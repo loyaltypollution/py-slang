@@ -1,5 +1,6 @@
 {
   "name": "py-slang",
+  "packageManager": "yarn@4.6.0",
   "version": "1.0.0",
   "description": "",
   "main": "dist/index.js",
@@ -23,8 +24,8 @@
   },
   "license": "Apache-2.0",
   "devDependencies": {
-    "@rollup/plugin-json": "^6.1.0",
     "@rollup/plugin-commonjs": "^28.0.3",
+    "@rollup/plugin-json": "^6.1.0",
     "@rollup/plugin-node-resolve": "^16.0.1",
     "@rollup/plugin-terser": "^0.4.4",
     "@rollup/plugin-typescript": "^12.1.2",
@@ -46,6 +47,7 @@
     "typescript": "^5.5.3"
   },
   "dependencies": {
+    "@sourceacademy/conductor": "https://github.com/loyaltypollution/conductor.git#src",
     "@types/estree": "^1.0.0",
     "fast-levenshtein": "^3.0.0",
     "mathjs": "^14.4.0"
