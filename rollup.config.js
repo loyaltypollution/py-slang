@@ -6,15 +6,24 @@ import commonjs from '@rollup/plugin-commonjs';
 /**
  * @type {import('rollup').RollupOptions}
  */
-const config = {
-  input: 'src/index.ts',
+const config = [{
+  input: 'src/conductor/PyEvaluator.ts',
   output: {
-    file: 'dist/index.js',
+    file: 'dist/python-evaluator.cjs',
     format: 'cjs',
     name: 'PySlangRunner',
     sourcemap: true
   },
   plugins: [commonjs(), json(), typescript(), nodeResolve()]
-};
+}, {
+  input: 'src/index.ts',
+  output: {
+    file: 'dist/worker.js',
+    format: 'iife',
+    name: 'PySlangWorker',
+    sourcemap: true
+  },
+  plugins: [commonjs(), json(), typescript(), nodeResolve()]
+}];
 
 export default config;

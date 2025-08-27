@@ -205,4 +205,4 @@ export async function runInContext(
     return result;
 }
 
-export default PyEvaluator;
+const {runnerPlugin, conduit} = initialise(PyEvaluator);
