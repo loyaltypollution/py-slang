@@ -5,7 +5,7 @@ import { Parser } from "./parser";
 import { Translator } from "./translator";
 import { Resolver } from "./resolver";
 import type { Program } from "estree";
-import { compileToIns } from './vm/svml-compiler';
+import { compileFunctional } from './vm/functional-compiler';
 import { assemble } from './vm/svml-assembler';
 import { stringifyProgram } from './vm/util';
 import * as fs from 'fs';
@@ -103,7 +103,7 @@ function main() {
         const ast = parsePythonToEstreeAst(pythonCode, 1, true);
         
         console.log('Compiling to SVML bytecode...');
-        const program = compileToIns(ast);
+        const program = compileFunctional(ast);
         
         console.log('Formatting output...');
         
