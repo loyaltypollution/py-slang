@@ -94,6 +94,13 @@ export class InstructionBuilder {
   }
 
   /**
+   * Convert this builder to an SVMFunction
+   */
+  toSVMFunction(stackSize: number, envSize: number, numArgs: number): [number, number, number, Instruction[]] {
+    return [stackSize, envSize, numArgs, this.build()];
+  }
+
+  /**
    * Reset builder for reuse
    */
   reset(): void {

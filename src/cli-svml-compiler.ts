@@ -6,10 +6,12 @@ import { Translator } from "./translator";
 import { Resolver } from "./resolver";
 import type { Program } from "estree";
 import { compileFunctional } from './vm/functional-compiler';
+import { compileToIns } from './vm/svml-compiler';
 import { assemble } from './vm/svml-assembler';
 import { stringifyProgram } from './vm/util';
 import * as fs from 'fs';
 import * as path from 'path';
+import { compileDirect } from "./vm/direct-compiler";
 
 /**
  * Standalone function to parse Python to EsTree AST without browser dependencies
@@ -103,7 +105,7 @@ function main() {
         const ast = parsePythonToEstreeAst(pythonCode, 1, true);
         
         console.log('Compiling to SVML bytecode...');
-        const program = compileFunctional(ast);
+        const program = compileDirect(ast);
         
         console.log('Formatting output...');
         
