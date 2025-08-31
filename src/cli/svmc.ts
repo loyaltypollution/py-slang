@@ -1,17 +1,16 @@
 #!/usr/bin/env node
 
-import { Tokenizer } from "./tokenizer";
-import { Parser } from "./parser";
-import { Translator } from "./translator";
-import { Resolver } from "./resolver";
+import { Command } from 'commander';
+import { Tokenizer } from "../tokenizer";
+import { Parser } from "../parser";
+import { Translator } from "../translator";
+import { Resolver } from "../resolver";
 import type { Program } from "estree";
-import { compileFunctional } from './vm/functional-compiler';
-import { compileToIns } from './vm/svml-compiler';
-import { assemble } from './vm/svml-assembler';
-import { stringifyProgram } from './vm/util';
+import { assemble } from '../vm/svml-assembler';
+import { stringifyProgram } from '../vm/util';
 import * as fs from 'fs';
 import * as path from 'path';
-import { compileDirect } from "./vm/direct-compiler";
+import { compileDirect } from "../vm/svml-compiler";
 
 /**
  * Standalone function to parse Python to EsTree AST without browser dependencies
@@ -37,69 +36,9 @@ function formatSVMLProgram(program: any): string {
 }
 
 /**
- * CLI tool for compiling Python to SVML bytecode
- * Usage: 
- *   node cli-svml-compiler.js <input-file> [output-file] [format=binary|text]
- *   node cli-svml-compiler.js --code "print('hello')" [output-file] [format=binary|text]
+ * Compile Python code to SVML bytecode
  */
-function main() {
-    const args = process.argv.slice(2);
-    
-    if (args.length === 0) {
-        console.log('SVML Compiler CLI');
-        console.log('');
-        console.log('Usage:');
-        console.log('  node cli-svml-compiler.js <input-file> [output-file] [format=binary|text]');
-        console.log('  node cli-svml-compiler.js --code "print(\'hello\')" [output-file] [format=binary|text]');
-        console.log('');
-        console.log('Options:');
-        console.log('  format=binary  Output as binary bytecode (default)');
-        console.log('  format=text    Output as human-readable text');
-        console.log('');
-        console.log('Examples:');
-        console.log('  node cli-svml-compiler.js test.py');
-        console.log('  node cli-svml-compiler.js test.py bytecode.svm');
-        console.log('  node cli-svml-compiler.js --code "x = 1 + 2" format=text');
-        process.exit(1);
-    }
-
-    let pythonCode: string;
-    let outputFile: string;
-    let format = 'binary';
-
-    // Parse arguments
-    const filteredArgs = args.filter(arg => {
-        if (arg.startsWith('format=')) {
-            format = arg.split('=')[1];
-            return false;
-        }
-        return true;
-    });
-
-    if (filteredArgs[0] === '--code') {
-        if (filteredArgs.length < 2) {
-            console.error('Error: --code requires a Python code string');
-            process.exit(1);
-        }
-        pythonCode = filteredArgs[1];
-        outputFile = filteredArgs[2] || `output.${format === 'text' ? 'txt' : 'bin'}`;
-    } else {
-        const inputFile = filteredArgs[0];
-        outputFile = filteredArgs[1] || inputFile.replace(/\.py$/, format === 'text' ? '.txt' : '.svm');
-        
-        if (!fs.existsSync(inputFile)) {
-            console.error(`Error: File '${inputFile}' not found`);
-            process.exit(1);
-        }
-        
-        try {
-            pythonCode = fs.readFileSync(inputFile, 'utf8');
-        } catch (error) {
-            console.error(`Error reading file '${inputFile}':`, error);
-            process.exit(1);
-        }
-    }
-
+function compilePythonToSVML(pythonCode: string, outputFile: string, format: string) {
     try {
         console.log('Parsing Python code...');
         const ast = parsePythonToEstreeAst(pythonCode, 1, true);
@@ -159,6 +98,43 @@ function main() {
         }
         process.exit(1);
     }
+}
+
+/**
+ * CLI tool for compiling Python to SVML bytecode
+ */
+function main() {
+    const program = new Command();
+    
+    program
+        .name('svmc')
+        .description('SVML Compiler - Compile Python to SVML bytecode')
+        .version('1.0.0');
+
+    program
+        .command('compile')
+        .description('Compile Python file to SVML bytecode')
+        .argument('<input-file>', 'Python file to compile')
+        .option('-o, --output <file>', 'Output file path')
+        .option('-f, --format <format>', 'Output format (binary|text)', 'binary')
+        .action((inputFile: string, options: any) => {
+            if (!fs.existsSync(inputFile)) {
+                console.error(`Error: File '${inputFile}' not found`);
+                process.exit(1);
+            }
+            
+            const outputFile = options.output || inputFile.replace(/\.py$/, options.format === 'text' ? '.txt' : '.svm');
+            
+            try {
+                const pythonCode = fs.readFileSync(inputFile, 'utf8');
+                compilePythonToSVML(pythonCode, outputFile, options.format);
+            } catch (error) {
+                console.error(`Error reading file '${inputFile}':`, error);
+                process.exit(1);
+            }
+        });
+
+    program.parse(process.argv);
 }
 
 // Run the CLI if this file is executed directly

@@ -15,12 +15,10 @@
     "sourceMap": true
   },
   "include": [
-    "src/ast-visualizer.ts",
-    "src/cli/ast-viz.ts",
+    "src/vm/*.ts",
+    "src/cli/svmc.ts",
     "src/tokenizer.ts",
     "src/parser.ts",
-    "src/translator.ts",
-    "src/resolver.ts",
     "src/types.ts",
     "src/errors.ts"
   ],
