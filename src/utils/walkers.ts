@@ -100,4 +100,10 @@ export const findNodeAround: typeof findNodeAt = walkers.findNodeAround as any
 
 export const findNodeAfter: typeof findNodeAt = walkers.findNodeAfter as any
 
-export const base: AncestorVisitors<never> = walkers.base as any
+export const base: RecursiveVisitors<any> = walkers.base as any
+
+// Extended base visitor that includes py-slang custom AST nodes
+export const pySlangBase = {
+  ...base,
+  NoneType(){},
+}

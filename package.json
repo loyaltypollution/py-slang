@@ -13,7 +13,9 @@
     "jsdoc": "./scripts/jsdoc.sh",
     "test": "jest",
     "build:ast": "tsc -p tsconfig-ast.json",
-    "ast-viz": "npm run build:ast && node dist/cli-ast-visualizer.js"
+    "ast-viz": "npm run build:ast && node dist/cli-ast-visualizer.js",
+    "build:svmc": "tsc -p tsconfig-svmc.json",
+    "svmc": "npm run build:svmc && node dist/cli-svml-compiler.js"
   },
   "keywords": [
     "Python",

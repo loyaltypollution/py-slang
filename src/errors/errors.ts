@@ -6,6 +6,26 @@ import { Control, ControlItem } from '../cse-machine/control';
 import { column } from 'mathjs';
 import { typeTranslator } from '../cse-machine/utils';
 
+// Error classes for SVML compiler
+export class UndefinedVariable extends RuntimeSourceError {
+  public name: string
+
+  constructor(name: string, node: es.Node) {
+    super(node)
+    this.name = name
+    this.type = ErrorType.RUNTIME
+    this.message = `Name "${name}" is not defined.`
+  }
+}
+
+export class ConstAssignment extends RuntimeSourceError {
+  constructor(node: es.Node, name: string) {
+    super(node)
+    this.type = ErrorType.RUNTIME
+    this.message = `Assignment to constant variable "${name}".`
+  }
+}
+
 /* Searches backwards and forwards till it hits a newline */
 function getFullLine(source: string, current: number): { line: number; fullLine: string } {
   let back: number = current;
