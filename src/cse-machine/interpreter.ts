@@ -235,6 +235,36 @@ export function* generateCSEMachineStateStream(
       context.runtime.changepointSteps.push(steps + 1)
     }
 
+    // if (!isPrelude && context.vmEngine && context.vmEngine.shouldCompile(command, context)) {
+    //   try {
+    //     // Note: Using Promise.resolve to handle potential async operations
+    //     // In future, this can be made fully async when the generator supports it
+    //     const vmResult = context.vmEngine.tryExecuteSync(command, context, control, stash);
+    //     if (vmResult.success && vmResult.value !== undefined) {
+    //       // VM execution succeeded - update stash and continue
+    //       stash.push(vmResult.value);
+    //       control.pop(); // Remove the command that was executed by VM
+          
+    //       // Update hotness counters for future decisions
+    //       context.vmEngine.updateHotness(command, context);
+          
+    //       command = control.peek();
+    //       steps += 1;
+    //       if (!isPrelude) {
+    //         context.runtime.envStepsTotal = steps;
+    //       }
+          
+    //       yield { stash, control, steps, vmExecuted: true };
+    //       continue;
+    //     }
+    //     // If VM failed, fall through to interpreter
+    //   } catch (vmError) {
+    //     // VM execution failed, fall back to interpreter
+    //     console.warn('VM execution failed, falling back to interpreter:', vmError);
+    //   }
+    // }
+
+    // Original interpreter execution path
     control.pop()
     if (isNode(command)) {
       context.runtime.nodes.shift()
@@ -248,10 +278,15 @@ export function* generateCSEMachineStateStream(
         // With the new evaluator, we don't return a break
         // return new CSEBreak()
       }
-    } else {
+    } else if (command) {
       // Command is an instruction
       cmdEvaluators[(command as Instr).instrType](command, context, control, stash, isPrelude)
     }
+
+    // // Update hotness counters for profiling
+    // if (!isPrelude && context.vmEngine && command) {
+    //   context.vmEngine.updateHotness(command, context);
+    // }
 
     command = control.peek()
     
