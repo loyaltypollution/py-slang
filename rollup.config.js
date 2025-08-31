@@ -7,6 +7,12 @@ import commonjs from '@rollup/plugin-commonjs';
  * @type {import('rollup').RollupOptions}
  */
 const config = [{
+  input: 'src/cli-ast-visualizer.ts',
+  output: {
+    file: 'dist/cli-ast-visualizer.mjs',
+    format: 'es',
+  },
+  plugins: [commonjs(), json(), typescript(), nodeResolve()]}, {
   input: 'src/conductor/PyEvaluator.ts',
   output: {
     file: 'dist/python-evaluator.cjs',

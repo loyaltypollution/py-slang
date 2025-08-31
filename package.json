@@ -11,7 +11,9 @@
     "build": "rollup -c --bundleConfigAsCjs",
     "start": "npm run build && node dist/index.js",
     "jsdoc": "./scripts/jsdoc.sh",
-    "test": "jest"
+    "test": "jest",
+    "build:ast": "tsc -p tsconfig-ast.json",
+    "ast-viz": "npm run build:ast && node dist/cli-ast-visualizer.js"
   },
   "keywords": [
     "Python",
