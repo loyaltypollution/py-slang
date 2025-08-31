@@ -42,6 +42,8 @@ export type FunctionInfo = {
   numArgs: number;
   ast: es.BlockStatement | es.Program;
   environment: Environment;
+  name?: string; // Function name (for declarations), undefined for expressions
+  storageIndex?: number; // Index in declaring environment
 };
 
 /**
@@ -51,6 +53,7 @@ export type AnalysisResult = {
   mainFunction: FunctionInfo;
   functions: FunctionInfo[];
   resolvedIdentifiers: WeakMap<es.Identifier, ResolvedSymbol>;
+  functionNodes: WeakMap<es.FunctionDeclaration | es.ArrowFunctionExpression, FunctionInfo>;
 };
 
 // ============================================================================
@@ -283,6 +286,7 @@ export const analyzeProgram = (
   vmInternalFunctions: string[] = []
 ): AnalysisResult => {
   const resolvedIdentifiers = new WeakMap<es.Identifier, ResolvedSymbol>();
+  const functionNodes = new WeakMap<es.FunctionDeclaration | es.ArrowFunctionExpression, FunctionInfo>();
   const functions: FunctionInfo[] = [];
   let functionCounter = 0;
 
@@ -333,13 +337,34 @@ export const analyzeProgram = (
       
       const functionEnv = extendEnvironment(env, params);
       
-      functions.push({
+      // For function declarations, find the name and storage index in the declaring environment
+      let functionName: string | undefined;
+      let storageIndex: number | undefined;
+      
+      if (node.type === 'FunctionDeclaration' && node.id) {
+        const originalName = node.id.name;
+        // Look for the function name (original or renamed) in the current environment
+        for (const [name, info] of env.locals) {
+          if (name === originalName || name.startsWith(`${originalName}-`)) {
+            functionName = name;
+            storageIndex = info.index;
+            break;
+          }
+        }
+      }
+      
+      const functionInfo: FunctionInfo = {
         functionIndex,
         envSize: params.size,
         numArgs: node.params.length,
         ast: body,
         environment: functionEnv,
-      });
+        name: functionName,
+        storageIndex: storageIndex,
+      };
+      
+      functions.push(functionInfo);
+      functionNodes.set(node, functionInfo);
       
       // Continue resolving in function body
       resolveInNode(body, functionEnv);
@@ -387,5 +412,6 @@ export const analyzeProgram = (
     mainFunction,
     functions,
     resolvedIdentifiers,
+    functionNodes,
   };
 };

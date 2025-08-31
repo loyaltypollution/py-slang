@@ -1,6 +1,6 @@
 import Buffer from '../utils/buffer'
 import OpCodes, { getInstructionSize, OPCODE_MAX } from './opcodes'
-import { Instruction, Program, SVMFunction } from './svml-compiler'
+import { Instruction, Program, SVMFunction } from './types'
 
 const SVM_MAGIC = 0x5005acad
 const MAJOR_VER = 0

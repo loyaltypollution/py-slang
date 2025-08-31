@@ -1,5 +1,5 @@
 import { OpCodes } from './opcodes'
-import { Program } from './svml-compiler'
+import { Program } from './types'
 
 const OPCODES_STR = {
   [OpCodes.NOP]: 'NOP   ',
