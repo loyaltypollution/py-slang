@@ -17,7 +17,8 @@ const config = [
       name: 'PySlangWorker',
       sourcemap: true
     },
-    plugins: [wasm(), commonjs(), json(), typescript(), nodeResolve(), nodePolyfills()]
+    // must allow 91 kb
+    plugins: [wasm({maxFileSize: 2000000}), commonjs(), json(), typescript(), nodeResolve(), nodePolyfills()]
   },
   {
     input: 'src/conductor/PyEvaluator.ts',
