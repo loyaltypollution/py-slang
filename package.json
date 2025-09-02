@@ -15,7 +15,9 @@
     "build:ast": "tsc -p tsconfig-ast.json",
     "ast-viz": "npm run build:ast && node dist/cli/ast-viz.js",
     "build:svmc": "tsc -p tsconfig-svmc.json",
-    "svmc": "npm run build:svmc && node dist/cli/svmc.js"
+    "svmc": "npm run build:svmc && node dist/cli/svmc.js",
+    "build:sinter": "tsc -p tsconfig-sinter.json",
+    "sinter": "npm run build:sinter && node dist/sinter/example.js"
   },
   "keywords": [
     "Python",
@@ -33,6 +35,7 @@
     "@rollup/plugin-node-resolve": "^16.0.1",
     "@rollup/plugin-terser": "^0.4.4",
     "@rollup/plugin-typescript": "^12.1.2",
+    "@rollup/plugin-wasm": "^6.2.2",
     "@types/fast-levenshtein": "^0.0.4",
     "@types/jest": "^29.4.0",
     "@types/mathjs": "^9.4.1",
@@ -53,8 +56,9 @@
   "dependencies": {
     "@sourceacademy/conductor": "https://github.com/loyaltypollution/conductor.git#src",
     "@types/estree": "^1.0.0",
+    "@wasmer/sdk": "^0.9.0",
+    "commander": "^13.1.0",
     "fast-levenshtein": "^3.0.0",
-    "mathjs": "^14.4.0",
-    "commander": "^13.1.0"
+    "mathjs": "^14.4.0"
   }
 }
