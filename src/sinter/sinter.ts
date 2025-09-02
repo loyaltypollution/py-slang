@@ -20,14 +20,23 @@ const future = async (props: any) => {
   const alloc_heap = module.cwrap("siwasm_alloc_heap", undefined, ["number"]);
   const alloc = module.cwrap("siwasm_alloc", "number", ["number"]);
   const free = module.cwrap("siwasm_free", undefined, ["number"]);
-  const run = module.cwrap("siwasm_run", undefined, ["number", "number"]);
+  const run = module.cwrap("siwasm_run", "number", ["number", "number"]);
+  const runConvenient = (a:number, b:number) => {
+    const resPtr = run(a, b);
+    const type = module.HEAP8[resPtr]
+                   | (module.HEAP8[resPtr + 1] << 8)
+                   | (module.HEAP8[resPtr + 2] << 16)
+                   | (module.HEAP8[resPtr + 3] << 24);
+    console.log("Type received", type);
+  }
+
   return {
     module,
     alloc_heap,
     alloc,
     free,
     run,
-    // Convenience function to run bytecode from JavaScript buffer
+    runConvenient,
     runBuffer: (buffer: Uint8Array) => {
       // Allocate WASM memory for the buffer
       const ptr = alloc(buffer.length);
@@ -40,7 +49,7 @@ const future = async (props: any) => {
         module.HEAPU8.set(buffer, ptr);
         
         // Run the bytecode
-        run(ptr, buffer.length);
+        runConvenient(ptr, buffer.length);
       } finally {
         // Clean up allocated memory
         free(ptr);
@@ -51,6 +60,7 @@ const future = async (props: any) => {
 
 if (require.main === module) {
   future({}).then((sinter) => {
+    console.log(sinter);
     fs.readFile("test.svm", (err, buffer) => {
       if (err) {
         console.error(err);

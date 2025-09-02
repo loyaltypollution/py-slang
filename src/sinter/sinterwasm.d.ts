@@ -13,14 +13,14 @@ declare namespace RuntimeExports {
      * @param {Object=} opts
      */
     function cwrap(ident: any, returnType?: string | undefined, argTypes?: any[] | undefined, opts?: any | undefined): any;
+    let HEAP8: any;
+    let HEAPU8: any;
 }
 interface WasmModule {
   _siwasm_alloc_heap(_0: number): void;
   _siwasm_alloc(_0: number): number;
   _siwasm_free(_0: number): void;
-  _siwasm_run(_0: number, _1: number): void;
-  HEAPU8: Uint8Array;
-  HEAP8: Int8Array;
+  _siwasm_run(_0: number, _1: number): number;
 }
 
 export type MainModule = WasmModule & typeof RuntimeExports;
