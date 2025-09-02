@@ -1,6 +1,6 @@
 import Buffer from '../utils/buffer'
 import OpCodes, { getInstructionSize, OPCODE_MAX } from './opcodes'
-import { Instruction, Program, SVMFunction } from './types'
+import { Instruction, SVMProgram, SVMFunction } from './types'
 
 const SVM_MAGIC = 0x5005acad
 const MAJOR_VER = 0
@@ -150,7 +150,7 @@ function serialiseFunction(f: SVMFunction): ImFunction {
   }
 }
 
-export function assemble(p: Program): Uint8Array {
+export function assemble(p: SVMProgram): Uint8Array {
   const [entrypointIndex, jsonFns] = p
 
   // serialise all the functions

@@ -1,5 +1,5 @@
 import { OpCodes } from './opcodes'
-import { Program } from './types'
+import { SVMProgram } from './types'
 
 const OPCODES_STR = {
   [OpCodes.NOP]: 'NOP   ',
@@ -155,7 +155,7 @@ export function getName(op: number) {
 }
 
 // pretty-print the program
-export function stringifyProgram(P: Program) {
+export function stringifyProgram(P: SVMProgram) {
   const functions = P[1]
   let programStr = ''
   programStr += 'Entry function: ' + P[0] + '\n'

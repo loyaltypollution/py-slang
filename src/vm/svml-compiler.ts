@@ -2,7 +2,7 @@ import * as es from "estree";
 import { UNKNOWN_LOCATION } from "../errors/runtimeSourceError";
 import { ConstAssignment, UndefinedVariable } from "../errors/errors";
 import { CONSTANT_PRIMITIVES, PRIMITIVE_FUNCTIONS } from "../stdlib/vm-prelude";
-import { InstructionBuilder, Program, Instruction, Argument, SVMFunction } from "./types";
+import { InstructionBuilder, SVMProgram, Instruction, Argument, SVMFunction } from "./types";
 import OpCodes from "./opcodes";
 import { arrowFunctionExpression, constantDeclaration } from "../utils/ast/astCreator";
 
@@ -525,13 +525,13 @@ export function compileFunctionToBuilder(
 // ============================================================================
 
 /**
- * Compile a program using the direct approach - no monads!
+ * Compile a program
  */
 export function compileDirect(
   program: es.Program,
-  prelude?: Program,
+  prelude?: SVMProgram,
   vmInternalFunctions?: string[]
-): Program {
+): SVMProgram {
   // Step 1: Analysis pass
   const analysis = analyzeProgram(program, PRIMITIVE_FUNCTIONS, vmInternalFunctions);
 

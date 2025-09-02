@@ -141,6 +141,9 @@ import { runCSEMachine } from "./runner/pyRunner";
 import { initialise } from "@sourceacademy/conductor";
 import { PyEvaluator } from "./conductor/PyEvaluator";
 export * from './errors';
+import { compileDirect } from "./vm/svml-compiler";
+import { assemble } from "./vm/svml-assembler";
+import init from "./sinter/sinter";
 
 export function parsePythonToEstreeAst(code: string,
     variant: number = 1,
@@ -201,7 +204,14 @@ export async function runInContext(
     options: RecursivePartial<IOptions> = {}
 ): Promise<Result> {
     const estreeAst = parsePythonToEstreeAst(code, 1, true);
-    const result = runCSEMachine(code, estreeAst, context, options);
+    // Compile to SVML
+    const p = compileDirect(estreeAst);
+    const binary: Uint8Array = assemble(p);
+    const sinter = await init();
+    var result: any = sinter.runBinary(binary);
+    console.log("COMPILED ANSWER", result);
+
+    result = runCSEMachine(code, estreeAst, context, options);
     return result;
 }
 

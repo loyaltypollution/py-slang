@@ -19,7 +19,7 @@ export type SVMFunction = [
   number, // number of arguments
   Instruction[] // code
 ];
-export type Program = [
+export type SVMProgram = [
   number, // index of entry point function
   SVMFunction[]
 ];

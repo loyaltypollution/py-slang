@@ -2,7 +2,28 @@ import fs from "fs";
 import sinterwasm from "./sinterwasm.js";
 import wasm from "./sinterwasm.wasm";
 
-const future = async (props: any) => {
+// Define the possible return types from the WASM module
+export type SinterValue = 
+  | undefined
+  | null
+  | boolean
+  | number
+  | string
+  | any[] // array
+  | Function; // function
+
+// Define the sinter module interface
+export interface SinterModule {
+  module: any;
+  alloc_heap: (size: number) => void;
+  alloc: (size: number) => number;
+  free: (ptr: number) => void;
+  run: (ptr: number, size: number) => number;
+  runBinary: (buffer: Uint8Array) => SinterValue;
+}
+
+// Initialize the sinter WASM module
+export const init = async (props: any = {}): Promise<SinterModule> => {
   const module = await sinterwasm({
     instantiateWasm(imports: WebAssembly.Imports, callback: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void) {
       return wasm(imports).then(result => {
@@ -17,12 +38,14 @@ const future = async (props: any) => {
     console.error("module has no cwrap", module);
     throw new Error("module has no cwrap");
   }
+
   const alloc_heap = module.cwrap("siwasm_alloc_heap", undefined, ["number"]);
   const alloc = module.cwrap("siwasm_alloc", "number", ["number"]);
   const free = module.cwrap("siwasm_free", undefined, ["number"]);
   const run = module.cwrap("siwasm_run", "number", ["number", "number"]);
-  const runConvenient = (a:number, b:number) => {
-    const resPtr = run(a, b);
+
+  // Helper function to read return value from WASM memory
+  const readReturnValue = (resPtr: number): SinterValue => {
     const type = module.HEAP8[resPtr]
                    | (module.HEAP8[resPtr + 1] << 8)
                    | (module.HEAP8[resPtr + 2] << 16)
@@ -31,9 +54,7 @@ const future = async (props: any) => {
                    | (module.HEAP8[resPtr + 5] << 8)
                    | (module.HEAP8[resPtr + 6] << 16)
                    | (module.HEAP8[resPtr + 7] << 24);
-
-    console.log("Returned", retVal);
-    console.log("Type", type);
+    
     switch(type) {
       case 1: // sinter_type_undefined = 1,
         return undefined;
@@ -51,8 +72,33 @@ const future = async (props: any) => {
         throw new Error("Type not yet supported");
       case 8: // sinter_type_function = 8
         throw new Error("Type not yet supported");
+      default:
+        throw new Error(`Unknown return type: ${type}`);
     }
-  }
+  };
+
+  // Main function to run binary and return result
+  const runBinary = (buffer: Uint8Array): SinterValue => {
+    // Allocate WASM memory for the buffer
+    const ptr = alloc(buffer.length);
+    if (!ptr) {
+      throw new Error("Failed to allocate WASM memory");
+    }
+    
+    try {
+      // Copy buffer into WASM memory
+      module.HEAPU8.set(buffer, ptr);
+      
+      // Run the bytecode and get result pointer
+      const resPtr = run(ptr, buffer.length);
+      
+      // Read and return the result
+      return readReturnValue(resPtr);
+    } finally {
+      // Clean up allocated memory
+      free(ptr);
+    }
+  };
 
   return {
     module,
@@ -60,39 +106,32 @@ const future = async (props: any) => {
     alloc,
     free,
     run,
-    runConvenient,
-    runBuffer: (buffer: Uint8Array) => {
-      // Allocate WASM memory for the buffer
-      const ptr = alloc(buffer.length);
-      if (!ptr) {
-        throw new Error("Failed to allocate WASM memory");
-      }
-      
-      try {
-        // Copy buffer into WASM memory
-        module.HEAPU8.set(buffer, ptr);
-        
-        // Run the bytecode
-        runConvenient(ptr, buffer.length);
-      } finally {
-        // Clean up allocated memory
-        free(ptr);
-      }
-    }
+    runBinary,
   };
 };
 
+// Legacy function for backward compatibility
+export const future = init;
+
+// Example usage when run directly
 if (require.main === module) {
-  future({}).then((sinter) => {
-    console.log(sinter);
+  init().then((sinter) => {
+    console.log("Sinter module initialized:", sinter);
     fs.readFile("test.svm", (err, buffer) => {
       if (err) {
         console.error(err);
         return;
       }
-      sinter.runBuffer(buffer);
-    })
+      try {
+        const result = sinter.runBinary(buffer);
+        console.log("Execution result:", result);
+      } catch (error) {
+        console.error("Execution error:", error);
+      }
+    });
+  }).catch(error => {
+    console.error("Failed to initialize sinter:", error);
   });
 }
 
-export default future;
+export default init;
