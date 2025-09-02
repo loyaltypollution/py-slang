@@ -47,6 +47,7 @@
     "rimraf": "^3.0.2",
     "rollup": "^4.38.0",
     "rollup-plugin-modify": "^3.0.0",
+    "rollup-plugin-polyfill-node": "^0.13.0",
     "taffydb": "^2.7.3",
     "ts-jest": "^29.0.5",
     "ts-node": "^10.9.1",
