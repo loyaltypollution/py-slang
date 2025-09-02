@@ -27,7 +27,31 @@ const future = async (props: any) => {
                    | (module.HEAP8[resPtr + 1] << 8)
                    | (module.HEAP8[resPtr + 2] << 16)
                    | (module.HEAP8[resPtr + 3] << 24);
-    console.log("Type received", type);
+    const retVal = module.HEAP8[resPtr + 4]
+                   | (module.HEAP8[resPtr + 5] << 8)
+                   | (module.HEAP8[resPtr + 6] << 16)
+                   | (module.HEAP8[resPtr + 7] << 24);
+
+    console.log("Returned", retVal);
+    console.log("Type", type);
+    switch(type) {
+      case 1: // sinter_type_undefined = 1,
+        return undefined;
+      case 2: // sinter_type_null = 2,
+        return null;
+      case 3: // sinter_type_boolean = 3,
+        return retVal === 1;
+      case 4: // sinter_type_integer = 4,
+        return retVal;
+      case 5: // sinter_type_float = 5,
+        throw new Error("Type not yet supported");
+      case 6: // sinter_type_string = 6,
+        throw new Error("Type not yet supported");    
+      case 7: // sinter_type_array = 7,
+        throw new Error("Type not yet supported");
+      case 8: // sinter_type_function = 8
+        throw new Error("Type not yet supported");
+    }
   }
 
   return {
