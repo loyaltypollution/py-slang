@@ -1,4 +1,3 @@
-import fs from "fs";
 import sinterwasm from "./sinterwasm.js";
 import wasm from "./sinterwasm.wasm";
 
@@ -109,29 +108,5 @@ export const init = async (props: any = {}): Promise<SinterModule> => {
     runBinary,
   };
 };
-
-// Legacy function for backward compatibility
-export const future = init;
-
-// Example usage when run directly
-if (require.main === module) {
-  init().then((sinter) => {
-    console.log("Sinter module initialized:", sinter);
-    fs.readFile("test.svm", (err, buffer) => {
-      if (err) {
-        console.error(err);
-        return;
-      }
-      try {
-        const result = sinter.runBinary(buffer);
-        console.log("Execution result:", result);
-      } catch (error) {
-        console.error("Execution error:", error);
-      }
-    });
-  }).catch(error => {
-    console.error("Failed to initialize sinter:", error);
-  });
-}
 
 export default init;
