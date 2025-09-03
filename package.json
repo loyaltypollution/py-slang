@@ -12,12 +12,8 @@
     "start": "npm run build && node dist/index.js",
     "jsdoc": "./scripts/jsdoc.sh",
     "test": "jest",
-    "build:ast": "tsc -p tsconfig-ast.json",
-    "ast-viz": "npm run build:ast && node dist/cli/ast-viz.js",
-    "build:svmc": "tsc -p tsconfig-svmc.json",
-    "svmc": "npm run build:svmc && node dist/cli/svmc.js",
-    "build:sinter": "tsc -p tsconfig-sinter.json",
-    "sinter": "npm run build:sinter && node dist/sinter/example.js"
+    "ast-viz": "npm run build && node dist/ast-viz.js",
+    "svmc": "npm run build && node dist/svmc.js"
   },
   "keywords": [
     "Python",

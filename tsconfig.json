@@ -5,7 +5,16 @@
     "node_modules",
     "dist",
     "src/tests",
-    "rollup.config.js"
+    "rollup.config.js",
+    "src/sinter/**"
+  ],
+  "files": [
+    "@wasm.d.ts"
+  ],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.d.ts"
   ],
   "compilerOptions": {
     /* Visit https://aka.ms/tsconfig to read more about this file */

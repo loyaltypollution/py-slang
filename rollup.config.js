@@ -14,8 +14,7 @@ const config = [
     output: {
       file: 'dist/worker.js',
       format: 'iife',
-      name: 'PySlangWorker',
-      sourcemap: true
+      name: 'PySlangWorker'
     },
     // must allow 91 kb
     plugins: [wasm({maxFileSize: 2000000}), commonjs(), json(), typescript(), nodeResolve(), nodePolyfills()]
@@ -25,20 +24,28 @@ const config = [
     output: {
       file: 'dist/python-evaluator.cjs',
       format: 'cjs',
-      name: 'PySlangRunner',
-      sourcemap: true
+      name: 'PySlangRunner'
     },
-    plugins: [wasm(), commonjs(), json(), typescript(), nodeResolve(), nodePolyfills()]
+    plugins: [wasm({maxFileSize: 2000000}), commonjs(), json(), typescript(), nodeResolve(), nodePolyfills()]
   },
   {
-    input: 'src/sinter/sinter.ts',
+    input: 'src/cli/svmc.ts',
     output: {
-      file: 'dist/sinter.js',
+      file: 'dist/svmc.cjs',
       format: 'cjs',
-      name: 'Sinter',
+      name: 'SVMC'
     },
-    external: ['fs', 'path'],
-    plugins: [wasm(), commonjs(), typescript()]
-  }];
+    plugins: [commonjs(), json(), typescript(), nodeResolve()]
+  },
+  {
+    input: 'src/cli/ast-viz.ts',
+    output: {
+      file: 'dist/ast-viz.cjs',
+      format: 'cjs',
+      name: 'AstViz'
+    },
+    plugins: [commonjs(), json(), typescript(), nodeResolve()]
+  }
+];
 
 export default config;
