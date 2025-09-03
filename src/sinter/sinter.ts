@@ -1,31 +1,22 @@
 import sinterwasm from "./sinterwasm.js";
 import wasm from "./sinterwasm.wasm";
-
-// Define the possible return types from the WASM module
-export type SinterValue = 
-  | undefined
-  | null
-  | boolean
-  | number
-  | string
-  | any[] // array
-  | Function; // function
+import { Value } from "../cse-machine/stash";
 
 // Define the sinter module interface
-export interface SinterModule {
+interface SinterModule {
   module: any;
   alloc_heap: (size: number) => void;
   alloc: (size: number) => number;
   free: (ptr: number) => void;
   run: (ptr: number, size: number) => number;
-  runBinary: (buffer: Uint8Array) => SinterValue;
+  runBinary: (buffer: Uint8Array) => Value;
 }
 
 // Initialize the sinter WASM module
-export const init = async (props: any = {}): Promise<SinterModule> => {
+export default async function init(props: any = {}): Promise<SinterModule> {
   const module = await sinterwasm({
     instantiateWasm(imports: WebAssembly.Imports, callback: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void) {
-      return wasm(imports).then(result => {
+      return wasm(imports).then((result: WebAssembly.WebAssemblyInstantiatedSource) => {
         callback(result.instance, result.module);
         return result.instance.exports;
       });
@@ -44,7 +35,7 @@ export const init = async (props: any = {}): Promise<SinterModule> => {
   const run = module.cwrap("siwasm_run", "number", ["number", "number"]);
 
   // Helper function to read return value from WASM memory
-  const readReturnValue = (resPtr: number): SinterValue => {
+  const readReturnValue = (resPtr: number): Value => {
     const type = module.HEAP8[resPtr]
                    | (module.HEAP8[resPtr + 1] << 8)
                    | (module.HEAP8[resPtr + 2] << 16)
@@ -56,13 +47,13 @@ export const init = async (props: any = {}): Promise<SinterModule> => {
     
     switch(type) {
       case 1: // sinter_type_undefined = 1,
-        return undefined;
+        return { type: 'undefined' };
       case 2: // sinter_type_null = 2,
-        return null;
+        return { type: 'NoneType', value: undefined };
       case 3: // sinter_type_boolean = 3,
-        return retVal === 1;
+        return { type: 'bool', value: retVal === 1 };
       case 4: // sinter_type_integer = 4,
-        return retVal;
+        return { type: 'bigint', value: retVal };
       case 5: // sinter_type_float = 5,
         throw new Error("Type not yet supported");
       case 6: // sinter_type_string = 6,
@@ -77,19 +68,20 @@ export const init = async (props: any = {}): Promise<SinterModule> => {
   };
 
   // Main function to run binary and return result
-  const runBinary = (buffer: Uint8Array): SinterValue => {
+  const runBinary = (buffer: Uint8Array): Value => {
     // Allocate WASM memory for the buffer
     const ptr = alloc(buffer.length);
     if (!ptr) {
       throw new Error("Failed to allocate WASM memory");
     }
+    let resPtr = 0;
     
     try {
       // Copy buffer into WASM memory
       module.HEAPU8.set(buffer, ptr);
       
       // Run the bytecode and get result pointer
-      const resPtr = run(ptr, buffer.length);
+      resPtr = run(ptr, buffer.length);
       
       // Read and return the result
       return readReturnValue(resPtr);
@@ -108,5 +100,3 @@ export const init = async (props: any = {}): Promise<SinterModule> => {
     runBinary,
   };
 };
-
-export default init;

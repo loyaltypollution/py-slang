@@ -7,10 +7,9 @@
 /* tslint:disable:max-classes-per-file */
 
 import * as es from 'estree'
-import { Stack } from './stack'
 import { Control, ControlItem } from './control';
 import { Stash, Value } from './stash';
-import { Environment, createBlockEnvironment, createEnvironment, createProgramEnvironment, currentEnvironment, popEnvironment, pushEnvironment } from './environment';
+import { createBlockEnvironment, createEnvironment, createProgramEnvironment, currentEnvironment, popEnvironment, pushEnvironment } from './environment';
 import { Context } from './context';
 import { isNode, isBlockStatement, hasDeclarations, statementSequence, blockArrowFunction, constantDeclaration, pyVariableDeclaration, identifier, literal } from './ast-helper';
 import { envChanging,declareFunctionsAndVariables, handleSequence, defineVariable, getVariable, checkStackOverFlow, checkNumberOfArguments, isInstr, isSimpleFunction, isIdentifier, reduceConditional, valueProducing, handleRuntimeError, hasImportDeclarations, declareIdentifier, typeTranslator } from './utils';
@@ -22,10 +21,9 @@ import { conditionalExpression } from './instrCreator';
 import * as error from "../errors/errors"
 import { ComplexLiteral, CSEBreak, None, PyComplexNumber, RecursivePartial, Representation, Result } from '../types';
 import { builtIns, builtInConstants } from '../stdlib';
-import { IOptions } from '..';
-import { CseError } from './error';
+import { IOptions } from '../runner/pyRunner';
 import { filterImportDeclarations } from './dict';
-import { RuntimeSourceError } from '../errors/runtimeSourceError';
+import { RuntimeSourceError } from '../errors/errors';
 
 type CmdEvaluator = (
   command: ControlItem,

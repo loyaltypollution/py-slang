@@ -81,7 +81,7 @@ export class InstructionBuilder {
       if (targetIndex === undefined) {
         throw new Error(`Undefined label: ${label}`);
       }
-      const offset = targetIndex - (index + 1); // relative to next instruction
+      const offset = targetIndex - index; // relative to next instruction
       this.instructions[index][1] = offset;
     }
 
