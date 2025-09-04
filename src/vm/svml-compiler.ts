@@ -12,6 +12,7 @@ import {
     FunctionInfo,
     analyzeProgram,
 } from "./compiler-environment";
+import { DeadCodeEliminator } from "./svml-opt";
 
 // ============================================================================
 // Types and Context
@@ -687,7 +688,8 @@ export function compileDirect(
     for (const functionInfo of analysis.functions) {
         const { builder, maxStackSize, envSize, numArgs } =
             compileFunctionToBuilder(functionInfo, context);
-        const svmFunction = builder.toSVMFunction(
+        builder.optimize(new DeadCodeEliminator());
+            const svmFunction = builder.toSVMFunction(
             maxStackSize,
             envSize,
             numArgs
@@ -702,6 +704,7 @@ export function compileDirect(
         envSize: mainEnvSize,
         numArgs: mainNumArgs,
     } = compileFunctionToBuilder(analysis.mainFunction, context);
+    mainBuilder.optimize(new DeadCodeEliminator());
     const mainSVMFunction = mainBuilder.toSVMFunction(
         mainStackSize,
         mainEnvSize,
