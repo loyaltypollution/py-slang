@@ -2,16 +2,18 @@
  * Core types for the SVML (Source Virtual Machine Language) compiler
  */
 
+import { SVMLTransformer } from "./svml-opt";
+
 export type Offset = number; // instructions to skip
 export type Address = [
   number, // function index
   number? // instruction index within function; optional
 ];
-export type Instruction = [
-  number, // opcode
-  Argument?,
-  Argument?
-];
+export interface Instruction {
+  opcode: number;
+  arg1?: Argument;
+  arg2?: Argument;
+}
 export type Argument = number | boolean | string | Offset | Address;
 export type SVMFunction = [
   number, // stack size
@@ -37,15 +39,15 @@ export class InstructionBuilder {
   }
 
   emitNullary(opcode: number): void {
-    this.emit([opcode]);
+    this.emit({ opcode });
   }
 
   emitUnary(opcode: number, arg: Argument): void {
-    this.emit([opcode, arg]);
+    this.emit({ opcode, arg1: arg });
   }
 
   emitBinary(opcode: number, arg1: Argument, arg2: Argument): void {
-    this.emit([opcode, arg1, arg2]);
+    this.emit({ opcode, arg1, arg2 });
   }
 
   /**
@@ -54,7 +56,7 @@ export class InstructionBuilder {
   emitBranchTo(opcode: number, label: string): void {
     const index = this.instructions.length;
     this.fixups.push({ index, label });
-    this.emit([opcode, 0]); // placeholder offset
+    this.emit({ opcode, arg1: 0 }); // placeholder offset
   }
 
   /**
@@ -82,9 +84,8 @@ export class InstructionBuilder {
         throw new Error(`Undefined label: ${label}`);
       }
       const offset = targetIndex - index; // relative to next instruction
-      this.instructions[index][1] = offset;
+      this.instructions[index].arg1 = offset;
     }
-
     return [...this.instructions];
   }
 
@@ -95,6 +96,11 @@ export class InstructionBuilder {
     return [stackSize, envSize, numArgs, this.build()];
   }
 
+  /** Optimize the instructions */
+  optimize(transformer: SVMLTransformer): void {
+    this.instructions = transformer.transform(this.instructions);
+  }
+  
   /**
    * Reset builder for reuse
    */

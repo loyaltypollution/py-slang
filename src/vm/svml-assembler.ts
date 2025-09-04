@@ -58,42 +58,42 @@ function serialiseFunction(f: SVMFunction): ImFunction {
   b.putU(8, 0) // padding
 
   const instrOffsets = code
-    .map(i => getInstructionSize(i[0]))
+    .map(i => getInstructionSize(i.opcode))
     .reduce((ss, s) => (ss.push(ss[ss.length - 1] + s), ss), [0])
 
   for (const [instr, index] of code.map((i1, i2) => [i1, i2] as [Instruction, number])) {
-    if (instr[0] < 0 || instr[0] > OPCODE_MAX) {
-      throw new Error(`Invalid opcode ${instr[0].toString()}`)
+    if (instr.opcode < 0 || instr.opcode > OPCODE_MAX) {
+      throw new Error(`Invalid opcode ${instr.opcode.toString()}`)
     }
-    const opcode: OpCodes = instr[0]
+    const opcode: OpCodes = instr.opcode
     b.putU(8, opcode)
     switch (opcode) {
       case OpCodes.LDCI:
       case OpCodes.LGCI:
-        if (!Number.isInteger(instr[1] as number)) {
-          throw new Error(`Non-integral operand to LDCI/LDGI: ${instr[1]} (this is a compiler bug)`)
+        if (!Number.isInteger(instr.arg1 as number)) {
+          throw new Error(`Non-integral operand to LDCI/LDGI: ${instr.arg1} (this is a compiler bug)`)
         }
-        b.putI(32, instr[1] as number)
+        b.putI(32, instr.arg1 as number)
         break
       case OpCodes.LDCF32:
       case OpCodes.LGCF32:
-        b.putF(32, instr[1] as number)
+        b.putF(32, instr.arg1 as number)
         break
       case OpCodes.LDCF64:
       case OpCodes.LGCF64:
-        b.putF(64, instr[1] as number)
+        b.putF(64, instr.arg1 as number)
         break
       case OpCodes.LGCS:
         holes.push({
           offset: b.cursor,
-          referent: ['string', instr[1] as string]
+          referent: ['string', instr.arg1 as string]
         })
         b.putU(32, 0)
         break
       case OpCodes.NEWC:
         holes.push({
           offset: b.cursor,
-          referent: ['function', (instr[1] as number)!]
+          referent: ['function', (instr.arg1 as number)!]
         })
         b.putU(32, 0)
         break
@@ -108,7 +108,7 @@ function serialiseFunction(f: SVMFunction): ImFunction {
       case OpCodes.NEWENV:
       case OpCodes.NEWCP:
       case OpCodes.NEWCV:
-        b.putU(8, instr[1] as number)
+        b.putU(8, instr.arg1 as number)
         break
       case OpCodes.LDPG:
       case OpCodes.LDPF:
@@ -120,13 +120,13 @@ function serialiseFunction(f: SVMFunction): ImFunction {
       case OpCodes.CALLTP:
       case OpCodes.CALLV:
       case OpCodes.CALLTV:
-        b.putU(8, instr[1] as number)
-        b.putU(8, instr[2] as number)
+        b.putU(8, instr.arg1 as number)
+        b.putU(8, instr.arg2 as number)
         break
       case OpCodes.BRF:
       case OpCodes.BRT:
       case OpCodes.BR:
-        const offset = instrOffsets[index + (instr[1] as number)] - instrOffsets[index + 1]
+        const offset = instrOffsets[index + (instr.arg1 as number)] - instrOffsets[index + 1]
         b.putI(32, offset)
         break
       case OpCodes.JMP:

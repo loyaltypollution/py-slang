@@ -166,10 +166,9 @@ export function stringifyProgram(P: SVMProgram) {
     for (let j = 0; j < f[3].length; j++) {
       s += j
       const ins = f[3][j]
-      s += ': ' + getName(ins[0])
-      for (let k = 1; k < ins.length; k++) {
-        s += ' ' + ins[k]
-      }
+      s += ': ' + getName(ins.opcode)
+      s += ' ' + (ins.arg1 ?? ' ')
+      s += ' ' + (ins.arg2 ?? ' ')
       s += '\n'
     }
     programStr += s + '\n'
