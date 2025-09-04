@@ -15,11 +15,19 @@ interface SinterModule {
 // Initialize the sinter WASM module
 export default async function init(props: any = {}): Promise<SinterModule> {
   const module = await sinterwasm({
-    instantiateWasm(imports: WebAssembly.Imports, callback: (instance: WebAssembly.Instance, module: WebAssembly.Module) => void) {
-      return wasm(imports).then((result: WebAssembly.WebAssemblyInstantiatedSource) => {
-        callback(result.instance, result.module);
-        return result.instance.exports;
-      });
+    instantiateWasm(
+      imports: WebAssembly.Imports,
+      callback: (
+        instance: WebAssembly.Instance,
+        module: WebAssembly.Module
+      ) => void
+    ) {
+      return wasm(imports).then(
+        (result: WebAssembly.WebAssemblyInstantiatedSource) => {
+          callback(result.instance, result.module);
+          return result.instance.exports;
+        }
+      );
     },
     ...props,
   });
@@ -36,28 +44,28 @@ export default async function init(props: any = {}): Promise<SinterModule> {
 
   // Helper function to read return value from WASM memory
   const readReturnValue = (resPtr: number): Value => {
-    const type = module.HEAP8[resPtr]
-                   | (module.HEAP8[resPtr + 1] << 8)
-                   | (module.HEAP8[resPtr + 2] << 16)
-                   | (module.HEAP8[resPtr + 3] << 24);
-    const retVal = module.HEAP8[resPtr + 4]
-                   | (module.HEAP8[resPtr + 5] << 8)
-                   | (module.HEAP8[resPtr + 6] << 16)
-                   | (module.HEAP8[resPtr + 7] << 24);
-    
-    switch(type) {
-      case 1: // sinter_type_undefined = 1,
-        return { type: 'undefined' };
-      case 2: // sinter_type_null = 2,
-        return { type: 'NoneType', value: undefined };
-      case 3: // sinter_type_boolean = 3,
-        return { type: 'bool', value: retVal === 1 };
-      case 4: // sinter_type_integer = 4,
-        return { type: 'bigint', value: retVal };
-      case 5: // sinter_type_float = 5,
-        throw new Error("Type not yet supported");
+    // Make a DataView over the WASM heap
+    const u8 = module.HEAPU8 as Uint8Array;
+    const dv = new DataView(u8.buffer);
+    const type = dv.getUint32(resPtr, true);
+    const raw32 = dv.getUint32(resPtr + 4, true);
+
+    switch (type) {
+      case 1: // sinter_type_undefined
+        return { type: "undefined" };
+      case 2: // sinter_type_null
+        return { type: "NoneType", value: undefined };
+      case 3: // sinter_type_boolean
+        return { type: "bool", value: raw32 === 1 };
+      case 4: // sinter_type_integer (32-bit signed)
+        return { type: "int", value: dv.getInt32(resPtr + 4, true) };
+      case 5: // sinter_type_float (IEEE-754 float32)
+        return { type: "float", value: dv.getFloat32(resPtr + 4, true) };
       case 6: // sinter_type_string = 6,
-        throw new Error("Type not yet supported");    
+        // raw32 is a pointer to null-terminated string
+        const bytearray = module.HEAPU8.subarray(raw32, module.HEAPU8.indexOf(0, raw32));
+        const decoder = new TextDecoder('utf-8');
+        return { type: "string", value: decoder.decode(bytearray) };
       case 7: // sinter_type_array = 7,
         throw new Error("Type not yet supported");
       case 8: // sinter_type_function = 8
@@ -75,14 +83,14 @@ export default async function init(props: any = {}): Promise<SinterModule> {
       throw new Error("Failed to allocate WASM memory");
     }
     let resPtr = 0;
-    
+
     try {
       // Copy buffer into WASM memory
       module.HEAPU8.set(buffer, ptr);
-      
+
       // Run the bytecode and get result pointer
       resPtr = run(ptr, buffer.length);
-      
+
       // Read and return the result
       return readReturnValue(resPtr);
     } finally {
@@ -99,4 +107,4 @@ export default async function init(props: any = {}): Promise<SinterModule> {
     run,
     runBinary,
   };
-};
+}
