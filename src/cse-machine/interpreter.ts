@@ -24,6 +24,7 @@ import { builtIns, builtInConstants } from '../stdlib';
 import { IOptions } from '../runner/pyRunner';
 import { filterImportDeclarations } from './dict';
 import { RuntimeSourceError } from '../errors/errors';
+import { collectArgsAndCaptures } from './vm';
 
 type CmdEvaluator = (
   command: ControlItem,
@@ -231,6 +232,30 @@ export function* generateCSEMachineStateStream(
       // command is evaluated on the next step
       // Hence, next step will change the environment
       context.runtime.changepointSteps.push(steps + 1)
+    }
+
+    // Test logging for args and captures collection
+    if (!isPrelude && isInstr(command) && command.instrType === InstrType.APPLICATION) {
+      // Peek at the stash to see if we have a closure
+      const stashItems = stash.getStack()
+      const appInstr = command as AppInstr
+      const functionIndex = stashItems.length - appInstr.numOfArgs - 1
+      
+      if (functionIndex >= 0) {
+        const func = stashItems[functionIndex]
+        if (func instanceof Closure) {
+          try {
+            const result = collectArgsAndCaptures(func, context)
+            console.log('=== CLOSURE ARGS & CAPTURES ===')
+            console.log('Function name:', func.declaredName || '<anonymous>')
+            console.log('Args:', result.args)
+            console.log('Captures:', result.captures)
+            console.log('================================')
+          } catch (e) {
+            console.log('Error collecting args/captures:', e)
+          }
+        }
+      }
     }
 
     // if (!isPrelude && context.vmEngine && context.vmEngine.shouldCompile(command, context)) {
