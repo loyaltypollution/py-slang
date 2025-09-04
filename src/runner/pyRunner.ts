@@ -18,7 +18,7 @@ export async function runInContext(
     context: Context,
     options: RecursivePartial<IOptions> = {}
 ): Promise<Result> {
-    const estreeAst = parsePythonToEstreeAst(code, 1, true);
+    const estreeAst: es.Program = parsePythonToEstreeAst(code, 1, true);
     // Compile to SVML
     const p = compileDirect(estreeAst);
     const binary: Uint8Array = assemble(p);
