@@ -15,6 +15,7 @@ import {
   StatementSequence
 } from './types'
 import { NativeStorage } from '../types';
+import VMEngine from './vm';
 
 export class Context {
   public control: Control;
@@ -42,10 +43,16 @@ export class Context {
    */
   nativeStorage: NativeStorage
 
+  /**
+   * VM Engine for JIT compilation and hot code optimization
+   */
+  vmEngine: VMEngine | null = null
+
   constructor(program?: es.Program | StatementSequence, context?: Context) {
     this.control = new Control(program);
     this.stash = new Stash();
     this.runtime = this.createEmptyRuntime();
+    this.vmEngine = new VMEngine();
     //this.environment = createProgramEnvironment(context || this, false);
     if (this.runtime.environments.length === 0) {
       const globalEnvironment = this.createGlobalEnvironment()

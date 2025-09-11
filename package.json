@@ -10,7 +10,9 @@
     "build": "rollup -c --bundleConfigAsCjs",
     "start": "npm run build && node dist/index.js",
     "jsdoc": "./scripts/jsdoc.sh",
-    "test": "jest"
+    "test": "jest",
+    "ast-viz": "npm run build && node dist/ast-viz.js",
+    "svmc": "npm run build && node dist/svmc.js"
   },
   "keywords": [
     "Python",
@@ -28,6 +30,7 @@
     "@rollup/plugin-node-resolve": "^16.0.1",
     "@rollup/plugin-terser": "^0.4.4",
     "@rollup/plugin-typescript": "^12.1.2",
+    "@rollup/plugin-wasm": "^6.2.2",
     "@types/fast-levenshtein": "^0.0.4",
     "@types/jest": "^29.4.0",
     "@types/mathjs": "^9.4.1",
@@ -39,6 +42,7 @@
     "rimraf": "^3.0.2",
     "rollup": "^4.38.0",
     "rollup-plugin-modify": "^3.0.0",
+    "rollup-plugin-polyfill-node": "^0.13.0",
     "taffydb": "^2.7.3",
     "ts-jest": "^29.0.5",
     "ts-node": "^10.9.1",
@@ -48,6 +52,8 @@
   "dependencies": {
     "@sourceacademy/conductor": "https://github.com/loyaltypollution/conductor.git#src",
     "@types/estree": "^1.0.0",
+    "@wasmer/sdk": "^0.9.0",
+    "commander": "^13.1.0",
     "fast-levenshtein": "^3.0.0",
     "mathjs": "^14.4.0"
   }

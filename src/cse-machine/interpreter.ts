@@ -7,10 +7,9 @@
 /* tslint:disable:max-classes-per-file */
 
 import * as es from 'estree'
-import { Stack } from './stack'
 import { Control, ControlItem } from './control';
 import { Stash, Value } from './stash';
-import { Environment, createBlockEnvironment, createEnvironment, createProgramEnvironment, currentEnvironment, popEnvironment, pushEnvironment } from './environment';
+import { createBlockEnvironment, createEnvironment, createProgramEnvironment, currentEnvironment, popEnvironment, pushEnvironment } from './environment';
 import { Context } from './context';
 import { isNode, isBlockStatement, hasDeclarations, statementSequence, blockArrowFunction, constantDeclaration, pyVariableDeclaration, identifier, literal } from './ast-helper';
 import { envChanging,declareFunctionsAndVariables, handleSequence, defineVariable, getVariable, checkStackOverFlow, checkNumberOfArguments, isInstr, isSimpleFunction, isIdentifier, reduceConditional, valueProducing, handleRuntimeError, hasImportDeclarations, declareIdentifier, typeTranslator } from './utils';
@@ -22,10 +21,10 @@ import { conditionalExpression } from './instrCreator';
 import * as error from "../errors/errors"
 import { ComplexLiteral, CSEBreak, None, PyComplexNumber, RecursivePartial, Representation, Result } from '../types';
 import { builtIns, builtInConstants } from '../stdlib';
-import { IOptions } from '..';
-import { CseError } from './error';
+import { IOptions } from '../runner/pyRunner';
 import { filterImportDeclarations } from './dict';
-import { RuntimeSourceError } from '../errors/runtimeSourceError';
+import { RuntimeSourceError } from '../errors/errors';
+import { collectArgsAndCaptures } from './vm';
 
 type CmdEvaluator = (
   command: ControlItem,
@@ -235,6 +234,60 @@ export function* generateCSEMachineStateStream(
       context.runtime.changepointSteps.push(steps + 1)
     }
 
+    // Test logging for args and captures collection
+    if (!isPrelude && isInstr(command) && command.instrType === InstrType.APPLICATION) {
+      // Peek at the stash to see if we have a closure
+      const stashItems = stash.getStack()
+      const appInstr = command as AppInstr
+      const functionIndex = stashItems.length - appInstr.numOfArgs - 1
+      
+      if (functionIndex >= 0) {
+        const func = stashItems[functionIndex]
+        if (func instanceof Closure) {
+          try {
+            const result = collectArgsAndCaptures(func, context)
+            console.log('=== CLOSURE ARGS & CAPTURES ===')
+            console.log('Function name:', func.declaredName || '<anonymous>')
+            console.log('Args:', result.args)
+            console.log('Captures:', result.captures)
+            console.log('================================')
+          } catch (e) {
+            console.log('Error collecting args/captures:', e)
+          }
+        }
+      }
+    }
+
+    // if (!isPrelude && context.vmEngine && context.vmEngine.shouldCompile(command, context)) {
+    //   try {
+    //     // Note: Using Promise.resolve to handle potential async operations
+    //     // In future, this can be made fully async when the generator supports it
+    //     const vmResult = context.vmEngine.tryExecuteSync(command, context, control, stash);
+    //     if (vmResult.success && vmResult.value !== undefined) {
+    //       // VM execution succeeded - update stash and continue
+    //       stash.push(vmResult.value);
+    //       control.pop(); // Remove the command that was executed by VM
+          
+    //       // Update hotness counters for future decisions
+    //       context.vmEngine.updateHotness(command, context);
+          
+    //       command = control.peek();
+    //       steps += 1;
+    //       if (!isPrelude) {
+    //         context.runtime.envStepsTotal = steps;
+    //       }
+          
+    //       yield { stash, control, steps, vmExecuted: true };
+    //       continue;
+    //     }
+    //     // If VM failed, fall through to interpreter
+    //   } catch (vmError) {
+    //     // VM execution failed, fall back to interpreter
+    //     console.warn('VM execution failed, falling back to interpreter:', vmError);
+    //   }
+    // }
+
+    // Original interpreter execution path
     control.pop()
     if (isNode(command)) {
       context.runtime.nodes.shift()
@@ -248,10 +301,15 @@ export function* generateCSEMachineStateStream(
         // With the new evaluator, we don't return a break
         // return new CSEBreak()
       }
-    } else {
+    } else if (command) {
       // Command is an instruction
       cmdEvaluators[(command as Instr).instrType](command, context, control, stash, isPrelude)
     }
+
+    // // Update hotness counters for profiling
+    // if (!isPrelude && context.vmEngine && command) {
+    //   context.vmEngine.updateHotness(command, context);
+    // }
 
     command = control.peek()
     

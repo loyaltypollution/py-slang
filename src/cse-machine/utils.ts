@@ -16,8 +16,7 @@ import { Context } from './context'
 import * as instr from './instrCreator'
 import { Value } from './stash';
 import { Closure } from './closure';
-import { RuntimeSourceError } from '../errors/runtimeSourceError';
-import { CseError } from './error';
+import { RuntimeSourceError } from '../errors/errors';
 import { MissingRequiredPositionalError, TooManyPositionalArgumentsError } from '../errors/errors';
 
 export const isIdentifier = (node: Node): node is es.Identifier => {
