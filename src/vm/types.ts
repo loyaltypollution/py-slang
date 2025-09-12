@@ -30,10 +30,32 @@ export type SVMProgram = [
  * Efficient instruction builder for generating SVML bytecode
  */
 export class InstructionBuilder {
+  private children: InstructionBuilder[] = [];
   private instructions: Instruction[] = [];
   private labels: Map<string, number> = new Map();
   private fixups: Array<{ index: number; label: string }> = [];
+  private functionIndex: number;
+  static functionIndexCounter: number = 0;
 
+  constructor(functionIndex: number | undefined = undefined) {
+    this.functionIndex = functionIndex ?? InstructionBuilder.functionIndexCounter++;
+  }
+
+  getFunctionIndex(): number {
+    return this.functionIndex;
+  }
+  
+  createChildBuilder(isSameIndex: boolean = false): InstructionBuilder {
+    const nextIndex = isSameIndex ? this.functionIndex : undefined;
+    const child = new InstructionBuilder(nextIndex);
+    this.children.push(child);
+    return child;
+  }
+  
+  getAllBuilders(): InstructionBuilder[] {
+    return [this, ...this.children.flatMap(child => child.getAllBuilders())];
+  }
+  
   emit(instruction: Instruction): void {
     this.instructions.push(instruction);
   }
@@ -94,6 +116,13 @@ export class InstructionBuilder {
    */
   toSVMFunction(stackSize: number, envSize: number, numArgs: number): SVMFunction {
     return [stackSize, envSize, numArgs, this.build()];
+  }
+
+  /**
+   * Convert this builder to an SVMProgram
+   */
+  toSVMProgram(): SVMProgram {
+    return [0, this.getAllBuilders().map(builder => builder.toSVMFunction(0, 0, 0))];
   }
 
   /** Optimize the instructions */

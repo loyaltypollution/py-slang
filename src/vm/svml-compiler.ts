@@ -72,7 +72,10 @@ class SVMLSymbolResolver {
 }
 
 export type ExpressionResult = {
+  builder: InstructionBuilder;
   maxStackSize: number;
+  envSize: number;
+  numArgs: number;
 };
 
 export type FunctionCompilationResult = {
@@ -88,36 +91,27 @@ export type FunctionCompilationResult = {
 export class SVMLCompiler
   implements StmtNS.Visitor<ExpressionResult>, ExprNS.Visitor<ExpressionResult>
 {
-  public builder: InstructionBuilder; // Made public for access in compilation
+  private builder: InstructionBuilder;
   private currentEnvironment: Environment;
   private functionEnvironments: FunctionEnvironments;
   private isTailCall: boolean;
-  private labelCounter: number = 0;
-
-  // Function indexing for compilation
-  private functionIndexMap: Map<
-    StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda,
-    number
-  >;
 
   static SymbolResolver: SVMLSymbolResolver = new SVMLSymbolResolver();
 
   constructor(
     currentEnvironment: Environment,
     functionEnvironments: FunctionEnvironments,
-    functionIndexMap?: Map<
-      | StmtNS.FileInput
-      | StmtNS.FunctionDef
-      | ExprNS.Lambda
-      | ExprNS.MultiLambda,
-      number
-    >
+    builder: InstructionBuilder
   ) {
-    this.builder = new InstructionBuilder();
+    this.builder = builder;
     this.currentEnvironment = currentEnvironment;
     this.functionEnvironments = functionEnvironments;
-    this.functionIndexMap = functionIndexMap || new Map();
     this.isTailCall = false;
+  }
+
+  withEnvironment(environment: Environment): SVMLCompiler {
+    const builder = this.builder.createChildBuilder();
+    return new SVMLCompiler(environment, this.functionEnvironments, builder);
   }
 
   /**
@@ -127,9 +121,7 @@ export class SVMLCompiler
     return node.accept(this);
   }
 
-  /**
-   * Generate a unique label
-   */
+  private labelCounter: number = 0;
   private genLabel(prefix: string = "L"): string {
     return `${prefix}${this.labelCounter++}`;
   }
@@ -464,27 +456,41 @@ export class SVMLCompiler
   }
 
   visitLambdaExpr(expr: ExprNS.Lambda): ExpressionResult {
-    // Get function index for this lambda
-    const functionIndex = this.functionIndexMap.get(expr);
-    if (functionIndex === undefined) {
-      throw new Error("Lambda function index not found");
+    const ast: StmtNS.Stmt = new StmtNS.Return(
+      expr.startToken,
+      expr.endToken,
+      expr.body
+    );
+    const numArgs: number = expr.parameters.length;
+    const nextEnvironment = this.functionEnvironments.get(expr);
+    if (!nextEnvironment) {
+      throw new Error(`Lambda function environment not found`);
     }
+    const compiler = this.withEnvironment(nextEnvironment);
+    const { builder, maxStackSize } = compiler.compile(ast);
+    // Add return if needed (functions should always return something)
+    builder.emitNullary(OpCodes.RETG);
 
-    // Emit function creation instruction
-    this.builder.emitUnary(OpCodes.NEWC, functionIndex);
-    return { maxStackSize: 1 };
+    // Calculate environment size (number of local variables)
+    const envSize = Array.from(nextEnvironment.names.keys()).length;
+    return { builder, maxStackSize, envSize, numArgs };
   }
 
   visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExpressionResult {
-    // Get function index for this multi-lambda
-    const functionIndex = this.functionIndexMap.get(expr);
-    if (functionIndex === undefined) {
-      throw new Error("MultiLambda function index not found");
+    const ast: StmtNS.Stmt[] = expr.body;
+    const numArgs: number = expr.parameters.length;
+    const nextEnvironment = this.functionEnvironments.get(expr);
+    if (!nextEnvironment) {
+      throw new Error(`MultiLambda function environment not found`);
     }
+    const compiler = this.withEnvironment(nextEnvironment);
+    const { builder, maxStackSize } = compiler.compileStatements(ast);
+    // Add return if needed (functions should always return something)
+    builder.emitNullary(OpCodes.RETG);
 
-    // Emit function creation instruction
-    this.builder.emitUnary(OpCodes.NEWC, functionIndex);
-    return { maxStackSize: 1 };
+    // Calculate environment size (number of local variables)
+    const envSize = Array.from(nextEnvironment.names.keys()).length;
+    return { builder, maxStackSize, envSize, numArgs };
   }
 
   visitGroupingExpr(expr: ExprNS.Grouping): ExpressionResult {
@@ -529,36 +535,35 @@ export class SVMLCompiler
     return initResult;
   }
 
-  visitFunctionDefStmt(stmt: StmtNS.FunctionDef): ExpressionResult {
-    // Get function index for this function definition
-    const functionIndex = this.functionIndexMap.get(stmt);
-    if (functionIndex === undefined) {
-      throw new Error("Function definition index not found");
-    }
+  visitFunctionDefStmt(stmt: StmtNS.FunctionDef): ExpressionResult {    
+    const ast: StmtNS.Stmt[] = stmt.body;
+      const numArgs: number = stmt.parameters.length;
+      const nextEnvironment = this.functionEnvironments.get(stmt);
+      if (!nextEnvironment) {
+        throw new Error(`FunctionDef function environment not found`);
+      }
+      const childCompiler = this.withEnvironment(nextEnvironment);
+      const { builder: childBuilder, maxStackSize } = childCompiler.compileStatements(ast);
+      // Add return if needed (functions should always return something)
+      childBuilder.emitNullary(OpCodes.RETG);
+  
+      // Calculate environment size (number of local variables)
+      const envSize = Array.from(nextEnvironment.names.keys()).length;
 
-    // Emit function creation instruction
-    this.builder.emitUnary(OpCodes.NEWC, functionIndex);
+      // Add function creation instruction
+      this.builder.emitUnary(OpCodes.NEWC, childBuilder.getFunctionIndex());
 
-    // Store the function in the local variable
-    const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(
-      this.currentEnvironment,
-      stmt.name
-    );
+      // Assign function as variable
+      const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(this.currentEnvironment, stmt.name);
+      if (type === SVMLType.USERDECLARED) {
+        if (envLevel === 0) {
+          this.builder.emitUnary(OpCodes.STLG, index);
+        } else {
+          this.builder.emitBinary(OpCodes.STPG, index, envLevel);
+        }
+      }
 
-    if (type !== SVMLType.USERDECLARED) {
-      throw new Error(
-        `Cannot store function to ${type} symbol: ${stmt.name.lexeme}`
-      );
-    }
-
-    if (envLevel === 0) {
-      this.builder.emitUnary(OpCodes.STLG, index);
-    } else {
-      this.builder.emitBinary(OpCodes.STPG, index, envLevel);
-    }
-
-    this.builder.emitNullary(OpCodes.LGCU);
-    return { maxStackSize: 1 };
+      return { builder: this.builder, maxStackSize, envSize, numArgs };
   }
 
   visitIfStmt(stmt: StmtNS.If): ExpressionResult {
@@ -693,97 +698,4 @@ export class SVMLCompiler
 
     return { maxStackSize };
   }
-}
-
-// Helper function to compile a single function
-function compileSingleFunction(
-  env: Environment,
-  functionEnvironments: FunctionEnvironments,
-  ast: StmtNS.Stmt[],
-  functionIndexMap: Map<
-    StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda,
-    number
-  >
-): FunctionCompilationResult {
-  const compiler = new SVMLCompiler(
-    env,
-    functionEnvironments,
-    functionIndexMap
-  );
-  const result = compiler.compileStatements(ast);
-
-  // Add return if needed (functions should always return something)
-  compiler.builder.emitNullary(OpCodes.RETG);
-
-  // Calculate environment size (number of local variables)
-  const envSize = Array.from(env.names.keys()).length;
-
-  return {
-    builder: compiler.builder,
-    maxStackSize: result.maxStackSize,
-    envSize,
-    numArgs: 0, // Will be set by caller
-  };
-}
-
-export function compileAll(program: StmtNS.FileInput): SVMProgram {
-  // Step 1: Resolve environments
-  const resolver = new Resolver("", program);
-  const functionEnvironments = resolver.resolveEnvironments(program);
-
-  // Step 2: Create function index map
-  const functionIndexMap = new Map<
-    StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda,
-    number
-  >();
-  let functionCounter = 0;
-
-  for (const [node] of functionEnvironments) {
-    functionIndexMap.set(node, functionCounter);
-    functionCounter++;
-  }
-
-  // Step 3: Collect and compile all functions
-  const svmFunctions: SVMFunction[] = [];
-
-  // Compile user-defined functions first
-  let entryPointIndex: number = 0;
-  for (const [node, env] of functionEnvironments) {
-    let ast: StmtNS.Stmt[];
-    let numArgs: number;
-
-    if (node instanceof StmtNS.FunctionDef) {
-      ast = node.body;
-      numArgs = node.parameters.length;
-    } else if (node instanceof ExprNS.Lambda) {
-      ast = [new StmtNS.Return(node.startToken, node.endToken, node.body)];
-      numArgs = node.parameters.length;
-    } else if (node instanceof ExprNS.MultiLambda) {
-      ast = node.body;
-      numArgs = node.parameters.length;
-    } else if (node instanceof StmtNS.FileInput) {
-      ast = node.statements;
-      entryPointIndex = svmFunctions.length;
-      numArgs = 0;
-    } else {
-      throw new Error("Unknown function node type");
-    }
-
-    console.log(env);
-
-    // Compile the function
-    const { builder, maxStackSize, envSize } = compileSingleFunction(
-      env,
-      functionEnvironments,
-      ast,
-      functionIndexMap
-    );
-
-    // Optimize and create SVM function
-    builder.optimize(new DeadCodeEliminator());
-    const svmFunction = builder.toSVMFunction(maxStackSize, envSize, numArgs);
-    svmFunctions.push(svmFunction);
-  }
-
-  return [entryPointIndex, svmFunctions];
 }
