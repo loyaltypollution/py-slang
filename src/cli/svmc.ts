@@ -10,7 +10,7 @@ import { assemble } from '../vm/svml-assembler';
 import { stringifyProgram } from '../vm/util';
 import * as fs from 'fs';
 import * as path from 'path';
-import { compileAll } from "../vm/svml-compiler";
+import { SVMLCompiler } from "../vm/svml-compiler";
 
 /**
  * Standalone function to parse Python to Python AST without translation to ESTree
@@ -43,7 +43,7 @@ function compilePythonToSVML(pythonCode: string, outputFile: string, format: str
         const ast = parsePythonToAst(pythonCode, 1, true);
         
         console.log('Compiling to SVML bytecode...');
-        const program = compileAll(ast);
+        const program = SVMLCompiler.fromProgram(ast).compileProgram(ast);
         
         console.log('Formatting output...');
         

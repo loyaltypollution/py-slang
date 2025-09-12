@@ -118,13 +118,6 @@ export class InstructionBuilder {
     return [stackSize, envSize, numArgs, this.build()];
   }
 
-  /**
-   * Convert this builder to an SVMProgram
-   */
-  toSVMProgram(): SVMProgram {
-    return [0, this.getAllBuilders().map(builder => builder.toSVMFunction(0, 0, 0))];
-  }
-
   /** Optimize the instructions */
   optimize(transformer: SVMLTransformer): void {
     this.instructions = transformer.transform(this.instructions);

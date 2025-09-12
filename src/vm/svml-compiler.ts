@@ -72,21 +72,11 @@ class SVMLSymbolResolver {
 }
 
 export type ExpressionResult = {
-  builder: InstructionBuilder;
   maxStackSize: number;
-  envSize: number;
-  numArgs: number;
-};
-
-export type FunctionCompilationResult = {
-  builder: InstructionBuilder;
-  maxStackSize: number;
-  envSize: number;
-  numArgs: number;
 };
 
 /**
- * SVML Compiler implementing visitor pattern for clean AST traversal
+ * SVML Compiler implementing visitor interface
  */
 export class SVMLCompiler
   implements StmtNS.Visitor<ExpressionResult>, ExprNS.Visitor<ExpressionResult>
@@ -109,9 +99,57 @@ export class SVMLCompiler
     this.isTailCall = false;
   }
 
+  /**
+   * Create SVMLCompiler from program AST
+   */
+  static fromProgram(program: StmtNS.FileInput): SVMLCompiler {
+    const resolver = new Resolver("", program);
+    const functionEnvironments = resolver.resolveEnvironments(program);
+    const mainEnv = functionEnvironments.get(program);
+    if (!mainEnv) {
+      throw new Error("Main program environment not found");
+    }
+    const builder = new InstructionBuilder();
+    return new SVMLCompiler(mainEnv, functionEnvironments, builder);
+  }
+
   withEnvironment(environment: Environment): SVMLCompiler {
     const builder = this.builder.createChildBuilder();
     return new SVMLCompiler(environment, this.functionEnvironments, builder);
+  }
+
+  /**
+   * Compile entire program and return complete SVMProgram
+   */
+  compileProgram(program: StmtNS.FileInput): SVMProgram {
+    // Compile main program statements
+    this.compileStatements(program.statements);
+    this.builder.emitNullary(OpCodes.RETG);
+
+    // Get all builders from the hierarchy
+    const allBuilders = this.builder.getAllBuilders();
+
+    // Convert each builder to SVMFunction with proper metadata
+    const svmFunctions: SVMFunction[] = [];
+    const entryPointIndex = 0; // Main program is always at index 0
+
+    // Optimize all builders in the hierarchy
+    for (const builder of allBuilders) {
+        builder.optimize(new DeadCodeEliminator());
+    }
+
+    for (const builder of allBuilders) {
+      // Find corresponding AST node to get metadata
+      let stackSize = 1; // Default stack size
+      let envSize = 0; // Default env size
+      let numArgs = 0; // Default args
+
+      // For now, use defaults - metadata tracking will be enhanced later
+      const svmFunction = builder.toSVMFunction(stackSize, envSize, numArgs);
+      svmFunctions.push(svmFunction);
+    }
+
+    return [entryPointIndex, svmFunctions];
   }
 
   /**
@@ -461,36 +499,40 @@ export class SVMLCompiler
       expr.endToken,
       expr.body
     );
-    const numArgs: number = expr.parameters.length;
     const nextEnvironment = this.functionEnvironments.get(expr);
     if (!nextEnvironment) {
       throw new Error(`Lambda function environment not found`);
     }
-    const compiler = this.withEnvironment(nextEnvironment);
-    const { builder, maxStackSize } = compiler.compile(ast);
-    // Add return if needed (functions should always return something)
-    builder.emitNullary(OpCodes.RETG);
 
-    // Calculate environment size (number of local variables)
-    const envSize = Array.from(nextEnvironment.names.keys()).length;
-    return { builder, maxStackSize, envSize, numArgs };
+    // Compile lambda body in child environment
+    const compiler = this.withEnvironment(nextEnvironment);
+    const { maxStackSize } = compiler.compile(ast);
+    // Add return if needed (functions should always return something)
+    compiler.builder.emitNullary(OpCodes.RETG);
+
+    // Emit function creation instruction in current environment
+    this.builder.emitUnary(OpCodes.NEWC, compiler.builder.getFunctionIndex());
+
+    return { maxStackSize: Math.max(maxStackSize, 1) };
   }
 
   visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExpressionResult {
     const ast: StmtNS.Stmt[] = expr.body;
-    const numArgs: number = expr.parameters.length;
     const nextEnvironment = this.functionEnvironments.get(expr);
     if (!nextEnvironment) {
       throw new Error(`MultiLambda function environment not found`);
     }
-    const compiler = this.withEnvironment(nextEnvironment);
-    const { builder, maxStackSize } = compiler.compileStatements(ast);
-    // Add return if needed (functions should always return something)
-    builder.emitNullary(OpCodes.RETG);
 
-    // Calculate environment size (number of local variables)
-    const envSize = Array.from(nextEnvironment.names.keys()).length;
-    return { builder, maxStackSize, envSize, numArgs };
+    // Compile lambda body in child environment
+    const compiler = this.withEnvironment(nextEnvironment);
+    const { maxStackSize } = compiler.compileStatements(ast);
+    // Add return if needed (functions should always return something)
+    compiler.builder.emitNullary(OpCodes.RETG);
+
+    // Emit function creation instruction in current environment
+    this.builder.emitUnary(OpCodes.NEWC, compiler.builder.getFunctionIndex());
+
+    return { maxStackSize: Math.max(maxStackSize, 1) };
   }
 
   visitGroupingExpr(expr: ExprNS.Grouping): ExpressionResult {
@@ -535,35 +577,39 @@ export class SVMLCompiler
     return initResult;
   }
 
-  visitFunctionDefStmt(stmt: StmtNS.FunctionDef): ExpressionResult {    
+  visitFunctionDefStmt(stmt: StmtNS.FunctionDef): ExpressionResult {
     const ast: StmtNS.Stmt[] = stmt.body;
-      const numArgs: number = stmt.parameters.length;
-      const nextEnvironment = this.functionEnvironments.get(stmt);
-      if (!nextEnvironment) {
-        throw new Error(`FunctionDef function environment not found`);
+    const nextEnvironment = this.functionEnvironments.get(stmt);
+    if (!nextEnvironment) {
+      throw new Error(`FunctionDef function environment not found`);
+    }
+
+    // Compile function body in child environment
+    const childCompiler = this.withEnvironment(nextEnvironment);
+    const { maxStackSize } = childCompiler.compileStatements(ast);
+    // Add return if needed (functions should always return something)
+    childCompiler.builder.emitNullary(OpCodes.RETG);
+
+    // Add function creation instruction
+    this.builder.emitUnary(
+      OpCodes.NEWC,
+      childCompiler.builder.getFunctionIndex()
+    );
+
+    // Assign function as variable
+    const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(
+      this.currentEnvironment,
+      stmt.name
+    );
+    if (type === SVMLType.USERDECLARED) {
+      if (envLevel === 0) {
+        this.builder.emitUnary(OpCodes.STLG, index);
+      } else {
+        this.builder.emitBinary(OpCodes.STPG, index, envLevel);
       }
-      const childCompiler = this.withEnvironment(nextEnvironment);
-      const { builder: childBuilder, maxStackSize } = childCompiler.compileStatements(ast);
-      // Add return if needed (functions should always return something)
-      childBuilder.emitNullary(OpCodes.RETG);
-  
-      // Calculate environment size (number of local variables)
-      const envSize = Array.from(nextEnvironment.names.keys()).length;
+    }
 
-      // Add function creation instruction
-      this.builder.emitUnary(OpCodes.NEWC, childBuilder.getFunctionIndex());
-
-      // Assign function as variable
-      const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(this.currentEnvironment, stmt.name);
-      if (type === SVMLType.USERDECLARED) {
-        if (envLevel === 0) {
-          this.builder.emitUnary(OpCodes.STLG, index);
-        } else {
-          this.builder.emitBinary(OpCodes.STPG, index, envLevel);
-        }
-      }
-
-      return { builder: this.builder, maxStackSize, envSize, numArgs };
+    return { maxStackSize: Math.max(maxStackSize, 1) };
   }
 
   visitIfStmt(stmt: StmtNS.If): ExpressionResult {

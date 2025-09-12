@@ -3,7 +3,7 @@ import { CSEResultPromise, evaluate } from "../cse-machine/interpreter"
 import init from "../sinter/sinter"
 import { RecursivePartial, Result } from "../types"
 import * as es from 'estree'
-import { compileAll } from "../vm/svml-compiler"
+import { SVMLCompiler } from "../vm/svml-compiler"
 import { Tokenizer } from "../tokenizer"
 import { Parser } from "../parser"
 import { Resolver } from "../resolver"
@@ -37,7 +37,7 @@ export async function runInContext(
 ): Promise<Result> {
     const pyAst = parsePythonToAst(code, 1, true);
     // Compile to SVML
-    const p = compileAll(pyAst);
+    const p = SVMLCompiler.fromProgram(pyAst).compileProgram(pyAst);
     const binary: Uint8Array = assemble(p);
     const sinter = await init();
     var result: any = sinter.runBinary(binary);
