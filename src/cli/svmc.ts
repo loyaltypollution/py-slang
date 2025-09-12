@@ -10,12 +10,12 @@ import { assemble } from '../vm/svml-assembler';
 import { stringifyProgram } from '../vm/util';
 import * as fs from 'fs';
 import * as path from 'path';
-import { compileDirect } from "../vm/svml-compiler";
+import { compileAll } from "../vm/svml-compiler";
 
 /**
- * Standalone function to parse Python to EsTree AST without browser dependencies
+ * Standalone function to parse Python to Python AST without translation to ESTree
  */
-function parsePythonToEstreeAst(code: string, variant: number = 1, doValidate: boolean = false): Program {
+function parsePythonToAst(code: string, variant: number = 1, doValidate: boolean = false): any {
     const script = code + '\n'
     const tokenizer = new Tokenizer(script)
     const tokens = tokenizer.scanEverything()
@@ -24,8 +24,7 @@ function parsePythonToEstreeAst(code: string, variant: number = 1, doValidate: b
     if (doValidate) {
         new Resolver(script, ast).resolve(ast);
     }
-    const translator = new Translator(script)
-    return translator.resolve(ast) as unknown as Program
+    return ast
 }
 
 /**
@@ -41,10 +40,10 @@ function formatSVMLProgram(program: any): string {
 function compilePythonToSVML(pythonCode: string, outputFile: string, format: string) {
     try {
         console.log('Parsing Python code...');
-        const ast = parsePythonToEstreeAst(pythonCode, 1, true);
+        const ast = parsePythonToAst(pythonCode, 1, true);
         
         console.log('Compiling to SVML bytecode...');
-        const program = compileDirect(ast);
+        const program = compileAll(ast);
         
         console.log('Formatting output...');
         
@@ -142,4 +141,4 @@ if (require.main === module) {
     main();
 }
 
-export { parsePythonToEstreeAst, formatSVMLProgram };
+export { parsePythonToAst, formatSVMLProgram };

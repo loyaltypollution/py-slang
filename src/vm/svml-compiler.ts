@@ -1,719 +1,789 @@
-import * as es from "estree";
-import { UndefinedVariable } from "../errors/errors";
-import { CONSTANT_PRIMITIVES, PRIMITIVE_FUNCTIONS } from "../stdlib/vm-prelude";
-import {
-    InstructionBuilder,
-    SVMProgram,
-    SVMFunction,
-} from "./types";
+import { StmtNS, ExprNS } from "../ast-types";
+import { Token } from "../tokenizer";
+import { TokenType } from "../tokens";
+import { PRIMITIVE_FUNCTIONS } from "./sinter-primitives";
+import { InstructionBuilder, SVMProgram, SVMFunction } from "./types";
 import OpCodes from "./opcodes";
-import {
-    AnalysisResult,
-    FunctionInfo,
-    analyzeProgram,
-} from "./compiler-environment";
+import { FunctionEnvironments, Environment, Resolver } from "../resolver";
 import { DeadCodeEliminator } from "./svml-opt";
 
-// ============================================================================
-// Types and Context
-// ============================================================================
-
-/**
- * Compilation context - simple and direct
- */
-export type CompilationContext = {
-    analysis: AnalysisResult;
-    isTopLevel: boolean;
-    labelCounter: number;
-};
-
-/**
- * Result of compiling an expression - just the stack effect needed
- */
-export type ExpressionResult = {
-    maxStackSize: number;
-};
-
-/**
- * Generate a unique label
- */
-function genLabel(context: CompilationContext, prefix: string = "L"): string {
-    return `${prefix}${context.labelCounter++}`;
+enum SVMLType {
+  PRIMITIVE = "primitive",
+  INTERNAL = "internal",
+  USERDECLARED = "userdeclared",
 }
 
-// ============================================================================
-// Core Expression Compilers - Direct Style
-// ============================================================================
+class SVMLSymbolResolver {
+  private envNodeToIndex = new WeakMap<Environment, Map<string, number>>();
+  private envNextIndex = new WeakMap<Environment, number>();
+
+  getIndex(env: Environment, name: string): number {
+    let nodeMap = this.envNodeToIndex.get(env);
+    if (!nodeMap) {
+      nodeMap = new Map<string, number>();
+      this.envNodeToIndex.set(env, nodeMap);
+      this.envNextIndex.set(env, 0);
+    }
+    const existing = nodeMap.get(name);
+    if (existing !== undefined) return existing;
+
+    const next = this.envNextIndex.get(env)!;
+    nodeMap.set(name, next);
+    this.envNextIndex.set(env, next + 1);
+    return next;
+  }
+
+  getSymbol(
+    env: Environment,
+    node: Token
+  ): {
+    type: SVMLType;
+    index: number;
+    envLevel: number;
+  } {
+    const name = node.lexeme;
+    const parentEnv = env.lookupNameEnv(node);
+
+    // If the node is a primitive function, return the index
+    if (parentEnv === Environment.GlobalEnvironment) {
+      if (!PRIMITIVE_FUNCTIONS.has(name)) {
+        throw new Error(`Primitive function ${name} not implemented`);
+      }
+      return {
+        type: SVMLType.PRIMITIVE,
+        index: PRIMITIVE_FUNCTIONS.get(name)!,
+        envLevel: 0,
+      };
+    }
+
+    // If the node is a user-declared variable, return the index
+    if (parentEnv != null && parentEnv != Environment.GlobalEnvironment) {
+      const index = this.getIndex(parentEnv, name);
+      const envLevel = env.lookupName(node);
+      return {
+        type: SVMLType.USERDECLARED,
+        index,
+        envLevel,
+      };
+    }
+
+    throw new Error(`Variable ${name} not found in environment`);
+  }
+}
+
+export type ExpressionResult = {
+  maxStackSize: number;
+};
+
+export type FunctionCompilationResult = {
+  builder: InstructionBuilder;
+  maxStackSize: number;
+  envSize: number;
+  numArgs: number;
+};
 
 /**
- * Compile a literal value - direct, no monads
+ * SVML Compiler implementing visitor pattern for clean AST traversal
  */
-function compileLiteral(
-    node: es.Literal,
-    builder: InstructionBuilder
-): ExpressionResult {
-    const value = node.value;
+export class SVMLCompiler
+  implements StmtNS.Visitor<ExpressionResult>, ExprNS.Visitor<ExpressionResult>
+{
+  public builder: InstructionBuilder; // Made public for access in compilation
+  private currentEnvironment: Environment;
+  private functionEnvironments: FunctionEnvironments;
+  private isTailCall: boolean;
+  private labelCounter: number = 0;
+
+  // Function indexing for compilation
+  private functionIndexMap: Map<
+    StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda,
+    number
+  >;
+
+  static SymbolResolver: SVMLSymbolResolver = new SVMLSymbolResolver();
+
+  constructor(
+    currentEnvironment: Environment,
+    functionEnvironments: FunctionEnvironments,
+    functionIndexMap?: Map<
+      | StmtNS.FileInput
+      | StmtNS.FunctionDef
+      | ExprNS.Lambda
+      | ExprNS.MultiLambda,
+      number
+    >
+  ) {
+    this.builder = new InstructionBuilder();
+    this.currentEnvironment = currentEnvironment;
+    this.functionEnvironments = functionEnvironments;
+    this.functionIndexMap = functionIndexMap || new Map();
+    this.isTailCall = false;
+  }
+
+  /**
+   * Compile a statement or expression and return stack effect
+   */
+  compile(node: StmtNS.Stmt | ExprNS.Expr): ExpressionResult {
+    return node.accept(this);
+  }
+
+  /**
+   * Generate a unique label
+   */
+  private genLabel(prefix: string = "L"): string {
+    return `${prefix}${this.labelCounter++}`;
+  }
+
+  // ========================================================================
+  // Expression Visitor Methods
+  // ========================================================================
+
+  visitLiteralExpr(expr: ExprNS.Literal): ExpressionResult {
+    const value = expr.value;
 
     if (value === null) {
-        builder.emitNullary(OpCodes.LGCN);
-    } else if ("bigint" in node) {
-        // Handle BigIntLiteral
-        const numValue = Number(node.bigint);
-        if (
-            Number.isInteger(numValue) &&
-            -2_147_483_648 <= numValue &&
-            numValue <= 2_147_483_647
-        ) {
-            builder.emitUnary(OpCodes.LGCI, numValue);
-        } else {
-            builder.emitUnary(OpCodes.LGCF64, numValue);
-        }
+      this.builder.emitNullary(OpCodes.LGCN);
     } else {
-        // Handle SimpleLiteral
-        switch (typeof value) {
-            case "boolean":
-                builder.emitNullary(value ? OpCodes.LGCB1 : OpCodes.LGCB0);
-                break;
-            case "number":
-                builder.emitUnary(OpCodes.LGCF64, value);
-                break;
-            case "string":
-                builder.emitUnary(OpCodes.LGCS, value);
-                break;
-            default:
-                throw new Error("Unsupported literal type");
-        }
+      switch (typeof value) {
+        case "boolean":
+          this.builder.emitNullary(value ? OpCodes.LGCB1 : OpCodes.LGCB0);
+          break;
+        case "number":
+          if (
+            Number.isInteger(value) &&
+            -2_147_483_648 <= value &&
+            value <= 2_147_483_647
+          ) {
+            this.builder.emitUnary(OpCodes.LGCI, value);
+          } else {
+            this.builder.emitUnary(OpCodes.LGCF64, value);
+          }
+          break;
+        case "string":
+          this.builder.emitUnary(OpCodes.LGCS, value);
+          break;
+        default:
+          throw new Error("Unsupported literal type");
+      }
     }
 
     return { maxStackSize: 1 };
-}
+  }
 
-/**
- * Compile an identifier reference - direct, no monads
- */
-function compileIdentifier(
-    node: es.Identifier,
-    builder: InstructionBuilder,
-    context: CompilationContext
-): ExpressionResult {
-    // Try to get pre-resolved symbol
-    const resolved = context.analysis.resolvedIdentifiers.get(node);
-
-    if (resolved) {
-        // Use pre-resolved information
-        if (resolved.type === "primitive") {
-            builder.emitUnary(OpCodes.NEWCP, resolved.index);
-        } else if (resolved.type === "internal") {
-            builder.emitUnary(OpCodes.NEWCV, resolved.index);
-        } else if (resolved.envLevel === 0) {
-            builder.emitUnary(OpCodes.LDLG, resolved.index);
-        } else {
-            builder.emitBinary(OpCodes.LDPG, resolved.index, resolved.envLevel);
-        }
+  visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ExpressionResult {
+    const numValue = Number(expr.value);
+    if (
+      Number.isInteger(numValue) &&
+      -2_147_483_648 <= numValue &&
+      numValue <= 2_147_483_647
+    ) {
+      this.builder.emitUnary(OpCodes.LGCI, numValue);
     } else {
-        // Fallback: check constant primitives
-        const matches = CONSTANT_PRIMITIVES.filter(
-            (f: [string, any]) => f[0] === node.name
-        );
-
-        if (matches.length === 0) {
-            throw new UndefinedVariable(node.name, node);
-        }
-
-        const [, value] = matches[0];
-        if (typeof value === "number") {
-            builder.emitUnary(OpCodes.LGCF32, value);
-        } else if (value === undefined) {
-            builder.emitNullary(OpCodes.LGCU);
-        } else {
-            throw new Error("Unknown primitive constant");
-        }
+      this.builder.emitUnary(OpCodes.LGCF64, numValue);
     }
 
     return { maxStackSize: 1 };
-}
+  }
 
-/**
- * Compile a binary expression - direct, no monads
- */
-function compileBinaryExpression(
-    node: es.BinaryExpression,
-    builder: InstructionBuilder,
-    context: CompilationContext
-): ExpressionResult {
-    const VALID_BINARY_OPERATORS = new Map([
-        ["+", OpCodes.ADDG],
-        ["-", OpCodes.SUBG],
-        ["*", OpCodes.MULG],
-        ["/", OpCodes.DIVG],
-        ["%", OpCodes.MODG],
-        ["<", OpCodes.LTG],
-        [">", OpCodes.GTG],
-        ["<=", OpCodes.LEG],
-        [">=", OpCodes.GEG],
-        ["===", OpCodes.EQG],
-        ["!==", OpCodes.NEQG],
-    ]);
+  visitComplexExpr(expr: ExprNS.Complex): ExpressionResult {
+    // For now, treat complex numbers as objects
+    // This would need proper SVML support for complex numbers
+    throw new Error("Complex numbers not yet supported in SVML compiler");
+  }
 
-    const opcode = VALID_BINARY_OPERATORS.get(node.operator);
-    if (!opcode) {
-        throw new Error(`Unsupported binary operator: ${node.operator}`);
-    }
-
-    // Compile left operand
-    const leftResult = compileExpression(
-        node.left as es.Expression,
-        builder,
-        context
+  visitVariableExpr(expr: ExprNS.Variable): ExpressionResult {
+    // Look up the symbol using the symbol resolver
+    const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(
+      this.currentEnvironment,
+      expr.name
     );
 
+    switch (type) {
+      case SVMLType.PRIMITIVE:
+        this.builder.emitUnary(OpCodes.NEWCP, index);
+        break;
+      case SVMLType.INTERNAL:
+        this.builder.emitUnary(OpCodes.NEWCV, index);
+        break;
+      case SVMLType.USERDECLARED:
+        if (envLevel === 0) {
+          this.builder.emitUnary(OpCodes.LDLG, index);
+        } else {
+          this.builder.emitBinary(OpCodes.LDPG, index, envLevel);
+        }
+        break;
+    }
+    return { maxStackSize: 1 };
+  }
+
+  /**
+   * Convert Python operator token to SVML binary operator
+   */
+  private getBinaryOpCode(operator: Token): number {
+    switch (operator.type) {
+      case TokenType.PLUS:
+        return OpCodes.ADDG;
+      case TokenType.MINUS:
+        return OpCodes.SUBG;
+      case TokenType.STAR:
+        return OpCodes.MULG;
+      case TokenType.SLASH:
+        return OpCodes.DIVG;
+      case TokenType.PERCENT:
+        return OpCodes.MODG;
+      default:
+        throw new Error(`Unsupported binary operator: ${operator.lexeme}`);
+    }
+  }
+
+  /**
+   * Convert Python comparison operator token to SVML binary operator
+   */
+  private getCompareOpCode(operator: Token): number {
+    switch (operator.type) {
+      case TokenType.LESS:
+        return OpCodes.LTG;
+      case TokenType.GREATER:
+        return OpCodes.GTG;
+      case TokenType.LESSEQUAL:
+        return OpCodes.LEG;
+      case TokenType.GREATEREQUAL:
+        return OpCodes.GEG;
+      case TokenType.DOUBLEEQUAL:
+        return OpCodes.EQG;
+      case TokenType.NOTEQUAL:
+        return OpCodes.NEQG;
+      default:
+        throw new Error(`Unsupported comparison operator: ${operator.lexeme}`);
+    }
+  }
+
+  visitBinaryExpr(expr: ExprNS.Binary): ExpressionResult {
+    const opcode = this.getBinaryOpCode(expr.operator);
+
+    // Compile left operand
+    const leftResult = this.compile(expr.left);
+
     // Compile right operand
-    const rightResult = compileExpression(node.right, builder, context);
+    const rightResult = this.compile(expr.right);
 
     // Emit the operation
-    builder.emitNullary(opcode);
+    this.builder.emitNullary(opcode);
 
     return {
-        maxStackSize: Math.max(
-            leftResult.maxStackSize,
-            1 + rightResult.maxStackSize
-        ),
+      maxStackSize: Math.max(
+        leftResult.maxStackSize,
+        1 + rightResult.maxStackSize
+      ),
     };
-}
+  }
 
-/**
- * Compile a unary expression - direct, no monads
- */
-function compileUnaryExpression(
-    node: es.UnaryExpression,
-    builder: InstructionBuilder,
-    context: CompilationContext
-): ExpressionResult {
-    const VALID_UNARY_OPERATORS = new Map([
-        ["!", OpCodes.NOTG],
-        ["-", OpCodes.NEGG],
-    ]);
+  visitCompareExpr(expr: ExprNS.Compare): ExpressionResult {
+    const opcode = this.getCompareOpCode(expr.operator);
 
-    const opcode = VALID_UNARY_OPERATORS.get(node.operator);
-    if (!opcode) {
-        throw new Error(`Unsupported unary operator: ${node.operator}`);
+    // Compile left operand
+    const leftResult = this.compile(expr.left);
+
+    // Compile right operand
+    const rightResult = this.compile(expr.right);
+
+    // Emit the operation
+    this.builder.emitNullary(opcode);
+
+    return {
+      maxStackSize: Math.max(
+        leftResult.maxStackSize,
+        1 + rightResult.maxStackSize
+      ),
+    };
+  }
+
+  visitBoolOpExpr(expr: ExprNS.BoolOp): ExpressionResult {
+    const elseLabel = this.genLabel("else");
+    const endLabel = this.genLabel("end");
+
+    // Convert to conditional expression
+    if (expr.operator.type === TokenType.AND) {
+      // left && right -> left ? right : false
+      const testResult = this.compile(expr.left);
+      this.builder.emitBranchTo(OpCodes.BRF, elseLabel);
+
+      const conseqResult = this.compile(expr.right);
+      this.builder.emitBranchTo(OpCodes.BR, endLabel);
+
+      this.builder.markLabel(elseLabel);
+      this.builder.emitNullary(OpCodes.LGCB0); // false
+      const altResult = { maxStackSize: 1 };
+
+      this.builder.markLabel(endLabel);
+
+      return {
+        maxStackSize: Math.max(
+          testResult.maxStackSize,
+          conseqResult.maxStackSize,
+          altResult.maxStackSize
+        ),
+      };
+    } else if (expr.operator.type === TokenType.OR) {
+      // left || right -> left ? true : right
+      const testResult = this.compile(expr.left);
+      this.builder.emitBranchTo(OpCodes.BRF, elseLabel);
+
+      this.builder.emitNullary(OpCodes.LGCB1); // true
+      const conseqResult = { maxStackSize: 1 };
+      this.builder.emitBranchTo(OpCodes.BR, endLabel);
+
+      this.builder.markLabel(elseLabel);
+      const altResult = this.compile(expr.right);
+
+      this.builder.markLabel(endLabel);
+
+      return {
+        maxStackSize: Math.max(
+          testResult.maxStackSize,
+          conseqResult.maxStackSize,
+          altResult.maxStackSize
+        ),
+      };
+    }
+    throw new Error(`Unsupported boolean operator: ${expr.operator.lexeme}`);
+  }
+
+  visitUnaryExpr(expr: ExprNS.Unary): ExpressionResult {
+    let opcode: number;
+
+    switch (expr.operator.type) {
+      case TokenType.NOT:
+        opcode = OpCodes.NOTG;
+        break;
+      case TokenType.MINUS:
+        opcode = OpCodes.NEGG;
+        break;
+      case TokenType.PLUS:
+        // Unary plus - for now just return the operand
+        return this.compile(expr.right);
+      default:
+        throw new Error(`Unsupported unary operator: ${expr.operator.lexeme}`);
     }
 
     // Compile the operand
-    const operandResult = compileExpression(node.argument, builder, context);
+    const operandResult = this.compile(expr.right);
 
     // Emit the operation
-    builder.emitNullary(opcode);
+    this.builder.emitNullary(opcode);
 
     return { maxStackSize: operandResult.maxStackSize };
-}
+  }
 
-/**
- * Compile a call expression - direct, no monads
- */
-function compileCallExpression(
-    node: es.CallExpression,
-    builder: InstructionBuilder,
-    context: CompilationContext,
-    isTailCall: boolean = false
-): ExpressionResult {
-    if (node.callee.type !== "Identifier") {
-        throw new Error("Unsupported call expression");
+  visitCallExpr(expr: ExprNS.Call): ExpressionResult {
+    if (!(expr.callee instanceof ExprNS.Variable)) {
+      throw new Error(
+        "Unsupported call expression: callee must be an identifier"
+      );
     }
 
-    const callee = node.callee as es.Identifier;
-
-    // Special case for __py_func
-    var arg1Result = { maxStackSize: 0 };
-    var arg2Result = { maxStackSize: 0 };
-    switch (callee.name) {
-        case "__py_adder":
-            arg1Result = compileExpression(
-                node.arguments[0] as es.Expression,
-                builder,
-                context
-            );
-            arg2Result = compileExpression(
-                node.arguments[1] as es.Expression,
-                builder,
-                context
-            );
-            builder.emitNullary(OpCodes.ADDG);
-            return {
-                maxStackSize: Math.max(
-                    arg1Result.maxStackSize,
-                    arg2Result.maxStackSize + 1
-                ),
-            };
-        case "__py_minuser":
-            arg1Result = compileExpression(
-                node.arguments[0] as es.Expression,
-                builder,
-                context
-            );
-            arg2Result = compileExpression(
-                node.arguments[1] as es.Expression,
-                builder,
-                context
-            );
-            builder.emitNullary(OpCodes.SUBG);
-            return {
-                maxStackSize: Math.max(
-                    arg1Result.maxStackSize,
-                    arg2Result.maxStackSize + 1
-                ),
-            };
-        case "__py_minuser":
-            break;
-        case "__py_multiplier":
-            break;
-    }
-
-    const resolved = context.analysis.resolvedIdentifiers.get(callee);
-    if (!resolved) {
-        throw new UndefinedVariable(callee.name, callee);
-    }
+    const callee: ExprNS.Variable = expr.callee;
+    const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(
+      this.currentEnvironment,
+      callee.name
+    );
 
     // Load function if needed
     let functionStackEffect = 0;
-    if (resolved.type === "primitive" || resolved.type === "internal") {
-        // No function loading needed
-    } else if (resolved.envLevel === 0) {
-        builder.emitUnary(OpCodes.LDLG, resolved.index);
-        functionStackEffect = 1;
+    if (type === SVMLType.PRIMITIVE || type === SVMLType.INTERNAL) {
+      // No function loading needed for built-ins
+    } else if (envLevel === 0) {
+      this.builder.emitUnary(OpCodes.LDLG, index);
+      functionStackEffect = 1;
     } else {
-        builder.emitBinary(OpCodes.LDPG, resolved.index, resolved.envLevel);
-        functionStackEffect = 1;
+      this.builder.emitBinary(OpCodes.LDPG, index, envLevel);
+      functionStackEffect = 1;
     }
 
     // Compile arguments last, in reverse order
     let maxArgStackSize = 0;
-    for (let i = node.arguments.length - 1; i >= 0; i--) {
-        const argResult = compileExpression(
-            node.arguments[i] as es.Expression,
-            builder,
-            context
-        );
-        maxArgStackSize = Math.max(maxArgStackSize, i + argResult.maxStackSize);
+    for (let i = expr.args.length - 1; i >= 0; i--) {
+      const argResult = this.compile(expr.args[i]);
+      maxArgStackSize = Math.max(maxArgStackSize, i + argResult.maxStackSize);
     }
 
     // Emit call instruction
-    const numArgs = node.arguments.length;
-    if (resolved.type === "primitive") {
-        const opcode = isTailCall ? OpCodes.CALLTP : OpCodes.CALLP;
-        builder.emitBinary(opcode, resolved.index, numArgs);
-    } else if (resolved.type === "internal") {
-        const opcode = isTailCall ? OpCodes.CALLTV : OpCodes.CALLV;
-        builder.emitBinary(opcode, resolved.index, numArgs);
-    } else {
-        const opcode = isTailCall ? OpCodes.CALLT : OpCodes.CALL;
-        builder.emitUnary(opcode, numArgs);
+    const numArgs = expr.args.length;
+    switch (type) {
+      case SVMLType.PRIMITIVE:
+        const primitiveOpcode = this.isTailCall
+          ? OpCodes.CALLTP
+          : OpCodes.CALLP;
+        this.builder.emitBinary(primitiveOpcode, index, numArgs);
+        break;
+      case SVMLType.INTERNAL:
+        const internalOpcode = this.isTailCall ? OpCodes.CALLTV : OpCodes.CALLV;
+        this.builder.emitBinary(internalOpcode, index, numArgs);
+        break;
+      case SVMLType.USERDECLARED:
+        const userOpcode = this.isTailCall ? OpCodes.CALLT : OpCodes.CALL;
+        this.builder.emitUnary(userOpcode, numArgs);
+        break;
     }
 
     return {
-        maxStackSize: functionStackEffect + maxArgStackSize,
+      maxStackSize: functionStackEffect + maxArgStackSize,
     };
-}
+  }
 
-/**
- * Compile a conditional expression - direct, no monads
- */
-function compileConditionalExpression(
-    node: es.ConditionalExpression,
-    builder: InstructionBuilder,
-    context: CompilationContext,
-    isTailCall: boolean = false
-): ExpressionResult {
-    const elseLabel = genLabel(context, "else");
-    const endLabel = genLabel(context, "end");
+  visitTernaryExpr(expr: ExprNS.Ternary): ExpressionResult {
+    const elseLabel = this.genLabel("else");
+    const endLabel = this.genLabel("end");
 
     // Compile test
-    const testResult = compileExpression(node.test, builder, context);
-    builder.emitBranchTo(OpCodes.BRF, elseLabel);
+    const testResult = this.compile(expr.predicate);
+    this.builder.emitBranchTo(OpCodes.BRF, elseLabel);
 
     // Compile consequent
-    const conseqResult = compileExpression(node.consequent, builder, context);
-    builder.emitBranchTo(OpCodes.BR, endLabel);
+    const conseqResult = this.compile(expr.consequent);
+    this.builder.emitBranchTo(OpCodes.BR, endLabel);
 
     // Compile alternate
-    builder.markLabel(elseLabel);
-    const altResult = compileExpression(node.alternate, builder, context);
+    this.builder.markLabel(elseLabel);
+    const altResult = this.compile(expr.alternative);
 
-    builder.markLabel(endLabel);
+    this.builder.markLabel(endLabel);
 
     return {
-        maxStackSize: Math.max(
-            testResult.maxStackSize,
-            conseqResult.maxStackSize,
-            altResult.maxStackSize
-        ),
+      maxStackSize: Math.max(
+        testResult.maxStackSize,
+        conseqResult.maxStackSize,
+        altResult.maxStackSize
+      ),
     };
-}
+  }
 
-/**
- * Compile NoneType - direct, no monads
- */
-function compileNoneType(
-    node: { type: "NoneType" },
-    builder: InstructionBuilder
-): ExpressionResult {
-    builder.emitNullary(OpCodes.LGCU);
+  visitNoneExpr(expr: ExprNS.None): ExpressionResult {
+    this.builder.emitNullary(OpCodes.LGCU);
     return { maxStackSize: 1 };
-}
+  }
 
-/**
- * Main expression compiler dispatch - direct, no monads
- */
-function compileExpression(
-    node: es.Expression | { type: "NoneType" },
-    builder: InstructionBuilder,
-    context: CompilationContext,
-    isTailCall: boolean = false
-): ExpressionResult {
-    switch (node.type) {
-        case "Literal":
-            return compileLiteral(node, builder);
-
-        case "Identifier":
-            return compileIdentifier(node, builder, context);
-
-        case "BinaryExpression":
-            return compileBinaryExpression(node, builder, context);
-
-        case "UnaryExpression":
-            return compileUnaryExpression(node, builder, context);
-
-        case "CallExpression":
-            return compileCallExpression(node, builder, context, isTailCall);
-
-        case "ConditionalExpression":
-            return compileConditionalExpression(
-                node,
-                builder,
-                context,
-                isTailCall
-            );
-
-        case "LogicalExpression":
-            // Convert to conditional expression
-            if (node.operator === "&&") {
-                const conditional: es.ConditionalExpression = {
-                    type: "ConditionalExpression",
-                    test: node.left,
-                    consequent: node.right,
-                    alternate: { type: "Literal", value: false } as es.Literal,
-                };
-                return compileConditionalExpression(
-                    conditional,
-                    builder,
-                    context,
-                    isTailCall
-                );
-            } else if (node.operator === "||") {
-                const conditional: es.ConditionalExpression = {
-                    type: "ConditionalExpression",
-                    test: node.left,
-                    consequent: { type: "Literal", value: true } as es.Literal,
-                    alternate: node.right,
-                };
-                return compileConditionalExpression(
-                    conditional,
-                    builder,
-                    context,
-                    isTailCall
-                );
-            }
-            throw new Error(`Unsupported logical operator: ${node.operator}`);
-
-        case "ArrowFunctionExpression":
-            // Get function info from analysis
-            const arrowFunctionInfo = context.analysis.functionNodes.get(node);
-            if (!arrowFunctionInfo) {
-                throw new Error(`Arrow function not found in analysis data`);
-            }
-
-            // Emit function creation instruction
-            builder.emitUnary(OpCodes.NEWC, arrowFunctionInfo.functionIndex);
-
-            return { maxStackSize: 1 };
-
-        case "NoneType":
-            return compileNoneType(node, builder);
-
-        default:
-            throw new Error(`Unsupported expression type: ${node.type}`);
+  visitLambdaExpr(expr: ExprNS.Lambda): ExpressionResult {
+    // Get function index for this lambda
+    const functionIndex = this.functionIndexMap.get(expr);
+    if (functionIndex === undefined) {
+      throw new Error("Lambda function index not found");
     }
-}
 
-// ============================================================================
-// Statement Compilers
-// ============================================================================
+    // Emit function creation instruction
+    this.builder.emitUnary(OpCodes.NEWC, functionIndex);
+    return { maxStackSize: 1 };
+  }
 
-function compileStatement(
-    node: es.Statement,
-    builder: InstructionBuilder,
-    context: CompilationContext,
-    isLastStatement: boolean = false
-): ExpressionResult {
-    switch (node.type) {
-        case "BlockStatement":
-            let maxStackSizeBlock = 0;
-            for (const statement of node.body) {
-                const { maxStackSize: m } = compileStatement(
-                    statement,
-                    builder,
-                    context,
-                    false
-                );
-                // TODO: do we need to increment stacksize per statement?
-                maxStackSizeBlock = Math.max(m, maxStackSizeBlock);
-            }
-            return { maxStackSize: maxStackSizeBlock };
-
-        case "ExpressionStatement":
-            return compileExpression(node.expression, builder, context);
-
-        case "ReturnStatement":
-            if (!node.argument) {
-                builder.emitNullary(OpCodes.LGCU);
-                builder.emitNullary(OpCodes.RETG);
-                return { maxStackSize: 1 };
-            }
-            const result = compileExpression(node.argument, builder, context);
-            builder.emitNullary(OpCodes.RETG);
-            return result;
-
-        case "VariableDeclaration":
-            if (node.kind !== "var" && node.kind !== "const") {
-                throw new Error("Invalid declaration kind");
-            }
-
-            // TODO: if node.kind == "const", we need to compile-time check
-            // no other assignment in scope
-
-            const id = node.declarations[0].id as es.Identifier;
-            const resolved = context.analysis.resolvedIdentifiers.get(id);
-            if (!resolved) {
-                throw new UndefinedVariable(id.name, id);
-            }
-
-            const initResult = compileExpression(
-                node.declarations[0].init as es.Expression,
-                builder,
-                context
-            );
-
-            if (resolved.envLevel === 0) {
-                builder.emitUnary(OpCodes.STLG, resolved.index);
-            } else {
-                builder.emitBinary(
-                    OpCodes.STPG,
-                    resolved.index,
-                    resolved.envLevel
-                );
-            }
-
-            builder.emitNullary(OpCodes.LGCU);
-            return initResult;
-
-        case "FunctionDeclaration":
-            if (node.id === null) {
-                throw new Error(
-                    "Encountered a FunctionDeclaration node without an identifier. This should have been caught when parsing."
-                );
-            }
-
-            // Get function info from analysis
-            const functionInfo = context.analysis.functionNodes.get(node);
-            if (!functionInfo) {
-                throw new Error(
-                    `Function ${node.id.name} not found in analysis data`
-                );
-            }
-
-            // Emit function creation instruction
-            builder.emitUnary(OpCodes.NEWC, functionInfo.functionIndex);
-
-            // Store the function in the local variable
-            if (functionInfo.storageIndex !== undefined) {
-                builder.emitUnary(OpCodes.STLG, functionInfo.storageIndex);
-                builder.emitNullary(OpCodes.LGCU);
-            } else {
-                throw new Error(
-                    `Function ${node.id.name} missing storage index information`
-                );
-            }
-
-            return { maxStackSize: 1 };
-
-        case "IfStatement":
-            const elseLabel = genLabel(context, "else");
-            const endLabel = genLabel(context, "end");
-        
-            // Compile test
-            const testResult = compileExpression(node.test, builder, context);
-            builder.emitBranchTo(OpCodes.BRF, elseLabel);
-
-            // Compile consequent
-            const conseqResult = compileStatement(node.consequent, builder, context);
-            builder.emitBranchTo(OpCodes.BR, endLabel);
-            
-            // Compile alternate
-            builder.markLabel(elseLabel);
-            const altResult = compileStatement(node.alternate!, builder, context);
-
-            builder.markLabel(endLabel);
-        
-            return {
-                maxStackSize: Math.max(
-                    testResult.maxStackSize,
-                    conseqResult.maxStackSize,
-                    altResult.maxStackSize
-                ),
-            };
-        default:
-            throw new Error(`Unsupported statement type: ${node.type}`);
+  visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExpressionResult {
+    // Get function index for this multi-lambda
+    const functionIndex = this.functionIndexMap.get(expr);
+    if (functionIndex === undefined) {
+      throw new Error("MultiLambda function index not found");
     }
-}
 
-/**
- * Compile a block of statements
- */
-function compileStatements(
-    statements: es.Statement[],
-    builder: InstructionBuilder,
-    context: CompilationContext
-): ExpressionResult {
+    // Emit function creation instruction
+    this.builder.emitUnary(OpCodes.NEWC, functionIndex);
+    return { maxStackSize: 1 };
+  }
+
+  visitGroupingExpr(expr: ExprNS.Grouping): ExpressionResult {
+    return this.compile(expr.expression);
+  }
+
+  visitSimpleExprStmt(stmt: StmtNS.SimpleExpr): ExpressionResult {
+    return this.compile(stmt.expression);
+  }
+
+  visitReturnStmt(stmt: StmtNS.Return): ExpressionResult {
+    if (!stmt.value) {
+      this.builder.emitNullary(OpCodes.LGCU);
+      this.builder.emitNullary(OpCodes.RETG);
+      return { maxStackSize: 1 };
+    }
+    const result = this.compile(stmt.value);
+    this.builder.emitNullary(OpCodes.RETG);
+    return result;
+  }
+
+  visitAssignStmt(stmt: StmtNS.Assign): ExpressionResult {
+    const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(
+      this.currentEnvironment,
+      stmt.name
+    );
+
+    const initResult = this.compile(stmt.value);
+
+    // Only user-declared variables can be assigned to
+    if (type !== SVMLType.USERDECLARED) {
+      throw new Error(`Cannot assign to ${type} symbol: ${stmt.name.lexeme}`);
+    }
+
+    if (envLevel === 0) {
+      this.builder.emitUnary(OpCodes.STLG, index);
+    } else {
+      this.builder.emitBinary(OpCodes.STPG, index, envLevel);
+    }
+
+    this.builder.emitNullary(OpCodes.LGCU);
+    return initResult;
+  }
+
+  visitFunctionDefStmt(stmt: StmtNS.FunctionDef): ExpressionResult {
+    // Get function index for this function definition
+    const functionIndex = this.functionIndexMap.get(stmt);
+    if (functionIndex === undefined) {
+      throw new Error("Function definition index not found");
+    }
+
+    // Emit function creation instruction
+    this.builder.emitUnary(OpCodes.NEWC, functionIndex);
+
+    // Store the function in the local variable
+    const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(
+      this.currentEnvironment,
+      stmt.name
+    );
+
+    if (type !== SVMLType.USERDECLARED) {
+      throw new Error(
+        `Cannot store function to ${type} symbol: ${stmt.name.lexeme}`
+      );
+    }
+
+    if (envLevel === 0) {
+      this.builder.emitUnary(OpCodes.STLG, index);
+    } else {
+      this.builder.emitBinary(OpCodes.STPG, index, envLevel);
+    }
+
+    this.builder.emitNullary(OpCodes.LGCU);
+    return { maxStackSize: 1 };
+  }
+
+  visitIfStmt(stmt: StmtNS.If): ExpressionResult {
+    const elseLabel = this.genLabel("else");
+    const endLabel = this.genLabel("end");
+
+    // Compile test
+    const testResult = this.compile(stmt.condition);
+    this.builder.emitBranchTo(OpCodes.BRF, elseLabel);
+
+    // Compile consequent
+    const conseqResult = this.compileStatements(stmt.body);
+    this.builder.emitBranchTo(OpCodes.BR, endLabel);
+
+    // Compile alternate
+    this.builder.markLabel(elseLabel);
+    const altResult = stmt.elseBlock
+      ? this.compileStatements(stmt.elseBlock)
+      : { maxStackSize: 0 };
+
+    this.builder.markLabel(endLabel);
+
+    return {
+      maxStackSize: Math.max(
+        testResult.maxStackSize,
+        conseqResult.maxStackSize,
+        altResult.maxStackSize
+      ),
+    };
+  }
+
+  visitWhileStmt(stmt: StmtNS.While): ExpressionResult {
+    const loopLabel = this.genLabel("loop");
+    const endLabel = this.genLabel("end");
+
+    this.builder.markLabel(loopLabel);
+
+    // Compile test
+    const testResult = this.compile(stmt.condition);
+    this.builder.emitBranchTo(OpCodes.BRF, endLabel);
+
+    // Compile body
+    const bodyResult = this.compileStatements(stmt.body);
+    this.builder.emitBranchTo(OpCodes.BR, loopLabel);
+
+    this.builder.markLabel(endLabel);
+    this.builder.emitNullary(OpCodes.LGCU); // While loops return undefined
+
+    return {
+      maxStackSize: Math.max(
+        testResult.maxStackSize,
+        bodyResult.maxStackSize,
+        1
+      ),
+    };
+  }
+
+  visitPassStmt(stmt: StmtNS.Pass): ExpressionResult {
+    this.builder.emitNullary(OpCodes.LGCU);
+    return { maxStackSize: 1 };
+  }
+
+  visitIndentCreation(stmt: StmtNS.Indent): ExpressionResult {
+    this.builder.emitNullary(OpCodes.LGCU);
+    return { maxStackSize: 1 };
+  }
+
+  visitDedentCreation(stmt: StmtNS.Dedent): ExpressionResult {
+    this.builder.emitNullary(OpCodes.LGCU);
+    return { maxStackSize: 1 };
+  }
+
+  visitAnnAssignStmt(stmt: StmtNS.AnnAssign): ExpressionResult {
+    throw new Error("AnnAssign not yet implemented in SVML compiler");
+  }
+
+  visitBreakStmt(stmt: StmtNS.Break): ExpressionResult {
+    throw new Error("Break not yet implemented in SVML compiler");
+  }
+
+  visitContinueStmt(stmt: StmtNS.Continue): ExpressionResult {
+    throw new Error("Continue not yet implemented in SVML compiler");
+  }
+
+  visitFromImportStmt(stmt: StmtNS.FromImport): ExpressionResult {
+    throw new Error("FromImport not yet implemented in SVML compiler");
+  }
+
+  visitGlobalStmt(stmt: StmtNS.Global): ExpressionResult {
+    this.builder.emitNullary(OpCodes.LGCU);
+    return { maxStackSize: 1 };
+  }
+
+  visitNonLocalStmt(stmt: StmtNS.NonLocal): ExpressionResult {
+    this.builder.emitNullary(OpCodes.LGCU);
+    return { maxStackSize: 1 };
+  }
+
+  visitAssertStmt(stmt: StmtNS.Assert): ExpressionResult {
+    throw new Error("Assert not yet implemented in SVML compiler");
+  }
+
+  visitForStmt(stmt: StmtNS.For): ExpressionResult {
+    throw new Error("For not yet implemented in SVML compiler");
+  }
+
+  visitFileInputStmt(stmt: StmtNS.FileInput): ExpressionResult {
+    return this.compileStatements(stmt.statements);
+  }
+
+  compileStatements(statements: StmtNS.Stmt[]): ExpressionResult {
     if (statements.length === 0) {
-        builder.emitNullary(OpCodes.LGCU);
-        return { maxStackSize: 1 };
+      this.builder.emitNullary(OpCodes.LGCU);
+      return { maxStackSize: 1 };
     }
 
     let maxStackSize = 0;
 
     for (let i = 0; i < statements.length; i++) {
-        const result = compileStatement(
-            statements[i],
-            builder,
-            context,
-            i === statements.length - 1
-        );
-        maxStackSize = Math.max(maxStackSize, result.maxStackSize);
+      const result = this.compile(statements[i]);
+      maxStackSize = Math.max(maxStackSize, result.maxStackSize);
 
-        // Assumption: every statement/expression leaves exactly one value.
-        // Earlier statement results are not needed and would otherwise accumulate,
-        // breaking block-level stack balance. Pop N-1 intermediates so only the last
-        // statement's value remains (the block result). Any leftovers indicate a
-        // compiler emission bug (e.g. extra LGCU or unconsumed operands).
-        if (i < statements.length - 1) {
-            builder.emitNullary(OpCodes.POPG);
-        }
+      // Assumption: every statement/expression leaves exactly one value.
+      // Earlier statement results are not needed and would otherwise accumulate,
+      // breaking block-level stack balance. Pop N-1 intermediates so only the last
+      // statement's value remains (the block result). Any leftovers indicate a
+      // compiler emission bug (e.g. extra LGCU or unconsumed operands).
+      if (i < statements.length - 1) {
+        this.builder.emitNullary(OpCodes.POPG);
+      }
     }
 
     return { maxStackSize };
+  }
 }
 
-// ============================================================================
-// Composition Utilities
-// ============================================================================
+// Helper function to compile a single function
+function compileSingleFunction(
+  env: Environment,
+  functionEnvironments: FunctionEnvironments,
+  ast: StmtNS.Stmt[],
+  functionIndexMap: Map<
+    StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda,
+    number
+  >
+): FunctionCompilationResult {
+  const compiler = new SVMLCompiler(
+    env,
+    functionEnvironments,
+    functionIndexMap
+  );
+  const result = compiler.compileStatements(ast);
 
-/**
- * Compile a single function and return the builder with function metadata
- */
-export function compileFunctionToBuilder(
-    functionInfo: FunctionInfo,
-    context: CompilationContext
-): {
-    builder: InstructionBuilder;
-    maxStackSize: number;
-    envSize: number;
-    numArgs: number;
-} {
-    const builder = new InstructionBuilder();
-    const functionContext = { ...context, isTopLevel: false };
+  // Add return if needed (functions should always return something)
+  compiler.builder.emitNullary(OpCodes.RETG);
 
-    // Compile function body
-    const result = compileStatements(
-        functionInfo.ast.body as es.Statement[],
-        builder,
-        functionContext
-    );
+  // Calculate environment size (number of local variables)
+  const envSize = Array.from(env.names.keys()).length;
 
-    // Add return if needed (functions should always return something)
-    builder.emitNullary(OpCodes.RETG);
-
-    return {
-        builder,
-        maxStackSize: result.maxStackSize,
-        envSize: functionInfo.envSize,
-        numArgs: functionInfo.numArgs,
-    };
+  return {
+    builder: compiler.builder,
+    maxStackSize: result.maxStackSize,
+    envSize,
+    numArgs: 0, // Will be set by caller
+  };
 }
 
-// ============================================================================
-// Main Compiler Entry Point
-// ============================================================================
+export function compileAll(program: StmtNS.FileInput): SVMProgram {
+  // Step 1: Resolve environments
+  const resolver = new Resolver("", program);
+  const functionEnvironments = resolver.resolveEnvironments(program);
 
-/**
- * Compile a program
- */
-export function compileDirect(
-    program: es.Program,
-    prelude?: SVMProgram,
-    vmInternalFunctions?: string[]
-): SVMProgram {
-    // Step 1: Analysis pass
-    const analysis = analyzeProgram(
-        program,
-        PRIMITIVE_FUNCTIONS,
-        vmInternalFunctions
-    );
+  // Step 2: Create function index map
+  const functionIndexMap = new Map<
+    StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda,
+    number
+  >();
+  let functionCounter = 0;
 
-    // Step 2: Create compilation context
-    const context: CompilationContext = {
-        analysis,
-        isTopLevel: true,
-        labelCounter: 0,
-    };
+  for (const [node] of functionEnvironments) {
+    functionIndexMap.set(node, functionCounter);
+    functionCounter++;
+  }
 
-    // Step 3: Compile all functions to separate builders
-    const svmFunctions: SVMFunction[] = [];
+  // Step 3: Collect and compile all functions
+  const svmFunctions: SVMFunction[] = [];
 
-    // Add prelude functions if provided
-    if (prelude) {
-        svmFunctions.push(...prelude[1]);
+  // Compile user-defined functions first
+  let entryPointIndex: number = 0;
+  for (const [node, env] of functionEnvironments) {
+    let ast: StmtNS.Stmt[];
+    let numArgs: number;
+
+    if (node instanceof StmtNS.FunctionDef) {
+      ast = node.body;
+      numArgs = node.parameters.length;
+    } else if (node instanceof ExprNS.Lambda) {
+      ast = [new StmtNS.Return(node.startToken, node.endToken, node.body)];
+      numArgs = node.parameters.length;
+    } else if (node instanceof ExprNS.MultiLambda) {
+      ast = node.body;
+      numArgs = node.parameters.length;
+    } else if (node instanceof StmtNS.FileInput) {
+      ast = node.statements;
+      entryPointIndex = svmFunctions.length;
+      numArgs = 0;
+    } else {
+      throw new Error("Unknown function node type");
     }
 
-    // Compile user-defined functions first
-    for (const functionInfo of analysis.functions) {
-        const { builder, maxStackSize, envSize, numArgs } =
-            compileFunctionToBuilder(functionInfo, context);
-        builder.optimize(new DeadCodeEliminator());
-            const svmFunction = builder.toSVMFunction(
-            maxStackSize,
-            envSize,
-            numArgs
-        );
-        svmFunctions.push(svmFunction);
-    }
+    console.log(env);
 
-    // Compile main function last
-    const {
-        builder: mainBuilder,
-        maxStackSize: mainStackSize,
-        envSize: mainEnvSize,
-        numArgs: mainNumArgs,
-    } = compileFunctionToBuilder(analysis.mainFunction, context);
-    mainBuilder.optimize(new DeadCodeEliminator());
-    const mainSVMFunction = mainBuilder.toSVMFunction(
-        mainStackSize,
-        mainEnvSize,
-        mainNumArgs
+    // Compile the function
+    const { builder, maxStackSize, envSize } = compileSingleFunction(
+      env,
+      functionEnvironments,
+      ast,
+      functionIndexMap
     );
-    svmFunctions.push(mainSVMFunction);
 
-    // Step 4: Create program structure
-    const entryPointIndex = analysis.mainFunction.functionIndex;
+    // Optimize and create SVM function
+    builder.optimize(new DeadCodeEliminator());
+    const svmFunction = builder.toSVMFunction(maxStackSize, envSize, numArgs);
+    svmFunctions.push(svmFunction);
+  }
 
-    return [entryPointIndex, svmFunctions];
+  return [entryPointIndex, svmFunctions];
 }
