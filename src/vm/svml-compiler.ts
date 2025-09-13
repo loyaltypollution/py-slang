@@ -2,73 +2,16 @@ import { StmtNS, ExprNS } from "../ast-types";
 import { Token } from "../tokenizer";
 import { TokenType } from "../tokens";
 import { PRIMITIVE_FUNCTIONS } from "./sinter-primitives";
-import { InstructionBuilder, SVMProgram, SVMFunction } from "./types";
+import { FunctionBuilder, SVMProgram, SVMFunction } from "./types";
 import OpCodes from "./opcodes";
 import { FunctionEnvironments, Environment, Resolver } from "../resolver";
-import { DeadCodeEliminator } from "./svml-opt";
 
-enum SVMLType {
-  PRIMITIVE = "primitive",
-  INTERNAL = "internal",
-  USERDECLARED = "userdeclared",
-}
-
-class SVMLSymbolResolver {
-  private envNodeToIndex = new WeakMap<Environment, Map<string, number>>();
-  private envNextIndex = new WeakMap<Environment, number>();
-
-  getIndex(env: Environment, name: string): number {
-    let nodeMap = this.envNodeToIndex.get(env);
-    if (!nodeMap) {
-      nodeMap = new Map<string, number>();
-      this.envNodeToIndex.set(env, nodeMap);
-      this.envNextIndex.set(env, 0);
-    }
-    const existing = nodeMap.get(name);
-    if (existing !== undefined) return existing;
-
-    const next = this.envNextIndex.get(env)!;
-    nodeMap.set(name, next);
-    this.envNextIndex.set(env, next + 1);
-    return next;
-  }
-
-  getSymbol(
-    env: Environment,
-    node: Token
-  ): {
-    type: SVMLType;
-    index: number;
-    envLevel: number;
-  } {
-    const name = node.lexeme;
-    const parentEnv = env.lookupNameEnv(node);
-
-    // If the node is a primitive function, return the index
-    if (parentEnv === Environment.GlobalEnvironment) {
-      if (!PRIMITIVE_FUNCTIONS.has(name)) {
-        throw new Error(`Primitive function ${name} not implemented`);
-      }
-      return {
-        type: SVMLType.PRIMITIVE,
-        index: PRIMITIVE_FUNCTIONS.get(name)!,
-        envLevel: 0,
-      };
-    }
-
-    // If the node is a user-declared variable, return the index
-    if (parentEnv != null && parentEnv != Environment.GlobalEnvironment) {
-      const index = this.getIndex(parentEnv, name);
-      const envLevel = env.lookupName(node);
-      return {
-        type: SVMLType.USERDECLARED,
-        index,
-        envLevel,
-      };
-    }
-
-    throw new Error(`Variable ${name} not found in environment`);
-  }
+// Fast compiler annotations for maximum performance
+interface CompilerAnnotation {
+  slot: number; // Variable slot index within environment
+  envLevel: number; // Environment nesting level (0 = local)
+  isPrimitive: boolean; // True if this is a builtin function
+  primitiveIndex?: number; // Index in PRIMITIVE_FUNCTIONS if isPrimitive
 }
 
 export type ExpressionResult = {
@@ -81,17 +24,21 @@ export type ExpressionResult = {
 export class SVMLCompiler
   implements StmtNS.Visitor<ExpressionResult>, ExprNS.Visitor<ExpressionResult>
 {
-  private builder: InstructionBuilder;
+  private builder: FunctionBuilder;
   private currentEnvironment: Environment;
   private functionEnvironments: FunctionEnvironments;
   private isTailCall: boolean;
 
-  static SymbolResolver: SVMLSymbolResolver = new SVMLSymbolResolver();
+  // Ultra-fast annotation cache (no string lookups during compilation)
+  private tokenAnnotations = new WeakMap<Token, CompilerAnnotation>();
+  // Per-environment slot assignment for variables
+  private envSlotCounters = new WeakMap<Environment, number>();
+  private envSlotMaps = new WeakMap<Environment, Map<string, number>>();
 
   constructor(
     currentEnvironment: Environment,
     functionEnvironments: FunctionEnvironments,
-    builder: InstructionBuilder
+    builder: FunctionBuilder
   ) {
     this.builder = builder;
     this.currentEnvironment = currentEnvironment;
@@ -109,13 +56,21 @@ export class SVMLCompiler
     if (!mainEnv) {
       throw new Error("Main program environment not found");
     }
-    const builder = new InstructionBuilder();
+    const builder = new FunctionBuilder(0, 0);
     return new SVMLCompiler(mainEnv, functionEnvironments, builder);
   }
 
-  withEnvironment(environment: Environment): SVMLCompiler {
-    const builder = this.builder.createChildBuilder();
-    return new SVMLCompiler(environment, this.functionEnvironments, builder);
+  fromFunctionNode(node: StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda): SVMLCompiler {
+    const nextEnvironment = this.functionEnvironments.get(node);
+    if (!nextEnvironment) {
+      throw new Error(`Function environment not found`);
+    }
+    for (const param of node.parameters) {
+        nextEnvironment.lookupNameCurrentEnvWithError(param);
+    }
+    const numArgs = node.parameters.length;
+    const builder = this.builder.createChildBuilder(numArgs);
+    return new SVMLCompiler(nextEnvironment, this.functionEnvironments, builder);
   }
 
   /**
@@ -123,29 +78,17 @@ export class SVMLCompiler
    */
   compileProgram(program: StmtNS.FileInput): SVMProgram {
     // Compile main program statements
-    this.compileStatements(program.statements);
-    this.builder.emitNullary(OpCodes.RETG);
+    this.compile(program);
 
     // Get all builders from the hierarchy
     const allBuilders = this.builder.getAllBuilders();
 
-    // Convert each builder to SVMFunction with proper metadata
+    // Convert each builder to SVMFunction
     const svmFunctions: SVMFunction[] = [];
     const entryPointIndex = 0; // Main program is always at index 0
 
-    // Optimize all builders in the hierarchy
     for (const builder of allBuilders) {
-        builder.optimize(new DeadCodeEliminator());
-    }
-
-    for (const builder of allBuilders) {
-      // Find corresponding AST node to get metadata
-      let stackSize = 1; // Default stack size
-      let envSize = 0; // Default env size
-      let numArgs = 0; // Default args
-
-      // For now, use defaults - metadata tracking will be enhanced later
-      const svmFunction = builder.toSVMFunction(stackSize, envSize, numArgs);
+      const svmFunction = builder.toSVMFunction();
       svmFunctions.push(svmFunction);
     }
 
@@ -159,9 +102,119 @@ export class SVMLCompiler
     return node.accept(this);
   }
 
-  private labelCounter: number = 0;
-  private genLabel(prefix: string = "L"): string {
-    return `${prefix}${this.labelCounter++}`;
+  /**
+   * Get or create fast annotation for a token (O(1) lookup via WeakMap)
+   */
+  private getTokenAnnotation(token: Token): CompilerAnnotation {
+    let annotation = this.tokenAnnotations.get(token);
+    if (annotation) {
+      return annotation;
+    }
+
+    const name = token.lexeme;
+    const parentEnv = this.currentEnvironment.lookupNameEnv(token);
+
+    // Handle primitive functions
+    if (parentEnv === Environment.GlobalEnvironment) {
+      const primitiveIndex = PRIMITIVE_FUNCTIONS.get(name);
+      if (primitiveIndex === undefined) {
+        throw new Error(`Primitive function ${name} not implemented`);
+      }
+      annotation = {
+        slot: primitiveIndex,
+        envLevel: 0,
+        isPrimitive: true,
+        primitiveIndex,
+      };
+    } else if (parentEnv != null) {
+      // Handle user-declared variables
+      const envLevel = this.currentEnvironment.lookupName(token);
+      const slot = this.getOrAssignSlot(parentEnv, name);
+
+      annotation = {
+        slot,
+        envLevel,
+        isPrimitive: false,
+      };
+    } else {
+      throw new Error(`Variable ${name} not found in environment`);
+    }
+
+    this.tokenAnnotations.set(token, annotation);
+    return annotation;
+  }
+
+  /**
+   * Assign variable slot in environment (O(1) with WeakMap)
+   */
+  private getOrAssignSlot(env: Environment, name: string): number {
+    let slotMap = this.envSlotMaps.get(env);
+    if (!slotMap) {
+      slotMap = new Map();
+      this.envSlotMaps.set(env, slotMap);
+      this.envSlotCounters.set(env, 0);
+    }
+
+    let slot = slotMap.get(name);
+    if (slot === undefined) {
+      slot = this.envSlotCounters.get(env)!;
+      slotMap.set(name, slot);
+      this.envSlotCounters.set(env, slot + 1);
+      this.builder.noteSymbolUsed();
+    }
+    return slot;
+  }
+
+  private emitLoadSymbol(token: Token): ExpressionResult {
+    const annotation = this.getTokenAnnotation(token);
+
+    if (annotation.isPrimitive) {
+      return { maxStackSize: 0 };
+    }
+    if (annotation.envLevel === 0) {
+      this.builder.emitUnary(OpCodes.LDLG, annotation.slot);
+    } else {
+      this.builder.emitBinary(
+        OpCodes.LDPG,
+        annotation.slot,
+        annotation.envLevel
+      );
+    }
+    return { maxStackSize: 1 };
+  }
+
+  private emitStoreSymbol(token: Token): void {
+    const annotation = this.getTokenAnnotation(token);
+
+    if (annotation.isPrimitive) {
+      throw new Error(`Cannot assign to primitive symbol: ${token.lexeme}`);
+    }
+
+    if (annotation.envLevel === 0) {
+      this.builder.emitUnary(OpCodes.STLG, annotation.slot);
+    } else {
+      this.builder.emitBinary(
+        OpCodes.STPG,
+        annotation.slot,
+        annotation.envLevel
+      );
+    }
+  }
+
+  private emitFunctionCall(token: Token, numArgs: number): void {
+    const annotation = this.getTokenAnnotation(token);
+
+    if (annotation.isPrimitive) {
+      const primitiveOpcode = this.isTailCall ? OpCodes.CALLTP : OpCodes.CALLP;
+      this.builder.emitPrimitiveCall(
+        primitiveOpcode,
+        annotation.primitiveIndex!,
+        numArgs
+      );
+    } else {
+      const userOpcode = this.isTailCall ? OpCodes.CALLT : OpCodes.CALL;
+      this.builder.emitCall(userOpcode, numArgs);
+    }
   }
 
   // ========================================================================
@@ -222,27 +275,7 @@ export class SVMLCompiler
   }
 
   visitVariableExpr(expr: ExprNS.Variable): ExpressionResult {
-    // Look up the symbol using the symbol resolver
-    const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(
-      this.currentEnvironment,
-      expr.name
-    );
-
-    switch (type) {
-      case SVMLType.PRIMITIVE:
-        this.builder.emitUnary(OpCodes.NEWCP, index);
-        break;
-      case SVMLType.INTERNAL:
-        this.builder.emitUnary(OpCodes.NEWCV, index);
-        break;
-      case SVMLType.USERDECLARED:
-        if (envLevel === 0) {
-          this.builder.emitUnary(OpCodes.LDLG, index);
-        } else {
-          this.builder.emitBinary(OpCodes.LDPG, index, envLevel);
-        }
-        break;
-    }
+    this.emitLoadSymbol(expr.name);
     return { maxStackSize: 1 };
   }
 
@@ -329,17 +362,14 @@ export class SVMLCompiler
   }
 
   visitBoolOpExpr(expr: ExprNS.BoolOp): ExpressionResult {
-    const elseLabel = this.genLabel("else");
-    const endLabel = this.genLabel("end");
-
     // Convert to conditional expression
     if (expr.operator.type === TokenType.AND) {
       // left && right -> left ? right : false
       const testResult = this.compile(expr.left);
-      this.builder.emitBranchTo(OpCodes.BRF, elseLabel);
+      const elseLabel = this.builder.emitJump(OpCodes.BRF);
 
       const conseqResult = this.compile(expr.right);
-      this.builder.emitBranchTo(OpCodes.BR, endLabel);
+      const endLabel = this.builder.emitJump(OpCodes.BR);
 
       this.builder.markLabel(elseLabel);
       this.builder.emitNullary(OpCodes.LGCB0); // false
@@ -357,11 +387,11 @@ export class SVMLCompiler
     } else if (expr.operator.type === TokenType.OR) {
       // left || right -> left ? true : right
       const testResult = this.compile(expr.left);
-      this.builder.emitBranchTo(OpCodes.BRF, elseLabel);
+      const elseLabel = this.builder.emitJump(OpCodes.BRF);
 
       this.builder.emitNullary(OpCodes.LGCB1); // true
       const conseqResult = { maxStackSize: 1 };
-      this.builder.emitBranchTo(OpCodes.BR, endLabel);
+      const endLabel = this.builder.emitJump(OpCodes.BR);
 
       this.builder.markLabel(elseLabel);
       const altResult = this.compile(expr.right);
@@ -413,22 +443,9 @@ export class SVMLCompiler
     }
 
     const callee: ExprNS.Variable = expr.callee;
-    const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(
-      this.currentEnvironment,
-      callee.name
-    );
 
     // Load function if needed
-    let functionStackEffect = 0;
-    if (type === SVMLType.PRIMITIVE || type === SVMLType.INTERNAL) {
-      // No function loading needed for built-ins
-    } else if (envLevel === 0) {
-      this.builder.emitUnary(OpCodes.LDLG, index);
-      functionStackEffect = 1;
-    } else {
-      this.builder.emitBinary(OpCodes.LDPG, index, envLevel);
-      functionStackEffect = 1;
-    }
+    const { maxStackSize: functionStackEffect } = this.emitLoadSymbol(callee.name);
 
     // Compile arguments last, in reverse order
     let maxArgStackSize = 0;
@@ -439,22 +456,7 @@ export class SVMLCompiler
 
     // Emit call instruction
     const numArgs = expr.args.length;
-    switch (type) {
-      case SVMLType.PRIMITIVE:
-        const primitiveOpcode = this.isTailCall
-          ? OpCodes.CALLTP
-          : OpCodes.CALLP;
-        this.builder.emitBinary(primitiveOpcode, index, numArgs);
-        break;
-      case SVMLType.INTERNAL:
-        const internalOpcode = this.isTailCall ? OpCodes.CALLTV : OpCodes.CALLV;
-        this.builder.emitBinary(internalOpcode, index, numArgs);
-        break;
-      case SVMLType.USERDECLARED:
-        const userOpcode = this.isTailCall ? OpCodes.CALLT : OpCodes.CALL;
-        this.builder.emitUnary(userOpcode, numArgs);
-        break;
-    }
+    this.emitFunctionCall(callee.name, numArgs);
 
     return {
       maxStackSize: functionStackEffect + maxArgStackSize,
@@ -462,16 +464,13 @@ export class SVMLCompiler
   }
 
   visitTernaryExpr(expr: ExprNS.Ternary): ExpressionResult {
-    const elseLabel = this.genLabel("else");
-    const endLabel = this.genLabel("end");
-
     // Compile test
     const testResult = this.compile(expr.predicate);
-    this.builder.emitBranchTo(OpCodes.BRF, elseLabel);
+    const elseLabel = this.builder.emitJump(OpCodes.BRF);
 
     // Compile consequent
     const conseqResult = this.compile(expr.consequent);
-    this.builder.emitBranchTo(OpCodes.BR, endLabel);
+    const endLabel = this.builder.emitJump(OpCodes.BR);
 
     // Compile alternate
     this.builder.markLabel(elseLabel);
@@ -499,13 +498,9 @@ export class SVMLCompiler
       expr.endToken,
       expr.body
     );
-    const nextEnvironment = this.functionEnvironments.get(expr);
-    if (!nextEnvironment) {
-      throw new Error(`Lambda function environment not found`);
-    }
-
+    
     // Compile lambda body in child environment
-    const compiler = this.withEnvironment(nextEnvironment);
+    const compiler = this.fromFunctionNode(expr);
     const { maxStackSize } = compiler.compile(ast);
     // Add return if needed (functions should always return something)
     compiler.builder.emitNullary(OpCodes.RETG);
@@ -518,13 +513,9 @@ export class SVMLCompiler
 
   visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExpressionResult {
     const ast: StmtNS.Stmt[] = expr.body;
-    const nextEnvironment = this.functionEnvironments.get(expr);
-    if (!nextEnvironment) {
-      throw new Error(`MultiLambda function environment not found`);
-    }
 
     // Compile lambda body in child environment
-    const compiler = this.withEnvironment(nextEnvironment);
+    const compiler = this.fromFunctionNode(expr);
     const { maxStackSize } = compiler.compileStatements(ast);
     // Add return if needed (functions should always return something)
     compiler.builder.emitNullary(OpCodes.RETG);
@@ -555,23 +546,10 @@ export class SVMLCompiler
   }
 
   visitAssignStmt(stmt: StmtNS.Assign): ExpressionResult {
-    const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(
-      this.currentEnvironment,
-      stmt.name
-    );
-
     const initResult = this.compile(stmt.value);
 
-    // Only user-declared variables can be assigned to
-    if (type !== SVMLType.USERDECLARED) {
-      throw new Error(`Cannot assign to ${type} symbol: ${stmt.name.lexeme}`);
-    }
-
-    if (envLevel === 0) {
-      this.builder.emitUnary(OpCodes.STLG, index);
-    } else {
-      this.builder.emitBinary(OpCodes.STPG, index, envLevel);
-    }
+    // Emit store instruction (will handle primitive check internally)
+    this.emitStoreSymbol(stmt.name);
 
     this.builder.emitNullary(OpCodes.LGCU);
     return initResult;
@@ -579,17 +557,13 @@ export class SVMLCompiler
 
   visitFunctionDefStmt(stmt: StmtNS.FunctionDef): ExpressionResult {
     const ast: StmtNS.Stmt[] = stmt.body;
-    const nextEnvironment = this.functionEnvironments.get(stmt);
-    if (!nextEnvironment) {
-      throw new Error(`FunctionDef function environment not found`);
-    }
 
     // Compile function body in child environment
-    const childCompiler = this.withEnvironment(nextEnvironment);
+    const childCompiler = this.fromFunctionNode(stmt);
     const { maxStackSize } = childCompiler.compileStatements(ast);
     // Add return if needed (functions should always return something)
     childCompiler.builder.emitNullary(OpCodes.RETG);
-
+    
     // Add function creation instruction
     this.builder.emitUnary(
       OpCodes.NEWC,
@@ -597,32 +571,22 @@ export class SVMLCompiler
     );
 
     // Assign function as variable
-    const { type, index, envLevel } = SVMLCompiler.SymbolResolver.getSymbol(
-      this.currentEnvironment,
-      stmt.name
-    );
-    if (type === SVMLType.USERDECLARED) {
-      if (envLevel === 0) {
-        this.builder.emitUnary(OpCodes.STLG, index);
-      } else {
-        this.builder.emitBinary(OpCodes.STPG, index, envLevel);
-      }
-    }
+    this.emitStoreSymbol(stmt.name);
+
+    // Load it right back
+    this.emitLoadSymbol(stmt.name);
 
     return { maxStackSize: Math.max(maxStackSize, 1) };
   }
 
   visitIfStmt(stmt: StmtNS.If): ExpressionResult {
-    const elseLabel = this.genLabel("else");
-    const endLabel = this.genLabel("end");
-
     // Compile test
     const testResult = this.compile(stmt.condition);
-    this.builder.emitBranchTo(OpCodes.BRF, elseLabel);
+    const elseLabel = this.builder.emitJump(OpCodes.BRF);
 
     // Compile consequent
     const conseqResult = this.compileStatements(stmt.body);
-    this.builder.emitBranchTo(OpCodes.BR, endLabel);
+    const endLabel = this.builder.emitJump(OpCodes.BR);
 
     // Compile alternate
     this.builder.markLabel(elseLabel);
@@ -642,18 +606,15 @@ export class SVMLCompiler
   }
 
   visitWhileStmt(stmt: StmtNS.While): ExpressionResult {
-    const loopLabel = this.genLabel("loop");
-    const endLabel = this.genLabel("end");
-
-    this.builder.markLabel(loopLabel);
+    const loopLabel = this.builder.markLabel();
 
     // Compile test
     const testResult = this.compile(stmt.condition);
-    this.builder.emitBranchTo(OpCodes.BRF, endLabel);
+    const endLabel = this.builder.emitJump(OpCodes.BRF);
 
     // Compile body
     const bodyResult = this.compileStatements(stmt.body);
-    this.builder.emitBranchTo(OpCodes.BR, loopLabel);
+    this.builder.emitJump(OpCodes.BR, loopLabel);
 
     this.builder.markLabel(endLabel);
     this.builder.emitNullary(OpCodes.LGCU); // While loops return undefined
@@ -717,7 +678,9 @@ export class SVMLCompiler
   }
 
   visitFileInputStmt(stmt: StmtNS.FileInput): ExpressionResult {
-    return this.compileStatements(stmt.statements);
+    const { maxStackSize } = this.compileStatements(stmt.statements);
+    this.builder.emitNullary(OpCodes.RETG);
+    return { maxStackSize: Math.max(maxStackSize, 1) };
   }
 
   compileStatements(statements: StmtNS.Stmt[]): ExpressionResult {
