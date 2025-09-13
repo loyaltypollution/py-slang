@@ -11,7 +11,7 @@
     "start": "npm run build && node dist/index.js",
     "jsdoc": "./scripts/jsdoc.sh",
     "test": "jest",
-    "ast-viz": "npm run build && node dist/ast-viz.js",
+    "ast-to-dot": "npm run build && node dist/ast-to-dot.js",
     "svmc": "npm run build && node dist/svmc.js"
   },
   "keywords": [

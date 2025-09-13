@@ -3,16 +3,15 @@
 import { Command } from 'commander';
 import { Tokenizer } from "../tokenizer";
 import { Parser } from "../parser";
-import { Translator } from "../translator";
 import { Resolver } from "../resolver";
-import { Program } from "estree";
-import ASTVisualizer from '../utils/ast/astVisualizer';
+import { StmtNS } from "../ast-types";
+import PyASTVisualizer from '../utils/astVisualizer';
 import * as fs from 'fs';
 
 /**
- * Standalone function to parse Python to EsTree AST without browser dependencies
+ * Parse Python code to Python AST without translation to ESTree
  */
-function parsePythonToEstreeAst(code: string, variant: number = 1, doValidate: boolean = false): Program {
+function parsePythonToAst(code: string, variant: number = 1, doValidate: boolean = false): StmtNS.FileInput {
     const script = code + '\n'
     const tokenizer = new Tokenizer(script)
     const tokens = tokenizer.scanEverything()
@@ -21,8 +20,11 @@ function parsePythonToEstreeAst(code: string, variant: number = 1, doValidate: b
     if (doValidate) {
         new Resolver(script, ast).resolve(ast);
     }
-    const translator = new Translator(script)
-    return translator.resolve(ast) as unknown as Program
+    // The parser should always return a FileInput for top-level parsing
+    if (!(ast instanceof StmtNS.FileInput)) {
+        throw new Error('Expected FileInput as root AST node');
+    }
+    return ast
 }
 
 /**
@@ -30,9 +32,9 @@ function parsePythonToEstreeAst(code: string, variant: number = 1, doValidate: b
  */
 function generateASTVisualization(pythonCode: string, outputFile: string) {
     try {
-        const ast = parsePythonToEstreeAst(pythonCode, 1, true);
+        const ast = parsePythonToAst(pythonCode, 1, true);
         
-        const astVisualizer = new ASTVisualizer();
+        const astVisualizer = new PyASTVisualizer();
         astVisualizer.saveToFile(ast, outputFile);
     } catch (error) {
         console.error('Error generating AST visualization:', error);
@@ -50,8 +52,8 @@ function main() {
     const program = new Command();
     
     program
-        .name('ast-viz')
-        .description('AST Visualizer - Generate DOT visualizations of Python ASTs')
+        .name('ast-to-dot')
+        .description('Python AST Visualizer - Generate DOT visualizations of Python ASTs')
         .version('1.0.0');
 
     program
@@ -80,8 +82,8 @@ function main() {
     if (process.argv.length === 2) {
         program.outputHelp();
         console.log('\nExamples:');
-        console.log('  ast-viz file test.py');
-        console.log('  ast-viz file test.py -o ast-output.dot');
+        console.log('  ast-to-dot file test.py');
+        console.log('  ast-to-dot file test.py -o ast-output.dot');
         process.exit(0);
     }
 
