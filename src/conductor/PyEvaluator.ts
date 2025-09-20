@@ -4,8 +4,7 @@
 
 import { runInContext, IOptions } from "../runner/pyRunner";
 import { Context } from "../cse-machine/context";
-import { BasicEvaluator } from "@sourceacademy/conductor";
-import { IRunnerPlugin } from "@sourceacademy/conductor";
+import { BasicEvaluator, IRunnerPlugin } from "@sourceacademy/conductor/runner";
 import { Finished } from "../types";
 
 const defaultContext = new Context();

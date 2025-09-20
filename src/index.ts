@@ -129,7 +129,7 @@
 /* Use as a command line script */
 /* npm run start:dev -- test.py */
 
-import { initialise } from "@sourceacademy/conductor";
+import { initialise } from "@sourceacademy/conductor/runner";
 import PyEvaluator from "./conductor/PyEvaluator";
 
 const {runnerPlugin, conduit} = initialise(PyEvaluator);
