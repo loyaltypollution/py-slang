@@ -50,7 +50,7 @@
     "typescript": "^5.5.3"
   },
   "dependencies": {
-    "@sourceacademy/conductor": "https://github.com/loyaltypollution/conductor.git#src",
+    "@sourceacademy/conductor": "https://github.com/source-academy/conductor.git#0.2.2",
     "@types/estree": "^1.0.0",
     "@wasmer/sdk": "^0.9.0",
     "commander": "^13.1.0",
