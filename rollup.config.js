@@ -37,9 +37,9 @@ const config = [{
   plugins: [commonjs(), json(), typescript(), nodeResolve()]
 },
 {
-  input: 'src/cli/ast-viz.ts',
+  input: 'src/cli/ast-to-dot.ts',
   output: {
-    file: 'dist/ast-viz.cjs',
+    file: 'dist/ast-to-dot.cjs',
     format: 'cjs',
     name: 'AstViz'
   },
