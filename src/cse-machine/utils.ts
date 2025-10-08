@@ -16,7 +16,7 @@ import { Context } from './context'
 import * as instr from './instrCreator'
 import { Value } from './stash';
 import { Closure } from './closure';
-import { RuntimeSourceError } from '../errors/errors';
+import { RuntimeSourceError, AssertionError } from '../errors/errors';
 import { MissingRequiredPositionalError, TooManyPositionalArgumentsError } from '../errors/errors';
 
 export const isIdentifier = (node: Node): node is es.Identifier => {
@@ -515,19 +515,6 @@ export function getModuleDeclarationSource(
   return node.source.value
 }
 
-export class AssertionError extends RuntimeSourceError {
-  constructor(public readonly message: string) {
-    super()
-  }
-
-  public explain(): string {
-    return this.message
-  }
-
-  public elaborate(): string {
-    return 'Please contact the administrators to let them know that this error has occurred'
-  }
-}
 
 export default function assert(condition: boolean, message: string): asserts condition {
   if (!condition) {

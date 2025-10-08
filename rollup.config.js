@@ -44,6 +44,15 @@ const config = [{
     name: 'AstViz'
   },
   plugins: [commonjs(), json(), typescript(), nodeResolve()]
+},
+{
+  input: 'src/vm/test-interpreter.ts',
+  output: {
+    file: 'dist/test-interpreter.cjs',
+    format: 'cjs',
+    name: 'TestInterpreter'
+  },
+  plugins: [commonjs(), json(), typescript(), nodeResolve()]
 }];
 
 export default config;

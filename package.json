@@ -11,6 +11,8 @@
     "start": "npm run build && node dist/index.js",
     "jsdoc": "./scripts/jsdoc.sh",
     "test": "jest",
+    "test:interpreter": "npm run build && node dist/vm/run-tests.js",
+    "debug:interpreter": "npm run build && node dist/vm/debug-test.js",
     "ast-to-dot": "npm run build && node dist/ast-to-dot.js",
     "svmc": "npm run build && node dist/svmc.js"
   },

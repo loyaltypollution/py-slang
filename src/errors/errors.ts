@@ -1,7 +1,26 @@
 import * as es from "estree";
 import { ErrorSeverity, ErrorType, SourceError } from "../types";
 import { Context } from "../cse-machine/context";
-import { typeTranslator } from "../cse-machine/utils";
+
+// Utility function to translate JavaScript types to Python types
+function typeTranslator(type: string): string {
+  switch (type) {
+    case "bigint":
+      return "int";
+    case "number":
+      return "float";
+    case "boolean":
+      return "bool";
+    case "bool":
+      return "bool";
+    case "string":
+      return "string";
+    case "complex":
+      return "complex";
+    default:
+      return "unknown";
+  }
+}
 
 export const UNKNOWN_LOCATION: es.SourceLocation = {
   start: {
@@ -483,5 +502,19 @@ export class SublanguageError extends RuntimeSourceError {
     this.message = `${name} at line ${line}\n\n ${fullLine}\n ${" ".repeat(
       offset
     )}${indicator}\n${hint}${suggestion}`;
+  }
+}
+
+export class AssertionError extends RuntimeSourceError {
+  constructor(public readonly message: string) {
+    super()
+  }
+
+  public explain(): string {
+    return this.message
+  }
+
+  public elaborate(): string {
+    return 'Please contact the administrators to let them know that this error has occurred'
   }
 }

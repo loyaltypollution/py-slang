@@ -5,6 +5,7 @@ import { PRIMITIVE_FUNCTIONS } from "./sinter-primitives";
 import { FunctionBuilder, SVMProgram, SVMFunction } from "./types";
 import OpCodes from "./opcodes";
 import { FunctionEnvironments, Environment, Resolver } from "../resolver";
+import { InstrumentationTracker, InstrumentationConfig, DEFAULT_INSTRUMENTATION_CONFIG } from "./instrumentation";
 
 // Fast compiler annotations for maximum performance
 interface CompilerAnnotation {
@@ -35,15 +36,20 @@ export class SVMLCompiler
   private envSlotCounters = new WeakMap<Environment, number>();
   private envSlotMaps = new WeakMap<Environment, Map<string, number>>();
 
+  // Instrumentation tracker for recursion detection and memoization
+  private instrumentation: InstrumentationTracker;
+
   constructor(
     currentEnvironment: Environment,
     functionEnvironments: FunctionEnvironments,
-    builder: FunctionBuilder
+    builder: FunctionBuilder,
+    instrumentation?: InstrumentationTracker
   ) {
     this.builder = builder;
     this.currentEnvironment = currentEnvironment;
     this.functionEnvironments = functionEnvironments;
     this.isTailCall = false;
+    this.instrumentation = instrumentation || new InstrumentationTracker();
   }
 
   /**
@@ -56,7 +62,8 @@ export class SVMLCompiler
     if (!mainEnv) {
       throw new Error("Main program environment not found");
     }
-    const builder = new FunctionBuilder(0, 0);
+    FunctionBuilder.resetIndex();
+    const builder = new FunctionBuilder(0);
     return new SVMLCompiler(mainEnv, functionEnvironments, builder);
   }
 
@@ -70,7 +77,7 @@ export class SVMLCompiler
     }
     const numArgs = node.parameters.length;
     const builder = this.builder.createChildBuilder(numArgs);
-    return new SVMLCompiler(nextEnvironment, this.functionEnvironments, builder);
+    return new SVMLCompiler(nextEnvironment, this.functionEnvironments, builder, this.instrumentation);
   }
 
   /**
@@ -81,7 +88,7 @@ export class SVMLCompiler
     this.compile(program);
 
     // Get all builders from the hierarchy
-    const allBuilders = this.builder.getAllBuilders();
+    const allBuilders = this.builder.getAllBuilders(true);
 
     // Convert each builder to SVMFunction
     const svmFunctions: SVMFunction[] = [];
@@ -92,6 +99,12 @@ export class SVMLCompiler
       svmFunctions.push(svmFunction);
     }
 
+    // Print instrumentation summary
+    this.instrumentation.printSummary();
+    
+    // Detect mutual recursion
+    this.instrumentation.detectMutualRecursion();
+
     return [entryPointIndex, svmFunctions];
   }
 
@@ -100,6 +113,13 @@ export class SVMLCompiler
    */
   compile(node: StmtNS.Stmt | ExprNS.Expr): ExpressionResult {
     return node.accept(this);
+  }
+
+  /**
+   * Get the instrumentation tracker
+   */
+  getInstrumentation(): InstrumentationTracker {
+    return this.instrumentation;
   }
 
   /**
@@ -436,6 +456,9 @@ export class SVMLCompiler
   }
 
   visitCallExpr(expr: ExprNS.Call): ExpressionResult {
+    // Instrumentation: record this call
+    this.instrumentation.recordCall(expr);
+    
     if (!(expr.callee instanceof ExprNS.Variable)) {
       throw new Error(
         "Unsupported call expression: callee must be an identifier"
@@ -447,9 +470,9 @@ export class SVMLCompiler
     // Load function if needed
     const { maxStackSize: functionStackEffect } = this.emitLoadSymbol(callee.name);
 
-    // Compile arguments last, in reverse order
+    // Compile arguments
     let maxArgStackSize = 0;
-    for (let i = expr.args.length - 1; i >= 0; i--) {
+    for (let i = 0; i < expr.args.length; i++) {
       const argResult = this.compile(expr.args[i]);
       maxArgStackSize = Math.max(maxArgStackSize, i + argResult.maxStackSize);
     }
@@ -501,7 +524,15 @@ export class SVMLCompiler
     
     // Compile lambda body in child environment
     const compiler = this.fromFunctionNode(expr);
+    
+    // Instrumentation: enter lambda
+    this.instrumentation.enterFunction(expr, compiler.builder.getFunctionIndex());
+    
     const { maxStackSize } = compiler.compile(ast);
+    
+    // Instrumentation: exit lambda
+    this.instrumentation.exitFunction();
+    
     // Add return if needed (functions should always return something)
     compiler.builder.emitNullary(OpCodes.RETG);
 
@@ -516,7 +547,15 @@ export class SVMLCompiler
 
     // Compile lambda body in child environment
     const compiler = this.fromFunctionNode(expr);
+    
+    // Instrumentation: enter multi-lambda
+    this.instrumentation.enterFunction(expr, compiler.builder.getFunctionIndex());
+    
     const { maxStackSize } = compiler.compileStatements(ast);
+    
+    // Instrumentation: exit multi-lambda
+    this.instrumentation.exitFunction();
+    
     // Add return if needed (functions should always return something)
     compiler.builder.emitNullary(OpCodes.RETG);
 
@@ -560,7 +599,15 @@ export class SVMLCompiler
 
     // Compile function body in child environment
     const childCompiler = this.fromFunctionNode(stmt);
+    
+    // Instrumentation: enter function
+    this.instrumentation.enterFunction(stmt, childCompiler.builder.getFunctionIndex());
+    
     const { maxStackSize } = childCompiler.compileStatements(ast);
+    
+    // Instrumentation: exit function
+    this.instrumentation.exitFunction();
+    
     // Add return if needed (functions should always return something)
     childCompiler.builder.emitNullary(OpCodes.RETG);
     

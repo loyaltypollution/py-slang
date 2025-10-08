@@ -141,10 +141,15 @@ export class FunctionBuilder {
   private symbolCount: number = 0;
   private numArgs: number = 0;
   private functionIndex: number;
+  private static _functionIndex: number = 0;
 
-  constructor(numArgs: number, functionIndex: number) {
+  constructor(numArgs: number) {
     this.numArgs = numArgs;
-    this.functionIndex = functionIndex;
+    this.functionIndex = FunctionBuilder._functionIndex++;
+  }
+
+  static resetIndex(): void {
+    FunctionBuilder._functionIndex = 0;
   }
 
   getFunctionIndex(): number {
@@ -152,13 +157,26 @@ export class FunctionBuilder {
   }
 
   createChildBuilder(numArgs: number): FunctionBuilder {
-    const child = new FunctionBuilder(numArgs, this.functionIndex + 1);
+    const child = new FunctionBuilder(numArgs);
     this.children.push(child);
     return child;
   }
 
-  getAllBuilders(): FunctionBuilder[] {
-    return [this, ...this.children.flatMap((child) => child.getAllBuilders())];
+  getAllBuilders(toSort: boolean = false): FunctionBuilder[] {
+    const res = [this, ...this.children.flatMap((child) => child.getAllBuilders())];
+    if (!toSort) {
+      return res;
+    }
+    return res.sort((a, b) => a.getFunctionIndex() - b.getFunctionIndex());
+  }
+
+  getAllBuildersSorted(): FunctionBuilder[] {
+    // We can use bucket sort because all elements are unique and guaranteed to be in the range [0, n)
+    const builders = new Array<FunctionBuilder>(this.getAllBuilders().length);
+    for (const builder of this.getAllBuilders()) {
+      builders[builder.getFunctionIndex()] = builder;
+    }
+    return builders;
   }
 
   emitNullary(opcode: number): void {

@@ -1,13 +1,12 @@
 import { Context } from "../cse-machine/context"
 import { CSEResultPromise, evaluate } from "../cse-machine/interpreter"
-import init from "../sinter/sinter"
 import { RecursivePartial, Result } from "../types"
 import * as es from 'estree'
 import { SVMLCompiler } from "../vm/svml-compiler"
 import { Tokenizer } from "../tokenizer"
 import { Parser } from "../parser"
 import { Resolver } from "../resolver"
-import { assemble } from "../vm/svml-assembler"
+import { runSVMLProgram } from "../vm/svml-interpreter"
 
 export interface IOptions {
     isPrelude: boolean,
@@ -36,11 +35,9 @@ export async function runInContext(
     options: RecursivePartial<IOptions> = {}
 ): Promise<Result> {
     const pyAst = parsePythonToAst(code, 1, true);
-    // Compile to SVML
-    const p = SVMLCompiler.fromProgram(pyAst).compileProgram(pyAst);
-    const binary: Uint8Array = assemble(p);
-    const sinter = await init();
-    var result: any = sinter.runBinary(binary);
+    const compiler = SVMLCompiler.fromProgram(pyAst);
+    const program = compiler.compileProgram(pyAst);
+    const result = runSVMLProgram(program, compiler.getInstrumentation());
     return CSEResultPromise(context, result);
     // var result = runCSEMachine(code, estreeAst, context, options);
     // return result;
