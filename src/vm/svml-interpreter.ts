@@ -984,18 +984,6 @@ export class SVMLInterpreter {
     return String(value);
   }
 }
-
-import {
-  Value,
-  NumberValue,
-  BoolValue,
-  StringValue,
-  UndefinedValue,
-  ErrorValue,
-  pyClosureValue,
-  BigIntValue,
-} from "../cse-machine/stash";
-
 export function runSVMLProgram(
   program: SVMProgram,
   instrumentation?: InstrumentationTracker,
@@ -1004,45 +992,11 @@ export function runSVMLProgram(
     maxCallDepth?: number;
     maxInstructions?: number;
   }
-): Value {
+): any {
   const interpreter = new SVMLInterpreter(program, instrumentation, options);
   const result = interpreter.execute();
 
   const stats = interpreter.getStats();
 
   return result;
-}
-
-// Convert SVML RuntimeValue to CSE-machine Value type
-export function convertToValue(val: any): Value {
-  if (val === undefined) {
-    return { type: "undefined" } as UndefinedValue;
-  }
-  if (val === null) {
-    return { type: "NoneType", value: undefined };
-  }
-  if (typeof val === "number") {
-    if (Number.isInteger(val)) {
-      return { type: "bigint", value: BigInt(val) } as BigIntValue;
-    } else {
-      return { type: "number", value: val } as NumberValue;
-    }
-  }
-  if (typeof val === "boolean") {
-    return { type: "bool", value: val } as BoolValue;
-  }
-  if (typeof val === "string") {
-    return { type: "string", value: val } as StringValue;
-  }
-  if (typeof val === "object") {
-    if (val.type === "closure") {
-      return { type: "closure", closure: val } as pyClosureValue;
-    }
-    if (val.type === "array") {
-      // Recursively convert array elements
-      return (val.elements || []).map(convertToValue);
-    }
-  }
-  // Fallback: string representation
-  return { type: "string", value: String(val) } as StringValue;
 }

@@ -1,1 +1,1 @@
-export { Resolver } from "./resolver";
+export { Resolver, Environment, FunctionEnvironments } from "./resolver";

@@ -1,5 +1,4 @@
 import nodeResolve from "@rollup/plugin-node-resolve";
-import nodeResolve from "@rollup/plugin-node-resolve";
 import typescript from '@rollup/plugin-typescript';
 import json from '@rollup/plugin-json';
 import wasm from '@rollup/plugin-wasm';
@@ -43,15 +42,6 @@ const config = [{
     file: 'dist/ast-to-dot.cjs',
     format: 'cjs',
     name: 'AstViz'
-  },
-  plugins: [commonjs(), json(), typescript(), nodeResolve()]
-},
-{
-  input: 'src/vm/test-interpreter.ts',
-  output: {
-    file: 'dist/test-interpreter.cjs',
-    format: 'cjs',
-    name: 'TestInterpreter'
   },
   plugins: [commonjs(), json(), typescript(), nodeResolve()]
 }];

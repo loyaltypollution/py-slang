@@ -3,9 +3,7 @@
 import { Command } from 'commander';
 import { Tokenizer } from "../tokenizer";
 import { Parser } from "../parser";
-import { Translator } from "../translator";
 import { Resolver } from "../resolver";
-import type { Program } from "estree";
 import { assemble } from '../vm/svml-assembler';
 import { stringifyProgram } from '../vm/util';
 import * as fs from 'fs';

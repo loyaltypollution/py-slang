@@ -1,14 +1,4 @@
-import * as es from 'estree'
 import { toPythonString } from './stdlib'
-import { Value } from './cse-machine/stash'
-import { Context } from './cse-machine/context'
-import { ModuleFunctions } from './modules/moduleTypes'
-
-export class CSEBreak {}
-
-// export class CseError {
-//     constructor(public readonly error: any) {}
-// }
 
 export class PyComplexNumber {
     public real: number;
@@ -217,20 +207,6 @@ export class PyComplexNumber {
     }
 }
 
-export interface None extends es.BaseNode {
-    type: 'NoneType';
-    loc?: es.SourceLocation;
-}
-
-export interface ComplexLiteral extends es.BaseNode {
-    type: 'Literal';
-    complex: {
-        real: number;
-        imag: number;
-    }
-    loc?: es.SourceLocation;
-}
-
 
 /**
  * Helper type to recursively make properties that are also objects
@@ -248,38 +224,6 @@ export type RecursivePartial<T> =
         }>
       : T
 
-export type Result = Finished | Error | SuspendedCseEval // | Suspended
-
-// TODO: should allow debug
-// export interface Suspended {
-//     status: 'suspended'
-//     it: IterableIterator<Value>
-//     scheduler: Scheduler
-//     context: Context
-// }
-  
-export interface SuspendedCseEval {
-    status: 'suspended-cse-eval'
-    context: Context
-}
-
-export interface Finished {
-    status: 'finished'
-    context: Context
-    value: Value
-    representation: Representation // if the returned value needs a unique representation,
-    // (for example if the language used is not JS),
-    // the display of the result will use the representation
-    // field instead
-}
-
-// export class Representation {
-//     constructor(public representation: string) {}
-//     toString() {
-//         return this.representation
-//     }
-// }
-
 export class Representation {
     constructor(public representation: string) {}
   
@@ -289,19 +233,4 @@ export class Representation {
         const result = toPythonString(value);
         return result;
     }
-}
-
-export interface NativeStorage {
-    builtins: Map<string, Value>
-    previousProgramsIdentifiers: Set<string>
-    operators: Map<string, (...operands: Value[]) => Value>
-    maxExecTime: number
-    //evaller: null | ((program: string) => Value)
-    /*
-    the first time evaller is used, it must be used directly like `eval(code)` to inherit
-    surrounding scope, so we cannot set evaller to `eval` directly. subsequent assignments to evaller will
-    close in the surrounding values, so no problem
-     */
-    loadedModules: Record<string, ModuleFunctions>
-    loadedModuleTypes: Record<string, Record<string, string>>
 }
