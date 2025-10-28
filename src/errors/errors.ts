@@ -73,10 +73,7 @@ export class ConstAssignment extends RuntimeSourceError {
 }
 
 /* Searches backwards and forwards till it hits a newline */
-function getFullLine(
-  source: string,
-  current: number
-): { line: number; fullLine: string } {
+export function getFullLine(source: string, current: number): { lineIndex: number; fullLine: string } {
   let back: number = current;
   let forward: number = current;
 
@@ -90,10 +87,10 @@ function getFullLine(
     forward++;
   }
 
-  const line = source.slice(0, back).split("\n").length;
+  const lineIndex = source.slice(0, back).split('\n').length;
   const fullLine = source.slice(back, forward);
 
-  return { line, fullLine };
+  return {lineIndex, fullLine};
 }
 
 export function createErrorIndicator(
@@ -113,36 +110,18 @@ export class TypeConcatenateError extends RuntimeSourceError {
     super(node);
     this.type = ErrorType.TYPE;
 
-    let index = (node as any).symbol?.loc?.start?.index;
-    const { line, fullLine } = getFullLine(source, index);
-    const snippet = (node as any).symbol?.loc?.source ?? "<unknown source>";
-
-    let hint =
-      'TypeError: can only concatenate str (not "' + wrongType + '") to str.';
-    const offset = fullLine.indexOf(snippet);
-    const indicator = createErrorIndicator(snippet, "+");
-    const name = "TypeError";
-    const suggestion =
-      "You are trying to concatenate a string with an " +
-      wrongType +
-      ". To fix this, convert the " +
-      wrongType +
-      " to a string using str(), or ensure both operands are of the same type.";
-    const msg =
-      name +
-      " at line " +
-      line +
-      "\n\n    " +
-      fullLine +
-      "\n    " +
-      " ".repeat(offset) +
-      indicator +
-      "\n" +
-      hint +
-      "\n" +
-      suggestion;
-    this.message = msg;
-  }
+        let index = (node as any).symbol?.loc?.start?.index;
+        const { lineIndex, fullLine } = getFullLine(source, index);
+        const snippet = (node as any).symbol?.loc?.source ?? '<unknown source>';
+        
+        let hint = 'TypeError: can only concatenate str (not "' + wrongType + '") to str.';
+        const offset = fullLine.indexOf(snippet);
+        const indicator = createErrorIndicator(snippet, '+');
+        const name = "TypeError";
+        const suggestion = "You are trying to concatenate a string with an " + wrongType + ". To fix this, convert the " + wrongType + " to a string using str(), or ensure both operands are of the same type.";
+        const msg = name + " at line " + lineIndex + "\n\n    " + fullLine + "\n    " + " ".repeat(offset) + indicator + "\n" + hint + "\n" + suggestion;
+        this.message = msg;
+    }
 }
 
 export class UnsupportedOperandTypeError extends RuntimeSourceError {
@@ -156,76 +135,40 @@ export class UnsupportedOperandTypeError extends RuntimeSourceError {
     super(node);
     this.type = ErrorType.TYPE;
 
-    let index =
-      (node as any).symbol?.loc?.start?.index ??
-      (node as any).srcNode?.loc?.start?.index;
-    const { line, fullLine } = getFullLine(source, index);
-    const snippet =
-      (node as any).symbol?.loc?.source ??
-      (node as any).srcNode?.loc?.source ??
-      "<unknown source>";
-    let hint =
-      "TypeError: unsupported operand type(s) for " +
-      operand +
-      ": '" +
-      wrongType1 +
-      "' and '" +
-      wrongType2 +
-      "'";
-    const offset = fullLine.indexOf(snippet);
-    const indicator = createErrorIndicator(snippet, operand);
-    const name = "TypeError";
-    const suggestion =
-      "You are using the '" +
-      operand +
-      "' operator between a '" +
-      wrongType1 +
-      "' and a '" +
-      wrongType2 +
-      "', which are not compatible types for this operation.\nMake sure both operands are of the correct type.";
-    const msg =
-      name +
-      " at line " +
-      line +
-      "\n\n    " +
-      fullLine +
-      "\n    " +
-      " ".repeat(offset) +
-      indicator +
-      "\n" +
-      hint +
-      "\n" +
-      suggestion;
-    this.message = msg;
-  }
+        let index = (node as any).symbol?.loc?.start?.index ?? 
+                    (node as any).srcNode?.loc?.start?.index;
+        const { lineIndex, fullLine } = getFullLine(source, index);
+        const snippet = (node as any).symbol?.loc?.source ?? 
+                        (node as any).srcNode?.loc?.source ?? 
+                        '<unknown source>';
+        let hint = "TypeError: unsupported operand type(s) for " + operand + ": '" + wrongType1 + "' and '" + wrongType2 + "'";
+        const offset = fullLine.indexOf(snippet);
+        const indicator = createErrorIndicator(snippet, operand);
+        const name = "TypeError";
+        const suggestion = "You are using the '" + operand+ "' operator between a '" + wrongType1 + "' and a '" + wrongType2 + "', which are not compatible types for this operation.\nMake sure both operands are of the correct type.";
+        const msg = name + " at line " + lineIndex + "\n\n    " + fullLine + "\n    " + " ".repeat(offset) + indicator + "\n" + hint + "\n" + suggestion;
+        this.message = msg;
+    }
 }
 
 export class MissingRequiredPositionalError extends RuntimeSourceError {
-  private functionName: string;
-  private missingParamCnt: number;
-  private missingParamName: string;
-
-  constructor(
-    source: string,
-    node: es.Node,
-    functionName: string,
-    params: any,
-    args: any,
-    variadic: boolean
-  ) {
-    super(node);
-    this.type = ErrorType.TYPE;
-    this.functionName = functionName;
-    let adverb: string = "exactly";
-    if (variadic) {
-      adverb = "at least";
-    }
-    const index =
-      (node as any).loc?.start?.index ??
-      (node as any).srcNode?.loc?.start?.index ??
-      0;
-    const { line, fullLine } = getFullLine(source, index);
-    this.message = "TypeError at line " + line + "\n\n    " + fullLine + "\n";
+    private functionName: string;
+    private missingParamCnt: number;
+    private missingParamName: string;
+  
+    constructor(source: string, node: es.Node, functionName: string, params: any, args: any, variadic: boolean) {
+        super(node);
+        this.type = ErrorType.TYPE;
+        this.functionName = functionName;
+        let adverb: string = "exactly";
+        if (variadic) {
+          adverb = "at least";
+        }
+        const index = (node as any).loc?.start?.index
+                  ?? (node as any).srcNode?.loc?.start?.index
+                  ?? 0;
+        const { lineIndex, fullLine } = getFullLine(source, index);
+        this.message = 'TypeError at line ' + lineIndex + '\n\n    ' + fullLine + '\n';
 
     if (typeof params === "number") {
       this.missingParamCnt = params;
@@ -285,12 +228,11 @@ export class TooManyPositionalArgumentsError extends RuntimeSourceError {
       adverb = "at most";
     }
 
-    const index =
-      (node as any).loc?.start?.index ??
-      (node as any).srcNode?.loc?.start?.index ??
-      0;
-    const { line, fullLine } = getFullLine(source, index);
-    this.message = "TypeError at line " + line + "\n\n    " + fullLine + "\n";
+      const index = (node as any).loc?.start?.index
+                  ?? (node as any).srcNode?.loc?.start?.index
+                  ?? 0;
+      const { lineIndex, fullLine } = getFullLine(source, index);
+      this.message = 'TypeError at line ' + lineIndex + '\n\n    ' + fullLine + '\n';
 
     if (typeof params === "number") {
       this.expectedCount = params;
@@ -319,28 +261,15 @@ export class ZeroDivisionError extends RuntimeSourceError {
     super(node);
     this.type = ErrorType.TYPE;
     let index = (node as any).symbol?.loc?.start?.index;
-    const { line, fullLine } = getFullLine(source, index);
-    const snippet = (node as any).symbol?.loc?.source ?? "<unknown source>";
-
-    let hint = "ZeroDivisionError: division by zero.";
+    const { lineIndex, fullLine } = getFullLine(source, index);
+    const snippet = (node as any).symbol?.loc?.source ?? '<unknown source>';
+    
+    let hint = 'ZeroDivisionError: division by zero.';
     const offset = fullLine.indexOf(snippet);
     const indicator = createErrorIndicator(snippet, "/");
     const name = "ZeroDivisionError";
-    const suggestion =
-      "You attempted to divide by zero. Division or modulo operations cannot be performed with a divisor of zero. Please ensure that the divisor is non-zero before performing the operation.";
-    const msg =
-      name +
-      " at line " +
-      line +
-      "\n\n    " +
-      fullLine +
-      "\n    " +
-      " ".repeat(offset) +
-      indicator +
-      "\n" +
-      hint +
-      "\n" +
-      suggestion;
+    const suggestion = "You attempted to divide by zero. Division or modulo operations cannot be performed with a divisor of zero. Please ensure that the divisor is non-zero before performing the operation.";
+    const msg = name + " at line " + lineIndex + "\n\n    " + fullLine + "\n    " + " ".repeat(offset) + indicator + "\n" + hint + "\n" + suggestion;
     this.message = msg;
   }
 }
@@ -355,7 +284,7 @@ export class StepLimitExceededError extends RuntimeSourceError {
       (node as any).srcNode?.loc?.start?.index ??
       0;
 
-    const { line, fullLine } = getFullLine(source, index);
+    const { lineIndex, fullLine } = getFullLine(source, index);
 
     const snippet =
       (node as any).loc?.source ??
@@ -371,12 +300,12 @@ export class StepLimitExceededError extends RuntimeSourceError {
     const adjustedOffset = offset >= 0 ? offset : 0;
 
     const msg = [
-      `${name} at line ${line}`,
-      "",
-      "    " + fullLine,
-      "    " + " ".repeat(adjustedOffset) + indicator,
-      hint,
-    ].join("\n");
+      `${name} at line ${lineIndex}`,
+      '',
+      '    ' + fullLine,
+      '    ' + ' '.repeat(adjustedOffset) + indicator,
+      hint
+    ].join('\n');
 
     this.message = msg;
   }
@@ -391,32 +320,19 @@ export class ValueError extends RuntimeSourceError {
   ) {
     super(node);
     this.type = ErrorType.TYPE;
-    const index =
-      (node as any).loc?.start?.index ??
-      (node as any).srcNode?.loc?.start?.index ??
-      0;
-    const { line, fullLine } = getFullLine(source, index);
-    const snippet =
-      (node as any).loc?.source ??
-      (node as any).srcNode?.loc?.source ??
-      "<unknown source>";
-    let hint = "ValueError: math domain error. ";
+    const index = (node as any).loc?.start?.index
+                  ?? (node as any).srcNode?.loc?.start?.index
+                  ?? 0;
+    const { lineIndex, fullLine } = getFullLine(source, index);
+    const snippet = (node as any).loc?.source
+                  ?? (node as any).srcNode?.loc?.source
+                  ?? '<unknown source>';
+    let hint = 'ValueError: math domain error. ';
     const offset = fullLine.indexOf(snippet);
     const indicator = createErrorIndicator(snippet, "@");
     const name = "ValueError";
     const suggestion = `Ensure that the input value(s) passed to '${functionName}' satisfy the mathematical requirements`;
-    const msg =
-      name +
-      " at line " +
-      line +
-      "\n\n    " +
-      fullLine +
-      "\n    " +
-      " ".repeat(offset) +
-      indicator +
-      "\n" +
-      hint +
-      suggestion;
+    const msg = name + " at line " + lineIndex + "\n\n    " + fullLine + "\n    " + " ".repeat(offset) + indicator + "\n" + hint + suggestion;
     this.message = msg;
   }
 }
@@ -432,89 +348,64 @@ export class TypeError extends RuntimeSourceError {
     super(node);
     originalType = typeTranslator(originalType);
     this.type = ErrorType.TYPE;
-    const index =
-      (node as any).loc?.start?.index ??
-      (node as any).srcNode?.loc?.start?.index ??
-      0;
-    const { line, fullLine } = getFullLine(source, index);
-    const snippet =
-      (node as any).loc?.source ??
-      (node as any).srcNode?.loc?.source ??
-      "<unknown source>";
-    let hint =
-      "TypeError: '" +
-      originalType +
-      "' cannot be interpreted as an '" +
-      targetType +
-      "'.";
+    const index = (node as any).loc?.start?.index
+                  ?? (node as any).srcNode?.loc?.start?.index
+                  ?? 0;
+    const { lineIndex, fullLine } = getFullLine(source, index);
+    const snippet = (node as any).loc?.source
+                  ?? (node as any).srcNode?.loc?.source
+                  ?? '<unknown source>';
+    let hint = "TypeError: '" + originalType + "' cannot be interpreted as an '" + targetType + "'.";
     const offset = fullLine.indexOf(snippet);
     const indicator = createErrorIndicator(snippet, "@");
     const name = "TypeError";
-    const suggestion =
-      " Make sure the value you are passing is compatible with the expected type.";
-    const msg =
-      name +
-      " at line " +
-      line +
-      "\n\n    " +
-      fullLine +
-      "\n    " +
-      " ".repeat(offset) +
-      indicator +
-      "\n" +
-      hint +
-      suggestion;
+    const suggestion = ' Make sure the value you are passing is compatible with the expected type.';
+    const msg = name + " at line " + lineIndex + "\n\n    " + fullLine + "\n    " + " ".repeat(offset) + indicator + "\n" + hint + suggestion;
     this.message = msg;
   }
 }
 
 export class SublanguageError extends RuntimeSourceError {
-  constructor(
-    source: string,
-    node: es.Node,
-    context: Context,
-    functionName: string,
-    chapter: string,
-    details?: string
-  ) {
-    super(node);
-
-    this.type = ErrorType.TYPE;
-
-    const index =
-      (node as any).loc?.start?.index ??
-      (node as any).srcNode?.loc?.start?.index ??
-      0;
-    const { line, fullLine } = getFullLine(source, index);
-    const snippet =
-      (node as any).loc?.source ??
-      (node as any).srcNode?.loc?.source ??
-      "<unknown source>";
-    const offset = fullLine.indexOf(snippet);
-    const indicator = createErrorIndicator(snippet, "@");
-
-    const name = "SublanguageError";
-    const hint = "Feature not supported in Python §" + chapter + ". ";
-    const suggestion = `The call to '${functionName}()' relies on behaviour that is valid in full Python but outside the Python §1 sublanguage${
-      details ? ": " + details : ""
-    }.`;
-
-    this.message = `${name} at line ${line}\n\n ${fullLine}\n ${" ".repeat(
-      offset
-    )}${indicator}\n${hint}${suggestion}`;
+  constructor (
+  source: string,
+  node: es.Node,
+  context: Context,
+  functionName: string,
+  chapter: string,
+  details?: string
+) {
+    super(node)
+    
+    this.type = ErrorType.TYPE
+    
+    const index = (node as any).loc?.start?.index
+                ?? (node as any).srcNode?.loc?.start?.index
+                ?? 0
+    const { lineIndex, fullLine } = getFullLine(source, index)
+    const snippet = (node as any).loc?.source
+                  ?? (node as any).srcNode?.loc?.source
+                  ?? '<unknown source>'
+    const offset = fullLine.indexOf(snippet)
+    const indicator = createErrorIndicator(snippet, '@')
+    
+    const name = 'SublanguageError'
+    const hint = 'Feature not supported in Python §' + chapter + '. '
+    const suggestion = `The call to '${functionName}()' relies on behaviour that is valid in full Python but outside the Python §1 sublanguage${details ? ': ' + details : ''}.`
+    
+    this.message = `${name} at line ${lineIndex}\n\n ${fullLine}\n ${' '.repeat(offset)}${indicator}\n${hint}${suggestion}`
   }
 }
 
-export class AssertionError extends RuntimeSourceError {
-  constructor(public readonly message: string) {
-    super()
-  }
+/*
+    The offset is calculated as follows:    
+    Current position is one after real position of end of token: 1
+*/
+export const MAGIC_OFFSET = 1;
 
-  public explain(): string {
-    return this.message
-  }
+export const SPECIAL_CHARS = new RegExp("[\\\\$'\"]", "g");
 
-  public elaborate(): string {
-    return 'Please contact the administrators to let them know that this error has occurred'
-  }
+function escape(unsafe: string): string {
+    // @TODO escape newlines
+    return unsafe.replace(SPECIAL_CHARS, "\\$&");
 }
+
