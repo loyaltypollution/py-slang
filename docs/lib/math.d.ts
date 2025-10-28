@@ -7,7 +7,7 @@
  *
  * @param {int | float} <CODE>x</CODE> - The number whose absolute value is computed.
  * @returns {float} absolute value of <CODE>x</CODE>
-*/
+ */
 declare function math_fabs(x: any): float;
 /**
  * Return the number of ways to choose <CODE>k</CODE> items from <CODE>n</CODE> items

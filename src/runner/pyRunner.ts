@@ -1,9 +1,8 @@
 import { Context } from "../cse-machine/context";
 import { CSEResultPromise, evaluate } from "../cse-machine/interpreter";
 import { RecursivePartial, Result } from "../types";
-import { Tokenizer } from "../tokenizer";
-import { Parser } from "../parser";
 import { Resolver } from "../resolver";
+import { parse } from "../peggy";
 import { Program } from "estree";
 import { Translator } from "../translator";
 import * as es from "estree";
@@ -17,13 +16,10 @@ export interface IOptions {
 function parsePythonToEstreeAst(
   code: string,
   variant: number = 1,
-  doValidate: boolean = false
+  doValidate: boolean = false,
 ): Program {
   const script = code + "\n";
-  const tokenizer = new Tokenizer(script);
-  const tokens = tokenizer.scanEverything();
-  const pyParser = new Parser(script, tokens);
-  const ast = pyParser.parse();
+  const ast = parse(script, undefined);
   if (doValidate) {
     new Resolver(script, ast).resolve(ast);
   }
@@ -34,7 +30,7 @@ function parsePythonToEstreeAst(
 export async function runInContext(
   code: string,
   context: Context,
-  options: RecursivePartial<IOptions> = {}
+  options: RecursivePartial<IOptions> = {},
 ): Promise<Result> {
   const estreeAst = parsePythonToEstreeAst(code, 1, true);
   const result = runCSEMachine(code, estreeAst, context, options);
@@ -45,7 +41,7 @@ export function runCSEMachine(
   code: string,
   program: es.Program,
   context: Context,
-  options: RecursivePartial<IOptions> = {}
+  options: RecursivePartial<IOptions> = {},
 ): Promise<Result> {
   const result = evaluate(code, program, context, options);
   return CSEResultPromise(context, result);

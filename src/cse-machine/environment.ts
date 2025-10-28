@@ -1,37 +1,37 @@
-import { Value } from './stash';
-import * as es from 'estree';
-import { Heap } from './heap';
-import { Context } from './context';
-import { Closure } from './closure';
-import { Node } from './types';
+import { Value } from "./stash";
+import * as es from "estree";
+import { Heap } from "./heap";
+import { Context } from "./context";
+import { Closure } from "./closure";
+import { Node } from "./types";
 
 export interface Frame {
-  [name: string]: any
+  [name: string]: any;
 }
 
 export interface Environment {
-  readonly id: string
-  name: string
-  tail: Environment | null
-  callExpression?: es.CallExpression
-  head: Frame
-  heap: Heap
-  thisContext?: Value
+  readonly id: string;
+  name: string;
+  tail: Environment | null;
+  callExpression?: es.CallExpression;
+  head: Frame;
+  heap: Heap;
+  thisContext?: Value;
 }
 
 export const uniqueId = (context: Context): string => {
-  return `${context.runtime.objectCount++}`
-}
+  return `${context.runtime.objectCount++}`;
+};
 
 export const createEnvironment = (
   context: Context,
   closure: Closure,
   args: Value[],
-  callExpression: es.CallExpression
+  callExpression: es.CallExpression,
 ): Environment => {
   const environment: Environment = {
     // TODO: name
-    name: '',
+    name: "",
     tail: closure.environment,
     head: {},
     heap: new Heap(),
@@ -39,28 +39,28 @@ export const createEnvironment = (
     callExpression: {
       ...callExpression,
       //arguments: args.map(ast.primitive)
-    }
-  }
-  
+    },
+  };
+
   // console.info('closure.node.params:', closure.node.params);
   // console.info('Number of params:', closure.node.params.length);
 
   closure.node.params.forEach((param, index) => {
     if (isRestElement(param)) {
-      const array = args.slice(index)
-      handleArrayCreation(context, array, environment)
-      environment.head[(param.argument as es.Identifier).name] = array
+      const array = args.slice(index);
+      handleArrayCreation(context, array, environment);
+      environment.head[(param.argument as es.Identifier).name] = array;
     } else {
-      environment.head[(param as es.Identifier).name] = args[index]
+      environment.head[(param as es.Identifier).name] = args[index];
     }
-  })
-  return environment
-}
+  });
+  return environment;
+};
 
 export const createSimpleEnvironment = (
   context: Context,
   name: string,
-  tail: Environment | null = null
+  tail: Environment | null = null,
 ): Environment => {
   return {
     id: uniqueId(context),
@@ -72,36 +72,42 @@ export const createSimpleEnvironment = (
   };
 };
 
-export const createProgramEnvironment = (context: Context, isPrelude: boolean): Environment => {
-  return createSimpleEnvironment(context, isPrelude ? 'prelude' : 'programEnvironment');
+export const createProgramEnvironment = (
+  context: Context,
+  isPrelude: boolean,
+): Environment => {
+  return createSimpleEnvironment(
+    context,
+    isPrelude ? "prelude" : "programEnvironment",
+  );
 };
 
 export const createBlockEnvironment = (
   context: Context,
-  name = 'blockEnvironment'
+  name = "blockEnvironment",
 ): Environment => {
   return {
     name,
     tail: currentEnvironment(context),
     head: {},
     heap: new Heap(),
-    id: uniqueId(context)
-  }
-}
+    id: uniqueId(context),
+  };
+};
 
 export const isRestElement = (node: Node): node is es.RestElement => {
-  return (node as es.RestElement).type === 'RestElement';
+  return (node as es.RestElement).type === "RestElement";
 };
 
 export const handleArrayCreation = (
   context: Context,
   array: any[],
-  envOverride?: Environment
+  envOverride?: Environment,
 ): void => {
   const environment = envOverride ?? currentEnvironment(context);
   Object.defineProperties(array, {
     id: { value: uniqueId(context) },
-    environment: { value: environment, writable: true }
+    environment: { value: environment, writable: true },
   });
   environment.heap.add(array as any);
 };
@@ -110,9 +116,10 @@ export const currentEnvironment = (context: Context): Environment => {
   return context.runtime.environments[0];
 };
 
-export const popEnvironment = (context: Context) => context.runtime.environments.shift()
+export const popEnvironment = (context: Context) =>
+  context.runtime.environments.shift();
 
 export const pushEnvironment = (context: Context, environment: Environment) => {
-  context.runtime.environments.unshift(environment)
-  context.runtime.environmentTree.insert(environment)
-}
+  context.runtime.environments.unshift(environment);
+  context.runtime.environmentTree.insert(environment);
+};

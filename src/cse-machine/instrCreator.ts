@@ -1,76 +1,95 @@
 import { Environment } from "./environment";
-import { AppInstr, AssmtInstr, BinOpInstr, BranchInstr, EnvInstr, Instr, InstrType, Node, UnOpInstr } from "./types";
-import type * as es from 'estree';
+import {
+  AppInstr,
+  AssmtInstr,
+  BinOpInstr,
+  BranchInstr,
+  EnvInstr,
+  Instr,
+  InstrType,
+  Node,
+  UnOpInstr,
+} from "./types";
+import type * as es from "estree";
 
-export const popInstr = (srcNode: Node): Instr => ({ instrType: InstrType.POP, srcNode })
+export const popInstr = (srcNode: Node): Instr => ({
+  instrType: InstrType.POP,
+  srcNode,
+});
 
 export const assmtInstr = (
   symbol: string,
   constant: boolean,
   declaration: boolean,
-  srcNode: Node
+  srcNode: Node,
 ): AssmtInstr => ({
   instrType: InstrType.ASSIGNMENT,
   symbol,
   constant,
   declaration,
-  srcNode
-})
+  srcNode,
+});
 
-export const appInstr = (numOfArgs: number, srcNode: es.CallExpression): AppInstr => ({
+export const appInstr = (
+  numOfArgs: number,
+  srcNode: es.CallExpression,
+): AppInstr => ({
   instrType: InstrType.APPLICATION,
   numOfArgs,
-  srcNode
-})
+  srcNode,
+});
 
 export const envInstr = (env: Environment, srcNode: Node): EnvInstr => ({
   instrType: InstrType.ENVIRONMENT,
   env,
-  srcNode
-})
+  srcNode,
+});
 
 export const markerInstr = (srcNode: Node): Instr => ({
   instrType: InstrType.MARKER,
-  srcNode
-})
+  srcNode,
+});
 
 export const binOpInstr = (symbol: any, srcNode: Node): BinOpInstr => ({
   instrType: InstrType.BINARY_OP,
   symbol,
-  srcNode
-})
+  srcNode,
+});
 
 export const resetInstr = (srcNode: Node): Instr => ({
   instrType: InstrType.RESET,
-  srcNode
-})
+  srcNode,
+});
 
 export const branchInstr = (
   consequent: es.Expression | es.Statement,
   alternate: es.Expression | es.Statement | null | undefined,
-  srcNode: Node
+  srcNode: Node,
 ): BranchInstr => ({
   instrType: InstrType.BRANCH,
   consequent,
   alternate,
-  srcNode
-})
+  srcNode,
+});
 
 export const conditionalExpression = (
   test: es.Expression,
   consequent: es.Expression,
   alternate: es.Expression,
-  loc?: es.SourceLocation | null
+  loc?: es.SourceLocation | null,
 ): es.ConditionalExpression => ({
-  type: 'ConditionalExpression',
+  type: "ConditionalExpression",
   test,
   consequent,
   alternate,
-  loc
-})
+  loc,
+});
 
-export const unOpInstr = (symbol: es.UnaryOperator, srcNode: Node): UnOpInstr => ({
+export const unOpInstr = (
+  symbol: es.UnaryOperator,
+  srcNode: Node,
+): UnOpInstr => ({
   instrType: InstrType.UNARY_OP,
   symbol,
-  srcNode
-})
+  srcNode,
+});

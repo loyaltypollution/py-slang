@@ -6,10 +6,12 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "regen": "npm run build && node dist/generate.js",
+    "gen:peggy": "ts-node scripts/generate-peggy-parser.ts",
     "start:dev": "npx nodemon",
     "build": "rollup -c --bundleConfigAsCjs",
-    "start": "npm run build && node dist/index.js",
+    "prettier": "prettier --plugin=prettier-plugin-pegjs --write .",
     "jsdoc": "./scripts/jsdoc.sh",
+    "start": "npm run build && node dist/index.js",
     "test": "jest"
   },
   "keywords": [
@@ -36,6 +38,9 @@
     "jest": "^29.7.0",
     "jsdoc": "^4.0.4",
     "nodemon": "^3.1.10",
+    "peggy": "^5.0.6",
+    "prettier": "^3.6.2",
+    "prettier-plugin-pegjs": "^2.0.2",
     "rimraf": "^3.0.2",
     "rollup": "^4.38.0",
     "rollup-plugin-modify": "^3.0.0",

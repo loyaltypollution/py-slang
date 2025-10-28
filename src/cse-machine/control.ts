@@ -1,8 +1,13 @@
-import type * as es from 'estree';
-import { Stack } from './stack';
-import { isNode, isBlockStatement, hasDeclarations, statementSequence } from './ast-helper';
-import { Node, StatementSequence, Instr } from './types';
-import { isEnvDependent } from './utils';
+import type * as es from "estree";
+import { Stack } from "./stack";
+import {
+  isNode,
+  isBlockStatement,
+  hasDeclarations,
+  statementSequence,
+} from "./ast-helper";
+import { Node, StatementSequence, Instr } from "./types";
+import { isEnvDependent } from "./utils";
 
 export type ControlItem = (Node | Instr) & {
   isEnvDependent?: boolean;
@@ -10,39 +15,41 @@ export type ControlItem = (Node | Instr) & {
 };
 
 export class Control extends Stack<ControlItem> {
-  private numEnvDependentItems: number
+  private numEnvDependentItems: number;
   public constructor(program?: es.Program | StatementSequence) {
-    super()
-    this.numEnvDependentItems = 0
+    super();
+    this.numEnvDependentItems = 0;
     // Load program into control stack
-    program ? this.push(program) : null
+    program ? this.push(program) : null;
   }
 
   public canAvoidEnvInstr(): boolean {
-    return this.numEnvDependentItems === 0
+    return this.numEnvDependentItems === 0;
   }
 
   // For testing purposes
   public getNumEnvDependentItems(): number {
-    return this.numEnvDependentItems
+    return this.numEnvDependentItems;
   }
 
   public pop(): ControlItem | undefined {
-    const item = super.pop()
+    const item = super.pop();
     if (item !== undefined && isEnvDependent(item)) {
-      this.numEnvDependentItems--
+      this.numEnvDependentItems--;
     }
-    return item
+    return item;
   }
 
   public push(...items: ControlItem[]): void {
-    const itemsNew: ControlItem[] = Control.simplifyBlocksWithoutDeclarations(...items)
+    const itemsNew: ControlItem[] = Control.simplifyBlocksWithoutDeclarations(
+      ...items,
+    );
     itemsNew.forEach((item: ControlItem) => {
       if (isEnvDependent(item)) {
-        this.numEnvDependentItems++
+        this.numEnvDependentItems++;
       }
-    })
-    super.push(...itemsNew)
+    });
+    super.push(...itemsNew);
   }
 
   /**
@@ -52,24 +59,26 @@ export class Control extends Stack<ControlItem> {
    * @returns The same set of control items, but with block statements without declarations converted to StatementSequences.
    * NOTE: this function handles any case where StatementSequence has to be converted back into BlockStatement due to type issues
    */
-  private static simplifyBlocksWithoutDeclarations(...items: ControlItem[]): ControlItem[] {
-    const itemsNew: ControlItem[] = []
-    items.forEach(item => {
+  private static simplifyBlocksWithoutDeclarations(
+    ...items: ControlItem[]
+  ): ControlItem[] {
+    const itemsNew: ControlItem[] = [];
+    items.forEach((item) => {
       if (isNode(item) && isBlockStatement(item) && !hasDeclarations(item)) {
         // Push block body as statement sequence
-        const seq: StatementSequence = statementSequence(item.body, item.loc)
-        itemsNew.push(seq)
+        const seq: StatementSequence = statementSequence(item.body, item.loc);
+        itemsNew.push(seq);
       } else {
-        itemsNew.push(item)
+        itemsNew.push(item);
       }
-    })
-    return itemsNew
+    });
+    return itemsNew;
   }
 
   public copy(): Control {
-    const newControl = new Control()
-    const stackCopy = super.getStack()
-    newControl.push(...stackCopy)
-    return newControl
+    const newControl = new Control();
+    const stackCopy = super.getStack();
+    newControl.push(...stackCopy);
+    return newControl;
   }
 }

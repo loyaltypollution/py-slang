@@ -70,7 +70,11 @@ declare function abs(x: any): int | float | complex;
  * @param {int | float | string} <CODE>*args</CODE> - Additional items to compare.
  * @returns {int | float | string} the largest of the provided values
  */
-declare function max(arg1: any, arg2: any, ...args: any[]): int | float | string;
+declare function max(
+  arg1: any,
+  arg2: any,
+  ...args: any[]
+): int | float | string;
 /**
  * Returns the smallest of the provided values. If multiple items are equal to the minimum,
  * the first encountered is returned. All values should be mutually comparable.
@@ -80,7 +84,11 @@ declare function max(arg1: any, arg2: any, ...args: any[]): int | float | string
  * @param {int | float | string} <CODE>*args</CODE> - Additional items to compare.
  * @returns {int | float | string} the smallest of the provided values
  */
-declare function min(arg1: any, arg2: any, ...args: any[]): int | float | string;
+declare function min(
+  arg1: any,
+  arg2: any,
+  ...args: any[]
+): int | float | string;
 /**
  * Return <CODE>number</CODE> rounded to <CODE>ndigits</CODE> precision after the decimal point. If
  * <CODE>ndigits</CODE> is omitted or is <CODE>None</CODE>, it returns the nearest integer

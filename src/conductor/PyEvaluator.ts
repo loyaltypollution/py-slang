@@ -29,16 +29,16 @@ export default class PyEvaluator extends BasicEvaluator {
       const result = await runInContext(
         chunk, // Code
         this.context,
-        this.options
+        this.options,
       );
       this.conductor.sendOutput(
         `${(result as Finished).representation.toString(
-          (result as Finished).value
-        )}`
+          (result as Finished).value,
+        )}`,
       );
     } catch (error) {
       this.conductor.sendOutput(
-        `Error: ${error instanceof Error ? error.message : error}`
+        `Error: ${error instanceof Error ? error.message : error}`,
       );
     }
   }
