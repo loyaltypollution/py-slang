@@ -6,7 +6,7 @@
 import { Parser } from "../parser";
 import { Tokenizer } from "../tokenizer";
 import { SVMLCompiler } from "../vm/svml-compiler";
-import { SVMLInterpreter, runSVMLProgram } from "../vm/svml-interpreter";
+import { RuntimeValue, SVMLInterpreter } from "../vm/svml-interpreter";
 import { InstrumentationTracker } from "../vm/instrumentation";
 import { StmtNS } from "../ast-types";
 
@@ -23,11 +23,14 @@ function parse(code: string): StmtNS.FileInput {
 /**
  * Helper function to compile and run Python code
  */
-function compileAndRun(code: string): any {
+function compileAndRun(code: string): RuntimeValue {
   const ast = parse(code);
   const compiler = SVMLCompiler.fromProgram(ast);
   const program = compiler.compileProgram(ast);
-  const result = runSVMLProgram(program, compiler.getInstrumentation());
+  const instrumentation = compiler.getInstrumentation();
+  const interpreter = new SVMLInterpreter(program, instrumentation);
+  const result = interpreter.execute();
+
   return SVMLInterpreter.toJSValue(result);
 }
 
@@ -284,7 +287,7 @@ fibonacci(15)
       const programWithMemo = compilerWithMemo.compileProgram(ast);
       
       const startWithMemo = Date.now();
-      const resultWithMemo = runSVMLProgram(programWithMemo, compilerWithMemo.getInstrumentation());
+      const resultWithMemo = compileAndRun(code);
       const endWithMemo = Date.now();
       const timeWithMemo = endWithMemo - startWithMemo;
       
@@ -303,7 +306,7 @@ fibonacci(15)
       const programNoMemo = compilerNoMemo.compileProgram(ast);
       
       const startNoMemo = Date.now();
-      const resultNoMemo = runSVMLProgram(programNoMemo, instrumentationNoMemo);
+      const resultNoMemo = compileAndRun(code);
       const endNoMemo = Date.now();
       const timeNoMemo = endNoMemo - startNoMemo;
       

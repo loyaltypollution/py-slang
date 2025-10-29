@@ -1,4 +1,4 @@
-import { toEstreeAST, toEstreeAstAndResolve } from "./utils";
+import { toPythonAst, toPythonAstAndResolve } from "./utils";
 
 describe('Regression tests for py-slang', () => {
     test('Issue #2', () => {
@@ -8,7 +8,7 @@ def foo():
 
     pass
 `;
-        toEstreeAST(text);
+        toPythonAst(text);
     })
     test('Issue #5', () => {
         const text = `
@@ -16,7 +16,7 @@ print("hi")
         
 print("world")
 `;
-        toEstreeAST(text);
+        toPythonAst(text);
     })
     test('Issue #3', () => {
         const text = `
@@ -28,7 +28,7 @@ def foo(
 
     pass
 `;
-        toEstreeAST(text);
+        toPythonAst(text);
     })
     test('Issue #9', () => {
         const text = `
@@ -36,7 +36,7 @@ add_one = lambda : None
 add_one = lambda : True
 add_one = lambda : False
 `;
-        toEstreeAST(text);
+        toPythonAst(text);
     })
 
     test('Issue #35', () => {
@@ -47,6 +47,6 @@ def f():
 def g():
     return 3
 `;
-        toEstreeAstAndResolve(text);
+        toPythonAstAndResolve(text);
     })
 })
