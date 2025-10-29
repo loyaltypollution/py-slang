@@ -16,7 +16,7 @@ export {
 } from "./instrumentation";
 
 // Types
-export { SVMProgram, SVMFunction, Instruction, FunctionBuilder } from "./types";
+export { SVMProgram, SVMFunction, Instruction } from "./types";
 
 // Opcodes
 export { default as OpCodes } from "./opcodes";

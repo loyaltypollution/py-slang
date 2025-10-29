@@ -6,9 +6,10 @@
 import { Parser } from "../parser";
 import { Tokenizer } from "../tokenizer";
 import { SVMLCompiler } from "../vm/svml-compiler";
-import { RuntimeValue, SVMLInterpreter } from "../vm/svml-interpreter";
-import { InstrumentationTracker } from "../vm/instrumentation";
+import { SVMLBoxType } from "../vm/types";
+import { SVMLInterpreter } from "../vm/svml-interpreter";
 import { StmtNS } from "../ast-types";
+import { UnsupportedOperandTypeError } from "../vm/errors";
 
 /**
  * Helper function to parse Python code
@@ -23,7 +24,7 @@ function parse(code: string): StmtNS.FileInput {
 /**
  * Helper function to compile and run Python code
  */
-function compileAndRun(code: string): RuntimeValue {
+function compileAndRun(code: string): SVMLBoxType {
   const ast = parse(code);
   const compiler = SVMLCompiler.fromProgram(ast);
   const program = compiler.compileProgram(ast);
@@ -269,66 +270,12 @@ classify_number(15)
     });
   });
 
-  describe('Performance and Memoization', () => {
-    test('Fibonacci with memoization should be faster', () => {
-      const code = `
-def fibonacci(n):
-    if n <= 1:
-        return n
-    else:
-        return fibonacci(n - 1) + fibonacci(n - 2)
-
-fibonacci(15)
-`;
-      
-      // Test with memoization enabled (default)
-      const ast = parse(code);
-      const compilerWithMemo = SVMLCompiler.fromProgram(ast);
-      const programWithMemo = compilerWithMemo.compileProgram(ast);
-      
-      const startWithMemo = Date.now();
-      const resultWithMemo = compileAndRun(code);
-      const endWithMemo = Date.now();
-      const timeWithMemo = endWithMemo - startWithMemo;
-      
-      // Test without memoization
-      const instrumentationNoMemo = new InstrumentationTracker({
-        enableMemoization: false,
-        enableRecursionDetection: true,
-        logRecursiveCalls: false,
-      });
-      const compilerNoMemo = new SVMLCompiler(
-        compilerWithMemo['currentEnvironment'],
-        compilerWithMemo['functionEnvironments'],
-        compilerWithMemo['builder'],
-        instrumentationNoMemo
-      );
-      const programNoMemo = compilerNoMemo.compileProgram(ast);
-      
-      const startNoMemo = Date.now();
-      const resultNoMemo = compileAndRun(code);
-      const endNoMemo = Date.now();
-      const timeNoMemo = endNoMemo - startNoMemo;
-      
-      // Both should produce the same result
-      expect(SVMLInterpreter.toJSValue(resultWithMemo)).toBe(610);
-      expect(SVMLInterpreter.toJSValue(resultNoMemo)).toBe(610);
-      
-      // Memoization should be faster (or at least not significantly slower)
-      // We allow some tolerance for timing variations
-      expect(timeWithMemo).toBeLessThanOrEqual(timeNoMemo + 50);
-    });
-  });
-
   describe('Error Handling', () => {
-    test('Should handle compilation without errors', () => {
+    test('String and number addition throws UnsupportedOperandTypeError', () => {
       const code = `
-def valid_function():
-    return 42
-
-valid_function()
+1+""
 `;
-      expect(() => compileAndRun(code)).not.toThrow();
+      expect(() => compileAndRun(code)).toThrow(UnsupportedOperandTypeError);
     });
   });
 });

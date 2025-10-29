@@ -1,10 +1,18 @@
-import { SVMProgram, SVMFunction, Instruction } from "./types";
-import OpCodes from "./opcodes";
 import {
-  InstrumentationTracker,
-  createMemoizedWrapper,
-} from "./instrumentation";
+  SVMProgram,
+  SVMFunction,
+  Instruction,
+  SVMLBoxType,
+  SVMLClosure,
+  SVMLType,
+  getSVMLType,
+  SVMLEnvironment,
+  SVMLArray,
+} from "./types";
+import OpCodes from "./opcodes";
+import { InstrumentationTracker } from "./instrumentation";
 import { executePrimitive } from "./sinter-primitives";
+import { UnsupportedOperandTypeError, SVMLTypeError } from "./errors";
 
 /**
  * TypeScript-based SVML Interpreter
@@ -13,90 +21,16 @@ import { executePrimitive } from "./sinter-primitives";
  * It integrates seamlessly with instrumentation for memoization and profiling.
  */
 
-/**
- * Runtime value types
- */
-export type RuntimeValue =
-  | number
-  | boolean
-  | string
-  | null
-  | undefined
-  | Closure
-  | RuntimeArray;
-
 export type RuntimeStdOut = string;
-
-interface RuntimeArray {
-  type: "array";
-  elements: RuntimeValue[];
-}
-
-/**
- * Closure represents a compiled function with its captured environment
- */
-interface Closure {
-  type: "closure";
-  functionIndex: number;
-  parentEnv: Environment | null;
-  isMemoized?: boolean;
-  memoCache?: Map<string, RuntimeValue>;
-}
-
-/**
- * Environment represents a scope with local variables
- */
-class Environment {
-  private locals: RuntimeValue[];
-  private parent: Environment | null;
-
-  constructor(size: number, parent: Environment | null = null) {
-    this.locals = new Array(size).fill(undefined);
-    this.parent = parent;
-  }
-
-  get(slot: number): RuntimeValue {
-    if (slot < 0 || slot >= this.locals.length) {
-      throw new Error(
-        `Environment slot ${slot} out of bounds (size: ${this.locals.length})`
-      );
-    }
-    return this.locals[slot];
-  }
-
-  set(slot: number, value: RuntimeValue): void {
-    if (slot < 0 || slot >= this.locals.length) {
-      throw new Error(
-        `Environment slot ${slot} out of bounds (size: ${this.locals.length})`
-      );
-    }
-    this.locals[slot] = value;
-  }
-
-  getParent(level: number): Environment {
-    let env: Environment | null = this;
-    for (let i = 0; i < level; i++) {
-      if (!env.parent) {
-        throw new Error(`No parent environment at level ${level}`);
-      }
-      env = env.parent;
-    }
-    return env;
-  }
-
-  getSize(): number {
-    return this.locals.length;
-  }
-}
 
 /**
  * Call frame for function execution
  */
 interface CallFrame {
-  closure: Closure;
+  closure: SVMLClosure;
   pc: number; // Program counter (instruction index)
-  env: Environment;
-  stack: RuntimeValue[]; // Each frame has its own operand stack!
+  env: SVMLEnvironment;
+  stack: SVMLBoxType[]; // Each frame has its own operand stack!
   returnAddress: number; // Where to return in the caller
   callerFrame: CallFrame | null;
 }
@@ -109,7 +43,7 @@ export class SVMLInterpreter {
   private functions: SVMFunction[];
   private currentFrame: CallFrame | null;
   private instrumentation: InstrumentationTracker | null;
-  private globalEnv: Environment;
+  private globalEnv: SVMLEnvironment;
   private halted: boolean;
   private stdout: RuntimeStdOut[];
 
@@ -139,7 +73,7 @@ export class SVMLInterpreter {
     this.functions = program[1];
     this.currentFrame = null;
     this.instrumentation = instrumentation || null;
-    this.globalEnv = new Environment(0);
+    this.globalEnv = new SVMLEnvironment(0);
     this.halted = false;
     this.stdout = [];
 
@@ -168,7 +102,7 @@ export class SVMLInterpreter {
   /**
    * Execute the program and return the result
    */
-  execute(): RuntimeValue {
+  execute(): SVMLBoxType {
     const entryPointIndex = this.program[0];
     const entryFunction = this.functions[entryPointIndex];
 
@@ -179,7 +113,7 @@ export class SVMLInterpreter {
     }
 
     // Create closure for entry point
-    const entryClosure: Closure = {
+    const entryClosure: SVMLClosure = {
       type: "closure",
       functionIndex: entryPointIndex,
       parentEnv: null,
@@ -187,7 +121,7 @@ export class SVMLInterpreter {
 
     // Create initial frame with its own stack
     const [stackSize, envSize, numArgs, _instructions] = entryFunction;
-    const entryEnv = new Environment(envSize, null);
+    const entryEnv = new SVMLEnvironment(envSize, null);
 
     this.currentFrame = {
       closure: entryClosure,
@@ -207,16 +141,16 @@ export class SVMLInterpreter {
   }
 
   /**
-   * Collect stdout
+   * Collect stdout in readable string format
    */
-  getStdout(): RuntimeStdOut {
+  getStdout(): string {
     return this.stdout.join("\n");
   }
 
   /**
    * Main interpreter loop
    */
-  private run(): RuntimeValue {
+  private run(): SVMLBoxType {
     while (!this.halted && this.currentFrame) {
       // Safety check
       if (this.instructionCount >= this.maxInstructionLimit) {
@@ -316,33 +250,97 @@ export class SVMLInterpreter {
         break;
 
       // Arithmetic operations
-      case OpCodes.ADDG:
+      case OpCodes.ADDG: {
+        const right = this.pop();
+        const left = this.pop();
+        const leftType = getSVMLType(left);
+        const rightType = getSVMLType(right);
+
+        if (leftType === SVMLType.NUMBER && rightType === SVMLType.NUMBER) {
+          this.push((left as number) + (right as number));
+        } else if (
+          leftType === SVMLType.STRING &&
+          rightType === SVMLType.STRING
+        ) {
+          this.push((left as string) + (right as string));
+        } else {
+          throw new UnsupportedOperandTypeError("+", leftType, rightType);
+        }
+        break;
+      }
       case OpCodes.ADDF:
         this.binaryOp((a, b) => (a as number) + (b as number));
         break;
 
-      case OpCodes.SUBG:
+      case OpCodes.SUBG: {
+        const right = this.pop();
+        const left = this.pop();
+        const leftType = getSVMLType(left);
+        const rightType = getSVMLType(right);
+
+        if (leftType === SVMLType.NUMBER && rightType === SVMLType.NUMBER) {
+          this.push((left as number) - (right as number));
+        } else {
+          throw new UnsupportedOperandTypeError("-", leftType, rightType);
+        }
+        break;
+      }
       case OpCodes.SUBF:
         this.binaryOp((a, b) => (a as number) - (b as number));
         break;
 
-      case OpCodes.MULG:
+      case OpCodes.MULG: {
+        const right = this.pop();
+        const left = this.pop();
+        const leftType = getSVMLType(left);
+        const rightType = getSVMLType(right);
+
+        if (leftType === SVMLType.NUMBER && rightType === SVMLType.NUMBER) {
+          this.push((left as number) * (right as number));
+        } else {
+          throw new UnsupportedOperandTypeError("*", leftType, rightType);
+        }
+        break;
+      }
       case OpCodes.MULF:
         this.binaryOp((a, b) => (a as number) * (b as number));
         break;
 
-      case OpCodes.DIVG:
+      case OpCodes.DIVG: {
+        const right = this.pop();
+        const left = this.pop();
+        const leftType = getSVMLType(left);
+        const rightType = getSVMLType(right);
+
+        if (leftType === SVMLType.NUMBER && rightType === SVMLType.NUMBER) {
+          this.push((left as number) / (right as number));
+        } else {
+          throw new UnsupportedOperandTypeError("/", leftType, rightType);
+        }
+        break;
+      }
       case OpCodes.DIVF:
         this.binaryOp((a, b) => (a as number) / (b as number));
         break;
 
       case OpCodes.MODG:
+        this.binaryOp((a, b) => (a as number) % (b as number));
+        break;
       case OpCodes.MODF:
         this.binaryOp((a, b) => (a as number) % (b as number));
         break;
 
       // Unary operations
-      case OpCodes.NEGG:
+      case OpCodes.NEGG: {
+        const operand = this.pop();
+        const operandType = getSVMLType(operand);
+        if (operandType === SVMLType.NUMBER) {
+          this.push(-(operand as number));
+        } else {
+          throw new UnsupportedOperandTypeError("-", operandType);
+        }
+        break;
+      }
       case OpCodes.NEGF:
         this.unaryOp((a) => -(a as number));
         break;
@@ -501,7 +499,7 @@ export class SVMLInterpreter {
   // Stack Operations
   // ========================================================================
 
-  private push(value: RuntimeValue): void {
+  private push(value: SVMLBoxType): void {
     if (!this.currentFrame) {
       throw new Error("No current frame for push");
     }
@@ -511,7 +509,7 @@ export class SVMLInterpreter {
     this.currentFrame.stack.push(value);
   }
 
-  private pop(): RuntimeValue {
+  private pop(): SVMLBoxType {
     if (!this.currentFrame) {
       throw new Error("No current frame for pop");
     }
@@ -526,7 +524,7 @@ export class SVMLInterpreter {
     return value;
   }
 
-  private peek(offset: number = 0): RuntimeValue {
+  private peek(offset: number = 0): SVMLBoxType {
     if (!this.currentFrame) {
       throw new Error("No current frame for peek");
     }
@@ -541,16 +539,14 @@ export class SVMLInterpreter {
   // Arithmetic/Logical Operations
   // ========================================================================
 
-  private binaryOp(
-    op: (a: RuntimeValue, b: RuntimeValue) => RuntimeValue
-  ): void {
+  private binaryOp(op: (a: SVMLBoxType, b: SVMLBoxType) => SVMLBoxType): void {
     const right = this.pop();
     const left = this.pop();
     const result = op(left, right);
     this.push(result);
   }
 
-  private unaryOp(op: (a: RuntimeValue) => RuntimeValue): void {
+  private unaryOp(op: (a: SVMLBoxType) => SVMLBoxType): void {
     const operand = this.pop();
     const result = op(operand);
     this.push(result);
@@ -656,7 +652,7 @@ export class SVMLInterpreter {
       }
     }
 
-    const closure: Closure = {
+    const closure: SVMLClosure = {
       type: "closure",
       functionIndex,
       parentEnv: this.currentFrame.env,
@@ -684,7 +680,7 @@ export class SVMLInterpreter {
     // According to SVML spec: Pop N arguments from stack, then pop function
     // Stack should be: [... func arg1 arg2 ... argN] with argN on top
     // After popping args, we get [arg1, arg2, ..., argN]
-    const args: RuntimeValue[] = [];
+    const args: SVMLBoxType[] = [];
     for (let i = 0; i < numArgs; i++) {
       if (this.currentFrame?.stack.length === 0) {
         throw new Error(
@@ -727,7 +723,7 @@ export class SVMLInterpreter {
       );
     }
 
-    const closure = func as Closure;
+    const closure = func as SVMLClosure;
 
     // Check memoization
     if (closure.isMemoized && closure.memoCache) {
@@ -750,7 +746,7 @@ export class SVMLInterpreter {
     }
 
     // Create new environment for the function
-    const newEnv = new Environment(envSize, closure.parentEnv);
+    const newEnv = new SVMLEnvironment(envSize, closure.parentEnv);
 
     // Store arguments in the new environment (first N slots)
     for (let i = 0; i < numArgs; i++) {
@@ -807,7 +803,7 @@ export class SVMLInterpreter {
 
     // According to SVML spec: call.p pops N arguments (NO function object)
     // Primitives don't push a function onto the stack
-    const args: RuntimeValue[] = [];
+    const args: SVMLBoxType[] = [];
     for (let i = 0; i < numArgs; i++) {
       if (this.currentFrame?.stack.length === 0) {
         throw new Error(
@@ -824,7 +820,11 @@ export class SVMLInterpreter {
     );
 
     // Execute primitive function
-    const result = executePrimitive(primitiveIndex, args, this.sendToStdout.bind(this));
+    const result = executePrimitive(
+      primitiveIndex,
+      args,
+      this.sendToStdout.bind(this)
+    );
     this.push(result);
 
     this.debug(
@@ -884,7 +884,7 @@ export class SVMLInterpreter {
 
   private createArray(): void {
     const size = this.pop() as number;
-    const arr: RuntimeArray = {
+    const arr: SVMLArray = {
       type: "array",
       elements: new Array(size).fill(undefined),
     };
@@ -903,7 +903,7 @@ export class SVMLInterpreter {
       throw new Error("Cannot index non-array value");
     }
 
-    const array = arr as RuntimeArray;
+    const array = arr as SVMLArray;
     if (index < 0 || index >= array.elements.length) {
       throw new Error(
         `Array index ${index} out of bounds (length: ${array.elements.length})`
@@ -926,7 +926,7 @@ export class SVMLInterpreter {
       throw new Error("Cannot index non-array value");
     }
 
-    const array = arr as RuntimeArray;
+    const array = arr as SVMLArray;
     if (index < 0 || index >= array.elements.length) {
       throw new Error(
         `Array index ${index} out of bounds (length: ${array.elements.length})`
@@ -975,7 +975,7 @@ export class SVMLInterpreter {
   /**
    * Convert runtime value to JavaScript value for display
    */
-  static toJSValue(value: RuntimeValue): any {
+  static toJSValue(value: SVMLBoxType): any {
     if (value === null || value === undefined) {
       return value;
     }
@@ -988,10 +988,10 @@ export class SVMLInterpreter {
     }
     if (typeof value === "object") {
       if ((value as any).type === "closure") {
-        return `<closure:${(value as Closure).functionIndex}>`;
+        return `<closure:${(value as SVMLClosure).functionIndex}>`;
       }
       if ((value as any).type === "array") {
-        return (value as RuntimeArray).elements.map((e) =>
+        return (value as SVMLArray).elements.map((e) =>
           SVMLInterpreter.toJSValue(e)
         );
       }
