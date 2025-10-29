@@ -25,10 +25,10 @@ export const CONSTANT_PRIMITIVES: [string, any][] = []
  * Execute a primitive function
  * This is called by the TypeScript interpreter for primitive operations
  */
-export function executePrimitive(primitiveIndex: number, args: any[]): any {
+export function executePrimitive(primitiveIndex: number, args: any[], sendOutput: (message: string) => void): any {
   switch (primitiveIndex) {
     case 5: // print/display
-      console.log(...args);
+      sendOutput(args.join(" "));
       return undefined;
     
     case 10: // abs

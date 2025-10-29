@@ -2,7 +2,7 @@ import { SVMLCompiler } from "../vm/svml-compiler"
 import { Tokenizer } from "../tokenizer"
 import { Parser } from "../parser"
 import { Resolver } from "../resolver"
-import { runSVMLProgram } from "../vm/svml-interpreter"
+import { SVMLInterpreter, RuntimeValue, RuntimeStdOut } from "../vm/svml-interpreter"
 
 export interface IOptions {
     isPrelude: boolean,
@@ -24,10 +24,14 @@ function parsePythonToAst(code: string, variant: number = 1, doValidate: boolean
 
 export async function runInContext(
     code: string
-): Promise<any> {
+): Promise<{result: RuntimeValue, stdout: RuntimeStdOut}> {
     const pyAst = parsePythonToAst(code, 1, true);
     const compiler = SVMLCompiler.fromProgram(pyAst);
     const program = compiler.compileProgram(pyAst);
-    const result = runSVMLProgram(program, compiler.getInstrumentation());
-    return Promise.resolve(result);
+
+    const instrumentation = compiler.getInstrumentation();
+    const interpreter = new SVMLInterpreter(program, instrumentation);
+    const result = interpreter.execute();
+    const interpreterStdout = interpreter.getStdout();
+    return Promise.resolve({result, stdout: interpreterStdout});
 }

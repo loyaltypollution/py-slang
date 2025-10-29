@@ -2,7 +2,7 @@
 export { SVMLCompiler } from "./svml-compiler";
 
 // TypeScript interpreter
-export { SVMLInterpreter, runSVMLProgram } from "./svml-interpreter";
+export { SVMLInterpreter } from "./svml-interpreter";
 
 // Instrumentation and optimization
 export {

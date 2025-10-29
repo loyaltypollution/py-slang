@@ -16,7 +16,7 @@ import { executePrimitive } from "./sinter-primitives";
 /**
  * Runtime value types
  */
-type RuntimeValue =
+export type RuntimeValue =
   | number
   | boolean
   | string
@@ -24,6 +24,8 @@ type RuntimeValue =
   | undefined
   | Closure
   | RuntimeArray;
+
+export type RuntimeStdOut = string;
 
 interface RuntimeArray {
   type: "array";
@@ -109,6 +111,7 @@ export class SVMLInterpreter {
   private instrumentation: InstrumentationTracker | null;
   private globalEnv: Environment;
   private halted: boolean;
+  private stdout: RuntimeStdOut[];
 
   // Execution limits for safety
   private maxStackSize: number = 10000;
@@ -138,6 +141,7 @@ export class SVMLInterpreter {
     this.instrumentation = instrumentation || null;
     this.globalEnv = new Environment(0);
     this.halted = false;
+    this.stdout = [];
 
     if (options) {
       if (options.maxStackSize) this.maxStackSize = options.maxStackSize;
@@ -146,6 +150,10 @@ export class SVMLInterpreter {
         this.maxInstructionLimit = options.maxInstructions;
       if (options.debug !== undefined) this.debugMode = options.debug;
     }
+  }
+
+  sendToStdout(message: string) {
+    this.stdout.push(message as RuntimeStdOut);
   }
 
   /**
@@ -196,6 +204,13 @@ export class SVMLInterpreter {
 
     // Run the interpreter loop
     return this.run();
+  }
+
+  /**
+   * Collect stdout
+   */
+  getStdout(): RuntimeStdOut {
+    return this.stdout.join("\n");
   }
 
   /**
@@ -809,7 +824,7 @@ export class SVMLInterpreter {
     );
 
     // Execute primitive function
-    const result = executePrimitive(primitiveIndex, args);
+    const result = executePrimitive(primitiveIndex, args, this.sendToStdout.bind(this));
     this.push(result);
 
     this.debug(
@@ -983,20 +998,4 @@ export class SVMLInterpreter {
     }
     return String(value);
   }
-}
-export function runSVMLProgram(
-  program: SVMProgram,
-  instrumentation?: InstrumentationTracker,
-  options?: {
-    maxStackSize?: number;
-    maxCallDepth?: number;
-    maxInstructions?: number;
-  }
-): any {
-  const interpreter = new SVMLInterpreter(program, instrumentation, options);
-  const result = interpreter.execute();
-
-  const stats = interpreter.getStats();
-
-  return result;
 }
