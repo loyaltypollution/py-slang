@@ -112,19 +112,18 @@ function main() {
         .command('compile')
         .description('Compile Python file to SVML bytecode')
         .argument('<input-file>', 'Python file to compile')
+        .argument('<format>', 'Output format (e.g. text or binary)')
         .option('-o, --output <file>', 'Output file path')
-        .option('-f, --format <format>', 'Output format (binary|text)', 'binary')
-        .action((inputFile: string, options: any) => {
+        .action((inputFile: string, format: string, options: any) => {
             if (!fs.existsSync(inputFile)) {
                 console.error(`Error: File '${inputFile}' not found`);
                 process.exit(1);
             }
-            
-            const outputFile = options.output || inputFile.replace(/\.py$/, options.format === 'text' ? '.txt' : '.svm');
+            const outputFile = options.output || inputFile.replace(/\.py$/, format === 'text' ? '.txt' : '.svm');
             
             try {
                 const pythonCode = fs.readFileSync(inputFile, 'utf8');
-                compilePythonToSVML(pythonCode, outputFile, options.format);
+                compilePythonToSVML(pythonCode, outputFile, format);
             } catch (error) {
                 console.error(`Error reading file '${inputFile}':`, error);
                 process.exit(1);
