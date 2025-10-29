@@ -26,24 +26,6 @@ const config = [{
     name: 'PySlangEvaluator'
   },
   plugins: [wasm({maxFileSize: 2000000}), commonjs(), json(), typescript(), nodeResolve(), nodePolyfills()]
-},
-{
-  input: 'src/cli/svmc.ts',
-  output: {
-    file: 'dist/svmc.cjs',
-    format: 'cjs',
-    name: 'SVMC'
-  },
-  plugins: [commonjs(), json(), typescript(), nodeResolve()]
-},
-{
-  input: 'src/cli/ast-to-dot.ts',
-  output: {
-    file: 'dist/ast-to-dot.cjs',
-    format: 'cjs',
-    name: 'AstViz'
-  },
-  plugins: [commonjs(), json(), typescript(), nodeResolve()]
 }];
 
 export default config;
