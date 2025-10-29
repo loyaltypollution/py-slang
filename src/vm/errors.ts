@@ -12,7 +12,6 @@ export class UnsupportedOperandTypeError extends SVMLInterpreterError {
     const msg = `TypeError: unsupported operand type(s) for ${operand}: ${wrongTypes.map(t => `'${t}'`).join(' and ')}`;
     super(msg);
   }
-  }
 }
 
 export class MissingRequiredPositionalError extends SVMLInterpreterError {}

@@ -12,7 +12,7 @@ import {
 import OpCodes from "./opcodes";
 import { InstrumentationTracker } from "./instrumentation";
 import { executePrimitive } from "./sinter-primitives";
-import { UnsupportedOperandTypeError, SVMLTypeError } from "./errors";
+import { UnsupportedOperandTypeError } from "./errors";
 
 /**
  * TypeScript-based SVML Interpreter
