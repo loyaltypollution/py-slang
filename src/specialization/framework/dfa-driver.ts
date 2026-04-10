@@ -1,9 +1,5 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import type {
-  AnalysisModule,
-  ExprTransformRule,
-  TransformRule,
-} from "./interfaces";
+import type { AnalysisModule, ExprTransformRule, TransformRule } from "./interfaces";
 import type { HintTable } from "./hint";
 import type { SlotLookup } from "../types";
 

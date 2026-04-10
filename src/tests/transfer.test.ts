@@ -32,12 +32,7 @@ import {
   IntRef,
   BoolRef,
 } from "../specialization";
-import {
-  INT_BIT,
-  BOOL_BIT,
-  FLOAT_BIT,
-  COMPLEX_BIT,
-} from "../specialization";
+import { INT_BIT, BOOL_BIT, FLOAT_BIT, COMPLEX_BIT } from "../specialization";
 
 describe("transferBinaryOp", () => {
   test("pos + pos = pos", () => {

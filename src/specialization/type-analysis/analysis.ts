@@ -144,13 +144,11 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     const leftIsBool = left.kinds === BOOL_BIT;
 
     if (expr.operator.type === TokenType.AND) {
-      if (leftIsBool && left.boolRef === BoolRef.False)
-        return this.annotate(expr, falseValue());
+      if (leftIsBool && left.boolRef === BoolRef.False) return this.annotate(expr, falseValue());
       if (leftIsBool && left.boolRef === BoolRef.True) return this.annotate(expr, right);
       return this.annotate(expr, booleanValue(BoolRef.Top));
     } else if (expr.operator.type === TokenType.OR) {
-      if (leftIsBool && left.boolRef === BoolRef.True)
-        return this.annotate(expr, trueValue());
+      if (leftIsBool && left.boolRef === BoolRef.True) return this.annotate(expr, trueValue());
       if (leftIsBool && left.boolRef === BoolRef.False) return this.annotate(expr, right);
       return this.annotate(expr, booleanValue(BoolRef.Top));
     }

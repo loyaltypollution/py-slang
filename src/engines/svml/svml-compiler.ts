@@ -1,6 +1,12 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
-import type { Annotated, OptimizationHint, PyASTNode, SlotInfo, SlotLookup } from "../../specialization";
+import type {
+  Annotated,
+  OptimizationHint,
+  PyASTNode,
+  SlotInfo,
+  SlotLookup,
+} from "../../specialization";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
 import { Token } from "../../tokenizer";
 import { TokenType } from "../../tokens";
@@ -17,7 +23,6 @@ function getHint(node: PyASTNode): OptimizationHint | undefined {
 /** Signed 32-bit integer bounds used to decide LGCI vs LGCF64 encoding. */
 const I32_MIN = -2_147_483_648;
 const I32_MAX = 2_147_483_647;
-
 
 interface CompilerAnnotation {
   slot: number;

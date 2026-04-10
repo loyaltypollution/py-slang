@@ -6,7 +6,12 @@ export { optimize } from "./optimize";
 
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
 
-export type { AnalysisModule, TransformRule, StmtTransformRule, ExprTransformRule } from "./framework/interfaces";
+export type {
+  AnalysisModule,
+  TransformRule,
+  StmtTransformRule,
+  ExprTransformRule,
+} from "./framework/interfaces";
 export type { OptimizationHint, HintTable, Annotated, PyASTNode } from "./framework/hint";
 export { annotateTree } from "./framework/hint";
 export {

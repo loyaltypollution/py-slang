@@ -178,11 +178,7 @@ export function neqSigns(l: IntRef, r: IntRef): BoolRef {
 // Top-level transfer functions operating on TypeLattice
 // ========================================================================
 
-export function transferBinaryOp(
-  op: string,
-  left: TypeLattice,
-  right: TypeLattice,
-): TypeLattice {
+export function transferBinaryOp(op: string, left: TypeLattice, right: TypeLattice): TypeLattice {
   const lk = left.kinds;
   const rk = right.kinds;
 
@@ -270,11 +266,7 @@ export function transferBinaryOp(
   return integer(resultRef);
 }
 
-export function transferCompare(
-  op: string,
-  left: TypeLattice,
-  right: TypeLattice,
-): TypeLattice {
+export function transferCompare(op: string, left: TypeLattice, right: TypeLattice): TypeLattice {
   const lk = left.kinds;
   const rk = right.kinds;
 
