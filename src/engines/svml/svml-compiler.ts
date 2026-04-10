@@ -518,7 +518,7 @@ export class SVMLCompiler
   }
 
   visitNoneExpr(_expr: ExprNS.None): ExpressionResult {
-    this.builder.emitNullary(OpCodes.LGCU);
+    this.builder.emitNullary(OpCodes.LGCN);
     return { maxStackSize: 1 };
   }
 
