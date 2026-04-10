@@ -36,8 +36,6 @@ interface CallFrame {
   env: SVMLEnvironment;
   stack: SVMLBoxType[];
   callerFrame: CallFrame | null;
-  memoArgs?: SVMLBoxType[];
-  memoClosure?: SVMLClosure;
 }
 
 /**
@@ -755,8 +753,6 @@ export class SVMLInterpreter {
       type: "closure",
       functionIndex,
       parentEnv: this.currentFrame.env,
-      isMemoized: false,
-      memoCache: undefined,
     };
 
     this.push(closure);
@@ -810,15 +806,6 @@ export class SVMLInterpreter {
 
     const closure = func;
 
-    if (closure.isMemoized && closure.memoCache) {
-      const cacheKey = JSON.stringify(args);
-      if (closure.memoCache.has(cacheKey)) {
-        const cachedResult = closure.memoCache.get(cacheKey)!;
-        this.push(cachedResult);
-        return;
-      }
-    }
-
     const funcDef = this.program.functions[closure.functionIndex];
 
     if (numArgs !== funcDef.numArgs) {
@@ -854,14 +841,6 @@ export class SVMLInterpreter {
       };
       this.currentFrame = newFrame;
       this.callDepth++;
-    }
-
-    // Store reference for memoization
-    if (closure.isMemoized && closure.memoCache) {
-      // We'll cache the result when the function returns
-      // For now, mark that we're executing this call
-      this.currentFrame.memoArgs = args;
-      this.currentFrame.memoClosure = closure;
     }
   }
 
@@ -899,14 +878,6 @@ export class SVMLInterpreter {
 
     if (__DEBUG__)
       debug(`[RETG] Returning value: ${JSON.stringify(SVMLInterpreter.toJSValue(returnValue))}`);
-
-    // Handle memoization
-    const memoArgs = this.currentFrame.memoArgs;
-    const memoClosure = this.currentFrame.memoClosure;
-    if (memoArgs && memoClosure && memoClosure.memoCache) {
-      const cacheKey = JSON.stringify(memoArgs);
-      memoClosure.memoCache.set(cacheKey, returnValue);
-    }
 
     const callerFrame = this.currentFrame.callerFrame;
 
