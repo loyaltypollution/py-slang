@@ -13,17 +13,21 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { StmtNS } from "../ast-types";
-import { runAnalysisPass, runMultiAnalysisPasses, MutableEnv } from "../specialization/dfa-driver";
-import { TypeAnalysisModule } from "../specialization/type-analysis";
 import {
+  runAnalysisPass,
+  runMultiAnalysisPasses,
+  MutableEnv,
+  TypeAnalysisModule,
   ConstAnalysisModule,
   constLeq,
   constJoin,
   constMeet,
-} from "../specialization/const-analysis";
-import type { HintTable } from "../specialization/analysis-module";
-import { CONST_BOTTOM, CONST_TOP, constOf } from "../specialization/analysis-module";
-import { INT_BIT } from "../types/abstract-value";
+  type HintTable,
+  CONST_BOTTOM,
+  CONST_TOP,
+  constOf,
+  INT_BIT,
+} from "../specialization";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -187,7 +191,7 @@ describe("runMultiAnalysisPasses — product lattice coexistence", () => {
     const { hints, ast } = analyseBoth("x = 3 + 4");
     const binExpr = (ast.statements[0] as any).value;
     const hint = hints.get(binExpr);
-    expect(hint?.type?.sound.kinds).toBe(INT_BIT);
+    expect(hint?.type?.kinds).toBe(INT_BIT);
     expect(hint?.constVal?.tag).toBe("const");
     expect((hint?.constVal as any)?.value).toBe(7);
   });

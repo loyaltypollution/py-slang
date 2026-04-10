@@ -1,10 +1,9 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
-import type { Annotated, OptimizationHint, PyASTNode } from "../../specialization/analysis-module";
-import type { SlotInfo, SlotLookup } from "../../specialization/types";
+import type { Annotated, OptimizationHint, PyASTNode, SlotInfo, SlotLookup } from "../../specialization";
+import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
 import { Token } from "../../tokenizer";
 import { TokenType } from "../../tokens";
-import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../types/abstract-value";
 import { SVMLIRBuilder } from "./SVMLIRBuilder";
 import { PRIMITIVE_FUNCTIONS } from "./builtins";
 import OpCodes from "./opcodes";
@@ -368,8 +367,8 @@ export class SVMLCompiler
 
   /** True when both operands have a statically known numeric type (int or float). */
   private bothNumeric(left: ExprNS.Expr, right: ExprNS.Expr): boolean {
-    const lk = getHint(left)?.type?.sound.kinds;
-    const rk = getHint(right)?.type?.sound.kinds;
+    const lk = getHint(left)?.type?.kinds;
+    const rk = getHint(right)?.type?.kinds;
     return (lk === INT_BIT || lk === FLOAT_BIT) && (rk === INT_BIT || rk === FLOAT_BIT);
   }
 
@@ -443,11 +442,11 @@ export class SVMLCompiler
 
     switch (expr.operator.type) {
       case TokenType.NOT: {
-        opcode = getHint(expr.right)?.type?.sound.kinds === BOOL_BIT ? OpCodes.NOTB : OpCodes.NOTG;
+        opcode = getHint(expr.right)?.type?.kinds === BOOL_BIT ? OpCodes.NOTB : OpCodes.NOTG;
         break;
       }
       case TokenType.MINUS: {
-        const k = getHint(expr.right)?.type?.sound.kinds;
+        const k = getHint(expr.right)?.type?.kinds;
         opcode = k === INT_BIT || k === FLOAT_BIT ? OpCodes.NEGF : OpCodes.NEGG;
         break;
       }

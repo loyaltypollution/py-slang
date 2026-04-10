@@ -13,9 +13,13 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import { runAnalysisPass, MutableEnv } from "../specialization/dfa-driver";
-import { TypeAnalysisModule } from "../specialization/type-analysis";
-import { annotateTree, type HintTable } from "../specialization/analysis-module";
+import {
+  runAnalysisPass,
+  MutableEnv,
+  TypeAnalysisModule,
+  annotateTree,
+  type HintTable,
+} from "../specialization";
 
 /**
  * Compile and run with DFA type analysis enabled.

@@ -3,9 +3,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { annotateTree, type HintTable } from "../specialization/analysis-module";
-import { MutableEnv, runAnalysisPass } from "../specialization/dfa-driver";
-import { TypeAnalysisModule } from "../specialization/type-analysis";
+import { optimize } from "../specialization";
 import { EvaluatorError } from "./errors";
 
 export class PySvmlEvaluator extends BasicEvaluator {
@@ -18,18 +16,7 @@ export class PySvmlEvaluator extends BasicEvaluator {
         throw errors[0];
       }
       const compiler = SVMLCompiler.fromProgram(ast, environments);
-
-      // Run forward type analysis before codegen to enable specialized opcode selection
-      const hints: HintTable = new WeakMap();
-      const typeEnv = new MutableEnv();
-      runAnalysisPass(
-        ast.statements,
-        new TypeAnalysisModule(),
-        typeEnv,
-        hints,
-        compiler.createSlotLookup(),
-      );
-      annotateTree(ast.statements, hints);
+      optimize(ast.statements, compiler.createSlotLookup());
 
       const program = compiler.compileProgram(ast);
       const interpreter = new SVMLInterpreter(program, {

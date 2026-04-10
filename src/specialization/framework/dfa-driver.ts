@@ -1,11 +1,11 @@
-import { ExprNS, StmtNS } from "../ast-types";
+import { ExprNS, StmtNS } from "../../ast-types";
 import type {
   AnalysisModule,
   ExprTransformRule,
-  HintTable,
   TransformRule,
-} from "./analysis-module";
-import type { SlotLookup } from "./types";
+} from "./interfaces";
+import type { HintTable } from "./hint";
+import type { SlotLookup } from "../types";
 
 /**
  * Generic per-function type environment: maps slot index → L.
@@ -13,8 +13,8 @@ import type { SlotLookup } from "./types";
  * Slot indices are assigned by SVMLCompiler.getOrAssignSlot — the same numbering
  * used here ensures analysis and codegen agree on which variable is which.
  *
- * Reference equality is the fast path for AbstractValue comparisons because
- * lattice-ops.ts returns frozen singletons. Identical lattice values are always
+ * Reference equality is the fast path for lattice comparisons because
+ * the lattice modules return frozen singletons. Identical lattice values are always
  * the same object. The leq-based path handles non-singleton join results.
  */
 export class MutableEnv<L> {

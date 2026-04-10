@@ -1,32 +1,19 @@
-import { ExprNS } from "../ast-types";
-import { TokenType } from "../tokens";
-import type { AnalysisModule, HintTable, ConstLattice, OptimizationHint } from "./analysis-module";
-import { CONST_BOTTOM, CONST_TOP, constOf } from "./analysis-module";
-import type { SlotLookup } from "./types";
+import { ExprNS } from "../../ast-types";
+import { TokenType } from "../../tokens";
+import type { AnalysisModule } from "../framework/interfaces";
+import type { HintTable } from "../framework/hint";
+import type { SlotLookup } from "../types";
+import {
+  type ConstLattice,
+  CONST_BOTTOM,
+  CONST_TOP,
+  constOf,
+  constLeq,
+  constJoin,
+  constMeet,
+} from "./lattice";
 
-// ── Lattice operations ────────────────────────────────────────────────────────
-
-export function constLeq(a: ConstLattice, b: ConstLattice): boolean {
-  if (a.tag === "bottom") return true;
-  if (b.tag === "top") return true;
-  if (a.tag === "top") return false; // top ≤ b only if b === top (handled above)
-  if (b.tag === "bottom") return false;
-  return a.value === b.value; // const(v) ≤ const(w) iff v === w
-}
-
-export function constJoin(a: ConstLattice, b: ConstLattice): ConstLattice {
-  if (a.tag === "bottom") return b;
-  if (b.tag === "bottom") return a;
-  if (a.tag === "top" || b.tag === "top") return CONST_TOP;
-  return a.value === b.value ? a : CONST_TOP;
-}
-
-export function constMeet(a: ConstLattice, b: ConstLattice): ConstLattice {
-  if (a.tag === "top") return b;
-  if (b.tag === "top") return a;
-  if (a.tag === "bottom" || b.tag === "bottom") return CONST_BOTTOM;
-  return a.value === b.value ? a : CONST_BOTTOM;
-}
+export { constLeq, constJoin, constMeet };
 
 // ── Expression-level visitor ──────────────────────────────────────────────────
 
@@ -224,8 +211,6 @@ export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
   readonly name = "const";
   readonly mergeKind = "may" as const;
   readonly direction = "forward" as const;
-  readonly field = "constVal" as const satisfies keyof OptimizationHint;
-
   top(): ConstLattice {
     return CONST_TOP;
   }

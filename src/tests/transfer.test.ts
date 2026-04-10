@@ -16,7 +16,7 @@ import {
   eqSigns,
   neqSigns,
   notBoolRef,
-} from "../specialization/transfer";
+} from "../specialization/type-analysis/transfer";
 import {
   positiveInteger,
   negativeInteger,
@@ -29,70 +29,70 @@ import {
   complexValue,
   stringValue,
   TOP,
-} from "../types/lattice-ops";
-import {
   IntRef,
   BoolRef,
+} from "../specialization";
+import {
   INT_BIT,
   BOOL_BIT,
   FLOAT_BIT,
   COMPLEX_BIT,
-} from "../types/abstract-value";
+} from "../specialization";
 
 describe("transferBinaryOp", () => {
   test("pos + pos = pos", () => {
     const result = transferBinaryOp("+", positiveInteger(), positiveInteger());
-    expect(result.sound.kinds).toBe(INT_BIT);
-    expect(result.sound.intRef).toBe(IntRef.Pos);
+    expect(result.kinds).toBe(INT_BIT);
+    expect(result.intRef).toBe(IntRef.Pos);
   });
 
   test("pos + neg = int (top refinement)", () => {
     const result = transferBinaryOp("+", positiveInteger(), negativeInteger());
-    expect(result.sound.kinds).toBe(INT_BIT);
-    expect(result.sound.intRef).toBe(IntRef.Top);
+    expect(result.kinds).toBe(INT_BIT);
+    expect(result.intRef).toBe(IntRef.Top);
   });
 
   test("unknown + unknown = unknown", () => {
     const result = transferBinaryOp("+", TOP, TOP);
-    expect(result.sound.kinds).toBe(TOP.sound.kinds);
+    expect(result.kinds).toBe(TOP.kinds);
   });
 });
 
 describe("transferCompare", () => {
   test("pos > zero = true", () => {
     const result = transferCompare(">", positiveInteger(), zeroInteger());
-    expect(result.sound.kinds).toBe(BOOL_BIT);
-    expect(result.sound.boolRef).toBe(BoolRef.True);
+    expect(result.kinds).toBe(BOOL_BIT);
+    expect(result.boolRef).toBe(BoolRef.True);
   });
 
   test("pos > pos = bool (unknown)", () => {
     const result = transferCompare(">", positiveInteger(), positiveInteger());
-    expect(result.sound.kinds).toBe(BOOL_BIT);
-    expect(result.sound.boolRef).toBe(BoolRef.Top);
+    expect(result.kinds).toBe(BOOL_BIT);
+    expect(result.boolRef).toBe(BoolRef.Top);
   });
 });
 
 describe("transferNot", () => {
   test("not True = False", () => {
     const result = transferNot(trueValue());
-    expect(result.sound.boolRef).toBe(BoolRef.False);
+    expect(result.boolRef).toBe(BoolRef.False);
   });
 
   test("not False = True", () => {
     const result = transferNot(falseValue());
-    expect(result.sound.boolRef).toBe(BoolRef.True);
+    expect(result.boolRef).toBe(BoolRef.True);
   });
 });
 
 describe("transferUnaryNeg", () => {
   test("-pos = neg", () => {
     const result = transferUnaryNeg(positiveInteger());
-    expect(result.sound.intRef).toBe(IntRef.Neg);
+    expect(result.intRef).toBe(IntRef.Neg);
   });
 
   test("-zero = zero", () => {
     const result = transferUnaryNeg(zeroInteger());
-    expect(result.sound.intRef).toBe(IntRef.Zero);
+    expect(result.intRef).toBe(IntRef.Zero);
   });
 });
 
@@ -256,46 +256,46 @@ describe("Comparison edge cases", () => {
 describe("transferBinaryOp with floats", () => {
   test("float + float = float (sign top)", () => {
     const result = transferBinaryOp("+", positiveFloat(), negativeFloat());
-    expect(result.sound.kinds).toBe(FLOAT_BIT);
-    expect(result.sound.floatRef).toBe(IntRef.Top);
+    expect(result.kinds).toBe(FLOAT_BIT);
+    expect(result.floatRef).toBe(IntRef.Top);
   });
 
   test("posFloat + posFloat = posFloat", () => {
     const result = transferBinaryOp("+", positiveFloat(), positiveFloat());
-    expect(result.sound.kinds).toBe(FLOAT_BIT);
-    expect(result.sound.floatRef).toBe(IntRef.Pos);
+    expect(result.kinds).toBe(FLOAT_BIT);
+    expect(result.floatRef).toBe(IntRef.Pos);
   });
 
   test("int + float = float (per spec: promotion)", () => {
     const result = transferBinaryOp("+", positiveInteger(), positiveFloat());
-    expect(result.sound.kinds).toBe(FLOAT_BIT);
+    expect(result.kinds).toBe(FLOAT_BIT);
   });
 
   test("float / float = float", () => {
     const result = transferBinaryOp("/", positiveFloat(), positiveFloat());
-    expect(result.sound.kinds).toBe(FLOAT_BIT);
+    expect(result.kinds).toBe(FLOAT_BIT);
   });
 
   test("int / int = float (per spec: true division)", () => {
     const result = transferBinaryOp("/", positiveInteger(), positiveInteger());
-    expect(result.sound.kinds).toBe(FLOAT_BIT);
+    expect(result.kinds).toBe(FLOAT_BIT);
   });
 });
 
 describe("transferBinaryOp with complex", () => {
   test("complex + anything numeric = complex", () => {
     const result = transferBinaryOp("+", complexValue(), positiveInteger());
-    expect(result.sound.kinds).toBe(COMPLEX_BIT);
+    expect(result.kinds).toBe(COMPLEX_BIT);
   });
 
   test("int + complex = complex", () => {
     const result = transferBinaryOp("+", positiveInteger(), complexValue());
-    expect(result.sound.kinds).toBe(COMPLEX_BIT);
+    expect(result.kinds).toBe(COMPLEX_BIT);
   });
 
   test("float + complex = complex", () => {
     const result = transferBinaryOp("+", positiveFloat(), complexValue());
-    expect(result.sound.kinds).toBe(COMPLEX_BIT);
+    expect(result.kinds).toBe(COMPLEX_BIT);
   });
 
   test("complex // int = TOP (not valid per spec)", () => {
@@ -317,32 +317,32 @@ describe("transferBinaryOp with complex", () => {
 describe("transferCompare with floats", () => {
   test("posFloat > zeroFloat = true", () => {
     const result = transferCompare(">", positiveFloat(), zeroFloat());
-    expect(result.sound.boolRef).toBe(BoolRef.True);
+    expect(result.boolRef).toBe(BoolRef.True);
   });
 
   test("posInt > posFloat = top (both positive, could be either)", () => {
     const result = transferCompare(">", positiveInteger(), positiveFloat());
-    expect(result.sound.kinds).toBe(BOOL_BIT);
-    expect(result.sound.boolRef).toBe(BoolRef.Top);
+    expect(result.kinds).toBe(BOOL_BIT);
+    expect(result.boolRef).toBe(BoolRef.Top);
   });
 
   test("posInt > zeroFloat = true (mixed int/float sign analysis)", () => {
     const result = transferCompare(">", positiveInteger(), zeroFloat());
-    expect(result.sound.kinds).toBe(BOOL_BIT);
-    expect(result.sound.boolRef).toBe(BoolRef.True);
+    expect(result.kinds).toBe(BOOL_BIT);
+    expect(result.boolRef).toBe(BoolRef.True);
   });
 
   test("posInt == negFloat = false (mixed int/float sign analysis)", () => {
     const result = transferCompare("==", positiveInteger(), negativeFloat());
-    expect(result.sound.kinds).toBe(BOOL_BIT);
-    expect(result.sound.boolRef).toBe(BoolRef.False);
+    expect(result.kinds).toBe(BOOL_BIT);
+    expect(result.boolRef).toBe(BoolRef.False);
   });
 });
 
 describe("transferUnaryNeg with float", () => {
   test("-posFloat = negFloat", () => {
     const result = transferUnaryNeg(positiveFloat());
-    expect(result.sound.kinds).toBe(FLOAT_BIT);
-    expect(result.sound.floatRef).toBe(IntRef.Neg);
+    expect(result.kinds).toBe(FLOAT_BIT);
+    expect(result.floatRef).toBe(IntRef.Neg);
   });
 });

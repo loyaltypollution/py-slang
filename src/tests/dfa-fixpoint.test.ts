@@ -12,12 +12,22 @@
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
-import { runAnalysisPass, MutableEnv } from "../specialization/dfa-driver";
-import { TypeAnalysisModule } from "../specialization/type-analysis";
-import type { HintTable } from "../specialization/analysis-module";
-import { INT_BIT, BOOL_BIT, FLOAT_BIT } from "../types/abstract-value";
-import { IntRef, BoolRef, positiveInteger, negativeInteger, join, leq } from "../types/lattice-ops";
-import type { AbstractValue } from "../types/abstract-value";
+import {
+  runAnalysisPass,
+  MutableEnv,
+  TypeAnalysisModule,
+  type HintTable,
+  INT_BIT,
+  BOOL_BIT,
+  FLOAT_BIT,
+  IntRef,
+  BoolRef,
+  positiveInteger,
+  negativeInteger,
+  join,
+  leq,
+  type TypeLattice,
+} from "../specialization";
 import { ExprNS } from "../ast-types";
 
 function analyseTopLevel(code: string): { hints: HintTable; compiler: SVMLCompiler } {
@@ -56,8 +66,8 @@ describe("DFA fixpoint driver", () => {
       // The literal 5 is the value in the Assign statement — find it
       const assign = ast.statements[0] as any;
       const lit = assign.value;
-      expect(hints.get(lit)?.type?.sound.kinds).toBe(INT_BIT);
-      expect(hints.get(lit)?.type?.sound.intRef).toBe(IntRef.Pos);
+      expect(hints.get(lit)?.type?.kinds).toBe(INT_BIT);
+      expect(hints.get(lit)?.type?.intRef).toBe(IntRef.Pos);
     });
 
     test("float literal annotated as FLOAT_BIT", () => {
@@ -76,7 +86,7 @@ describe("DFA fixpoint driver", () => {
 
       const assign = ast.statements[0] as any;
       const lit = assign.value;
-      expect(hints.get(lit)?.type?.sound.kinds).toBe(FLOAT_BIT);
+      expect(hints.get(lit)?.type?.kinds).toBe(FLOAT_BIT);
     });
 
     test("boolean literal annotated as BOOL_BIT", () => {
@@ -95,8 +105,8 @@ describe("DFA fixpoint driver", () => {
 
       const assign = ast.statements[0] as any;
       const lit = assign.value;
-      expect(hints.get(lit)?.type?.sound.kinds).toBe(BOOL_BIT);
-      expect(hints.get(lit)?.type?.sound.boolRef).toBe(BoolRef.True);
+      expect(hints.get(lit)?.type?.kinds).toBe(BOOL_BIT);
+      expect(hints.get(lit)?.type?.boolRef).toBe(BoolRef.True);
     });
   });
 
@@ -117,8 +127,8 @@ describe("DFA fixpoint driver", () => {
 
       const assign = ast.statements[0] as any;
       const binExpr = assign.value; // 3 + 4
-      expect(hints.get(binExpr)?.type?.sound.kinds).toBe(INT_BIT);
-      expect(hints.get(binExpr)?.type?.sound.intRef).toBe(IntRef.Pos);
+      expect(hints.get(binExpr)?.type?.kinds).toBe(INT_BIT);
+      expect(hints.get(binExpr)?.type?.intRef).toBe(IntRef.Pos);
     });
 
     test("pos - pos annotated as INT_BIT Top (sign unknown)", () => {
@@ -137,45 +147,45 @@ describe("DFA fixpoint driver", () => {
 
       const assign = ast.statements[0] as any;
       const binExpr = assign.value;
-      expect(hints.get(binExpr)?.type?.sound.kinds).toBe(INT_BIT);
+      expect(hints.get(binExpr)?.type?.kinds).toBe(INT_BIT);
       // 5 - 3 = pos - pos = top (could be positive or negative or zero)
-      expect(hints.get(binExpr)?.type?.sound.intRef).toBe(IntRef.Top);
+      expect(hints.get(binExpr)?.type?.intRef).toBe(IntRef.Top);
     });
   });
 
   describe("MutableTypeEnv", () => {
     test("snapshot is independent copy", () => {
-      const env = new MutableEnv<AbstractValue>([positiveInteger()]);
+      const env = new MutableEnv<TypeLattice>([positiveInteger()]);
       const snap = env.snapshot();
       env.set(0, negativeInteger());
-      expect(snap.get(0)?.sound.intRef).toBe(IntRef.Pos); // snapshot unaffected
-      expect(env.get(0)?.sound.intRef).toBe(IntRef.Neg);
+      expect(snap.get(0)?.intRef).toBe(IntRef.Pos); // snapshot unaffected
+      expect(env.get(0)?.intRef).toBe(IntRef.Neg);
     });
 
     test("joinWith merges slots correctly", () => {
-      const env1 = new MutableEnv<AbstractValue>([positiveInteger()]);
-      const env2 = new MutableEnv<AbstractValue>([negativeInteger()]);
+      const env1 = new MutableEnv<TypeLattice>([positiveInteger()]);
+      const env2 = new MutableEnv<TypeLattice>([negativeInteger()]);
       env1.joinWith(env2, join);
       // join(Pos, Neg) = NonZero (4 | 1 = 5): both are definitely nonzero, zero is impossible
-      expect(env1.get(0)?.sound.kinds).toBe(INT_BIT);
-      expect(env1.get(0)?.sound.intRef).toBe(IntRef.NonZero);
+      expect(env1.get(0)?.kinds).toBe(INT_BIT);
+      expect(env1.get(0)?.intRef).toBe(IntRef.NonZero);
     });
 
     test("equals returns true for same singletons", () => {
-      const env1 = new MutableEnv<AbstractValue>([positiveInteger()]);
-      const env2 = new MutableEnv<AbstractValue>([positiveInteger()]);
+      const env1 = new MutableEnv<TypeLattice>([positiveInteger()]);
+      const env2 = new MutableEnv<TypeLattice>([positiveInteger()]);
       expect(env1.equals(env2, leq)).toBe(true);
     });
 
     test("equals returns false for different values", () => {
-      const env1 = new MutableEnv<AbstractValue>([positiveInteger()]);
-      const env2 = new MutableEnv<AbstractValue>([negativeInteger()]);
+      const env1 = new MutableEnv<TypeLattice>([positiveInteger()]);
+      const env2 = new MutableEnv<TypeLattice>([negativeInteger()]);
       expect(env1.equals(env2, leq)).toBe(false);
     });
 
     test("equals returns false for different lengths", () => {
-      const env1 = new MutableEnv<AbstractValue>([positiveInteger(), positiveInteger()]);
-      const env2 = new MutableEnv<AbstractValue>([positiveInteger()]);
+      const env1 = new MutableEnv<TypeLattice>([positiveInteger(), positiveInteger()]);
+      const env2 = new MutableEnv<TypeLattice>([positiveInteger()]);
       expect(env1.equals(env2, leq)).toBe(false);
     });
   });
@@ -244,7 +254,7 @@ for i in [1, 2, 3]:
       const ifStmt = ast.statements[1] as any;
       const condition = ifStmt.condition; // Compare: x > 0
       const condHint = hints.get(condition);
-      expect(condHint?.type?.sound.kinds).toBe(BOOL_BIT);
+      expect(condHint?.type?.kinds).toBe(BOOL_BIT);
     });
   });
 
@@ -265,7 +275,7 @@ for i in [1, 2, 3]:
 
       const assign = ast.statements[0] as any;
       const cmp = assign.value;
-      expect(hints.get(cmp)?.type?.sound.kinds).toBe(BOOL_BIT);
+      expect(hints.get(cmp)?.type?.kinds).toBe(BOOL_BIT);
     });
 
     test("pos > zero annotated as BOOL_BIT True", () => {
@@ -284,8 +294,8 @@ for i in [1, 2, 3]:
 
       const assign = ast.statements[0] as any;
       const cmp = assign.value;
-      expect(hints.get(cmp)?.type?.sound.kinds).toBe(BOOL_BIT);
-      expect(hints.get(cmp)?.type?.sound.boolRef).toBe(BoolRef.True);
+      expect(hints.get(cmp)?.type?.kinds).toBe(BOOL_BIT);
+      expect(hints.get(cmp)?.type?.boolRef).toBe(BoolRef.True);
     });
   });
 });

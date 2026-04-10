@@ -12,13 +12,20 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import { runAnalysisPass, MutableEnv, stabilizeStatic } from "../specialization/dfa-driver";
-import { TypeAnalysisModule } from "../specialization/type-analysis";
-import { ConstAnalysisModule } from "../specialization/const-analysis";
-import { ConstantFoldingRule, DeadBranchEliminationRule } from "../specialization/transform-rules";
-import { annotateTree, type HintTable } from "../specialization/analysis-module";
-import { INT_BIT, BOOL_BIT } from "../types/abstract-value";
-import { BoolRef } from "../types/lattice-ops";
+import {
+  runAnalysisPass,
+  MutableEnv,
+  stabilizeStatic,
+  TypeAnalysisModule,
+  ConstAnalysisModule,
+  ConstantFoldingRule,
+  DeadBranchEliminationRule,
+  annotateTree,
+  type HintTable,
+  INT_BIT,
+  BOOL_BIT,
+  BoolRef,
+} from "../specialization";
 
 function compileAndRun(code: string): unknown {
   const script = code + "\n";
@@ -117,7 +124,7 @@ describe("[P2] Ternary result type annotation", () => {
     const hint = hints.get(ternary);
     // Currently TOP (all kinds set). Should be INT_BIT once fixed.
     // Flip this expectation to INT_BIT after the fix lands.
-    expect(hint?.type?.sound.kinds).not.toBe(INT_BIT);
+    expect(hint?.type?.kinds).not.toBe(INT_BIT);
   });
 });
 
@@ -212,12 +219,12 @@ acc
     const hint = hints.get(cmpExpr);
 
     // The comparison should be annotated as BOOL (kind = BOOL_BIT).
-    expect(hint?.type?.sound.kinds).toBe(BOOL_BIT);
+    expect(hint?.type?.kinds).toBe(BOOL_BIT);
 
     // With single-pass: acc=INT(Zero) at body entry, so acc > 0 may annotate as False.
     // Document current behaviour — boolRef is False (imprecise but harmless today).
     // If this starts being used for branch elimination, this test will catch the regression.
-    const boolRef = hint?.type?.sound.boolRef;
+    const boolRef = hint?.type?.boolRef;
     // The loop variable i = TOP propagates through acc + i → INT(Top),
     // so acc > 0 correctly annotates as BOOL(Top) even in a single pass.
     // P3 is moot: the one-pass analysis is precise enough here.

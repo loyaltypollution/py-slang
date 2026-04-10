@@ -15,11 +15,14 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { ExprNS, StmtNS } from "../ast-types";
-import { stabilizeStatic } from "../specialization/dfa-driver";
-import { TypeAnalysisModule } from "../specialization/type-analysis";
-import { ConstAnalysisModule } from "../specialization/const-analysis";
-import { ConstantFoldingRule, DeadBranchEliminationRule } from "../specialization/transform-rules";
-import type { HintTable } from "../specialization/analysis-module";
+import {
+  stabilizeStatic,
+  TypeAnalysisModule,
+  ConstAnalysisModule,
+  ConstantFoldingRule,
+  DeadBranchEliminationRule,
+  type HintTable,
+} from "../specialization";
 
 function optimise(code: string): StmtNS.Stmt[] {
   const script = code + "\n";
