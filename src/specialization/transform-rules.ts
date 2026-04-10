@@ -1,5 +1,10 @@
 import { ExprNS, StmtNS } from "../ast-types";
-import type { HintTable, StmtTransformRule, ExprTransformRule, ConstLattice } from "./analysis-module";
+import type {
+  HintTable,
+  StmtTransformRule,
+  ExprTransformRule,
+  ConstLattice,
+} from "./analysis-module";
 
 /**
  * Constant folding: replaces a Binary or Compare expression whose result is
@@ -20,7 +25,11 @@ export class ConstantFoldingRule implements ExprTransformRule {
   apply(expr: ExprNS.Expr, hints: HintTable): ExprNS.Expr {
     const cv = hints.get(expr)!.constVal as ConstLattice & { tag: "const" };
     // Reuse the original expression's token span so source locations remain valid.
-    return new ExprNS.Literal(expr.startToken, expr.endToken, cv.value as true | false | number | string);
+    return new ExprNS.Literal(
+      expr.startToken,
+      expr.endToken,
+      cv.value as true | false | number | string,
+    );
   }
 }
 

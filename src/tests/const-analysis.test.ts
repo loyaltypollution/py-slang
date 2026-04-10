@@ -15,24 +15,43 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { StmtNS } from "../ast-types";
 import { runAnalysisPass, runMultiAnalysisPasses, MutableEnv } from "../specialization/dfa-driver";
 import { TypeAnalysisModule } from "../specialization/type-analysis";
-import { ConstAnalysisModule, constLeq, constJoin, constMeet } from "../specialization/const-analysis";
+import {
+  ConstAnalysisModule,
+  constLeq,
+  constJoin,
+  constMeet,
+} from "../specialization/const-analysis";
 import type { HintTable } from "../specialization/analysis-module";
 import { CONST_BOTTOM, CONST_TOP, constOf } from "../specialization/analysis-module";
 import { INT_BIT } from "../types/abstract-value";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function analyseConst(code: string): { hints: HintTable; ast: StmtNS.FileInput; compiler: SVMLCompiler } {
+function analyseConst(code: string): {
+  hints: HintTable;
+  ast: StmtNS.FileInput;
+  compiler: SVMLCompiler;
+} {
   const script = code + "\n";
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const compiler = SVMLCompiler.fromProgram(ast, environments);
   const hints: HintTable = new WeakMap();
-  runAnalysisPass(ast.statements, new ConstAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+  runAnalysisPass(
+    ast.statements,
+    new ConstAnalysisModule(),
+    new MutableEnv(),
+    hints,
+    compiler.createSlotLookup(),
+  );
   return { hints, ast, compiler };
 }
 
-function analyseBoth(code: string): { hints: HintTable; ast: StmtNS.FileInput; compiler: SVMLCompiler } {
+function analyseBoth(code: string): {
+  hints: HintTable;
+  ast: StmtNS.FileInput;
+  compiler: SVMLCompiler;
+} {
   const script = code + "\n";
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
@@ -41,7 +60,7 @@ function analyseBoth(code: string): { hints: HintTable; ast: StmtNS.FileInput; c
   runMultiAnalysisPasses(
     ast.statements,
     [
-      { module: new TypeAnalysisModule(),  env: new MutableEnv() },
+      { module: new TypeAnalysisModule(), env: new MutableEnv() },
       { module: new ConstAnalysisModule(), env: new MutableEnv() },
     ],
     hints,
@@ -63,8 +82,8 @@ describe("ConstLattice operations", () => {
       expect(constLeq(CONST_BOTTOM, CONST_TOP)).toBe(true);
     });
     test("everything ≤ top", () => {
-      expect(constLeq(CONST_TOP,    CONST_TOP)).toBe(true);
-      expect(constLeq(c3,           CONST_TOP)).toBe(true);
+      expect(constLeq(CONST_TOP, CONST_TOP)).toBe(true);
+      expect(constLeq(c3, CONST_TOP)).toBe(true);
       expect(constLeq(CONST_BOTTOM, CONST_TOP)).toBe(true);
     });
     test("const(v) ≤ const(v) for same value", () => {
@@ -137,11 +156,11 @@ describe("ConstAnalysisModule — BinOp folding", () => {
 
   test("int arithmetic ops fold correctly", () => {
     const cases: [string, number][] = [
-      ["10 - 3",  7],
-      ["3 * 4",  12],
-      ["10 / 4",  2.5],
-      ["7 // 2",  3],
-      ["10 % 3",  1],
+      ["10 - 3", 7],
+      ["3 * 4", 12],
+      ["10 / 4", 2.5],
+      ["7 // 2", 3],
+      ["10 % 3", 1],
     ];
     for (const [expr, expected] of cases) {
       const { hints, ast } = analyseConst(`z = ${expr}`);

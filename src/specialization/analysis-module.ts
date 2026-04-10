@@ -25,13 +25,15 @@ export type ConstLattice =
   | { readonly tag: "top" };
 
 export const CONST_BOTTOM: ConstLattice = Object.freeze({ tag: "bottom" as const });
-export const CONST_TOP: ConstLattice    = Object.freeze({ tag: "top"    as const });
-export function constOf(value: ConstValue): ConstLattice { return { tag: "const", value }; }
+export const CONST_TOP: ConstLattice = Object.freeze({ tag: "top" as const });
+export function constOf(value: ConstValue): ConstLattice {
+  return { tag: "const", value };
+}
 
 // ── OptimizationHint — product lattice across all analyses ────────────────────
 
 export interface OptimizationHint {
-  type?:     AbstractValue;
+  type?: AbstractValue;
   constVal?: ConstLattice;
 }
 

@@ -27,7 +27,13 @@ function compileAndRun(code: string): unknown {
   if (errors.length > 0) throw errors[0];
   const compiler = SVMLCompiler.fromProgram(ast, environments);
   const hints: HintTable = new WeakMap();
-  runAnalysisPass(ast.statements, new TypeAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+  runAnalysisPass(
+    ast.statements,
+    new TypeAnalysisModule(),
+    new MutableEnv(),
+    hints,
+    compiler.createSlotLookup(),
+  );
   annotateTree(ast.statements, hints);
   const program = compiler.compileProgram(ast);
   return SVMLInterpreter.toJSValue(new SVMLInterpreter(program).execute());
@@ -98,7 +104,13 @@ describe("[P2] Ternary result type annotation", () => {
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const compiler = SVMLCompiler.fromProgram(ast, environments);
     const hints: HintTable = new WeakMap();
-    runAnalysisPass(ast.statements, new TypeAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+    runAnalysisPass(
+      ast.statements,
+      new TypeAnalysisModule(),
+      new MutableEnv(),
+      hints,
+      compiler.createSlotLookup(),
+    );
 
     const simpleExpr = ast.statements[0] as any;
     const ternary = simpleExpr.expression;
@@ -186,7 +198,13 @@ acc
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const compiler = SVMLCompiler.fromProgram(ast, environments);
     const hints: HintTable = new WeakMap();
-    runAnalysisPass(ast.statements, new TypeAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+    runAnalysisPass(
+      ast.statements,
+      new TypeAnalysisModule(),
+      new MutableEnv(),
+      hints,
+      compiler.createSlotLookup(),
+    );
 
     // The for-loop is stmt[1]. Its body[1] is `acc > 0` (a SimpleExpr).
     const forStmt = ast.statements[1] as any;

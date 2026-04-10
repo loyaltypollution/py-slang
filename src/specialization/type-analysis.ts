@@ -141,11 +141,13 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<AbstractValue> {
     const leftIsBool = left.sound.kinds === BOOL_BIT;
 
     if (expr.operator.type === TokenType.AND) {
-      if (leftIsBool && left.sound.boolRef === BoolRef.False) return this.annotate(expr, falseValue());
+      if (leftIsBool && left.sound.boolRef === BoolRef.False)
+        return this.annotate(expr, falseValue());
       if (leftIsBool && left.sound.boolRef === BoolRef.True) return this.annotate(expr, right);
       return this.annotate(expr, booleanValue(BoolRef.Top));
     } else if (expr.operator.type === TokenType.OR) {
-      if (leftIsBool && left.sound.boolRef === BoolRef.True) return this.annotate(expr, trueValue());
+      if (leftIsBool && left.sound.boolRef === BoolRef.True)
+        return this.annotate(expr, trueValue());
       if (leftIsBool && left.sound.boolRef === BoolRef.False) return this.annotate(expr, right);
       return this.annotate(expr, booleanValue(BoolRef.Top));
     }
@@ -236,11 +238,21 @@ export class TypeAnalysisModule implements AnalysisModule<AbstractValue> {
   readonly direction = "forward" as const;
   readonly field = "type" as const satisfies keyof OptimizationHint;
 
-  top(): AbstractValue { return TOP; }
-  bottom(): AbstractValue { return BOTTOM; }
-  join(a: AbstractValue, b: AbstractValue): AbstractValue { return join(a, b); }
-  meet(a: AbstractValue, b: AbstractValue): AbstractValue { return meet(a, b); }
-  leq(a: AbstractValue, b: AbstractValue): boolean { return leq(a, b); }
+  top(): AbstractValue {
+    return TOP;
+  }
+  bottom(): AbstractValue {
+    return BOTTOM;
+  }
+  join(a: AbstractValue, b: AbstractValue): AbstractValue {
+    return join(a, b);
+  }
+  meet(a: AbstractValue, b: AbstractValue): AbstractValue {
+    return meet(a, b);
+  }
+  leq(a: AbstractValue, b: AbstractValue): boolean {
+    return leq(a, b);
+  }
 
   makeExprVisitor(
     hints: HintTable,

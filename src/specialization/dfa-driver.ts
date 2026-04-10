@@ -1,5 +1,10 @@
 import { ExprNS, StmtNS } from "../ast-types";
-import type { AnalysisModule, ExprTransformRule, HintTable, TransformRule } from "./analysis-module";
+import type {
+  AnalysisModule,
+  ExprTransformRule,
+  HintTable,
+  TransformRule,
+} from "./analysis-module";
 import type { SlotLookup } from "./types";
 
 /**
@@ -301,15 +306,14 @@ function rewriteChild(
 /**
  * Rewrite elements of an expression array in-place, returning true if any changed.
  */
-function rewriteArray(
-  arr: ExprNS.Expr[],
-  rule: ExprTransformRule,
-  hints: HintTable,
-): boolean {
+function rewriteArray(arr: ExprNS.Expr[], rule: ExprTransformRule, hints: HintTable): boolean {
   let changed = false;
   for (let i = 0; i < arr.length; i++) {
     const [el, c] = rewriteExpr(arr[i], rule, hints);
-    if (c) { arr[i] = el; changed = true; }
+    if (c) {
+      arr[i] = el;
+      changed = true;
+    }
   }
   return changed;
 }
@@ -326,7 +330,11 @@ function rewriteExpr(
   let changed = false;
 
   // Recurse into children first (bottom-up)
-  if (expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare || expr instanceof ExprNS.BoolOp) {
+  if (
+    expr instanceof ExprNS.Binary ||
+    expr instanceof ExprNS.Compare ||
+    expr instanceof ExprNS.BoolOp
+  ) {
     changed = rewriteChild(expr, "left", rule, hints) || changed;
     changed = rewriteChild(expr, "right", rule, hints) || changed;
   } else if (expr instanceof ExprNS.Unary) {
@@ -360,11 +368,7 @@ function rewriteExpr(
   return [expr, changed];
 }
 
-function rewriteExprInStmt(
-  stmt: StmtNS.Stmt,
-  rule: ExprTransformRule,
-  hints: HintTable,
-): boolean {
+function rewriteExprInStmt(stmt: StmtNS.Stmt, rule: ExprTransformRule, hints: HintTable): boolean {
   let changed = false;
   if (stmt instanceof StmtNS.Assign) {
     changed = rewriteChild(stmt, "value", rule, hints);
@@ -425,7 +429,9 @@ export function applyTransformPass(
     while (i < stmts.length) {
       if (rule.matches(stmts[i], hints)) {
         if (++matchCount > 10_000) {
-          throw new Error(`applyTransformPass: rule "${rule.name}" exceeded match limit — check that apply() is not producing output that immediately re-matches`);
+          throw new Error(
+            `applyTransformPass: rule "${rule.name}" exceeded match limit — check that apply() is not producing output that immediately re-matches`,
+          );
         }
         const replacements = rule.apply(stmts[i], hints);
         stmts.splice(i, 1, ...replacements);

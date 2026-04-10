@@ -9,9 +9,9 @@ import type { SlotLookup } from "./types";
 export function constLeq(a: ConstLattice, b: ConstLattice): boolean {
   if (a.tag === "bottom") return true;
   if (b.tag === "top") return true;
-  if (a.tag === "top") return false;   // top ≤ b only if b === top (handled above)
+  if (a.tag === "top") return false; // top ≤ b only if b === top (handled above)
   if (b.tag === "bottom") return false;
-  return a.value === b.value;           // const(v) ≤ const(w) iff v === w
+  return a.value === b.value; // const(v) ≤ const(w) iff v === w
 }
 
 export function constJoin(a: ConstLattice, b: ConstLattice): ConstLattice {
@@ -62,7 +62,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ConstLattice {
-    const left  = expr.left.accept(this);
+    const left = expr.left.accept(this);
     const right = expr.right.accept(this);
 
     if (left.tag !== "const" || right.tag !== "const") {
@@ -94,10 +94,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
       }
     }
 
-    if (
-      typeof lv === "string" && typeof rv === "string" &&
-      expr.operator.type === TokenType.PLUS
-    ) {
+    if (typeof lv === "string" && typeof rv === "string" && expr.operator.type === TokenType.PLUS) {
       return this.annotate(expr, constOf(lv + rv));
     }
 
@@ -105,7 +102,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 
   visitCompareExpr(expr: ExprNS.Compare): ConstLattice {
-    const left  = expr.left.accept(this);
+    const left = expr.left.accept(this);
     const right = expr.right.accept(this);
 
     if (left.tag !== "const" || right.tag !== "const") {
@@ -116,13 +113,20 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     const rv = right.value;
 
     switch (expr.operator.type) {
-      case TokenType.LESS:          return this.annotate(expr, constOf(lv <  rv));
-      case TokenType.GREATER:       return this.annotate(expr, constOf(lv >  rv));
-      case TokenType.LESSEQUAL:     return this.annotate(expr, constOf(lv <= rv));
-      case TokenType.GREATEREQUAL:  return this.annotate(expr, constOf(lv >= rv));
-      case TokenType.DOUBLEEQUAL:   return this.annotate(expr, constOf(lv === rv));
-      case TokenType.NOTEQUAL:      return this.annotate(expr, constOf(lv !== rv));
-      default:                      return this.annotate(expr, CONST_TOP);
+      case TokenType.LESS:
+        return this.annotate(expr, constOf(lv < rv));
+      case TokenType.GREATER:
+        return this.annotate(expr, constOf(lv > rv));
+      case TokenType.LESSEQUAL:
+        return this.annotate(expr, constOf(lv <= rv));
+      case TokenType.GREATEREQUAL:
+        return this.annotate(expr, constOf(lv >= rv));
+      case TokenType.DOUBLEEQUAL:
+        return this.annotate(expr, constOf(lv === rv));
+      case TokenType.NOTEQUAL:
+        return this.annotate(expr, constOf(lv !== rv));
+      default:
+        return this.annotate(expr, CONST_TOP);
     }
   }
 
@@ -217,16 +221,26 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
  * DFAStatementDriver runs it correctly without modification.
  */
 export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
-  readonly name      = "const";
-  readonly mergeKind = "may"     as const;
+  readonly name = "const";
+  readonly mergeKind = "may" as const;
   readonly direction = "forward" as const;
-  readonly field     = "constVal" as const satisfies keyof OptimizationHint;
+  readonly field = "constVal" as const satisfies keyof OptimizationHint;
 
-  top():    ConstLattice { return CONST_TOP; }
-  bottom(): ConstLattice { return CONST_BOTTOM; }
-  join(a: ConstLattice, b: ConstLattice): ConstLattice { return constJoin(a, b); }
-  meet(a: ConstLattice, b: ConstLattice): ConstLattice { return constMeet(a, b); }
-  leq(a: ConstLattice,  b: ConstLattice): boolean      { return constLeq(a, b); }
+  top(): ConstLattice {
+    return CONST_TOP;
+  }
+  bottom(): ConstLattice {
+    return CONST_BOTTOM;
+  }
+  join(a: ConstLattice, b: ConstLattice): ConstLattice {
+    return constJoin(a, b);
+  }
+  meet(a: ConstLattice, b: ConstLattice): ConstLattice {
+    return constMeet(a, b);
+  }
+  leq(a: ConstLattice, b: ConstLattice): boolean {
+    return constLeq(a, b);
+  }
 
   makeExprVisitor(
     hints: HintTable,

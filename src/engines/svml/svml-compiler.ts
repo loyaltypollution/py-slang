@@ -97,11 +97,7 @@ export class SVMLCompiler
     const numArgs = node.parameters.length;
     const builder = this.builder.createChildBuilder(numArgs);
 
-    const compiler = new SVMLCompiler(
-      nextEnvironment,
-      this.functionEnvironments,
-      builder,
-    );
+    const compiler = new SVMLCompiler(nextEnvironment, this.functionEnvironments, builder);
     const slotMap = new Map<string, number>();
     compiler.envSlotMaps.set(nextEnvironment, slotMap);
 
@@ -341,21 +337,21 @@ export class SVMLCompiler
 
   // [generic, specialized] opcode pairs, indexed by token type
   private static readonly BINARY_OPCODES = new Map<TokenType, [number, number]>([
-    [TokenType.PLUS,        [OpCodes.ADDG,      OpCodes.ADDF]],
-    [TokenType.MINUS,       [OpCodes.SUBG,      OpCodes.SUBF]],
-    [TokenType.STAR,        [OpCodes.MULG,      OpCodes.MULF]],
-    [TokenType.SLASH,       [OpCodes.DIVG,      OpCodes.DIVF]],
-    [TokenType.PERCENT,     [OpCodes.MODG,      OpCodes.MODF]],
+    [TokenType.PLUS, [OpCodes.ADDG, OpCodes.ADDF]],
+    [TokenType.MINUS, [OpCodes.SUBG, OpCodes.SUBF]],
+    [TokenType.STAR, [OpCodes.MULG, OpCodes.MULF]],
+    [TokenType.SLASH, [OpCodes.DIVG, OpCodes.DIVF]],
+    [TokenType.PERCENT, [OpCodes.MODG, OpCodes.MODF]],
     [TokenType.DOUBLESLASH, [OpCodes.FLOORDIVG, OpCodes.FLOORDIVF]],
   ]);
 
   private static readonly COMPARE_OPCODES = new Map<TokenType, [number, number]>([
-    [TokenType.LESS,         [OpCodes.LTG, OpCodes.LTF]],
-    [TokenType.GREATER,      [OpCodes.GTG, OpCodes.GTF]],
-    [TokenType.LESSEQUAL,    [OpCodes.LEG, OpCodes.LEF]],
+    [TokenType.LESS, [OpCodes.LTG, OpCodes.LTF]],
+    [TokenType.GREATER, [OpCodes.GTG, OpCodes.GTF]],
+    [TokenType.LESSEQUAL, [OpCodes.LEG, OpCodes.LEF]],
     [TokenType.GREATEREQUAL, [OpCodes.GEG, OpCodes.GEF]],
-    [TokenType.DOUBLEEQUAL,  [OpCodes.EQG, OpCodes.EQF]],
-    [TokenType.NOTEQUAL,     [OpCodes.NEQG, OpCodes.NEQF]],
+    [TokenType.DOUBLEEQUAL, [OpCodes.EQG, OpCodes.EQF]],
+    [TokenType.NOTEQUAL, [OpCodes.NEQG, OpCodes.NEQF]],
   ]);
 
   private getBinaryOpCode(operator: Token, specialized = false): number {

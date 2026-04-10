@@ -27,7 +27,13 @@ function analyseTopLevel(code: string): { hints: HintTable; compiler: SVMLCompil
   const compiler = SVMLCompiler.fromProgram(ast, environments);
   const hints: HintTable = new WeakMap();
   const typeEnv = new MutableEnv();
-  runAnalysisPass(ast.statements, new TypeAnalysisModule(), typeEnv, hints, compiler.createSlotLookup());
+  runAnalysisPass(
+    ast.statements,
+    new TypeAnalysisModule(),
+    typeEnv,
+    hints,
+    compiler.createSlotLookup(),
+  );
   return { hints, compiler };
 }
 
@@ -39,7 +45,13 @@ describe("DFA fixpoint driver", () => {
       const { environments } = analyzeWithEnvironments(ast, script, 4);
       const compiler = SVMLCompiler.fromProgram(ast, environments);
       const hints: HintTable = new WeakMap();
-      runAnalysisPass(ast.statements, new TypeAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+      runAnalysisPass(
+        ast.statements,
+        new TypeAnalysisModule(),
+        new MutableEnv(),
+        hints,
+        compiler.createSlotLookup(),
+      );
 
       // The literal 5 is the value in the Assign statement — find it
       const assign = ast.statements[0] as any;
@@ -54,7 +66,13 @@ describe("DFA fixpoint driver", () => {
       const { environments } = analyzeWithEnvironments(ast, script, 4);
       const compiler = SVMLCompiler.fromProgram(ast, environments);
       const hints: HintTable = new WeakMap();
-      runAnalysisPass(ast.statements, new TypeAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+      runAnalysisPass(
+        ast.statements,
+        new TypeAnalysisModule(),
+        new MutableEnv(),
+        hints,
+        compiler.createSlotLookup(),
+      );
 
       const assign = ast.statements[0] as any;
       const lit = assign.value;
@@ -67,7 +85,13 @@ describe("DFA fixpoint driver", () => {
       const { environments } = analyzeWithEnvironments(ast, script, 4);
       const compiler = SVMLCompiler.fromProgram(ast, environments);
       const hints: HintTable = new WeakMap();
-      runAnalysisPass(ast.statements, new TypeAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+      runAnalysisPass(
+        ast.statements,
+        new TypeAnalysisModule(),
+        new MutableEnv(),
+        hints,
+        compiler.createSlotLookup(),
+      );
 
       const assign = ast.statements[0] as any;
       const lit = assign.value;
@@ -83,7 +107,13 @@ describe("DFA fixpoint driver", () => {
       const { environments } = analyzeWithEnvironments(ast, script, 4);
       const compiler = SVMLCompiler.fromProgram(ast, environments);
       const hints: HintTable = new WeakMap();
-      runAnalysisPass(ast.statements, new TypeAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+      runAnalysisPass(
+        ast.statements,
+        new TypeAnalysisModule(),
+        new MutableEnv(),
+        hints,
+        compiler.createSlotLookup(),
+      );
 
       const assign = ast.statements[0] as any;
       const binExpr = assign.value; // 3 + 4
@@ -97,7 +127,13 @@ describe("DFA fixpoint driver", () => {
       const { environments } = analyzeWithEnvironments(ast, script, 4);
       const compiler = SVMLCompiler.fromProgram(ast, environments);
       const hints: HintTable = new WeakMap();
-      runAnalysisPass(ast.statements, new TypeAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+      runAnalysisPass(
+        ast.statements,
+        new TypeAnalysisModule(),
+        new MutableEnv(),
+        hints,
+        compiler.createSlotLookup(),
+      );
 
       const assign = ast.statements[0] as any;
       const binExpr = assign.value;
@@ -196,7 +232,13 @@ for i in [1, 2, 3]:
       const { environments } = analyzeWithEnvironments(ast, script, 4);
       const compiler = SVMLCompiler.fromProgram(ast, environments);
       const hints: HintTable = new WeakMap();
-      runAnalysisPass(ast.statements, new TypeAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+      runAnalysisPass(
+        ast.statements,
+        new TypeAnalysisModule(),
+        new MutableEnv(),
+        hints,
+        compiler.createSlotLookup(),
+      );
 
       // The if condition x > 0 should be annotated
       const ifStmt = ast.statements[1] as any;
@@ -213,7 +255,13 @@ for i in [1, 2, 3]:
       const { environments } = analyzeWithEnvironments(ast, script, 4);
       const compiler = SVMLCompiler.fromProgram(ast, environments);
       const hints: HintTable = new WeakMap();
-      runAnalysisPass(ast.statements, new TypeAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+      runAnalysisPass(
+        ast.statements,
+        new TypeAnalysisModule(),
+        new MutableEnv(),
+        hints,
+        compiler.createSlotLookup(),
+      );
 
       const assign = ast.statements[0] as any;
       const cmp = assign.value;
@@ -226,7 +274,13 @@ for i in [1, 2, 3]:
       const { environments } = analyzeWithEnvironments(ast, script, 4);
       const compiler = SVMLCompiler.fromProgram(ast, environments);
       const hints: HintTable = new WeakMap();
-      runAnalysisPass(ast.statements, new TypeAnalysisModule(), new MutableEnv(), hints, compiler.createSlotLookup());
+      runAnalysisPass(
+        ast.statements,
+        new TypeAnalysisModule(),
+        new MutableEnv(),
+        hints,
+        compiler.createSlotLookup(),
+      );
 
       const assign = ast.statements[0] as any;
       const cmp = assign.value;

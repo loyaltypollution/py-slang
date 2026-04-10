@@ -30,7 +30,13 @@ function compileAndRunSpecialized(code: string): unknown {
   const compiler = SVMLCompiler.fromProgram(ast, environments);
   const hints: HintTable = new WeakMap();
   const typeEnv = new MutableEnv();
-  runAnalysisPass(ast.statements, new TypeAnalysisModule(), typeEnv, hints, compiler.createSlotLookup());
+  runAnalysisPass(
+    ast.statements,
+    new TypeAnalysisModule(),
+    typeEnv,
+    hints,
+    compiler.createSlotLookup(),
+  );
   annotateTree(ast.statements, hints);
 
   const program = compiler.compileProgram(ast);

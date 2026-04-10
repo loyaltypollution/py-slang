@@ -290,11 +290,20 @@ export function transferCompare(
     const rRef = rk === FLOAT_BIT ? right.sound.floatRef : right.sound.intRef;
     let resultRef: BoolRef;
     switch (op) {
-      case ">":  resultRef = gtSigns(lRef, rRef); break;
-      case "<":  resultRef = ltSigns(lRef, rRef); break;
-      case ">=": resultRef = geSigns(lRef, rRef); break;
-      case "<=": resultRef = leSigns(lRef, rRef); break;
-      default:   return boolean(BoolRef.Top);
+      case ">":
+        resultRef = gtSigns(lRef, rRef);
+        break;
+      case "<":
+        resultRef = ltSigns(lRef, rRef);
+        break;
+      case ">=":
+        resultRef = geSigns(lRef, rRef);
+        break;
+      case "<=":
+        resultRef = leSigns(lRef, rRef);
+        break;
+      default:
+        return boolean(BoolRef.Top);
     }
     return boolean(resultRef);
   }
