@@ -2,7 +2,7 @@
 
 // ── Pipeline entry point ─────────────────────────────────────────────────────
 
-export { optimize } from "./optimize";
+export { optimize, createOptimizationSessions } from "./optimize";
 
 // ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
 
@@ -19,8 +19,8 @@ export type {
   StmtTransformRule,
   ExprTransformRule,
 } from "./framework/interfaces";
-export type { OptimizationHint } from "./framework/hint";
-export { HintStore } from "./framework/hint";
+export type { OptimizationHint, HintChangeRecord } from "./framework/hint";
+export { HintStore, hintEquals } from "./framework/hint";
 export {
   MutableEnv,
   runAnalysisPass,
@@ -33,6 +33,11 @@ export {
 export type { BlockId, BasicBlock, CFG } from "./framework/cfg";
 export { buildCFG } from "./framework/cfg";
 export { runCFGOptimization } from "./framework/worklist";
+
+// ── Session (reactive API) ──────────────────────────────────────────────────
+
+export type { OptimizationSubscriber, SessionState } from "./framework/session";
+export { OptimizationSession } from "./framework/session";
 
 // ── Type lattice (codegen reads kind bits + refinements from hints) ──────────
 

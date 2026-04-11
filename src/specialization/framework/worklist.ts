@@ -18,12 +18,12 @@ import { applyTransformPass } from "./transform";
  *   - `null` means "never processed" (distinct from an empty env).
  *   - Seed-only initialization means unreachable blocks stay `null` forever.
  */
-interface AnalysisSession<L> {
+export interface AnalysisSession<L> {
   readonly module: AnalysisModule<L>;
   readonly out: Map<BlockId, MutableEnv<L> | null>;
 }
 
-function makeSession<L>(module: AnalysisModule<L>, cfg: CFG): AnalysisSession<L> {
+export function makeSession<L>(module: AnalysisModule<L>, cfg: CFG): AnalysisSession<L> {
   const out = new Map<BlockId, MutableEnv<L> | null>();
   for (const block of cfg.blocks) {
     out.set(block.id, null);
@@ -277,7 +277,7 @@ function drainWorklist<L>(
  * (const analysis reads type hints); hint fields are disjoint so ordering
  * within a round is safe.
  */
-function drainAllAnalyses(
+export function drainAllAnalyses(
   cfg: CFG,
   sessions: AnalysisSession<any>[],
   hints: HintStore,
