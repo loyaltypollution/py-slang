@@ -3,9 +3,9 @@
 import type { StmtNS } from "../ast-types";
 import type { FunctionEnvironments } from "../resolver";
 import { ConstAnalysisModule } from "./const-analysis/analysis";
-import { stabilizeStatic } from "./framework/dfa-driver";
 import type { FunctionUnit } from "./framework/function-unit";
 import { buildFunctionUnits } from "./framework/function-unit";
+import { runCFGOptimization } from "./framework/worklist";
 import { ConstantFoldingRule } from "./transforms/constant-folding";
 import { DeadBranchEliminationRule } from "./transforms/dead-branch";
 import { TypeAnalysisModule } from "./type-analysis/analysis";
@@ -16,8 +16,9 @@ const transforms = () => [new DeadBranchEliminationRule(), new ConstantFoldingRu
 /**
  * Run the full static optimization pipeline.
  *
- * Builds one FunctionUnit per scope, then runs analyze → transform → re-analyze
- * per unit until stable. Returns the flat map for the compiler to look up hints.
+ * Builds one FunctionUnit per scope, then runs CFG-based worklist DFA
+ * (analyze → transform → rebuild CFG) per unit until stable.
+ * Returns the flat map for the compiler to look up hints.
  */
 export function optimize(
   ast: StmtNS.FileInput,
@@ -25,7 +26,7 @@ export function optimize(
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = buildFunctionUnits(ast, functionEnvironments);
   for (const unit of units.values()) {
-    stabilizeStatic(unit.body, analyses(), transforms(), unit.hints, unit.slotLookup);
+    runCFGOptimization(unit.body, analyses(), transforms(), unit.hints, unit.slotLookup);
   }
   return units;
 }

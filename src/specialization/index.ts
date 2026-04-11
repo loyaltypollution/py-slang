@@ -28,6 +28,12 @@ export {
   stabilizeStatic,
 } from "./framework/dfa-driver";
 
+// ── CFG worklist driver ─────────────────────────────────────────────────────
+
+export type { BlockId, BasicBlock, CFG } from "./framework/cfg";
+export { buildCFG } from "./framework/cfg";
+export { runCFGOptimization } from "./framework/worklist";
+
 // ── Type lattice (codegen reads kind bits + refinements from hints) ──────────
 
 export type { TypeLattice } from "./type-analysis/lattice";

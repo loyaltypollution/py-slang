@@ -36,6 +36,8 @@ export class MutableEnv<L> {
   /**
    * In-place join: for each slot, replace with join(this[i], other[i]).
    * Used at merge points (if/else branches, loop header widening).
+   *
+   * Missing slots are treated as ⊥ (identity for join): join(⊥, x) = x.
    */
   joinWith(other: MutableEnv<L>, joinFn: (a: L, b: L) => L): void {
     const len = Math.max(this.slots.length, other.slots.length);
@@ -47,6 +49,29 @@ export class MutableEnv<L> {
       } else {
         this.slots[i] = a ?? b;
       }
+    }
+  }
+
+  /**
+   * In-place meet: for each slot, replace with meet(this[i], other[i]).
+   * Used at merge points for must-analyses.
+   *
+   * Missing slots are treated as ⊤ (identity for meet): meet(⊤, x) = x.
+   * When both are missing, the slot stays undefined.
+   */
+  meetWith(other: MutableEnv<L>, meetFn: (a: L, b: L) => L, top: L): void {
+    const len = Math.max(this.slots.length, other.slots.length);
+    for (let i = 0; i < len; i++) {
+      const a = this.slots[i];
+      const b = other.slots[i];
+      if (a !== undefined && b !== undefined) {
+        this.slots[i] = meetFn(a, b);
+      } else if (a !== undefined) {
+        this.slots[i] = meetFn(a, top);
+      } else if (b !== undefined) {
+        this.slots[i] = meetFn(top, b);
+      }
+      // both undefined → stays undefined
     }
   }
 
