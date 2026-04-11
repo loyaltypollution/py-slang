@@ -11,7 +11,7 @@ import {
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { optimize } from "../specialization";
+import { HintStore, optimize } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import pairmutator from "../stdlib/pairmutator";
@@ -79,11 +79,15 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         throw errors[errors.length - 1];
       }
 
-      // Run optimization and attach hints to context for stepper visualization
+      // Run optimization and attach merged hints to context for stepper visualization
+      this.context.runtime.optimizationHints = undefined;
       const units = optimize(ast, environments);
-      const rootUnit = units.get(ast);
-      if (rootUnit) {
-        this.context.runtime.optimizationHints = rootUnit.hints;
+      if (units.size > 0) {
+        const merged = new HintStore();
+        for (const unit of units.values()) {
+          unit.hints.mergeInto(merged);
+        }
+        this.context.runtime.optimizationHints = merged;
       }
 
       await evaluate("", ast, this.context, {

@@ -289,7 +289,9 @@ export async function* generateCSEMachineStateStream(
     }
     control.pop();
 
+    let commandIsNode = false;
     if (isNode(command)) {
+      commandIsNode = true;
       const node = command as Node;
       const nodeType = node.constructor.name;
 
@@ -326,9 +328,14 @@ export async function* generateCSEMachineStateStream(
       context.runtime.envStepsTotal = steps;
     }
 
-    const currentNode = context.runtime.nodes[0] as (ExprNS.Expr | StmtNS.Stmt) | undefined;
-    const hint: OptimizationHint | undefined =
-      currentNode ? context.runtime.optimizationHints?.get(currentNode) : undefined;
+    // Only look up hints when the processed command was a node.
+    // For instruction steps, nodes[0] holds the most recently executed node,
+    // not the current instruction, so the hint would be misattributed.
+    let hint: OptimizationHint | undefined;
+    if (commandIsNode) {
+      const currentNode = context.runtime.nodes[0] as (ExprNS.Expr | StmtNS.Stmt) | undefined;
+      hint = currentNode ? context.runtime.optimizationHints?.get(currentNode) : undefined;
+    }
 
     yield { stash, control, steps, hint };
   }

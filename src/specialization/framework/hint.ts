@@ -71,6 +71,23 @@ export class HintStore {
     return true;
   }
 
+  /** Copy all entries from this store into `target`, overwriting on conflict. */
+  mergeInto(target: HintStore): void {
+    for (const [id, hint] of this.map) {
+      target.setById(id, hint);
+    }
+  }
+
+  /** Set a hint by raw node id (used by mergeInto). Returns true if value changed. */
+  setById(id: number, hint: OptimizationHint): boolean {
+    const old = this.map.get(id);
+    if (old !== undefined && hintEquals(old, hint)) return false;
+    this._version++;
+    this._changes.push({ nodeId: id, version: this._version, oldHint: old, newHint: hint });
+    this.map.set(id, hint);
+    return true;
+  }
+
   /** Returns all changes since the given version (exclusive). */
   changesSince(version: number): ReadonlyArray<HintChangeRecord> {
     // Binary search for the first change with version > requested

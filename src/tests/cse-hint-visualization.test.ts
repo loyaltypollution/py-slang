@@ -21,11 +21,14 @@ function parseOptimizeAndAttach(code: string): { context: Context; ast: StmtNS.F
   if (errors.length > 0) throw errors[0];
 
   const units = optimize(ast, environments);
-  const rootUnit = units.get(ast);
 
   const context = new Context(ast);
-  if (rootUnit) {
-    context.runtime.optimizationHints = rootUnit.hints;
+  if (units.size > 0) {
+    const merged = new HintStore();
+    for (const unit of units.values()) {
+      unit.hints.mergeInto(merged);
+    }
+    context.runtime.optimizationHints = merged;
   }
   return { context, ast };
 }
@@ -70,6 +73,47 @@ describe("CSE hint visualization: hints on context", () => {
     const { context } = parseOptimizeAndAttach("x = 1\ny = x + 2\nz = y * 3");
     expect(context.runtime.optimizationHints).toBeInstanceOf(HintStore);
     expect(context.runtime.optimizationHints!.version).toBeGreaterThan(0);
+  });
+});
+
+// ── 1b. Nested function scope hints ─────────────────────────────────────────
+
+describe("CSE hint visualization: nested function scopes", () => {
+  test("hints are available for nodes inside function bodies", () => {
+    const { context, ast } = parseOptimizeAndAttach(
+      "def f():\n    return 1 + 2\nf()",
+    );
+    const hints = context.runtime.optimizationHints;
+    expect(hints).toBeInstanceOf(HintStore);
+
+    // Find the FunctionDef's body: the BinOp (1 + 2) inside return
+    const funcDef = ast.statements[0] as StmtNS.FunctionDef;
+    const returnStmt = funcDef.body[0] as StmtNS.Return;
+    const binOp = returnStmt.value!;
+
+    const hint = hints!.get(binOp);
+    expect(hint).toBeDefined();
+    expect(hint!.type).toBeDefined();
+  });
+
+  test("merged hints include both root and function scope entries", () => {
+    const { context, ast } = parseOptimizeAndAttach(
+      "x = 10\ndef g():\n    return x + 5\ng()",
+    );
+    const hints = context.runtime.optimizationHints!;
+    expect(hints.version).toBeGreaterThan(0);
+
+    // Root scope: the literal 10
+    const assignStmt = ast.statements[0] as StmtNS.Assign;
+    const rootHint = hints.get(assignStmt.value);
+    expect(rootHint).toBeDefined();
+
+    // Function scope: the BinOp (x + 5) inside return
+    const funcDef = ast.statements[1] as StmtNS.FunctionDef;
+    const returnStmt = funcDef.body[0] as StmtNS.Return;
+    const binOp = returnStmt.value!;
+    const fnHint = hints.get(binOp);
+    expect(fnHint).toBeDefined();
   });
 });
 
