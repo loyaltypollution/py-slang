@@ -9,6 +9,7 @@
 import { ErrorType } from "@sourceacademy/conductor/common";
 import { ExprNS, StmtNS } from "../../ast-types";
 import * as error from "../../errors/errors";
+import type { OptimizationHint } from "../../specialization";
 import { BuiltinReassignmentError, UnsupportedOperandTypeError } from "../../errors/errors";
 import { builtIns, toPythonString } from "../../stdlib";
 import { Group } from "../../stdlib/utils";
@@ -325,7 +326,11 @@ export async function* generateCSEMachineStateStream(
       context.runtime.envStepsTotal = steps;
     }
 
-    yield { stash, control, steps };
+    const currentNode = context.runtime.nodes[0] as (ExprNS.Expr | StmtNS.Stmt) | undefined;
+    const hint: OptimizationHint | undefined =
+      currentNode ? context.runtime.optimizationHints?.get(currentNode) : undefined;
+
+    yield { stash, control, steps, hint };
   }
 }
 
