@@ -79,6 +79,17 @@ export class SVMLInterpreter {
   }
 
   /**
+   * Replace the program between executions (e.g., after JIT recompilation).
+   * Throws if called while the interpreter is mid-execution.
+   */
+  replaceProgram(newProgram: SVMLProgram): void {
+    if (this.currentFrame !== null) {
+      throw new Error("Cannot replace program while interpreter is executing");
+    }
+    this.program = newProgram;
+  }
+
+  /**
    * Execute the program and return the result
    */
   execute(): SVMLBoxType {
@@ -547,9 +558,15 @@ export class SVMLInterpreter {
     }
 
     // Return top of stack or undefined
-    return this.currentFrame && this.currentFrame.stack.length > 0
-      ? this.currentFrame.stack[this.currentFrame.stack.length - 1]
-      : undefined;
+    const result =
+      this.currentFrame && this.currentFrame.stack.length > 0
+        ? this.currentFrame.stack[this.currentFrame.stack.length - 1]
+        : undefined;
+
+    // Clear execution state so replaceProgram() can be called between runs
+    this.currentFrame = null;
+
+    return result;
   }
 
   // ========================================================================

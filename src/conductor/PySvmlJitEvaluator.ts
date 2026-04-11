@@ -9,11 +9,10 @@ import { EvaluatorError } from "./errors";
 /**
  * JIT-capable SVML evaluator using the reactive optimization API.
  *
- * Currently functionally identical to PySvmlEvaluator — uses
- * createReactiveOptimization + converge() which is equivalent to the
- * one-shot optimize() path. The reactive infrastructure is wired up
- * but subscription-based recompilation is deferred until Gap 2
- * (interpreter program swap) is implemented.
+ * Uses createReactiveOptimization + converge() for the initial static pass,
+ * then wires a subscription that recompiles changed functions and swaps the
+ * program into the interpreter via replaceProgram(). The subscription fires
+ * on subsequent tick() calls (future use for runtime-driven re-optimization).
  */
 export class PySvmlJitEvaluator extends BasicEvaluator {
   evaluateChunk(chunk: string): Promise<void> {
@@ -32,16 +31,28 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units);
       const program = compiler.compileProgram(ast);
 
-      // TODO: subscribe to reactive changes for recompilation
-      // const scopeMap = compiler.scopeIndexMap;
-      // reactive.subscribe(changed => {
-      //   const newProgram = recompileChanged(program, changed, scopeMap, reactive.units);
-      //   interpreter.replaceProgram(newProgram);  // Gap 2
-      // });
+      const scopeMap = compiler.scopeIndexMap;
+      let currentProgram = program;
 
-      const interpreter = new SVMLInterpreter(program, {
+      const interpreter = new SVMLInterpreter(currentProgram, {
         sendOutput: this.conductor.sendOutput,
       });
+
+      reactive.subscribe(changed => {
+        // Recompile entire program to get fresh IR
+        const freshCompiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units);
+        const freshProgram = freshCompiler.compileProgram(ast);
+
+        // Extract only the changed functions' IR
+        for (const key of changed) {
+          const idx = scopeMap?.getIndex(key);
+          if (idx !== undefined) {
+            currentProgram = currentProgram.withSpecializedFunction(idx, freshProgram.functions[idx]);
+          }
+        }
+        interpreter.replaceProgram(currentProgram);
+      });
+
       const returnValue = interpreter.execute();
       this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
     } catch (e) {
