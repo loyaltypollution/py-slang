@@ -39,17 +39,17 @@ function incomingBlocks(block: BasicBlock, direction: "forward" | "backward"): B
 }
 
 /** Blocks to propagate to when this block's OUT changes (successors for forward, predecessors for backward). */
-function outgoingBlocks(block: BasicBlock, direction: "forward" | "backward"): BasicBlock[] {
+export function outgoingBlocks(block: BasicBlock, direction: "forward" | "backward"): BasicBlock[] {
   return direction === "forward" ? block.successors : block.predecessors;
 }
 
 /** The seed block: entry for forward, exit for backward. */
-function seedBlock(cfg: CFG, direction: "forward" | "backward"): BasicBlock {
+export function seedBlock(cfg: CFG, direction: "forward" | "backward"): BasicBlock {
   return direction === "forward" ? cfg.entry : cfg.exit;
 }
 
 /** The sentinel block that should never be transferred: exit for forward, entry for backward. */
-function sentinelBlock(cfg: CFG, direction: "forward" | "backward"): BasicBlock {
+export function sentinelBlock(cfg: CFG, direction: "forward" | "backward"): BasicBlock {
   return direction === "forward" ? cfg.exit : cfg.entry;
 }
 
@@ -61,7 +61,7 @@ function sentinelBlock(cfg: CFG, direction: "forward" | "backward"): BasicBlock 
  * - may-analysis: uses join (incoming missing slots = ⊥, identity for join)
  * - must-analysis: uses meet (incoming missing slots = ⊤, identity for meet)
  */
-function mergeInto<L>(
+export function mergeInto<L>(
   acc: MutableEnv<L>,
   incoming: MutableEnv<L>,
   module: AnalysisModule<L>,
@@ -77,7 +77,7 @@ function mergeInto<L>(
  * Compute the IN environment for `block` by merging incoming block OUTs.
  * Incoming blocks with `null` OUT (never processed) are skipped.
  */
-function computeBlockIN<L>(
+export function computeBlockIN<L>(
   block: BasicBlock,
   session: AnalysisSession<L>,
 ): MutableEnv<L> {
@@ -197,7 +197,7 @@ function transferStmt<L>(
  * Forward analysis processes statements top-to-bottom.
  * Backward analysis processes statements bottom-to-top.
  */
-function transferBlock<L>(
+export function transferBlock<L>(
   block: BasicBlock,
   inEnv: MutableEnv<L>,
   session: AnalysisSession<L>,
@@ -296,6 +296,8 @@ export function drainAllAnalyses(
  *
  * Repeats until no transform fires or `maxRounds` is reached.
  * After the final round, one last analysis pass annotates all surviving nodes.
+ *
+ * @deprecated Use OptimizationSession.converge() instead. Retained for differential testing.
  */
 export function runCFGOptimization(
   stmts: StmtNS.Stmt[],
