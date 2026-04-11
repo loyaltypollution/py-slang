@@ -10,7 +10,8 @@ import {
   displayError,
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
-import { analyze } from "../resolver/analysis";
+import { analyzeWithEnvironments } from "../resolver";
+import { optimize } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import pairmutator from "../stdlib/pairmutator";
@@ -67,13 +68,22 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
 
       const script = chunk + "\n";
       const ast = parse(script);
-      const errors = analyze(ast, script, this.variant, this.groups);
+      const { errors, environments } = analyzeWithEnvironments(
+        ast, script, this.variant, this.groups,
+      );
 
       if (errors.length > 0) {
         for (const error of errors.slice(0, -1)) {
           await displayError(this.context, error, ErrorType.EVALUATOR_SYNTAX);
         }
         throw errors[errors.length - 1];
+      }
+
+      // Run optimization and attach hints to context for stepper visualization
+      const units = optimize(ast, environments);
+      const rootUnit = units.get(ast);
+      if (rootUnit) {
+        this.context.runtime.optimizationHints = rootUnit.hints;
       }
 
       await evaluate("", ast, this.context, {
