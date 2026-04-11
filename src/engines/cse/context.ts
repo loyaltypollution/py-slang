@@ -1,5 +1,6 @@
 import { ConductorError } from "@sourceacademy/conductor/common";
 import { StmtNS } from "../../ast-types";
+import { HintStore } from "../../specialization";
 import { ModuleContext, NativeStorage } from "../../types";
 import { Control } from "./control";
 import { Environment } from "./environment";
@@ -41,6 +42,7 @@ export class Context {
     envStepsTotal: number;
     breakpointSteps: number[];
     changepointSteps: number[];
+    optimizationHints?: HintStore;
   };
 
   /**
