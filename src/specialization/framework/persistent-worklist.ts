@@ -163,11 +163,11 @@ export class PersistentWorklist {
           this._analysisItemsProcessed++;
         }
       } else {
-        this.processTransform(changed);
-        processed++;
-        this._itemsProcessed++;
-        this._transformItemsProcessed++;
-        this._transformRounds++;
+        if (this.processTransform(changed)) {
+          processed++;
+          this._itemsProcessed++;
+          this._transformItemsProcessed++;
+        }
       }
     }
 
@@ -266,7 +266,11 @@ export class PersistentWorklist {
 
   // ── Internal: transform processing ────────────────────────────────────────
 
-  private processTransform(changed: Set<ScopeKey>): void {
+  /**
+   * Process one item from the transform queue.
+   * Returns true if the item was current (processed), false if stale (skipped).
+   */
+  private processTransform(changed: Set<ScopeKey>): boolean {
     const item = this.transformQueue[this.transformHead++];
 
     // Compact
@@ -276,7 +280,7 @@ export class PersistentWorklist {
     }
 
     const state = this.scopes.get(item.scopeKey);
-    if (!state || item.generation !== state.generation) return; // stale
+    if (!state || item.generation !== state.generation) return false; // stale
 
     let anyChanged = false;
     for (const rule of this.transforms) {
@@ -287,10 +291,13 @@ export class PersistentWorklist {
     state.unit.hintVersionSnapshot = state.unit.hints.version;
 
     if (anyChanged) {
+      this._transformRounds++;
       state.unit.structuralVersion++;
       changed.add(item.scopeKey);
       this.rebuildAndReseed(item.scopeKey, state);
     }
+
+    return true;
   }
 
   // ── Internal: seeding helpers ─────────────────────────────────────────────
