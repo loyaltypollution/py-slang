@@ -35,14 +35,14 @@ function analyseTopLevel(code: string): { hints: HintStore; ast: StmtNS.FileInpu
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const env = environments.get(ast)!;
-  const slotTable = buildSlotTable(env, []);
+  const slotLookup = buildSlotTable(env, []);
   const hints = new HintStore();
   runAnalysisPass(
     ast.statements,
     new TypeAnalysisModule(),
     new MutableEnv(),
     hints,
-    slotTable.lookup,
+    slotLookup,
   );
   return { hints, ast };
 }

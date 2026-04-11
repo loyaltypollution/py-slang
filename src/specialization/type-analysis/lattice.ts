@@ -44,8 +44,6 @@ export interface TypeLattice {
   readonly floatRef: IntRef; // reuses IntRef enum for sign refinement
 }
 
-export type TypeEnv = ReadonlyMap<number, TypeLattice>;
-
 // ---- Lattice operations (pure bitwise) ----
 
 export function joinIntRef(a: IntRef, b: IntRef): IntRef {

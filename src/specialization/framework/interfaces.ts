@@ -1,5 +1,5 @@
 import type { ExprNS, StmtNS } from "../../ast-types";
-import type { SlotLookup } from "../types";
+import type { SlotLookup } from "./slot-table";
 import type { HintStore } from "./hint";
 
 export interface StmtTransformRule {
@@ -37,7 +37,7 @@ export interface AnalysisModule<L> {
    */
   makeExprVisitor(
     hints: HintStore,
-    env: readonly (L | undefined)[],
+    env: { get(slot: number): L | undefined },
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<L>;
 }

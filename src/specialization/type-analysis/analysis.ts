@@ -28,7 +28,7 @@ import {
 import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
 import type { AnalysisModule } from "../framework/interfaces";
 import type { HintStore } from "../framework/hint";
-import type { SlotLookup } from "../types";
+import type { SlotLookup } from "../framework/slot-table";
 
 /**
  * Maps Python binary operator token types to the string expected by transfer functions.
@@ -60,7 +60,7 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
 export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
     private readonly hints: HintStore,
-    private readonly slotTypes: readonly (TypeLattice | undefined)[],
+    private readonly slotTypes: { get(slot: number): TypeLattice | undefined },
     private readonly slotLookup: SlotLookup,
   ) {}
 
@@ -98,7 +98,7 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     const info = this.slotLookup(expr.name);
     if (info.isPrimitive) return this.annotate(expr, TOP);
     if (info.envLevel === 0) {
-      const slotInfo = this.slotTypes[info.slot] ?? TOP;
+      const slotInfo = this.slotTypes.get(info.slot) ?? TOP;
       return this.annotate(expr, slotInfo);
     }
     return this.annotate(expr, TOP);
@@ -256,7 +256,7 @@ export class TypeAnalysisModule implements AnalysisModule<TypeLattice> {
 
   makeExprVisitor(
     hints: HintStore,
-    env: readonly (TypeLattice | undefined)[],
+    env: { get(slot: number): TypeLattice | undefined },
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<TypeLattice> {
     return new TypeAnalysisVisitor(hints, env, slotLookup);

@@ -1,35 +1,25 @@
 import type { Environment } from "../../resolver";
 import type { Token } from "../../tokenizer";
-import type { SlotInfo, SlotLookup } from "../types";
 
-/**
- * Pre-computed, immutable slot assignment for a single function scope.
- *
- * Replaces the lazy getOrAssignSlot path in SVMLCompiler for analysis.
- * Both the DFA and compiler consume the same SlotTable, ensuring identical
- * slot numbering without coupling analysis to a specific engine.
- */
-export interface SlotTable {
-  /** Local variable name → SlotInfo. Frozen after construction. */
-  readonly slots: ReadonlyMap<string, SlotInfo>;
-  /** SlotLookup callback for the DFA framework. */
-  readonly lookup: SlotLookup;
+export interface SlotInfo {
+  slot: number;
+  envLevel: number;
+  isPrimitive: boolean;
 }
 
+export type SlotLookup = (token: Token) => SlotInfo;
+
 /**
- * Build a SlotTable for a function scope.
+ * Build a SlotLookup for a function scope.
  *
  * Parameters get slots 0..n-1, remaining local variables get n..m.
  * Non-local variables are resolved via the environment chain at lookup time
  * (the DFA treats them as TOP; the compiler handles them independently).
- *
- * @param env        - The Environment for this scope (from the resolver)
- * @param paramNames - Parameter names in declaration order
  */
 export function buildSlotTable(
   env: Environment,
   paramNames: string[],
-): SlotTable {
+): SlotLookup {
   const slots = new Map<string, SlotInfo>();
 
   // Parameters: slots 0..n-1
@@ -45,7 +35,7 @@ export function buildSlotTable(
     }
   }
 
-  const lookup: SlotLookup = (token: Token): SlotInfo => {
+  return (token: Token): SlotInfo => {
     const name = token.lexeme;
 
     // Fast path: local variable
@@ -67,6 +57,4 @@ export function buildSlotTable(
     const envLevel = env.lookupNameByString(name);
     return { slot: 0, envLevel, isPrimitive: false };
   };
-
-  return { slots, lookup };
 }

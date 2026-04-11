@@ -6,9 +6,9 @@ export { optimize } from "./optimize";
 
 // ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
 
-export type { FunctionUnit, ScopeNode } from "./framework/function-unit";
-export { buildFunctionUnits, flattenUnits } from "./framework/function-unit";
-export type { SlotTable } from "./framework/slot-table";
+export type { FunctionUnit } from "./framework/function-unit";
+export { buildFunctionUnits } from "./framework/function-unit";
+export type { SlotInfo, SlotLookup } from "./framework/slot-table";
 export { buildSlotTable } from "./framework/slot-table";
 
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
@@ -19,7 +19,7 @@ export type {
   StmtTransformRule,
   ExprTransformRule,
 } from "./framework/interfaces";
-export type { OptimizationHint, PyASTNode } from "./framework/hint";
+export type { OptimizationHint } from "./framework/hint";
 export { HintStore } from "./framework/hint";
 export {
   MutableEnv,
@@ -27,10 +27,6 @@ export {
   runMultiAnalysisPasses,
   stabilizeStatic,
 } from "./framework/dfa-driver";
-
-// ── Bridge types (compiler ↔ analysis) ───────────────────────────────────────
-
-export type { SlotInfo, SlotLookup } from "./types";
 
 // ── Type lattice (codegen reads kind bits + refinements from hints) ──────────
 

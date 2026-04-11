@@ -1,7 +1,7 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { AnalysisModule, TransformRule } from "./interfaces";
 import type { HintStore } from "./hint";
-import type { SlotLookup } from "../types";
+import type { AnalysisModule, TransformRule } from "./interfaces";
+import type { SlotLookup } from "./slot-table";
 import { applyTransformPass } from "./transform";
 
 /**
@@ -66,9 +66,6 @@ export class MutableEnv<L> {
     return true;
   }
 
-  toArray(): (L | undefined)[] {
-    return this.slots.slice();
-  }
 }
 
 /**
@@ -90,10 +87,9 @@ class DFAStatementDriver<L> implements StmtNS.Visitor<void> {
   ) {}
 
   private visitExpr(expr: ExprNS.Expr): L {
-    // Fresh visitor snapshot: captures current typeEnv state at call time.
     const visitor = this.module.makeExprVisitor(
       this.hints,
-      this.typeEnv.toArray(),
+      this.typeEnv,
       this.slotLookup,
     );
     return expr.accept(visitor);

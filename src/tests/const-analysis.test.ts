@@ -39,14 +39,14 @@ function analyseConst(code: string): {
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const env = environments.get(ast)!;
-  const slotTable = buildSlotTable(env, []);
+  const slotLookup = buildSlotTable(env, []);
   const hints = new HintStore();
   runAnalysisPass(
     ast.statements,
     new ConstAnalysisModule(),
     new MutableEnv(),
     hints,
-    slotTable.lookup,
+    slotLookup,
   );
   return { hints, ast };
 }
@@ -59,7 +59,7 @@ function analyseBoth(code: string): {
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const env = environments.get(ast)!;
-  const slotTable = buildSlotTable(env, []);
+  const slotLookup = buildSlotTable(env, []);
   const hints = new HintStore();
   runMultiAnalysisPasses(
     ast.statements,
@@ -68,7 +68,7 @@ function analyseBoth(code: string): {
       { module: new ConstAnalysisModule(), env: new MutableEnv() },
     ],
     hints,
-    slotTable.lookup,
+    slotLookup,
   );
   return { hints, ast };
 }

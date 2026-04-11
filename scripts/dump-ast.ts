@@ -15,7 +15,6 @@ import fs from "fs";
 import { ExprNS, StmtNS } from "../src/ast-types";
 import { parse } from "../src/parser/parser-adapter";
 import { analyzeWithEnvironments } from "../src/resolver";
-import { SVMLCompiler } from "../src/engines/svml/svml-compiler";
 import { optimize } from "../src/specialization";
 
 // ── CLI ──────────────────────────────────────────────────────────────
@@ -243,8 +242,7 @@ if (errors.length > 0) {
   for (const e of errors) console.error(" ", String(e));
   process.exit(1);
 }
-const compiler = SVMLCompiler.fromProgram(ast, environments);
-optimize(ast.statements, compiler.createSlotLookup());
+optimize(ast, environments);
 
 const after = new DotGraph("a");
 for (const s of ast.statements) emitStmt(s, after);

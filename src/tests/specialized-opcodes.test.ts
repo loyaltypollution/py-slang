@@ -25,8 +25,8 @@ function compileAndRunSpecialized(code: string): unknown {
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
 
-  const rootUnit = optimize(ast, environments);
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, rootUnit);
+  const units = optimize(ast, environments);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units);
   const program = compiler.compileProgram(ast);
   const interpreter = new SVMLInterpreter(program);
   return SVMLInterpreter.toJSValue(interpreter.execute());

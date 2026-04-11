@@ -2,7 +2,7 @@ import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { AnalysisModule } from "../framework/interfaces";
 import type { HintStore } from "../framework/hint";
-import type { SlotLookup } from "../types";
+import type { SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
   CONST_BOTTOM,
@@ -20,7 +20,7 @@ export { constLeq, constJoin, constMeet };
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
     private readonly hints: HintStore,
-    private readonly constEnv: readonly (ConstLattice | undefined)[],
+    private readonly constEnv: { get(slot: number): ConstLattice | undefined },
     private readonly slotLookup: SlotLookup,
   ) {}
 
@@ -45,7 +45,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   visitVariableExpr(expr: ExprNS.Variable): ConstLattice {
     const info = this.slotLookup(expr.name);
     if (info.isPrimitive || info.envLevel !== 0) return this.annotate(expr, CONST_TOP);
-    return this.annotate(expr, this.constEnv[info.slot] ?? CONST_TOP);
+    return this.annotate(expr, this.constEnv.get(info.slot) ?? CONST_TOP);
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ConstLattice {
@@ -230,7 +230,7 @@ export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
 
   makeExprVisitor(
     hints: HintStore,
-    env: readonly (ConstLattice | undefined)[],
+    env: { get(slot: number): ConstLattice | undefined },
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<ConstLattice> {
     return new ConstAnalysisVisitor(hints, env, slotLookup);

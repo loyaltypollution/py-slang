@@ -2,13 +2,13 @@
 
 import type { StmtNS } from "../ast-types";
 import type { FunctionEnvironments } from "../resolver";
+import { ConstAnalysisModule } from "./const-analysis/analysis";
 import { stabilizeStatic } from "./framework/dfa-driver";
 import type { FunctionUnit } from "./framework/function-unit";
 import { buildFunctionUnits } from "./framework/function-unit";
-import { TypeAnalysisModule } from "./type-analysis/analysis";
-import { ConstAnalysisModule } from "./const-analysis/analysis";
 import { ConstantFoldingRule } from "./transforms/constant-folding";
 import { DeadBranchEliminationRule } from "./transforms/dead-branch";
+import { TypeAnalysisModule } from "./type-analysis/analysis";
 
 const analyses = () => [new TypeAnalysisModule(), new ConstAnalysisModule()];
 const transforms = () => [new DeadBranchEliminationRule(), new ConstantFoldingRule()];
@@ -16,31 +16,16 @@ const transforms = () => [new DeadBranchEliminationRule(), new ConstantFoldingRu
 /**
  * Run the full static optimization pipeline.
  *
- * Builds a FunctionUnit tree (one per scope), then runs
- * analyze → transform → re-analyze per unit until stable.
- *
- * Returns the root FunctionUnit. Consumers pull hints per-unit.
+ * Builds one FunctionUnit per scope, then runs analyze → transform → re-analyze
+ * per unit until stable. Returns the flat map for the compiler to look up hints.
  */
 export function optimize(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
-): FunctionUnit {
-  const root = buildFunctionUnits(ast, functionEnvironments);
-  optimizeUnit(root);
-  return root;
-}
-
-function optimizeUnit(unit: FunctionUnit): void {
-  stabilizeStatic(
-    unit.body,
-    analyses(),
-    transforms(),
-    unit.hints,
-    unit.slotTable.lookup,
-  );
-  unit.version = 1;
-
-  for (const child of unit.children) {
-    optimizeUnit(child);
+): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
+  const units = buildFunctionUnits(ast, functionEnvironments);
+  for (const unit of units.values()) {
+    stabilizeStatic(unit.body, analyses(), transforms(), unit.hints, unit.slotLookup);
   }
+  return units;
 }

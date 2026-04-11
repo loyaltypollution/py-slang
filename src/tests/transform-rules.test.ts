@@ -29,14 +29,14 @@ function optimise(code: string): StmtNS.Stmt[] {
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const env = environments.get(ast)!;
-  const slotTable = buildSlotTable(env, []);
+  const slotLookup = buildSlotTable(env, []);
   const hints = new HintStore();
   stabilizeStatic(
     ast.statements,
     [new TypeAnalysisModule(), new ConstAnalysisModule()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule()],
     hints,
-    slotTable.lookup,
+    slotLookup,
   );
   return ast.statements;
 }

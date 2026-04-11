@@ -31,8 +31,8 @@ function compileAndRun(code: string): unknown {
   const ast = parse(script);
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
-  const rootUnit = optimize(ast, environments);
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, rootUnit);
+  const units = optimize(ast, environments);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units);
   const program = compiler.compileProgram(ast);
   return SVMLInterpreter.toJSValue(new SVMLInterpreter(program).execute());
 }
@@ -100,7 +100,8 @@ describe("[P2] Ternary result type annotation", () => {
     const script = "(5 if True else -3)\n";
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const rootUnit = optimize(ast, environments);
+    const units = optimize(ast, environments);
+    const rootUnit = units.get(ast)!;
 
     const simpleExpr = ast.statements[0] as any;
     const ternary = simpleExpr.expression;
@@ -132,14 +133,14 @@ describe("[P2] stabilizeStatic wiring", () => {
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const env = environments.get(ast)!;
-    const slotTable = buildSlotTable(env, []);
+    const slotLookup = buildSlotTable(env, []);
     const hints = new HintStore();
     stabilizeStatic(
       ast.statements,
       [new TypeAnalysisModule(), new ConstAnalysisModule()],
       [new DeadBranchEliminationRule(), new ConstantFoldingRule()],
       hints,
-      slotTable.lookup,
+      slotLookup,
     );
     // After folding, the SimpleExpr should contain a Literal(3)
     const { ExprNS } = require("../ast-types");
@@ -187,7 +188,8 @@ acc
     const script = "acc = 0\nfor i in [1, 2, 3]:\n    acc = acc + i\n    acc > 0\n";
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const rootUnit = optimize(ast, environments);
+    const units = optimize(ast, environments);
+    const rootUnit = units.get(ast)!;
 
     // The for-loop is stmt[1]. Its body[1] is `acc > 0` (a SimpleExpr).
     const forStmt = ast.statements[1] as any;

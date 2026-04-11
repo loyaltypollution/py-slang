@@ -1,14 +1,8 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
-import type {
-  OptimizationHint,
-  PyASTNode,
-  SlotInfo,
-  SlotLookup,
-} from "../../specialization";
+import type { OptimizationHint } from "../../specialization";
 import type { HintStore } from "../../specialization/framework/hint";
-import type { FunctionUnit, ScopeNode } from "../../specialization/framework/function-unit";
-import { flattenUnits } from "../../specialization/framework/function-unit";
+import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
 import { Token } from "../../tokenizer";
 import { TokenType } from "../../tokens";
@@ -41,7 +35,7 @@ export class SVMLCompiler
   private functionEnvironments: FunctionEnvironments;
   private isTailCall: boolean;
   private hints: HintStore | undefined;
-  private unitIndex?: Map<ScopeNode, FunctionUnit>;
+  private unitMap?: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
 
   private tokenAnnotations = new WeakMap<Token, CompilerAnnotation>();
   private envSlotCounters = new WeakMap<Environment, number>();
@@ -71,8 +65,8 @@ export class SVMLCompiler
     this.hints = hints;
   }
 
-  private getHint(node: PyASTNode): OptimizationHint | undefined {
-    return this.hints?.getById(node.id);
+  private getHint(node: ExprNS.Expr | StmtNS.Stmt): OptimizationHint | undefined {
+    return this.hints?.get(node);
   }
 
   /**
@@ -97,13 +91,13 @@ export class SVMLCompiler
   }
 
   /**
-   * Create SVMLCompiler wired to a FunctionUnit tree.
+   * Create SVMLCompiler wired to a unit map from optimize().
    * Each child compiler automatically gets the correct per-function hints.
    */
   static fromProgramUnit(
     program: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
-    rootUnit: FunctionUnit,
+    unitMap: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
   ): SVMLCompiler {
     const mainEnv = functionEnvironments.get(program);
     if (!mainEnv) {
@@ -111,8 +105,9 @@ export class SVMLCompiler
     }
     SVMLIRBuilder.resetIndex();
     const builder = new SVMLIRBuilder(0);
-    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, rootUnit.hints);
-    compiler.unitIndex = flattenUnits(rootUnit);
+    const rootHints = unitMap.get(program)?.hints;
+    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, rootHints);
+    compiler.unitMap = unitMap;
     return compiler;
   }
 
@@ -128,11 +123,11 @@ export class SVMLCompiler
     const builder = this.builder.createChildBuilder(numArgs);
 
     // Per-unit hints: if a FunctionUnit exists for this scope, use its HintStore
-    const childUnit = this.unitIndex?.get(node as ScopeNode);
+    const childUnit = this.unitMap?.get(node as StmtNS.FunctionDef);
     const childHints = childUnit?.hints ?? this.hints;
 
     const compiler = new SVMLCompiler(nextEnvironment, this.functionEnvironments, builder, childHints);
-    compiler.unitIndex = this.unitIndex;
+    compiler.unitMap = this.unitMap;
     const slotMap = new Map<string, number>();
     compiler.envSlotMaps.set(nextEnvironment, slotMap);
 
@@ -144,18 +139,6 @@ export class SVMLCompiler
     compiler.envSlotCounters.set(nextEnvironment, numArgs);
 
     return compiler;
-  }
-
-  /**
-   * Create a SlotLookup function for the type analyser. Maps each token to the
-   * {slot, envLevel, isPrimitive} triple used by the compiler — ensuring analysis
-   * and codegen use identical slot numbering.
-   */
-  createSlotLookup(): SlotLookup {
-    return (token: Token): SlotInfo => {
-      const a = this.getTokenAnnotation(token);
-      return { slot: a.slot, envLevel: a.envLevel, isPrimitive: a.isPrimitive };
-    };
   }
 
   /**
