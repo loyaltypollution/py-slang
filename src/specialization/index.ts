@@ -4,6 +4,13 @@
 
 export { optimize } from "./optimize";
 
+// ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
+
+export type { FunctionUnit, ScopeNode } from "./framework/function-unit";
+export { buildFunctionUnits, flattenUnits } from "./framework/function-unit";
+export type { SlotTable } from "./framework/slot-table";
+export { buildSlotTable } from "./framework/slot-table";
+
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
 
 export type {
@@ -12,13 +19,12 @@ export type {
   StmtTransformRule,
   ExprTransformRule,
 } from "./framework/interfaces";
-export type { OptimizationHint, HintTable, Annotated, PyASTNode } from "./framework/hint";
-export { annotateTree } from "./framework/hint";
+export type { OptimizationHint, PyASTNode } from "./framework/hint";
+export { HintStore } from "./framework/hint";
 export {
   MutableEnv,
   runAnalysisPass,
   runMultiAnalysisPasses,
-  applyTransformPass,
   stabilizeStatic,
 } from "./framework/dfa-driver";
 

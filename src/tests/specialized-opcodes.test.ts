@@ -13,13 +13,7 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import {
-  runAnalysisPass,
-  MutableEnv,
-  TypeAnalysisModule,
-  annotateTree,
-  type HintTable,
-} from "../specialization";
+import { optimize } from "../specialization";
 
 /**
  * Compile and run with DFA type analysis enabled.
@@ -31,18 +25,8 @@ function compileAndRunSpecialized(code: string): unknown {
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
 
-  const compiler = SVMLCompiler.fromProgram(ast, environments);
-  const hints: HintTable = new WeakMap();
-  const typeEnv = new MutableEnv();
-  runAnalysisPass(
-    ast.statements,
-    new TypeAnalysisModule(),
-    typeEnv,
-    hints,
-    compiler.createSlotLookup(),
-  );
-  annotateTree(ast.statements, hints);
-
+  const rootUnit = optimize(ast, environments);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, rootUnit);
   const program = compiler.compileProgram(ast);
   const interpreter = new SVMLInterpreter(program);
   return SVMLInterpreter.toJSValue(interpreter.execute());

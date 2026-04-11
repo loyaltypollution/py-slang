@@ -1,7 +1,7 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { AnalysisModule } from "../framework/interfaces";
-import type { HintTable } from "../framework/hint";
+import type { HintStore } from "../framework/hint";
 import type { SlotLookup } from "../types";
 import {
   type ConstLattice,
@@ -19,7 +19,7 @@ export { constLeq, constJoin, constMeet };
 
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
-    private readonly hints: HintTable,
+    private readonly hints: HintStore,
     private readonly constEnv: readonly (ConstLattice | undefined)[],
     private readonly slotLookup: SlotLookup,
   ) {}
@@ -149,7 +149,8 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 
   visitGroupingExpr(expr: ExprNS.Grouping): ConstLattice {
-    return expr.expression.accept(this);
+    const val = expr.expression.accept(this);
+    return this.annotate(expr, val);
   }
 
   visitTernaryExpr(expr: ExprNS.Ternary): ConstLattice {
@@ -228,7 +229,7 @@ export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
   }
 
   makeExprVisitor(
-    hints: HintTable,
+    hints: HintStore,
     env: readonly (ConstLattice | undefined)[],
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<ConstLattice> {

@@ -45,7 +45,11 @@ export class Environment {
    * If name isn't found, return -1.
    * */
   lookupName(identifier: Token): number {
-    const name = identifier.lexeme;
+    return this.lookupNameByString(identifier.lexeme);
+  }
+
+  /** String-based variant of lookupName — avoids constructing synthetic Tokens. */
+  lookupNameByString(name: string): number {
     let distance = 0;
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     let curr: Environment | null = this;
@@ -64,11 +68,16 @@ export class Environment {
    * Returns the Environment where the name is found, or null if not found.
    */
   lookupNameEnv(identifier: Token): Environment | null {
-    if (this.names.has(identifier.lexeme)) {
+    return this.lookupNameEnvByString(identifier.lexeme);
+  }
+
+  /** String-based variant of lookupNameEnv — avoids constructing synthetic Tokens. */
+  lookupNameEnvByString(name: string): Environment | null {
+    if (this.names.has(name)) {
       return this;
     }
     for (let curr = this.enclosing; curr !== null; curr = curr.enclosing) {
-      if (curr.names.has(identifier.lexeme)) {
+      if (curr.names.has(name)) {
         return curr;
       }
     }

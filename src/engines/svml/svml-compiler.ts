@@ -1,12 +1,14 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type {
-  Annotated,
   OptimizationHint,
   PyASTNode,
   SlotInfo,
   SlotLookup,
 } from "../../specialization";
+import type { HintStore } from "../../specialization/framework/hint";
+import type { FunctionUnit, ScopeNode } from "../../specialization/framework/function-unit";
+import { flattenUnits } from "../../specialization/framework/function-unit";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
 import { Token } from "../../tokenizer";
 import { TokenType } from "../../tokens";
@@ -15,10 +17,6 @@ import { PRIMITIVE_FUNCTIONS } from "./builtins";
 import OpCodes from "./opcodes";
 import { SVMLProgram } from "./types";
 
-/** Read the hint placed by annotateTree(), returning undefined if absent. */
-function getHint(node: PyASTNode): OptimizationHint | undefined {
-  return "hint" in node ? (node as Annotated<PyASTNode>).hint : undefined;
-}
 
 /** Signed 32-bit integer bounds used to decide LGCI vs LGCF64 encoding. */
 const I32_MIN = -2_147_483_648;
@@ -42,6 +40,8 @@ export class SVMLCompiler
   private currentEnvironment: Environment;
   private functionEnvironments: FunctionEnvironments;
   private isTailCall: boolean;
+  private hints: HintStore | undefined;
+  private unitIndex?: Map<ScopeNode, FunctionUnit>;
 
   private tokenAnnotations = new WeakMap<Token, CompilerAnnotation>();
   private envSlotCounters = new WeakMap<Environment, number>();
@@ -58,11 +58,21 @@ export class SVMLCompiler
     currentEnvironment: Environment,
     functionEnvironments: FunctionEnvironments,
     builder: SVMLIRBuilder,
+    hints?: HintStore,
   ) {
     this.builder = builder;
     this.currentEnvironment = currentEnvironment;
     this.functionEnvironments = functionEnvironments;
     this.isTailCall = false;
+    this.hints = hints;
+  }
+
+  setHints(hints: HintStore): void {
+    this.hints = hints;
+  }
+
+  private getHint(node: PyASTNode): OptimizationHint | undefined {
+    return this.hints?.getById(node.id);
   }
 
   /**
@@ -86,6 +96,26 @@ export class SVMLCompiler
     return new SVMLCompiler(mainEnv, functionEnvironments, builder);
   }
 
+  /**
+   * Create SVMLCompiler wired to a FunctionUnit tree.
+   * Each child compiler automatically gets the correct per-function hints.
+   */
+  static fromProgramUnit(
+    program: StmtNS.FileInput,
+    functionEnvironments: FunctionEnvironments,
+    rootUnit: FunctionUnit,
+  ): SVMLCompiler {
+    const mainEnv = functionEnvironments.get(program);
+    if (!mainEnv) {
+      throw new Error("Main program environment not found");
+    }
+    SVMLIRBuilder.resetIndex();
+    const builder = new SVMLIRBuilder(0);
+    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, rootUnit.hints);
+    compiler.unitIndex = flattenUnits(rootUnit);
+    return compiler;
+  }
+
   fromFunctionNode(node: StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda): SVMLCompiler {
     const nextEnvironment = this.functionEnvironments.get(node);
     if (!nextEnvironment) {
@@ -97,7 +127,12 @@ export class SVMLCompiler
     const numArgs = node.parameters.length;
     const builder = this.builder.createChildBuilder(numArgs);
 
-    const compiler = new SVMLCompiler(nextEnvironment, this.functionEnvironments, builder);
+    // Per-unit hints: if a FunctionUnit exists for this scope, use its HintStore
+    const childUnit = this.unitIndex?.get(node as ScopeNode);
+    const childHints = childUnit?.hints ?? this.hints;
+
+    const compiler = new SVMLCompiler(nextEnvironment, this.functionEnvironments, builder, childHints);
+    compiler.unitIndex = this.unitIndex;
     const slotMap = new Map<string, number>();
     compiler.envSlotMaps.set(nextEnvironment, slotMap);
 
@@ -351,8 +386,8 @@ export class SVMLCompiler
 
   /** True when both operands have a statically known numeric type (int or float). */
   private bothNumeric(left: ExprNS.Expr, right: ExprNS.Expr): boolean {
-    const lk = getHint(left)?.type?.kinds;
-    const rk = getHint(right)?.type?.kinds;
+    const lk = this.getHint(left)?.type?.kinds;
+    const rk = this.getHint(right)?.type?.kinds;
     return (lk === INT_BIT || lk === FLOAT_BIT) && (rk === INT_BIT || rk === FLOAT_BIT);
   }
 
@@ -426,11 +461,11 @@ export class SVMLCompiler
 
     switch (expr.operator.type) {
       case TokenType.NOT: {
-        opcode = getHint(expr.right)?.type?.kinds === BOOL_BIT ? OpCodes.NOTB : OpCodes.NOTG;
+        opcode = this.getHint(expr.right)?.type?.kinds === BOOL_BIT ? OpCodes.NOTB : OpCodes.NOTG;
         break;
       }
       case TokenType.MINUS: {
-        const k = getHint(expr.right)?.type?.kinds;
+        const k = this.getHint(expr.right)?.type?.kinds;
         opcode = k === INT_BIT || k === FLOAT_BIT ? OpCodes.NEGF : OpCodes.NEGG;
         break;
       }

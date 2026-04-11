@@ -13,15 +13,14 @@ import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import {
-  runAnalysisPass,
-  MutableEnv,
   stabilizeStatic,
   TypeAnalysisModule,
   ConstAnalysisModule,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
-  annotateTree,
-  type HintTable,
+  HintStore,
+  buildSlotTable,
+  optimize,
   INT_BIT,
   BOOL_BIT,
   BoolRef,
@@ -32,16 +31,8 @@ function compileAndRun(code: string): unknown {
   const ast = parse(script);
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
-  const compiler = SVMLCompiler.fromProgram(ast, environments);
-  const hints: HintTable = new WeakMap();
-  runAnalysisPass(
-    ast.statements,
-    new TypeAnalysisModule(),
-    new MutableEnv(),
-    hints,
-    compiler.createSlotLookup(),
-  );
-  annotateTree(ast.statements, hints);
+  const rootUnit = optimize(ast, environments);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, rootUnit);
   const program = compiler.compileProgram(ast);
   return SVMLInterpreter.toJSValue(new SVMLInterpreter(program).execute());
 }
@@ -109,19 +100,11 @@ describe("[P2] Ternary result type annotation", () => {
     const script = "(5 if True else -3)\n";
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const compiler = SVMLCompiler.fromProgram(ast, environments);
-    const hints: HintTable = new WeakMap();
-    runAnalysisPass(
-      ast.statements,
-      new TypeAnalysisModule(),
-      new MutableEnv(),
-      hints,
-      compiler.createSlotLookup(),
-    );
+    const rootUnit = optimize(ast, environments);
 
     const simpleExpr = ast.statements[0] as any;
     const ternary = simpleExpr.expression;
-    const hint = hints.get(ternary);
+    const hint = rootUnit.hints.get(ternary);
     // Currently TOP (all kinds set). Should be INT_BIT once fixed.
     // Flip this expectation to INT_BIT after the fix lands.
     expect(hint?.type?.kinds).not.toBe(INT_BIT);
@@ -148,14 +131,15 @@ describe("[P2] stabilizeStatic wiring", () => {
     const script = "1 + 2\n";
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const compiler = SVMLCompiler.fromProgram(ast, environments);
-    const hints: HintTable = new WeakMap();
+    const env = environments.get(ast)!;
+    const slotTable = buildSlotTable(env, []);
+    const hints = new HintStore();
     stabilizeStatic(
       ast.statements,
       [new TypeAnalysisModule(), new ConstAnalysisModule()],
       [new DeadBranchEliminationRule(), new ConstantFoldingRule()],
       hints,
-      compiler.createSlotLookup(),
+      slotTable.lookup,
     );
     // After folding, the SimpleExpr should contain a Literal(3)
     const { ExprNS } = require("../ast-types");
@@ -203,20 +187,12 @@ acc
     const script = "acc = 0\nfor i in [1, 2, 3]:\n    acc = acc + i\n    acc > 0\n";
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const compiler = SVMLCompiler.fromProgram(ast, environments);
-    const hints: HintTable = new WeakMap();
-    runAnalysisPass(
-      ast.statements,
-      new TypeAnalysisModule(),
-      new MutableEnv(),
-      hints,
-      compiler.createSlotLookup(),
-    );
+    const rootUnit = optimize(ast, environments);
 
     // The for-loop is stmt[1]. Its body[1] is `acc > 0` (a SimpleExpr).
     const forStmt = ast.statements[1] as any;
     const cmpExpr = forStmt.body[1].expression; // acc > 0
-    const hint = hints.get(cmpExpr);
+    const hint = rootUnit.hints.get(cmpExpr);
 
     // The comparison should be annotated as BOOL (kind = BOOL_BIT).
     expect(hint?.type?.kinds).toBe(BOOL_BIT);

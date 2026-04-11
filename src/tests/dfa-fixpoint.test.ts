@@ -11,12 +11,12 @@
 
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import {
   runAnalysisPass,
   MutableEnv,
   TypeAnalysisModule,
-  type HintTable,
+  HintStore,
+  buildSlotTable,
   INT_BIT,
   BOOL_BIT,
   FLOAT_BIT,
@@ -28,42 +28,29 @@ import {
   leq,
   type TypeLattice,
 } from "../specialization";
-import { ExprNS } from "../ast-types";
+import { ExprNS, StmtNS } from "../ast-types";
 
-function analyseTopLevel(code: string): { hints: HintTable; compiler: SVMLCompiler } {
+function analyseTopLevel(code: string): { hints: HintStore; ast: StmtNS.FileInput } {
   const script = code + "\n";
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const compiler = SVMLCompiler.fromProgram(ast, environments);
-  const hints: HintTable = new WeakMap();
-  const typeEnv = new MutableEnv();
+  const env = environments.get(ast)!;
+  const slotTable = buildSlotTable(env, []);
+  const hints = new HintStore();
   runAnalysisPass(
     ast.statements,
     new TypeAnalysisModule(),
-    typeEnv,
+    new MutableEnv(),
     hints,
-    compiler.createSlotLookup(),
+    slotTable.lookup,
   );
-  return { hints, compiler };
+  return { hints, ast };
 }
 
 describe("DFA fixpoint driver", () => {
   describe("Literal annotation", () => {
     test("positive integer literal annotated as INT_BIT Pos", () => {
-      const script = "x = 5\n";
-      const ast = parse(script);
-      const { environments } = analyzeWithEnvironments(ast, script, 4);
-      const compiler = SVMLCompiler.fromProgram(ast, environments);
-      const hints: HintTable = new WeakMap();
-      runAnalysisPass(
-        ast.statements,
-        new TypeAnalysisModule(),
-        new MutableEnv(),
-        hints,
-        compiler.createSlotLookup(),
-      );
-
-      // The literal 5 is the value in the Assign statement — find it
+      const { hints, ast } = analyseTopLevel("x = 5");
       const assign = ast.statements[0] as any;
       const lit = assign.value;
       expect(hints.get(lit)?.type?.kinds).toBe(INT_BIT);
@@ -71,38 +58,14 @@ describe("DFA fixpoint driver", () => {
     });
 
     test("float literal annotated as FLOAT_BIT", () => {
-      const script = "x = 3.14\n";
-      const ast = parse(script);
-      const { environments } = analyzeWithEnvironments(ast, script, 4);
-      const compiler = SVMLCompiler.fromProgram(ast, environments);
-      const hints: HintTable = new WeakMap();
-      runAnalysisPass(
-        ast.statements,
-        new TypeAnalysisModule(),
-        new MutableEnv(),
-        hints,
-        compiler.createSlotLookup(),
-      );
-
+      const { hints, ast } = analyseTopLevel("x = 3.14");
       const assign = ast.statements[0] as any;
       const lit = assign.value;
       expect(hints.get(lit)?.type?.kinds).toBe(FLOAT_BIT);
     });
 
     test("boolean literal annotated as BOOL_BIT", () => {
-      const script = "x = True\n";
-      const ast = parse(script);
-      const { environments } = analyzeWithEnvironments(ast, script, 4);
-      const compiler = SVMLCompiler.fromProgram(ast, environments);
-      const hints: HintTable = new WeakMap();
-      runAnalysisPass(
-        ast.statements,
-        new TypeAnalysisModule(),
-        new MutableEnv(),
-        hints,
-        compiler.createSlotLookup(),
-      );
-
+      const { hints, ast } = analyseTopLevel("x = True");
       const assign = ast.statements[0] as any;
       const lit = assign.value;
       expect(hints.get(lit)?.type?.kinds).toBe(BOOL_BIT);
@@ -112,19 +75,7 @@ describe("DFA fixpoint driver", () => {
 
   describe("Binary expression annotation", () => {
     test("pos + pos annotated as INT_BIT Pos", () => {
-      const script = "z = 3 + 4\n";
-      const ast = parse(script);
-      const { environments } = analyzeWithEnvironments(ast, script, 4);
-      const compiler = SVMLCompiler.fromProgram(ast, environments);
-      const hints: HintTable = new WeakMap();
-      runAnalysisPass(
-        ast.statements,
-        new TypeAnalysisModule(),
-        new MutableEnv(),
-        hints,
-        compiler.createSlotLookup(),
-      );
-
+      const { hints, ast } = analyseTopLevel("z = 3 + 4");
       const assign = ast.statements[0] as any;
       const binExpr = assign.value; // 3 + 4
       expect(hints.get(binExpr)?.type?.kinds).toBe(INT_BIT);
@@ -132,19 +83,7 @@ describe("DFA fixpoint driver", () => {
     });
 
     test("pos - pos annotated as INT_BIT Top (sign unknown)", () => {
-      const script = "z = 5 - 3\n";
-      const ast = parse(script);
-      const { environments } = analyzeWithEnvironments(ast, script, 4);
-      const compiler = SVMLCompiler.fromProgram(ast, environments);
-      const hints: HintTable = new WeakMap();
-      runAnalysisPass(
-        ast.statements,
-        new TypeAnalysisModule(),
-        new MutableEnv(),
-        hints,
-        compiler.createSlotLookup(),
-      );
-
+      const { hints, ast } = analyseTopLevel("z = 5 - 3");
       const assign = ast.statements[0] as any;
       const binExpr = assign.value;
       expect(hints.get(binExpr)?.type?.kinds).toBe(INT_BIT);
@@ -192,13 +131,11 @@ describe("DFA fixpoint driver", () => {
 
   describe("runAnalysisPass terminates", () => {
     test("simple while loop completes without infinite loop", () => {
-      // This test verifies the fixpoint terminates for a simple counting loop
       const code = `
 x = 1
 while x > 0:
     x = x + 1
 `;
-      // Must complete in finite time — if fixpoint fails, test will hang/timeout
       expect(() => analyseTopLevel(code)).not.toThrow();
     });
 
@@ -237,20 +174,7 @@ for i in [1, 2, 3]:
 
   describe("If-else join semantics", () => {
     test("annotates condition expression", () => {
-      const script = "x = 3\nif x > 0:\n    y = 1\nelse:\n    y = 2\n";
-      const ast = parse(script);
-      const { environments } = analyzeWithEnvironments(ast, script, 4);
-      const compiler = SVMLCompiler.fromProgram(ast, environments);
-      const hints: HintTable = new WeakMap();
-      runAnalysisPass(
-        ast.statements,
-        new TypeAnalysisModule(),
-        new MutableEnv(),
-        hints,
-        compiler.createSlotLookup(),
-      );
-
-      // The if condition x > 0 should be annotated
+      const { hints, ast } = analyseTopLevel("x = 3\nif x > 0:\n    y = 1\nelse:\n    y = 2");
       const ifStmt = ast.statements[1] as any;
       const condition = ifStmt.condition; // Compare: x > 0
       const condHint = hints.get(condition);
@@ -260,38 +184,14 @@ for i in [1, 2, 3]:
 
   describe("Comparison annotation", () => {
     test("pos > pos annotated as BOOL_BIT Top", () => {
-      const script = "z = 3 > 4\n";
-      const ast = parse(script);
-      const { environments } = analyzeWithEnvironments(ast, script, 4);
-      const compiler = SVMLCompiler.fromProgram(ast, environments);
-      const hints: HintTable = new WeakMap();
-      runAnalysisPass(
-        ast.statements,
-        new TypeAnalysisModule(),
-        new MutableEnv(),
-        hints,
-        compiler.createSlotLookup(),
-      );
-
+      const { hints, ast } = analyseTopLevel("z = 3 > 4");
       const assign = ast.statements[0] as any;
       const cmp = assign.value;
       expect(hints.get(cmp)?.type?.kinds).toBe(BOOL_BIT);
     });
 
     test("pos > zero annotated as BOOL_BIT True", () => {
-      const script = "z = 5 > 0\n";
-      const ast = parse(script);
-      const { environments } = analyzeWithEnvironments(ast, script, 4);
-      const compiler = SVMLCompiler.fromProgram(ast, environments);
-      const hints: HintTable = new WeakMap();
-      runAnalysisPass(
-        ast.statements,
-        new TypeAnalysisModule(),
-        new MutableEnv(),
-        hints,
-        compiler.createSlotLookup(),
-      );
-
+      const { hints, ast } = analyseTopLevel("z = 5 > 0");
       const assign = ast.statements[0] as any;
       const cmp = assign.value;
       expect(hints.get(cmp)?.type?.kinds).toBe(BOOL_BIT);

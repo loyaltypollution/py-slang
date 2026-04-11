@@ -13,7 +13,6 @@
 
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { ExprNS, StmtNS } from "../ast-types";
 import {
   stabilizeStatic,
@@ -21,21 +20,23 @@ import {
   ConstAnalysisModule,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
-  type HintTable,
+  HintStore,
+  buildSlotTable,
 } from "../specialization";
 
 function optimise(code: string): StmtNS.Stmt[] {
   const script = code + "\n";
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const compiler = SVMLCompiler.fromProgram(ast, environments);
-  const hints: HintTable = new WeakMap();
+  const env = environments.get(ast)!;
+  const slotTable = buildSlotTable(env, []);
+  const hints = new HintStore();
   stabilizeStatic(
     ast.statements,
     [new TypeAnalysisModule(), new ConstAnalysisModule()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule()],
     hints,
-    compiler.createSlotLookup(),
+    slotTable.lookup,
   );
   return ast.statements;
 }

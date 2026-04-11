@@ -1,32 +1,46 @@
 // src/specialization/optimize.ts — single entry point for the static optimization pipeline
 
 import type { StmtNS } from "../ast-types";
-import type { HintTable } from "./framework/hint";
-import { annotateTree } from "./framework/hint";
+import type { FunctionEnvironments } from "../resolver";
 import { stabilizeStatic } from "./framework/dfa-driver";
-import type { SlotLookup } from "./types";
+import type { FunctionUnit } from "./framework/function-unit";
+import { buildFunctionUnits } from "./framework/function-unit";
 import { TypeAnalysisModule } from "./type-analysis/analysis";
 import { ConstAnalysisModule } from "./const-analysis/analysis";
 import { ConstantFoldingRule } from "./transforms/constant-folding";
 import { DeadBranchEliminationRule } from "./transforms/dead-branch";
 
+const analyses = () => [new TypeAnalysisModule(), new ConstAnalysisModule()];
+const transforms = () => [new DeadBranchEliminationRule(), new ConstantFoldingRule()];
+
 /**
- * Run the full static optimization pipeline on a statement list:
- * analyze (type + const) → transform (dead branch + constant folding) → re-analyze,
- * repeating until stable. Then annotate the AST with converged hints.
+ * Run the full static optimization pipeline.
  *
- * Returns the HintTable for consumers that need it before annotation
- * (e.g., tests that inspect hints directly).
+ * Builds a FunctionUnit tree (one per scope), then runs
+ * analyze → transform → re-analyze per unit until stable.
+ *
+ * Returns the root FunctionUnit. Consumers pull hints per-unit.
  */
-export function optimize(stmts: StmtNS.Stmt[], slotLookup: SlotLookup): HintTable {
-  const hints: WeakMap<object, any> = new WeakMap();
+export function optimize(
+  ast: StmtNS.FileInput,
+  functionEnvironments: FunctionEnvironments,
+): FunctionUnit {
+  const root = buildFunctionUnits(ast, functionEnvironments);
+  optimizeUnit(root);
+  return root;
+}
+
+function optimizeUnit(unit: FunctionUnit): void {
   stabilizeStatic(
-    stmts,
-    [new TypeAnalysisModule(), new ConstAnalysisModule()],
-    [new DeadBranchEliminationRule(), new ConstantFoldingRule()],
-    hints,
-    slotLookup,
+    unit.body,
+    analyses(),
+    transforms(),
+    unit.hints,
+    unit.slotTable.lookup,
   );
-  annotateTree(stmts, hints);
-  return hints;
+  unit.version = 1;
+
+  for (const child of unit.children) {
+    optimizeUnit(child);
+  }
 }

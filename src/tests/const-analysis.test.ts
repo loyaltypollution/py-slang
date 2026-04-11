@@ -4,14 +4,13 @@
  * Verifies:
  *  1. Lattice operations are correct (leq, join, meet)
  *  2. x = 3 + 4 produces constVal = const(7) on the BinOp node  [spec requirement]
- *  3. Two analyses coexist in the same HintTable (type + constVal on the same node)
+ *  3. Two analyses coexist in the same HintStore (type + constVal on the same node)
  *  4. runMultiAnalysisPasses converges on a while loop (terminates)
  *  5. Variable propagation: x = 5; y = x + 2 → constVal const(7) on x+2
  */
 
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { StmtNS } from "../ast-types";
 import {
   runAnalysisPass,
@@ -22,7 +21,8 @@ import {
   constLeq,
   constJoin,
   constMeet,
-  type HintTable,
+  HintStore,
+  buildSlotTable,
   CONST_BOTTOM,
   CONST_TOP,
   constOf,
@@ -32,35 +32,35 @@ import {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function analyseConst(code: string): {
-  hints: HintTable;
+  hints: HintStore;
   ast: StmtNS.FileInput;
-  compiler: SVMLCompiler;
 } {
   const script = code + "\n";
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const compiler = SVMLCompiler.fromProgram(ast, environments);
-  const hints: HintTable = new WeakMap();
+  const env = environments.get(ast)!;
+  const slotTable = buildSlotTable(env, []);
+  const hints = new HintStore();
   runAnalysisPass(
     ast.statements,
     new ConstAnalysisModule(),
     new MutableEnv(),
     hints,
-    compiler.createSlotLookup(),
+    slotTable.lookup,
   );
-  return { hints, ast, compiler };
+  return { hints, ast };
 }
 
 function analyseBoth(code: string): {
-  hints: HintTable;
+  hints: HintStore;
   ast: StmtNS.FileInput;
-  compiler: SVMLCompiler;
 } {
   const script = code + "\n";
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const compiler = SVMLCompiler.fromProgram(ast, environments);
-  const hints: HintTable = new WeakMap();
+  const env = environments.get(ast)!;
+  const slotTable = buildSlotTable(env, []);
+  const hints = new HintStore();
   runMultiAnalysisPasses(
     ast.statements,
     [
@@ -68,9 +68,9 @@ function analyseBoth(code: string): {
       { module: new ConstAnalysisModule(), env: new MutableEnv() },
     ],
     hints,
-    compiler.createSlotLookup(),
+    slotTable.lookup,
   );
-  return { hints, ast, compiler };
+  return { hints, ast };
 }
 
 // ── 1. Lattice unit tests ─────────────────────────────────────────────────────

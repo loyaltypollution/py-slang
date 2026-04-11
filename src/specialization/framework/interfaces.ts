@@ -1,21 +1,21 @@
 import type { ExprNS, StmtNS } from "../../ast-types";
 import type { SlotLookup } from "../types";
-import type { HintTable } from "./hint";
+import type { HintStore } from "./hint";
 
 export interface StmtTransformRule {
   readonly name: string;
   readonly level: "stmt";
-  matches(stmt: StmtNS.Stmt, hints: HintTable): boolean;
+  matches(stmt: StmtNS.Stmt, hints: HintStore): boolean;
   /** Returns replacement statements. Empty array = delete the statement. */
-  apply(stmt: StmtNS.Stmt, hints: HintTable): StmtNS.Stmt[];
+  apply(stmt: StmtNS.Stmt, hints: HintStore): StmtNS.Stmt[];
 }
 
 export interface ExprTransformRule {
   readonly name: string;
   readonly level: "expr";
-  matches(expr: ExprNS.Expr, hints: HintTable): boolean;
+  matches(expr: ExprNS.Expr, hints: HintStore): boolean;
   /** Returns replacement expression (1:1). */
-  apply(expr: ExprNS.Expr, hints: HintTable): ExprNS.Expr;
+  apply(expr: ExprNS.Expr, hints: HintStore): ExprNS.Expr;
 }
 
 export type TransformRule = StmtTransformRule | ExprTransformRule;
@@ -36,7 +36,7 @@ export interface AnalysisModule<L> {
    * reads from `env` and writes computed facts to `hints`.
    */
   makeExprVisitor(
-    hints: HintTable,
+    hints: HintStore,
     env: readonly (L | undefined)[],
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<L>;

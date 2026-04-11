@@ -120,6 +120,13 @@ export class AstWriter {
     for (const alias of this.config.typeAliases ?? []) {
       this.writeSingleLine(alias);
     }
+    // Node ID counter for stable identity across the optimization pipeline
+    this.writeSingleLine("");
+    this.writeSingleLine("let _nextNodeId = 1;");
+    this.writeSingleLine("/** Reset the global node ID counter (for testing). */");
+    this.writeSingleLine("export function resetNodeIds(): void {");
+    this.writeSingleLine("_nextNodeId = 1;");
+    this.writeSingleLine("}");
   }
 
   private tearDown() {
@@ -172,9 +179,11 @@ export class AstWriter {
     // Base class
     this.writeSingleLine(`export abstract class ${baseClass} {`);
     this.writeSingleLine("abstract readonly kind: string;");
+    this.writeSingleLine("readonly id: number;");
     this.writeSingleLine("startToken: Token;");
     this.writeSingleLine("endToken: Token;");
     this.writeSingleLine("protected constructor(startToken: Token, endToken: Token) {");
+    this.writeSingleLine("this.id = _nextNodeId++;");
     this.writeSingleLine("this.startToken = startToken;");
     this.writeSingleLine("this.endToken = endToken;");
     this.writeSingleLine("}");

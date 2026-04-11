@@ -15,9 +15,8 @@ export class PySvmlEvaluator extends BasicEvaluator {
       if (errors.length > 0) {
         throw errors[0];
       }
-      const compiler = SVMLCompiler.fromProgram(ast, environments);
-      optimize(ast.statements, compiler.createSlotLookup());
-
+      const rootUnit = optimize(ast, environments);
+      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, rootUnit);
       const program = compiler.compileProgram(ast);
       const interpreter = new SVMLInterpreter(program, {
         sendOutput: msg => this.conductor.sendOutput(msg),

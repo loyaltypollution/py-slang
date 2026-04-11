@@ -27,7 +27,7 @@ import {
 } from "./lattice";
 import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
 import type { AnalysisModule } from "../framework/interfaces";
-import type { HintTable } from "../framework/hint";
+import type { HintStore } from "../framework/hint";
 import type { SlotLookup } from "../types";
 
 /**
@@ -59,7 +59,7 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
  */
 export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
-    private readonly hints: HintTable,
+    private readonly hints: HintStore,
     private readonly slotTypes: readonly (TypeLattice | undefined)[],
     private readonly slotLookup: SlotLookup,
   ) {}
@@ -187,7 +187,8 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   }
 
   visitGroupingExpr(expr: ExprNS.Grouping): TypeLattice {
-    return expr.expression.accept(this);
+    const val = expr.expression.accept(this);
+    return this.annotate(expr, val);
   }
 
   visitLambdaExpr(expr: ExprNS.Lambda): TypeLattice {
@@ -254,7 +255,7 @@ export class TypeAnalysisModule implements AnalysisModule<TypeLattice> {
   }
 
   makeExprVisitor(
-    hints: HintTable,
+    hints: HintStore,
     env: readonly (TypeLattice | undefined)[],
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<TypeLattice> {
