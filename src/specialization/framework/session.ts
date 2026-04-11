@@ -23,8 +23,8 @@ export class OptimizationSession {
 
   constructor(
     private readonly stmts: StmtNS.Stmt[],
-    private readonly analyses: AnalysisModule<any>[],
-    private readonly transforms: TransformRule[],
+    private readonly analyses: readonly AnalysisModule<any>[],
+    private readonly transforms: readonly TransformRule[],
     readonly hints: HintStore,
     private readonly slotLookup: SlotLookup,
   ) {}

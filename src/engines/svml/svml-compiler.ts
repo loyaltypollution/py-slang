@@ -3,6 +3,7 @@ import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { OptimizationHint } from "../../specialization";
 import type { HintStore } from "../../specialization/framework/hint";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
+import { ScopeIndexMap } from "../../specialization/framework/scope-index-map";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
 import { Token } from "../../tokenizer";
 import { TokenType } from "../../tokens";
@@ -35,7 +36,8 @@ export class SVMLCompiler
   private functionEnvironments: FunctionEnvironments;
   private isTailCall: boolean;
   private hints: HintStore | undefined;
-  private unitMap?: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
+  private unitMap?: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
+  private _scopeIndexMap?: ScopeIndexMap;
 
   private tokenAnnotations = new WeakMap<Token, CompilerAnnotation>();
   private envSlotCounters = new WeakMap<Environment, number>();
@@ -63,6 +65,11 @@ export class SVMLCompiler
 
   setHints(hints: HintStore): void {
     this.hints = hints;
+  }
+
+  /** Scope → function index map, populated during compilation via fromProgramUnit(). */
+  get scopeIndexMap(): ScopeIndexMap | undefined {
+    return this._scopeIndexMap;
   }
 
   private getHint(node: ExprNS.Expr | StmtNS.Stmt): OptimizationHint | undefined {
@@ -97,7 +104,7 @@ export class SVMLCompiler
   static fromProgramUnit(
     program: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
-    unitMap: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
+    unitMap: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
   ): SVMLCompiler {
     const mainEnv = functionEnvironments.get(program);
     if (!mainEnv) {
@@ -108,6 +115,8 @@ export class SVMLCompiler
     const rootHints = unitMap.get(program)?.hints;
     const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, rootHints);
     compiler.unitMap = unitMap;
+    compiler._scopeIndexMap = new ScopeIndexMap();
+    compiler._scopeIndexMap.register(program, builder.getFunctionIndex());
     return compiler;
   }
 
@@ -128,6 +137,10 @@ export class SVMLCompiler
 
     const compiler = new SVMLCompiler(nextEnvironment, this.functionEnvironments, builder, childHints);
     compiler.unitMap = this.unitMap;
+    compiler._scopeIndexMap = this._scopeIndexMap;
+    if (this._scopeIndexMap && node instanceof StmtNS.FunctionDef) {
+      this._scopeIndexMap.register(node, builder.getFunctionIndex());
+    }
     const slotMap = new Map<string, number>();
     compiler.envSlotMaps.set(nextEnvironment, slotMap);
 

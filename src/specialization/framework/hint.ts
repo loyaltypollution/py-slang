@@ -24,7 +24,7 @@ function typeLatticeEquals(a: TypeLattice, b: TypeLattice): boolean {
 }
 
 function constLatticeEquals(a: ConstLattice, b: ConstLattice): boolean {
-  return a === b || (a.tag === b.tag && (a.tag !== "const" || (a as any).value === (b as any).value));
+  return a === b || (a.tag !== "const" ? a.tag === b.tag : b.tag === "const" && a.value === b.value);
 }
 
 export function hintEquals(a: OptimizationHint, b: OptimizationHint): boolean {
