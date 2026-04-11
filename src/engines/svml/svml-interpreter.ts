@@ -128,6 +128,7 @@ export class SVMLInterpreter {
    * Main interpreter loop — dispatch from typed arrays
    */
   private run(): SVMLBoxType {
+    try {
     while (!this.halted && this.currentFrame) {
       // Safety check
       if (this.instructionCount >= this.maxInstructionLimit) {
@@ -563,10 +564,12 @@ export class SVMLInterpreter {
         ? this.currentFrame.stack[this.currentFrame.stack.length - 1]
         : undefined;
 
-    // Clear execution state so replaceProgram() can be called between runs
-    this.currentFrame = null;
-
     return result;
+    } finally {
+      // Clear execution state so replaceProgram() can be called between runs,
+      // even if run() threw an exception.
+      this.currentFrame = null;
+    }
   }
 
   // ========================================================================

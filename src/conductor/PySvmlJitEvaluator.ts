@@ -32,20 +32,23 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const program = compiler.compileProgram(ast);
 
       const scopeMap = compiler.scopeIndexMap;
+      if (!scopeMap) {
+        throw new Error("scopeIndexMap must be defined when using fromProgramUnit()");
+      }
       let currentProgram = program;
 
       const interpreter = new SVMLInterpreter(currentProgram, {
         sendOutput: this.conductor.sendOutput,
       });
 
-      reactive.subscribe(changed => {
+      const unsubscribe = reactive.subscribe(changed => {
         // Recompile entire program to get fresh IR
         const freshCompiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units);
         const freshProgram = freshCompiler.compileProgram(ast);
 
         // Extract only the changed functions' IR
         for (const key of changed) {
-          const idx = scopeMap?.getIndex(key);
+          const idx = scopeMap.getIndex(key);
           if (idx !== undefined) {
             currentProgram = currentProgram.withSpecializedFunction(idx, freshProgram.functions[idx]);
           }
@@ -54,6 +57,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       });
 
       const returnValue = interpreter.execute();
+      unsubscribe();
       this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
     } catch (e) {
       this.conductor.sendError(new EvaluatorError(e));
