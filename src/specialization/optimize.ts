@@ -1,17 +1,22 @@
-// src/specialization/optimize.ts — single entry point for the static optimization pipeline
+// src/specialization/optimize.ts — entry points for the optimization pipeline
+
+export { createReactiveOptimization } from "./reactive";
+export type { ReactiveOptimization, ReactiveSubscriber, ExternalWorkItem } from "./reactive";
+export type { ScopeKey, VersionedFunctionUnit } from "./framework/function-unit";
 
 import type { StmtNS } from "../ast-types";
 import type { FunctionEnvironments } from "../resolver";
 import { ConstAnalysisModule } from "./const-analysis/analysis";
 import type { FunctionUnit } from "./framework/function-unit";
 import { buildFunctionUnits } from "./framework/function-unit";
+import type { AnalysisModule, TransformRule } from "./framework/interfaces";
 import { OptimizationSession } from "./framework/session";
 import { ConstantFoldingRule } from "./transforms/constant-folding";
 import { DeadBranchEliminationRule } from "./transforms/dead-branch";
 import { TypeAnalysisModule } from "./type-analysis/analysis";
 
-const analyses = () => [new TypeAnalysisModule(), new ConstAnalysisModule()];
-const transforms = () => [new DeadBranchEliminationRule(), new ConstantFoldingRule()];
+const ANALYSES: readonly AnalysisModule<any>[] = [new TypeAnalysisModule(), new ConstAnalysisModule()];
+const TRANSFORMS: readonly TransformRule[] = [new DeadBranchEliminationRule(), new ConstantFoldingRule()];
 
 /**
  * Run the full static optimization pipeline.
@@ -26,7 +31,7 @@ export function optimize(
   const units = buildFunctionUnits(ast, functionEnvironments);
   for (const unit of units.values()) {
     const session = new OptimizationSession(
-      unit.body, analyses(), transforms(), unit.hints, unit.slotLookup,
+      unit.body, ANALYSES, TRANSFORMS, unit.hints, unit.slotLookup,
     );
     session.converge();
   }
@@ -48,7 +53,7 @@ export function createOptimizationSessions(
   >();
   for (const [key, unit] of units) {
     const session = new OptimizationSession(
-      unit.body, analyses(), transforms(), unit.hints, unit.slotLookup,
+      unit.body, ANALYSES, TRANSFORMS, unit.hints, unit.slotLookup,
     );
     result.set(key, { unit, session });
   }

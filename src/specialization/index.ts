@@ -1,13 +1,20 @@
 // src/specialization/index.ts — public API barrel
 
-// ── Pipeline entry point ─────────────────────────────────────────────────────
+// ── Pipeline entry points ────────────────────────────────────────────────────
 
 export { optimize, createOptimizationSessions } from "./optimize";
+export { createReactiveOptimization } from "./reactive";
+export type { ReactiveOptimization, ReactiveSubscriber, ExternalWorkItem } from "./reactive";
 
 // ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
 
-export type { FunctionUnit } from "./framework/function-unit";
-export { buildFunctionUnits } from "./framework/function-unit";
+export type { FunctionUnit, ScopeKey, VersionedFunctionUnit } from "./framework/function-unit";
+export { buildFunctionUnits, buildVersionedFunctionUnits } from "./framework/function-unit";
+
+// ── Persistent worklist ─────────────────────────────────────────────────────
+
+export { PersistentWorklist } from "./framework/persistent-worklist";
+export { ScopeIndexMap } from "./framework/scope-index-map";
 export type { SlotInfo, SlotLookup } from "./framework/slot-table";
 export { buildSlotTable } from "./framework/slot-table";
 
