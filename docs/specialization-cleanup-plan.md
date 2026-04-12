@@ -114,7 +114,13 @@ Round-1 step γ (commit `1d85550`) collapsed `hintEquals` to a hard-coded `switc
 3. **Thread the registry** into the equality callback given to `HintStore`. Smaller API: `HintStore` receives `(a,b) => boolean`, not the whole map.
 4. **Delete `typeLatticeEquals` / `constLatticeEquals` re-exports** from `framework/hint.ts` once each module owns its equality internally.
 5. **Q3 answer: keep the open index signature** on `OptimizationHint`. Dispatch is data-driven; honesty preserved.
-6. **[SEPARATE COMMIT]** **Dissolve `HintStore`** into `Map<number, OptimizationHint>` + free `setHint(map, id, hint, eq): boolean`. 12 call sites, mechanical rename. Defer until substeps 1–5 land and CI is green.
+6. **[DEFERRED — negative judgment after substeps 1–5 landed]** **Dissolve `HintStore`** into `Map<number, OptimizationHint>` + free `setHint(map, id, hint, eq): boolean`.
+
+   **Consumer-count evidence (2026-04-13 post-Step-3):** `rg` finds **45 occurrences across 16 files** of `HintStore` constructor / `.get` / `.set` / `.setById` / `.getById`. The prior plan's "12 call sites, mechanical rename" estimate is off by ~4×.
+
+   **Axis this turned on:** with C3 landed, the *eq callback* is the meaningful piece of state that distinguishes a write-through store from a raw Map. HintStore encapsulates that callback in one place. Dissolving pushes eq-threading to every write site — a burden shift, not a reduction. The class is already thin (≤30 LoC); the abstraction barrier earns its keep.
+
+   **Skipped**, not deferred to "plan-3." Any future reversal must cite concrete consumer simplification that outweighs the 16-file eq-threading churn.
 
 ### Red test
 
