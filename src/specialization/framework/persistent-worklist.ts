@@ -217,7 +217,7 @@ export class PersistentWorklist {
     );
     this.cacheSafeOnStackFlag();
 
-    const units = buildFunctionUnits(ast, functionEnvironments, analyses);
+    const units = buildFunctionUnits(ast, functionEnvironments);
     this.units = units;
     for (const [key, unit] of units) this.addScope(key, unit);
 

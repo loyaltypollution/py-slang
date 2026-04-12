@@ -1,7 +1,7 @@
 import type { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "./function-unit";
 import type { SlotLookup } from "./slot-table";
-import type { HintStore, LatticeEquality, OptimizationHint } from "./hint";
+import type { HintStore, OptimizationHint } from "./hint";
 
 export interface StmtTransformRule {
   readonly name: string;
@@ -71,13 +71,15 @@ export type TransformRule = StmtTransformRule | ExprTransformRule | ScopeTransfo
 
 /**
  * An analysis pass. The `name` doubles as the hint-record field under
- * which the analysis stores its lattice value and as the registry key for
- * `HintStore.hintEquals` (via the inherited `LatticeEquality` surface).
- * This is the extensibility seam — a new analysis adds a module (and an
- * optional field on `OptimizationHint`) and the framework picks it up.
+ * which the analysis stores its lattice value. A new analysis adds a
+ * module (and an optional field on `OptimizationHint`) and the framework
+ * picks it up. `latticeEquals` is declared directly on each concrete
+ * module — consumers that need equality route through `hintEquals` rather
+ * than calling module-level equality.
  */
-export interface AnalysisModule<L> extends LatticeEquality {
+export interface AnalysisModule<L> {
   readonly name: string;
+  latticeEquals(a: unknown, b: unknown): boolean;
   top(): L;
   bottom(): L;
   join(a: L, b: L): L;

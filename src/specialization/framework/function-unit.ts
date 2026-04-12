@@ -1,7 +1,6 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import { HintStore } from "./hint";
-import type { LatticeEquality } from "./hint";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
@@ -33,7 +32,6 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   constructor(
     private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
     private readonly functionEnvironments: FunctionEnvironments,
-    private readonly analysisModules: readonly LatticeEquality[] | undefined,
   ) {}
 
   register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
@@ -45,7 +43,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
     const unit: FunctionUnit = {
       funcAst,
-      hints: new HintStore(this.analysisModules),
+      hints: new HintStore(),
       slotLookup: buildSlotTable(env, paramNames),
       structuralVersion: 0,
       get body(): StmtNS.Stmt[] {
@@ -90,10 +88,9 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
 export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
-  analysisModules?: readonly LatticeEquality[],
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
-  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, analysisModules);
+  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments);
   visitor.register(ast);
   return units;
 }

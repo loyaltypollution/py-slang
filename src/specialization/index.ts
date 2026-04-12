@@ -47,7 +47,7 @@ export type {
   StmtTransformRule,
   ExprTransformRule,
 } from "./framework/interfaces";
-export type { LatticeEquality, OptimizationHint } from "./framework/hint";
+export type { OptimizationHint } from "./framework/hint";
 export { HintStore, hintEquals } from "./framework/hint";
 export { MutableEnv } from "./framework/worklist";
 export { OSRCoordinator, InPlaceASTStrategy } from "./framework/osr";
