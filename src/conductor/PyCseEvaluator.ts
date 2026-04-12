@@ -83,7 +83,6 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
       engine.converge();
 
       this.context.runtime.rootScope = ast;
-      this.context.runtime.hintsFor = node => engine.hintsFor(node);
       this.context.runtime.observationSink = engine.observationSink;
 
       try {
@@ -95,7 +94,6 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         );
       } finally {
         this.context.runtime.observationSink = undefined;
-        this.context.runtime.hintsFor = undefined;
       }
     } catch (e) {
       if (e instanceof SyntaxError) {

@@ -9,7 +9,6 @@
 import { ErrorType } from "@sourceacademy/conductor/common";
 import { ExprNS, StmtNS } from "../../ast-types";
 import * as error from "../../errors/errors";
-import type { OptimizationHint } from "../../specialization";
 import { BuiltinReassignmentError, UnsupportedOperandTypeError } from "../../errors/errors";
 import { builtIns, toPythonString } from "../../stdlib";
 import { Group } from "../../stdlib/utils";
@@ -289,9 +288,7 @@ export async function* generateCSEMachineStateStream(
     }
     control.pop();
 
-    let commandIsNode = false;
     if (isNode(command)) {
-      commandIsNode = true;
       const node = command as Node;
       const nodeType = node.constructor.name;
 
@@ -328,16 +325,7 @@ export async function* generateCSEMachineStateStream(
       context.runtime.envStepsTotal = steps;
     }
 
-    // Only look up hints when the processed command was a node.
-    // For instruction steps, nodes[0] holds the most recently executed node,
-    // not the current instruction, so the hint would be misattributed.
-    let hint: OptimizationHint | undefined;
-    if (commandIsNode) {
-      const currentNode = context.runtime.nodes[0] as (ExprNS.Expr | StmtNS.Stmt) | undefined;
-      hint = currentNode ? context.runtime.hintsFor?.(currentNode) : undefined;
-    }
-
-    yield { stash, control, steps, hint };
+    yield { stash, control, steps };
   }
 }
 

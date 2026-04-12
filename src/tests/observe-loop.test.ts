@@ -33,7 +33,6 @@ async function runWithReactive(code: string) {
 
   const merged = new HintStore();
   for (const unit of reactive.units.values()) unit.hints.mergeInto(merged);
-  context.runtime.hintsFor = node => reactive.hintsFor(node);
   context.runtime.observationSink = reactive;
   context.runtime.rootScope = ast;
 
