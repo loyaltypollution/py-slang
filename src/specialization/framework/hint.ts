@@ -18,10 +18,12 @@ export interface AnalysisKey<L = unknown> {
 /**
  * Open record of analysis values keyed by `AnalysisKey.name`.
  *
- * The named `type` and `constVal` fields are conveniences for the two analyses
- * currently shipped; they are equivalent to reading under the corresponding
- * analysis key's name. New analyses do not need to extend this interface —
- * they add their value under their own key via the index signature.
+ * `type` and `constVal` are **legacy convenience accessors** equivalent to
+ * reading under `TYPE_ANALYSIS_KEY.name` / `CONST_ANALYSIS_KEY.name` through
+ * the index signature. They exist because built-in analyses and pre-existing
+ * tests still destructure them directly; new analyses must **not** add named
+ * fields here — they declare their own `AnalysisKey` and are read via
+ * `hintGet` / `HintStore.getTyped`.
  */
 export interface OptimizationHint {
   readonly [fieldName: string]: unknown;
@@ -62,9 +64,10 @@ export const CONST_ANALYSIS_KEY: AnalysisKey<ConstLattice> = {
   equals: constLatticeEquals,
 };
 
-function defaultAnalysisKeys(): readonly AnalysisKey<unknown>[] {
-  return [TYPE_ANALYSIS_KEY as AnalysisKey<unknown>, CONST_ANALYSIS_KEY as AnalysisKey<unknown>];
-}
+const DEFAULT_ANALYSIS_KEYS: readonly AnalysisKey<unknown>[] = [
+  TYPE_ANALYSIS_KEY as AnalysisKey<unknown>,
+  CONST_ANALYSIS_KEY as AnalysisKey<unknown>,
+];
 
 export interface HintChangeRecord {
   readonly nodeId: number;
@@ -110,12 +113,9 @@ export function hintEquals(
   return true;
 }
 
-const DEFAULT_KEY_REGISTRY: ReadonlyMap<string, AnalysisKey<unknown>> = (() => {
-  const m = new Map<string, AnalysisKey<unknown>>();
-  m.set(TYPE_ANALYSIS_KEY.name, TYPE_ANALYSIS_KEY as AnalysisKey<unknown>);
-  m.set(CONST_ANALYSIS_KEY.name, CONST_ANALYSIS_KEY as AnalysisKey<unknown>);
-  return m;
-})();
+const DEFAULT_KEY_REGISTRY: ReadonlyMap<string, AnalysisKey<unknown>> = new Map(
+  DEFAULT_ANALYSIS_KEYS.map(k => [k.name, k]),
+);
 
 // ── HintStore ─────────────────────────────────────────────────────────────────
 
@@ -138,7 +138,7 @@ export class HintStore {
    * Defaults to built-in keys (`type`, `constVal`) for call-sites that build
    * a store without a specific analysis registry.
    */
-  constructor(keys: readonly AnalysisKey<unknown>[] = defaultAnalysisKeys()) {
+  constructor(keys: readonly AnalysisKey<unknown>[] = DEFAULT_ANALYSIS_KEYS) {
     const m = new Map<string, AnalysisKey<unknown>>();
     for (const k of keys) m.set(k.name, k);
     this.registry = m;
@@ -177,7 +177,14 @@ export class HintStore {
     return true;
   }
 
-  /** Copy all entries from this store into `target`, overwriting on conflict. */
+  /**
+   * Copy all entries from this store into `target`, overwriting on conflict.
+   * Equality checks during copy use `target`'s registry — if `target` was
+   * constructed without the analysis keys whose fields appear in these hints,
+   * those fields fall back to strict equality (conservative over-invalidation,
+   * not incorrect). Construct `target` with the union of known keys if you
+   * want precise equality.
+   */
   mergeInto(target: HintStore): void {
     for (const [id, hint] of this.map) {
       target.setById(id, hint);

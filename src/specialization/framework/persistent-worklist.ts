@@ -78,6 +78,13 @@ export interface WorklistStats {
 
 export type Subscriber = (changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>) => void;
 
+// ── Observation-capable analysis (narrowed subtype) ────────────────────────
+
+type ObservingAnalysis = AnalysisModule<any> & {
+  observeValue: NonNullable<AnalysisModule<any>["observeValue"]>;
+  mergeIntoHint: NonNullable<AnalysisModule<any>["mergeIntoHint"]>;
+};
+
 // ── Per-scope state ─────────────────────────────────────────────────────────
 
 interface ScopeWorkState {
@@ -105,9 +112,10 @@ export class PersistentWorklist {
   /**
    * Pre-filtered subset of `analyses` that implement the runtime-observation
    * hooks. Observation handling iterates this list rather than re-checking
-   * `observeValue` / `mergeIntoHint` on every analysis per write.
+   * `observeValue` / `mergeIntoHint` on every analysis per write. The type
+   * narrows both hooks to required so the loop body needs no non-null asserts.
    */
-  private readonly observers: readonly AnalysisModule<any>[];
+  private readonly observers: readonly ObservingAnalysis[];
 
   // Perf counters
   private _itemsProcessed = 0;
@@ -125,7 +133,10 @@ export class PersistentWorklist {
   ) {
     this.analysisQueues = analyses.map(() => []);
     this.analysisHeads = analyses.map(() => 0);
-    this.observers = analyses.filter(m => m.observeValue && m.mergeIntoHint);
+    this.observers = analyses.filter(
+      (m): m is ObservingAnalysis =>
+        m.observeValue !== undefined && m.mergeIntoHint !== undefined,
+    );
 
     const analysisKeys: AnalysisKey<unknown>[] = analyses.map(m => m.key as AnalysisKey<unknown>);
     const units = buildFunctionUnits(ast, functionEnvironments, analysisKeys);
@@ -274,10 +285,10 @@ export class PersistentWorklist {
     const hints = state.unit.hints;
     let next = hints.getById(item.nodeId) ?? {};
 
-    for (const module of this.observers) {
-      const lattice = module.observeValue!(item.value);
+    for (const { observeValue, mergeIntoHint } of this.observers) {
+      const lattice = observeValue(item.value);
       if (lattice === undefined) continue;
-      next = module.mergeIntoHint!(next, lattice);
+      next = mergeIntoHint(next, lattice);
     }
 
     return hints.setById(item.nodeId, next);
