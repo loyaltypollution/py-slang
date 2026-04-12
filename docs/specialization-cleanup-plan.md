@@ -6,6 +6,13 @@
 
 Sequenced per reviewer adjudication (2026-04-13). Each step is an independent commit with a falsifiable red test; green CI is the gate between steps.
 
+**Progress (2026-04-13):** Step 2 landed across commits `03364f2` (C8 pinSet → FunctionUnit.pinCount) and `ed3c59b` (deactivateAndTick inlined). Remaining: Steps 1, 3, 4, 5, 6.
+
+**Round-3 review-fold-ins (2026-04-13):**
+- Step 3.2 — the proposed `if (!mod) return av === bv;` branch is reached only after an earlier `if (av === bv) continue`, so it's a dead check. Rewrite as `return false` for clarity (preserves γ's default-false behavior).
+- Step 5 — LoC delta corrected to −10 (MEMO_MISS substep stricken; only move + dedup remain). Net-LoC table updated.
+- Step 6 — `rg -l` in 6.1 is a candidate-generator, not an authority (misses `export * from` paths). `yarn tsc --noEmit` at 6.3 is the real gate. Do not delete based on rg alone.
+
 ---
 
 ## Anti-oscillation rule
@@ -230,8 +237,8 @@ Reviewer explicitly left these out of C1/C2/C8 scope. Retained as separate ticke
 | 2 — C1+C8 pin unification | −35 to −50 |
 | 3 — C3 hint dispatch + HintStore dissolution | −40 |
 | 4 — C2 dead strategy triangle | −30 |
-| 5 — C6 runtime relocation | −20 |
+| 5 — C6 runtime relocation | −10 |
 | 6 — C4 barrel trim | −15 to −25 |
-| **Total** | **−210 to −265** |
+| **Total** | **−200 to −255** |
 
 Plus unquantified doc churn and deferred prosecutions D1/D2/D3.
