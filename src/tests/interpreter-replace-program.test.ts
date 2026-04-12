@@ -2,8 +2,7 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import { optimize } from "../specialization";
-import { createReactiveOptimization } from "../specialization/reactive";
+import { optimize, createReactiveOptimization } from "../specialization";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

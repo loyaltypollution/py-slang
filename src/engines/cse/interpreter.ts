@@ -846,17 +846,10 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       }
       pyDefineVariable(context, instr.symbol, value);
 
-      // OBSERVE: push the raw runtime value to the optimization worklist.
-      // srcNode is the Assign statement; its `.value` field is the RHS expression
-      // — the same node analysis already annotates with type/const hints.
       const sink = context.runtime.observationSink;
-      if (sink) {
-        const src = instr.srcNode as StmtNS.Assign;
-        if (src && typeof (src as any).value === "object" && (src as any).value !== null) {
-          const rhs = (src as any).value as ExprNS.Expr;
-          const scopeKey = currentScopeKey(context);
-          if (scopeKey) sink.observeWrite(scopeKey, rhs, value);
-        }
+      if (sink && instr.srcNode instanceof StmtNS.Assign) {
+        const scopeKey = currentScopeKey(context);
+        if (scopeKey) sink.observeWrite(scopeKey, instr.srcNode.value, value);
       }
     }
   },
@@ -1116,19 +1109,14 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         control.push(instrCreator.endOfFunctionBodyInstr(instr.srcNode));
       }
 
-      // OBSERVE: notify the sink of the call BEFORE entering the callee so the
-      // caller scope is the `scopeKey`. Pin the callee's scope as active
-      // (ref-counted) — balanced by `deactivateScope` in END_OF_FUNCTION_BODY.
-      // Only applied to FunctionDef callees (Lambdas have no end-of-body instr
-      // and run too briefly to warrant suppression).
+      // Pin callee scope (balanced by deactivate in END_OF_FUNCTION_BODY).
+      // FunctionDef only — Lambdas have no end-of-body instr.
       const sink = context.runtime.observationSink;
-      const calleeKey = closure.node as ScopeKey;
       if (sink) {
+        const calleeKey = closure.node as ScopeKey;
         const callerKey = currentScopeKey(context);
         if (callerKey) sink.observeCall(callerKey, calleeKey);
-        if (closure.node.constructor.name === "FunctionDef") {
-          sink.activateScope(calleeKey);
-        }
+        if (closure.node instanceof StmtNS.FunctionDef) sink.activateScope(calleeKey);
       }
 
       const newEnv = createEnvironment(code, context, closure, args, instr.srcNode as ExprNS.Call);

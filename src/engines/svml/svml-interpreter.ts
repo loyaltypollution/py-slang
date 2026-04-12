@@ -129,6 +129,15 @@ export class SVMLInterpreter {
    */
   private run(): SVMLBoxType {
     try {
+      return this.runInner();
+    } finally {
+      // Clear execution state so replaceProgram() can be called between runs,
+      // even if runInner threw.
+      this.currentFrame = null;
+    }
+  }
+
+  private runInner(): SVMLBoxType {
     while (!this.halted && this.currentFrame) {
       // Safety check
       if (this.instructionCount >= this.maxInstructionLimit) {
@@ -558,18 +567,9 @@ export class SVMLInterpreter {
       }
     }
 
-    // Return top of stack or undefined
-    const result =
-      this.currentFrame && this.currentFrame.stack.length > 0
-        ? this.currentFrame.stack[this.currentFrame.stack.length - 1]
-        : undefined;
-
-    return result;
-    } finally {
-      // Clear execution state so replaceProgram() can be called between runs,
-      // even if run() threw an exception.
-      this.currentFrame = null;
-    }
+    return this.currentFrame && this.currentFrame.stack.length > 0
+      ? this.currentFrame.stack[this.currentFrame.stack.length - 1]
+      : undefined;
   }
 
   // ========================================================================

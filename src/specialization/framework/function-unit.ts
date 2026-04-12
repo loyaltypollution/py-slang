@@ -8,42 +8,32 @@ import { buildSlotTable } from "./slot-table";
 export type ScopeKey = StmtNS.FileInput | StmtNS.FunctionDef;
 
 /**
- * Per-scope optimization unit: owns its body, hints, and slot lookup.
+ * Per-scope optimization unit: owns its body, hints, slot lookup, and a
+ * `structuralVersion` that the worklist bumps on each AST-mutating transform.
+ * Consumers comparing structure across time should watch `structuralVersion`;
+ * consumers watching annotations should read `hints.version` directly.
  */
 export interface FunctionUnit {
   readonly funcAst: ScopeKey;
   readonly body: StmtNS.Stmt[];
   readonly hints: HintStore;
   readonly slotLookup: SlotLookup;
-}
-
-/**
- * FunctionUnit with dual version tracking for reactive consumers.
- *
- * - `structuralVersion` bumps when AST transforms fire (dead branch elimination,
- *   constant folding). Consumers holding AST references should check this.
- * - `hintVersionSnapshot` records hints.version at last analysis convergence.
- *   Consumers can compare to hints.version to detect new annotations.
- */
-export interface VersionedFunctionUnit extends FunctionUnit {
   structuralVersion: number;
-  hintVersionSnapshot: number;
 }
 
 /**
- * Build a flat map of scope node → FunctionUnit from an AST and its resolved environments.
+ * Build a flat map of scope node → FunctionUnit.
  *
- * Walks scope boundaries (FileInput → FunctionDef → nested defs) and builds
- * one FunctionUnit per scope. Lambda is skipped (DFA does not analyze
- * single-expression lambda bodies).
+ * Walks scope boundaries (FileInput → FunctionDef → nested defs). Lambda is
+ * skipped (DFA does not analyze single-expression lambda bodies).
  */
 export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
-): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
-  const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
+): Map<ScopeKey, FunctionUnit> {
+  const units = new Map<ScopeKey, FunctionUnit>();
 
-  function buildUnit(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
+  function buildUnit(funcAst: ScopeKey): void {
     const env = functionEnvironments.get(funcAst);
     if (!env) {
       throw new Error(`Environment not found for scope node ${funcAst.kind}`);
@@ -57,46 +47,25 @@ export function buildFunctionUnits(
       body,
       hints: new HintStore(),
       slotLookup: buildSlotTable(env, paramNames),
+      structuralVersion: 0,
     });
 
-    // Recurse into nested function definitions (shallow walk — stop at function boundaries)
-    function collectFrom(stmts: StmtNS.Stmt[]): void {
-      for (const stmt of stmts) {
-        if (stmt instanceof StmtNS.FunctionDef) {
-          buildUnit(stmt);
-        } else if (stmt instanceof StmtNS.If) {
-          collectFrom(stmt.body);
-          if (stmt.elseBlock) collectFrom(stmt.elseBlock);
-        } else if (stmt instanceof StmtNS.While) {
-          collectFrom(stmt.body);
-        } else if (stmt instanceof StmtNS.For) {
-          collectFrom(stmt.body);
-        }
-      }
-    }
-    collectFrom(body);
+    for (const stmt of body) collectNested(stmt, buildUnit);
   }
 
   buildUnit(ast);
   return units;
 }
 
-/**
- * Build versioned function units with dual version tracking for reactive consumers.
- * Wraps buildFunctionUnits output with initial version counters.
- */
-export function buildVersionedFunctionUnits(
-  ast: StmtNS.FileInput,
-  functionEnvironments: FunctionEnvironments,
-): Map<ScopeKey, VersionedFunctionUnit> {
-  const base = buildFunctionUnits(ast, functionEnvironments);
-  const result = new Map<ScopeKey, VersionedFunctionUnit>();
-  for (const [key, unit] of base) {
-    result.set(key, {
-      ...unit,
-      structuralVersion: 0,
-      hintVersionSnapshot: 0,
-    });
+function collectNested(stmt: StmtNS.Stmt, buildUnit: (f: ScopeKey) => void): void {
+  if (stmt instanceof StmtNS.FunctionDef) {
+    buildUnit(stmt);
+  } else if (stmt instanceof StmtNS.If) {
+    for (const s of stmt.body) collectNested(s, buildUnit);
+    if (stmt.elseBlock) for (const s of stmt.elseBlock) collectNested(s, buildUnit);
+  } else if (stmt instanceof StmtNS.While) {
+    for (const s of stmt.body) collectNested(s, buildUnit);
+  } else if (stmt instanceof StmtNS.For) {
+    for (const s of stmt.body) collectNested(s, buildUnit);
   }
-  return result;
 }

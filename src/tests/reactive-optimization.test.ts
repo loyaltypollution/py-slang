@@ -3,16 +3,15 @@
  * - Differential correctness: createReactiveOptimization().converge() produces
  *   the same hints and AST structure as the one-shot optimize() path.
  * - PersistentWorklist priority ordering.
- * - Dual versioning (structuralVersion + hintVersionSnapshot).
+ * - Structural versioning.
  * - Subscription notifications.
  */
 
 import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { optimize } from "../specialization";
-import { createReactiveOptimization } from "../specialization/reactive";
-import type { ScopeKey, VersionedFunctionUnit } from "../specialization/framework/function-unit";
+import { optimize, createReactiveOptimization } from "../specialization";
+import type { ScopeKey, FunctionUnit } from "../specialization/framework/function-unit";
 import type { HintStore } from "../specialization/framework/hint";
 
 function parseAndResolve(code: string) {
@@ -137,16 +136,6 @@ describe("ReactiveOptimization: dual versioning", () => {
     expect(rootUnit!.structuralVersion).toBeGreaterThan(0);
   });
 
-  test("hintVersionSnapshot tracks hints.version", () => {
-    const { ast, environments } = parseAndResolve("x = 1 + 2");
-    const reactive = createReactiveOptimization(ast, environments);
-    reactive.converge();
-
-    for (const unit of reactive.units.values()) {
-      // After convergence, snapshot should equal current hints version
-      expect(unit.hintVersionSnapshot).toBe(unit.hints.version);
-    }
-  });
 });
 
 // ── Subscription tests ──────────────────────────────────────────────────────
@@ -221,9 +210,9 @@ describe("ReactiveOptimization: multi-scope", () => {
  * and structural position (since separate parses produce different objects).
  */
 function findMatchingUnit(
-  units: ReadonlyMap<ScopeKey, VersionedFunctionUnit>,
+  units: ReadonlyMap<ScopeKey, FunctionUnit>,
   target: StmtNS.FileInput | StmtNS.FunctionDef,
-): VersionedFunctionUnit | undefined {
+): FunctionUnit | undefined {
   if (target instanceof StmtNS.FileInput) {
     for (const [key, unit] of units) {
       if (key instanceof StmtNS.FileInput) return unit;

@@ -120,24 +120,62 @@ x = "hello"
     expect(allKeys.has(ast)).toBe(true);
   });
 
-  test("root scope pinned before converge: transforms deferred", async () => {
-    // Pinning the root before converge must park the root's transform.
-    // (Post-deactivation transform firing is covered by the worklist
-    // suppression tests; here we just verify the parking effect.)
+  test("root scope pinned before converge: transforms deferred, then fire on tick after deactivate", async () => {
     const { ast, reactive } = setupReactive("if True:\n  x = 1\nelse:\n  x = 2");
     reactive.activateScope(ast);
     reactive.converge();
     expect(reactive.units.get(ast)!.structuralVersion).toBe(0);
 
-    // Without pinning, the transform fires normally (baseline verified in a
-    // separate reactive instance).
+    reactive.deactivateScope(ast);
+    expect(reactive.idle).toBe(false);
+    reactive.tick();
+    expect(reactive.units.get(ast)!.structuralVersion).toBeGreaterThan(0);
+
+    // Baseline without pinning: transform fires during converge itself.
     const fresh = setupReactive("if True:\n  x = 1\nelse:\n  x = 2");
     fresh.reactive.converge();
     expect(fresh.reactive.units.get(fresh.ast)!.structuralVersion).toBeGreaterThan(0);
 
-    // Use Context import so lint is happy.
     const context = new Context();
     expect(context.runtime).toBeDefined();
+  });
+});
+
+describe("OBSERVE loop: multi-scope parallel optimization", () => {
+  test("pinning one function does not park a cold sibling's transform", () => {
+    // The architectural payoff: while scope f is active on a call stack,
+    // cold scope g must still optimize (here: constant-fold 3+4 → 7).
+    const code = `
+def f():
+    x = 1 + 2
+def g():
+    y = 3 + 4
+`;
+    const { ast, reactive } = setupReactive(code);
+    const fDef = ast.statements[0] as StmtNS.FunctionDef;
+    const gDef = ast.statements[1] as StmtNS.FunctionDef;
+
+    reactive.activateScope(fDef);
+    reactive.converge();
+
+    // f's transform is parked; g's fires.
+    expect(reactive.units.get(fDef)!.structuralVersion).toBe(0);
+    expect(reactive.units.get(gDef)!.structuralVersion).toBeGreaterThan(0);
+
+    // Verifying g actually got folded: its body's assignment RHS is now a literal.
+    const gAssign = gDef.body[0] as StmtNS.Assign;
+    expect(gAssign.value.kind).toBe("Literal");
+
+    // f's body is untouched — still a Binary expression.
+    const fAssign = fDef.body[0] as StmtNS.Assign;
+    expect(fAssign.value.kind).toBe("Binary");
+
+    // Unpin f → on next tick its transform fires too.
+    reactive.deactivateScope(fDef);
+    reactive.tick();
+    expect(reactive.units.get(fDef)!.structuralVersion).toBeGreaterThan(0);
+    const fAssignAfter = fDef.body[0] as StmtNS.Assign;
+    expect(fAssignAfter.value.kind).toBe("Literal");
   });
 });
 

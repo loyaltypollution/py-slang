@@ -8,8 +8,8 @@
 
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { createReactiveOptimization } from "../specialization/reactive";
-import type { WorklistStats } from "../specialization/reactive";
+import { createReactiveOptimization } from "../specialization";
+import type { WorklistStats } from "../specialization";
 
 // ── Test setup ─────────────────────────────────────────────────────────────
 

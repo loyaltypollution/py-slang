@@ -5,7 +5,6 @@
 
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { buildVersionedFunctionUnits } from "../specialization/framework/function-unit";
 import { PersistentWorklist } from "../specialization/framework/persistent-worklist";
 import { ConstAnalysisModule } from "../specialization/const-analysis/analysis";
 import { TypeAnalysisModule } from "../specialization/type-analysis/analysis";
@@ -17,13 +16,13 @@ function setup(code: string) {
   const script = code + "\n";
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const units = buildVersionedFunctionUnits(ast, environments);
   const worklist = new PersistentWorklist(
+    ast,
+    environments,
     [new TypeAnalysisModule(), new ConstAnalysisModule()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule()],
   );
-  for (const [key, unit] of units) worklist.addScope(key, unit);
-  return { ast, units, worklist };
+  return { ast, units: worklist.units, worklist };
 }
 
 describe("PersistentWorklist.enqueue value-observation", () => {

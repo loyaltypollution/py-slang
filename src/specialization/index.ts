@@ -3,17 +3,17 @@
 // ── Pipeline entry points ────────────────────────────────────────────────────
 
 export { optimize } from "./optimize";
-export { createReactiveOptimization } from "./reactive";
-export type { ReactiveOptimization, ReactiveSubscriber, ExternalWorkItem } from "./reactive";
+export { createReactiveOptimization } from "./optimize";
 
 // ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
 
-export type { FunctionUnit, ScopeKey, VersionedFunctionUnit } from "./framework/function-unit";
-export { buildFunctionUnits, buildVersionedFunctionUnits } from "./framework/function-unit";
+export type { FunctionUnit, ScopeKey } from "./framework/function-unit";
+export { buildFunctionUnits } from "./framework/function-unit";
 
 // ── Persistent worklist ─────────────────────────────────────────────────────
 
 export { PersistentWorklist } from "./framework/persistent-worklist";
+export type { ExternalWorkItem, Subscriber, WorklistStats } from "./framework/persistent-worklist";
 export { ScopeIndexMap } from "./framework/scope-index-map";
 export type { ObservationSink } from "./framework/observation-sink";
 export type { SlotInfo, SlotLookup } from "./framework/slot-table";
