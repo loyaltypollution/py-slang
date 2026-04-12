@@ -56,9 +56,12 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         interpreter.replaceProgram(currentProgram);
       });
 
-      const returnValue = interpreter.execute();
-      unsubscribe();
-      this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
+      try {
+        const returnValue = interpreter.execute();
+        this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
+      } finally {
+        unsubscribe();
+      }
     } catch (e) {
       this.conductor.sendError(new EvaluatorError(e));
     }
