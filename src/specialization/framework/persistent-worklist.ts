@@ -15,7 +15,12 @@ import { buildCFG } from "./cfg";
 import type { FunctionUnit } from "./function-unit";
 import { buildFunctionUnits } from "./function-unit";
 import type { OptimizationHint } from "./hint";
-import type { AnalysisModule, TransformRule } from "./interfaces";
+import type {
+  AnalysisModule,
+  CallObserver,
+  ScopeTransformRule,
+  TransformRule,
+} from "./interfaces";
 import { applyTransformPass } from "./transform";
 import type { AnalysisSession } from "./worklist";
 import {
@@ -193,6 +198,25 @@ export class PersistentWorklist {
    */
   private readonly observers: readonly ObservingAnalysis[];
 
+  /**
+   * Runtime call-site observers. Populated via `addCallObserver`. Fires on
+   * every `observeCall` dispatch, independently of the analysis lattice
+   * path. Used for profile-style facts (e.g. memoization saturating count)
+   * that don't belong in a Kildall transfer function.
+   */
+  private readonly callObservers: CallObserver[] = [];
+
+  /**
+   * Records scope-rule (scope × rule) pairs whose `fireOnce` flag is set
+   * and have already succeeded once. The scheduler skips matches/apply
+   * for any recorded pair. This is what lets non-monotone rules
+   * (memoization) live here without self-latching through the hint.
+   */
+  private readonly firedOneShotRules = new Map<
+    StmtNS.FileInput | StmtNS.FunctionDef,
+    Set<ScopeTransformRule>
+  >();
+
   // Perf counters
   private _itemsProcessed = 0;
   private _analysisItemsProcessed = 0;
@@ -260,6 +284,15 @@ export class PersistentWorklist {
   subscribe(cb: Subscriber): () => void {
     this.subscribers.add(cb);
     return () => this.subscribers.delete(cb);
+  }
+
+  /**
+   * Register a profile-style call observer. Fires on every `observeCall`
+   * dispatch. Independent of the analysis lattice path — observers receive
+   * the callee's `HintStore` and can write counter fields directly.
+   */
+  addCallObserver(observer: CallObserver): void {
+    this.callObservers.push(observer);
   }
 
   /**
@@ -349,8 +382,8 @@ export class PersistentWorklist {
       case "call-observation": {
         const calleeState = this.scopes.get(item.calleeKey);
         if (!calleeState) return;
-        for (const mod of this.analyses) {
-          mod.onCallObservation?.(item.scopeKey, item.calleeKey, calleeState.unit.hints);
+        for (const obs of this.callObservers) {
+          obs.onCallObservation(item.scopeKey, item.calleeKey, calleeState.unit.hints);
         }
         this.rebuildAndReseed(item.calleeKey, calleeState);
         // Tick once so any newly-enabled safeOnStack transforms (e.g.
@@ -607,7 +640,19 @@ export class PersistentWorklist {
         // rules (e.g. full-body rewrites that could race with on-stack
         // frames) stay parked until the pin releases.
         if (pinned && !rule.safeOnStack) continue;
-        if (rule.matches(state.unit) && rule.apply(state.unit)) anyChanged = true;
+        // One-shot rules: skip once they've fired successfully on this scope.
+        if (rule.fireOnce && this.firedOneShotRules.get(item.scopeKey)?.has(rule)) continue;
+        if (rule.matches(state.unit) && rule.apply(state.unit)) {
+          anyChanged = true;
+          if (rule.fireOnce) {
+            let set = this.firedOneShotRules.get(item.scopeKey);
+            if (!set) {
+              set = new Set();
+              this.firedOneShotRules.set(item.scopeKey, set);
+            }
+            set.add(rule);
+          }
+        }
         continue;
       }
       // Expr/stmt rules on pinned scopes are unsafe in general (they can

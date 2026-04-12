@@ -14,7 +14,7 @@ import {
   ConstAnalysisModule,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
-  MemoizationAnalysisModule,
+  CallCountObserver,
   MemoizationTransformRule,
   PersistentWorklist,
   TypeAnalysisModule,
@@ -33,7 +33,7 @@ function makeWorklist(code: string): {
   const worklist = new PersistentWorklist(
     ast,
     environments,
-    [new TypeAnalysisModule(), new ConstAnalysisModule(), new MemoizationAnalysisModule()],
+    [new TypeAnalysisModule(), new ConstAnalysisModule()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
     pinSet,
   );
@@ -43,6 +43,7 @@ function makeWorklist(code: string): {
 describe("runPinned", () => {
   test("fn throws → pinSet.clear() fires", async () => {
     const { worklist, ast, pinSet } = makeWorklist("x = 1");
+    worklist.addCallObserver(new CallCountObserver());
     worklist.converge();
     // Seed: simulate a stale pin from a prior interrupted evaluation.
     pinSet.set(ast, 1);
@@ -60,6 +61,7 @@ describe("runPinned", () => {
 
   test("fn returns normally → pinSet left alone (no leak from runPinned itself)", async () => {
     const { worklist, ast, pinSet } = makeWorklist("x = 1");
+    worklist.addCallObserver(new CallCountObserver());
     worklist.converge();
 
     const result = await runPinned(worklist, null, ast, pinSet, () => 42);
@@ -71,6 +73,7 @@ describe("runPinned", () => {
 
   test("throw propagates through runPinned unchanged", async () => {
     const { worklist, ast, pinSet } = makeWorklist("x = 1");
+    worklist.addCallObserver(new CallCountObserver());
     worklist.converge();
 
     class Custom extends Error {}

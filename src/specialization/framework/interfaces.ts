@@ -65,6 +65,19 @@ export interface ScopeTransformRule {
    * completes, defeating the point of runtime specialization.
    */
   readonly safeOnStack?: boolean;
+
+  /**
+   * If true, the worklist scheduler records `(scope, rule)` after the first
+   * successful apply and short-circuits future matches/applies on the same
+   * pair. The rule no longer needs a self-latch (e.g. a marker field in the
+   * hint) to prevent re-firing — the framework enforces one-shot semantics.
+   *
+   * This separates non-monotone rules (whose apply would re-match forever
+   * without a latch) from the monotone rules that `ScopeTransformRule`
+   * models by default, and keeps the non-monotone-through-monotone
+   * smuggling out of the rule's own `matches` predicate.
+   */
+  readonly fireOnce?: boolean;
 }
 
 export type TransformRule = StmtTransformRule | ExprTransformRule | ScopeTransformRule;
@@ -114,15 +127,19 @@ export interface AnalysisModule<L> {
    * specialization consumers).
    */
   mergeIntoHint?(hint: OptimizationHint, value: L): OptimizationHint;
+}
 
-  /**
-   * Optional runtime hook fired by the worklist on every `observeCall`
-   * (before the callee's CFG is rebuilt and analyses re-seeded). Lets an
-   * analysis accumulate per-scope call-site facts (e.g. memoization's
-   * saturating call counter) keyed on the callee FunctionDef's hint without
-   * shoehorning the update through the expression-level transfer function.
-   */
-  onCallObservation?(
+/**
+ * Profile-style runtime observer. Unlike `AnalysisModule`, a `CallObserver`
+ * does not participate in any lattice / transfer / visitor path — it only
+ * reacts to `observeCall` dispatch. Use for side-table counters and other
+ * non-dataflow facts that would otherwise be smuggled through a dummy
+ * `AnalysisModule` (e.g. the memoization saturating call counter).
+ *
+ * Registered on a worklist via `addCallObserver`.
+ */
+export interface CallObserver {
+  onCallObservation(
     callerKey: StmtNS.FileInput | StmtNS.FunctionDef,
     calleeKey: StmtNS.FileInput | StmtNS.FunctionDef,
     calleeHints: HintStore,

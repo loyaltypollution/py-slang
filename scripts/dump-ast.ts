@@ -20,7 +20,7 @@ import {
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   HintStore,
-  MemoizationAnalysisModule,
+  CallCountObserver,
   MemoizationTransformRule,
   PersistentWorklist,
   TypeAnalysisModule,
@@ -300,9 +300,10 @@ if (errors.length > 0) {
 const worklist = new PersistentWorklist(
   ast,
   environments,
-  [new TypeAnalysisModule(), new ConstAnalysisModule(), new MemoizationAnalysisModule()],
+  [new TypeAnalysisModule(), new ConstAnalysisModule()],
   [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
 );
+worklist.addCallObserver(new CallCountObserver());
 worklist.converge();
 const units = worklist.units;
 

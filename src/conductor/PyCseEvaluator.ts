@@ -16,7 +16,7 @@ import {
   ConstAnalysisModule,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
-  MemoizationAnalysisModule,
+  CallCountObserver,
   MemoizationTransformRule,
   PersistentWorklist,
   runPinned,
@@ -97,10 +97,11 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
       const worklist = new PersistentWorklist(
         ast,
         environments,
-        [new TypeAnalysisModule(), new ConstAnalysisModule(), new MemoizationAnalysisModule()],
+        [new TypeAnalysisModule(), new ConstAnalysisModule()],
         [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
         pinSet,
       );
+      worklist.addCallObserver(new CallCountObserver());
       worklist.converge();
 
       this.context.runtime.rootScope = ast;

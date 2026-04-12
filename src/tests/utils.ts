@@ -14,7 +14,7 @@ import {
   ConstAnalysisModule,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
-  MemoizationAnalysisModule,
+  CallCountObserver,
   MemoizationTransformRule,
   PersistentWorklist,
   TypeAnalysisModule,
@@ -36,13 +36,15 @@ export function buildTestWorklist(
   functionEnvironments: FunctionEnvironments,
   pinSet?: Map<StmtNS.FileInput | StmtNS.FunctionDef, number>,
 ): PersistentWorklist {
-  return new PersistentWorklist(
+  const worklist = new PersistentWorklist(
     ast,
     functionEnvironments,
-    [new TypeAnalysisModule(), new ConstAnalysisModule(), new MemoizationAnalysisModule()],
+    [new TypeAnalysisModule(), new ConstAnalysisModule()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
     pinSet,
   );
+  worklist.addCallObserver(new CallCountObserver());
+  return worklist;
 }
 
 /**
