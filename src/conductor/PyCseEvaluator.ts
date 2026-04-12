@@ -1,6 +1,5 @@
 import { ErrorType } from "@sourceacademy/conductor/common";
 import { BasicEvaluator, IRunnerPlugin } from "@sourceacademy/conductor/runner";
-import type { StmtNS } from "../ast-types";
 import { Context } from "../engines/cse/context";
 import { evaluate } from "../engines/cse/interpreter";
 import {
@@ -89,26 +88,23 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         throw errors[errors.length - 1];
       }
 
-      // Shared pin-set: runtime mutates via push/popEnvironment, worklist
-      // queries via isScopeActive. One map, two views.
-      const pinSet = new Map<StmtNS.FileInput | StmtNS.FunctionDef, number>();
-      this.context.runtime.pinSet = pinSet;
-
       const worklist = new PersistentWorklist(
         ast,
         environments,
         [new TypeAnalysisModule(), new ConstAnalysisModule()],
         [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
-        pinSet,
       );
       worklist.addCallObserver(new CallCountObserver());
       worklist.converge();
 
       this.context.runtime.rootScope = ast;
+      // observationSink wires the runtime's push/popEnvironment into the
+      // worklist's activateScope/deactivateScope, which mutate
+      // FunctionUnit.pinCount — the single owner of pin-set state.
       this.context.runtime.observationSink = worklist;
 
       try {
-        await runPinned(worklist, null, ast, pinSet, () =>
+        await runPinned(worklist, null, ast, () =>
           evaluate("", ast, this.context, {
             variant: this.variant,
             groups: this.groups,
@@ -116,7 +112,6 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         );
       } finally {
         this.context.runtime.observationSink = undefined;
-        this.context.runtime.pinSet = undefined;
       }
     } catch (e) {
       if (e instanceof SyntaxError) {

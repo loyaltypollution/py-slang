@@ -34,14 +34,12 @@ import Stmt = StmtNS.Stmt;
 export function buildTestWorklist(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
-  pinSet?: Map<StmtNS.FileInput | StmtNS.FunctionDef, number>,
 ): PersistentWorklist {
   const worklist = new PersistentWorklist(
     ast,
     functionEnvironments,
     [new TypeAnalysisModule(), new ConstAnalysisModule()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
-    pinSet,
   );
   worklist.addCallObserver(new CallCountObserver());
   return worklist;

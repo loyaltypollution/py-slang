@@ -5,10 +5,26 @@ import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
 /**
- * Per-scope optimization unit. `body` is a read-through getter onto the
- * AST's statement array so consumers can never observe a stale cached
- * array if memoization or another non-monotone transform swaps the
- * subtree.
+ * Per-scope optimization unit. Aggregates scope-keyed state: the AST node
+ * identity (immutable), and the mutable runtime state the framework
+ * maintains alongside it.
+ *
+ * Mutability split:
+ *   - Immutable identity / wiring: `funcAst`, `slotLookup`. Set at
+ *     construction, never rewritten.
+ *   - Mutable state:
+ *     - `hints` — readonly reference but `HintStore.set` mutates contents.
+ *     - `body` — readonly reference (read-through getter onto the AST's
+ *       statement array); array contents are spliced in place by
+ *       non-monotone transforms (memoization, dead-branch elimination).
+ *     - `structuralVersion` — bumped by every successful transform.
+ *     - `pinCount` — multiset count of live call frames currently
+ *       executing this scope. Previously a parallel `activeScopes` Map
+ *       on PersistentWorklist plus an aliased `context.runtime.pinSet`
+ *       in CSE; collapsed onto the unit so the unit is the single owner
+ *       of its scope-level mutable state. Mutated through
+ *       `PersistentWorklist.activateScope` / `deactivateScope`, which is
+ *       also the ObservationSink entry point interpreters use.
  */
 export interface FunctionUnit {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
@@ -16,6 +32,7 @@ export interface FunctionUnit {
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
   structuralVersion: number;
+  pinCount: number;
 }
 
 /**
@@ -46,6 +63,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       hints: new HintStore(),
       slotLookup: buildSlotTable(env, paramNames),
       structuralVersion: 0,
+      pinCount: 0,
       get body(): StmtNS.Stmt[] {
         return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
       },

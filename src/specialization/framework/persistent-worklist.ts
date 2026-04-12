@@ -173,21 +173,15 @@ export class PersistentWorklist {
 
   private readonly scopes = new Map<StmtNS.FileInput | StmtNS.FunctionDef, ScopeWorkState>();
   /**
-   * Pin-set: multiset of currently-executing scopes. Source of truth is
-   * **external** — engines mutate this via env/frame push/pop (CSE's
-   * `pushEnvironment`/`popEnvironment`; SVML's frame push/pop and
-   * exception-finally frame walk). Anchoring to the engine's own lifecycle
-   * primitive (which must be balanced for correctness-unrelated reasons:
-   * scope resolution, return-address management) converts the pin
-   * invariant from protocol ("every activate paired with deactivate on
-   * every exit path") to data ("pin-count = live-frame-count").
-   *
-   * The worklist retains `activateScope`/`deactivateScope` methods for
-   * the root-scope pinning performed by `withActiveScope`, and for tests
-   * that construct a worklist without an interpreter. Both write to this
-   * same map.
+   * Pin-set lives on `FunctionUnit.pinCount` (accessed via `this.scopes`).
+   * Engines mutate only through `activateScope`/`deactivateScope` on the
+   * `ObservationSink` surface — CSE's `pushEnvironment`/`popEnvironment`
+   * and SVML's frame push/pop call these. Anchoring to the engine's own
+   * lifecycle primitive (which must be balanced for correctness-unrelated
+   * reasons: scope resolution, return-address management) converts the
+   * pin invariant from protocol ("every activate paired with deactivate
+   * on every exit path") to data ("pin-count = live-frame-count").
    */
-  private readonly activeScopes: Map<StmtNS.FileInput | StmtNS.FunctionDef, number>;
   private readonly subscribers = new Set<Subscriber>();
 
   /**
@@ -230,9 +224,7 @@ export class PersistentWorklist {
     functionEnvironments: FunctionEnvironments,
     private readonly analyses: readonly AnalysisModule<any>[],
     private readonly transforms: readonly TransformRule[],
-    pinSet?: Map<StmtNS.FileInput | StmtNS.FunctionDef, number>,
   ) {
-    this.activeScopes = pinSet ?? new Map();
     this.analysisQueues = analyses.map(() => []);
     this.analysisHeads = analyses.map(() => 0);
     this.observers = analyses.filter(
@@ -398,17 +390,16 @@ export class PersistentWorklist {
   }
 
   activateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void {
-    this.activeScopes.set(key, (this.activeScopes.get(key) ?? 0) + 1);
+    const state = this.scopes.get(key);
+    if (!state) return;
+    state.unit.pinCount++;
   }
 
   deactivateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void {
-    const count = this.activeScopes.get(key);
-    if (count === undefined) return;
-    if (count > 1) {
-      this.activeScopes.set(key, count - 1);
-      return;
-    }
-    this.activeScopes.delete(key);
+    const state = this.scopes.get(key);
+    if (!state || state.unit.pinCount === 0) return;
+    state.unit.pinCount--;
+    if (state.unit.pinCount > 0) return;
     // Re-enqueue a transform for the now-unpinned scope. Any scope rules
     // that were skipped during `processTransform` due to the `pinned &&
     // !rule.safeOnStack` gate (and expr/stmt rules, which are all deferred
@@ -417,12 +408,29 @@ export class PersistentWorklist {
     // queue is empty. The enqueue is idempotent — duplicate-queueing of a
     // scope is safe; `hasProcessableTransform` coalesces at processing
     // time.
-    const state = this.scopes.get(key);
-    if (state) this.enqueueTransform(key, state.generation);
+    this.enqueueTransform(key, state.generation);
   }
 
   isScopeActive(key: StmtNS.FileInput | StmtNS.FunctionDef): boolean {
-    return this.activeScopes.has(key);
+    return (this.scopes.get(key)?.unit.pinCount ?? 0) > 0;
+  }
+
+  /**
+   * Zero every unit's `pinCount`. Called by `runPinned` on throw — CSE
+   * does not pop envs during JS-stack unwind, so any FunctionDef envs
+   * still on the runtime stack never ran their leave-hook. The next
+   * evaluation starts fresh, so reset is simpler than reconstruction.
+   */
+  clearAllPins(): void {
+    for (const state of this.scopes.values()) {
+      state.unit.pinCount = 0;
+    }
+  }
+
+  private countPinnedScopes(): number {
+    let n = 0;
+    for (const state of this.scopes.values()) if (state.unit.pinCount > 0) n++;
+    return n;
   }
 
   private handleValueObservation(item: ValueObservationItem, state: ScopeWorkState): boolean {
@@ -491,7 +499,7 @@ export class PersistentWorklist {
         if (stallWindow >= 2) {
           throw new Error(
             `[PersistentWorklist] drain stalled: findActiveQueue returned ${qIdx} but no queue advanced across two iterations. ` +
-              `queueShape=${shape} pending=${this.pending} activeScopes=${this.activeScopes.size}`,
+              `queueShape=${shape} pending=${this.pending} pinnedScopes=${this.countPinnedScopes()}`,
           );
         }
       } else {
@@ -576,7 +584,7 @@ export class PersistentWorklist {
    * `processTransform` then refused to advance past it.
    */
   private isTransformProcessable(item: QueuedTransform): boolean {
-    if (!this.activeScopes.has(item.scopeKey)) return true;
+    if (!this.isScopeActive(item.scopeKey)) return true;
     return this.hasSafeOnStackScopeRule;
   }
 
@@ -644,7 +652,7 @@ export class PersistentWorklist {
     const state = this.scopes.get(item.scopeKey);
     if (!state || item.generation !== state.generation) return false;
 
-    const pinned = this.activeScopes.has(item.scopeKey);
+    const pinned = state.unit.pinCount > 0;
     let anyChanged = false;
     const extraInvalidate = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     for (const rule of this.transforms) {

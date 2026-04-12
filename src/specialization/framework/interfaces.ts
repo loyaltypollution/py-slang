@@ -51,6 +51,9 @@ export interface ScopeTransformRule {
    */
   apply(unit: FunctionUnit): boolean;
   /**
+   * Pin-gate layer 1/3 (rule level — "is this transform safe against a
+   * live frame?"). Default: false (pinned scopes are skipped).
+   *
    * If true, this rule may fire on a scope that is currently pinned
    * (activeScopes.has(scopeKey)). The contract the rule promises: the
    * mutation only affects *future* calls into the scope — existing on-stack
@@ -63,6 +66,22 @@ export interface ScopeTransformRule {
    * entire duration of the outermost call — which for self-recursive
    * workloads (fib) means transforms never fire until after the program
    * completes, defeating the point of runtime specialization.
+   *
+   * Sister layers gate the same concern at different tiers (each is a
+   * separate opt-in; none subsumes another):
+   *   - `StateDeltaStrategy.canInstallOnStack` (osr.ts) — strategy level.
+   *     "Is the state-delta installation technique safe against a live
+   *     frame of this scope?" Whole-function IR swap: safe (frames hold
+   *     direct refs). In-place operand patches: unsafe.
+   *   - `SVMLInterpreter.patchFunction`'s `allowOnStack` param — engine
+   *     level. Bypasses the defensive live-frame assertion when the
+   *     strategy above has explicitly acknowledged safety.
+   *
+   * The three-layer split compensates for the absence of a
+   * Truffle-Assumption / explicit deopt mechanism. A descriptor-indirection
+   * refactor could collapse layers 2 and 3 (the strategy would always
+   * swap a descriptor pointer rather than a raw IR slot), but that
+   * refactor has not landed — do not collapse.
    */
   readonly safeOnStack?: boolean;
 

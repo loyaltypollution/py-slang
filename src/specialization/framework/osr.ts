@@ -70,19 +70,32 @@ export interface StateDeltaStrategy<Delta> {
   applyDelta(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, delta: Delta): void;
 
   /**
-   * Opt-in override for the default "skip pinned scopes" policy. Return true
-   * if installing this strategy's delta for `scopeKey` is safe while a frame
-   * of `scopeKey` is live on the stack. For SVML whole-function recompile:
-   * safe because `CallFrame` holds a direct IR reference (not an indirection
-   * through `program.functions[i]`), so the old IR executes to completion
-   * while new calls dispatch through the patched slot. For in-place operand
-   * patches that mutate the same typed arrays a live frame is reading from:
-   * NOT safe — omit or return false.
+   * Pin-gate layer 2/3 (strategy level — "is this state-delta install
+   * technique safe against a live frame?"). Deny-by-default: if absent,
+   * `OSRCoordinator.onChange` treats the pinned scope as an unconditional
+   * skip. An explicit `true` return is the opt-in.
+   *
+   * Return true if installing this strategy's delta for `scopeKey` is safe
+   * while a frame of `scopeKey` is live on the stack. For SVML
+   * whole-function recompile: safe because `CallFrame` holds a direct IR
+   * reference (not an indirection through `program.functions[i]`), so the
+   * old IR executes to completion while new calls dispatch through the
+   * patched slot. For in-place operand patches that mutate the same typed
+   * arrays a live frame is reading from: NOT safe — omit or return false.
    *
    * Without this, a recursive workload (fib) never installs a specialized
    * version of itself during a single execution: the scope is pinned from
    * outermost entry to outermost return, so `onChange` skips every
    * notification until after the program finishes.
+   *
+   * Sister layers (see `ScopeTransformRule.safeOnStack` for the full
+   * three-layer model): this layer answers "is the installation technique
+   * safe?"; the rule-level flag answers "is the transform source safe?";
+   * the engine-level `patchFunction`'s `allowOnStack` arg is the bypass
+   * switch the strategy pulls after checking both prior answers. Absent
+   * this layer, `OSRCoordinator` would have to trust the engine layer's
+   * defense alone, which is insufficient for operand-patch strategies
+   * (those mutate live-read typed arrays).
    */
   canInstallOnStack?(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef): boolean;
 }
@@ -160,11 +173,17 @@ export class OSRCoordinator<Delta> {
     for (const key of changed) {
       this._notificationsSeen++;
       if (this.reactive.isScopeActive(key)) {
-        if (!this.strategy.canInstallOnStack?.(key)) {
+        // Deny-by-default: an absent `canInstallOnStack` means the strategy
+        // has not opted in, so we skip. The predicate must be BOTH defined
+        // AND return true for an on-stack install to proceed — `?.true`
+        // shorthand would silently accept strategies that only forgot to
+        // override the hook.
+        const canInstall = this.strategy.canInstallOnStack;
+        if (!canInstall || !canInstall.call(this.strategy, key)) {
           this._skippedPinned++;
           continue;
         }
-        // fallthrough: strategy accepts on-stack install.
+        // fallthrough: strategy explicitly accepts on-stack install.
       }
       if (this.strategy.canInstall && !this.strategy.canInstall(key)) {
         this._skippedCanInstall++;

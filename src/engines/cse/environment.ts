@@ -178,14 +178,7 @@ export const popEnvironment = (context: Context) => {
   const env = context.runtime.environments.shift();
   if (env) {
     const scope = scopeKeyForEnv(env);
-    const pinSet = context.runtime.pinSet;
-    if (scope && pinSet) {
-      const n = pinSet.get(scope);
-      if (n !== undefined) {
-        if (n <= 1) pinSet.delete(scope);
-        else pinSet.set(scope, n - 1);
-      }
-    }
+    if (scope) context.runtime.observationSink?.deactivateScope(scope);
   }
   return env;
 };
@@ -194,8 +187,5 @@ export const pushEnvironment = (context: Context, environment: Environment) => {
   context.runtime.environments.unshift(environment);
   context.runtime.environmentTree.insert(environment);
   const scope = scopeKeyForEnv(environment);
-  const pinSet = context.runtime.pinSet;
-  if (scope && pinSet) {
-    pinSet.set(scope, (pinSet.get(scope) ?? 0) + 1);
-  }
+  if (scope) context.runtime.observationSink?.activateScope(scope);
 };

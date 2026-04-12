@@ -1,5 +1,4 @@
 import { BasicEvaluator } from "@sourceacademy/conductor/runner";
-import type { StmtNS } from "../ast-types";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
@@ -36,13 +35,11 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
       if (errors.length > 0) throw errors[0];
 
-      const pinSet = new Map<StmtNS.FileInput | StmtNS.FunctionDef, number>();
       const worklist = new PersistentWorklist(
         ast,
         environments,
         [new TypeAnalysisModule(), new ConstAnalysisModule()],
         [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
-        pinSet,
       );
       worklist.addCallObserver(new CallCountObserver());
       worklist.converge();
@@ -59,7 +56,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         new SVMLSwapStrategy(compiler, interpreter),
       );
 
-      const returnValue = await runPinned(worklist, coordinator, ast, pinSet, () =>
+      const returnValue = await runPinned(worklist, coordinator, ast, () =>
         interpreter.execute(),
       );
       this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));

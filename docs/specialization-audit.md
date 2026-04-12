@@ -1,121 +1,138 @@
-# Specialization Engine — Architectural Diagnosis
+# Specialization Engine — Architectural Diagnosis (round 2)
 
 **Subject**: `src/specialization/` (working tree, branch `worktree-pr3-hint-store`)
-**Method**: descriptive inventory → roadmap archaeology → falsification prosecution → forensic pattern diagnosis
-**Verdict**: **INCOMPLETE, two-to-three patterns stacked**. Not cargo; not one pattern done wrong. Three literature templates partially implemented, each gap filled by hand-written compensation.
+**Method**: descriptive inventory → roadmap archaeology → falsification prosecution → grep verification → forensic pattern diagnosis
+**Verdict**: **INCOMPLETE, two load-bearing patterns half-wired.** Most "architecture sprawl" is either (a) residue of a dissolution that stopped one step short, or (b) a monkey patch that compensates for a missing step in an established pattern. Fix the gaps, the patches become redundant.
+
+This memo supersedes the prior round's diagnosis. Scope narrower, prescriptions sharper.
 
 ---
 
-## 1. The three patterns
+## 1. What the literature already named
 
-### 1a. Truffle — self-optimizing AST interpreter
-> Würthinger et al., *Truffle: A Self-Optimizing Runtime System*, SPLASH '12, §3 (Node Rewriting), §4 (Dynamic Compilation).
+### 1a. Reactive/incremental monotone dataflow
 
-**What Truffle provides**: per-node specialization, `Assumption` tokens, deoptimization back to a stable form when an assumption is invalidated.
-**What we implement**: AST rewriting in place, driven by observation hooks (`observeWrite`, `observeCall`).
-**What is absent**: Assumption/deopt. We cannot roll back a rewrite; we can only refuse to apply one.
+> Kildall, *A Unified Approach to Global Program Optimization*, POPL '73 §3.
+> Arzt & Bodden, *Reviser: Efficiently Updating IFDS-Based Analyses on Incremental Changes*, ICSE '14 §§3–4.
+> Acar, *Self-Adjusting Computation*, CMU PhD (2005) §2.3 "Change propagation."
 
-### 1b. SELF-93 — adaptive recompilation with dispatch-table swap
-> Hölzle & Ungar, *A Third-generation SELF Implementation: Reconciling Responsiveness with Performance*, OOPSLA '94, §3.
+**Pattern core.** Modifiables (cells) → readers (computations that dereferenced a cell) → scheduler (re-runs dirty readers in topo order). On edit, the scheduler dirties *exactly* the readers whose inputs changed. Publication is at fact granularity, not region granularity.
 
-**What SELF-93 provides**: profile-driven recompile triggers, atomic dispatch-vector patching, safe coexistence of live activations with new versions via direct method pointers in activation records.
-**What we implement**: `SVMLSwapStrategy` atomically swaps function-table entries; CallFrames hold direct IR refs (`src/conductor/svml-swap-strategy.ts:44-60`).
-**What is absent**: profile-driven triggers. Our triggers come from DFA stability (const-folding, dead-branch elimination), not invocation counters. Memoization is the one exception, and even it couples hotness with a purity check.
+**Our implementation.** Tier-1 `tick()` is textbook Kildall. Tier-2 is incremental *in intent* only: every write that flips a hint calls `rebuildAndReseed(scope)`, which discards all sessions for that scope and re-enqueues from the entry — a full re-analysis per invalidation. A `generation` stamp on queue items then discards stale work from prior rounds.
 
-### 1c. Kildall — monotone worklist dataflow analysis
-> Kildall, *A Unified Approach to Global Program Optimization*, POPL '73.
-> Kam & Ullman, *Monotone Data Flow Analysis Frameworks*, Acta Informatica 7 (1977), §2–3.
+**Missing steps.**
+- **S1** — No per-block dependency tracking. The scheduler does not know *which* block's transfer read the mutated hint, so it cannot dirty only the affected blocks.
+- **S2** — Publication is coarse: subscribers receive `ReadonlySet<Scope>`, not the changed facts. Consumers filter at the subscriber (OSRCoordinator.onChange) using `canInstall`, `canInstallOnStack`, `needsInstall` — doing work the scheduler should have done by not notifying.
 
-**What Kildall provides**: per-block IN/OUT environments, monotone transfer functions over a bounded-height lattice, fixpoint via worklist.
-**What we implement**: Tier 1 of `PersistentWorklist.tick()` is textbook Kildall — per-block sessions, `mergeKind` join/meet, forward/backward direction, `leq`-based quiescence.
-**What is absent** (as Kildall originally framed it): transforms that mutate the CFG, observations that inject values outside the transfer function, non-monotone rules.
+### 1b. Lazy / return-barrier replacement (not OSR)
+
+> Hölzle, Chambers, Ungar, *Debugging Optimized Code with Dynamic Deoptimization*, PLDI '92 §4.2 (lazy replacement).
+> Fink & Qian, *Adaptive Recompilation with On-Stack Replacement* (Jikes RVM), CGO '03 §§3–4 (true OSR with state mapping).
+> Agesen, *GC Points in a Threaded Environment*, Sun TR-98-70 §§2–3 (safepoint vs yieldpoint).
+
+**Pattern core.** Two distinct lines: (i) safepoint selection — *when* is thread state inspectable/patchable; (ii) on-stack vs off-stack replacement — do existing frames get rewritten (true OSR; needs a state-mapping function), or only future dispatches (lazy replacement; old frames run to completion against old IR).
+
+**Our implementation.** `SVMLSwapStrategy` is **lazy replacement**: `CallFrame` captures IR by value, so old frames run to completion; future calls dispatch the new IR. `canInstallOnStack=true` is misleading — nothing is replaced on the stack. The single-threaded JS host makes "stop the world" trivial for us; the rule that genuinely mutates a live scope's body (`MemoizationTransformRule`) is closer to atomic-AST-rewrite-under-a-tree-walker, a mode the literature does not model.
+
+**Missing steps / misshapes.**
+- **S3** — `canInstallOnStack` is per-strategy but the actual distinction is per-*delta*. Whole-function recompile is on-stack-safe; operand patches are not. Strategy-level flag forces a TODO for when operand patches land.
+- **S4** — `safeOnStack` (per-rule) is a one-bit trust flag standing in for the state-reconciliation contract the literature requires (Fink–Qian §4.2). Memoization gets away with it by accident of its rewrite shape; the framework does not check the precondition.
+
+### 1c. Type-class dictionary dispatch (abandoned mid-wire)
+
+> Wadler & Blott, *How to make ad-hoc polymorphism less ad hoc*, POPL '89 §§1–2.
+
+**Pattern core.** Operation (`==`) resolved by dictionary lookup keyed on type / tag. Dictionary = instances; method = class member.
+
+**Our implementation.** `AnalysisModule.name` is the dictionary key; `AnalysisModule.latticeEquals` (interfaces.ts:95) is the class method; the worklist owns the registry. The call site (`hintEquals`, hint.ts:35) bypasses the dictionary and hardcodes `switch(name) { case "type": … case "constVal": … default: return false }`. The interface method is declared on every module but never invoked.
+
+**Monkey patch.** The switch + orphan method. SPEC-02's open-record contract is documentation drift — the index signature `[field: string]: unknown` is structurally open but operationally closed by the switch.
+
+### 1d. Ghost interface — one-step-short dissolution
+
+`ObservationSink = Pick<PersistentWorklist, "observeWrite" | "observeCall" | "activateScope" | "deactivateScope">`. Production callers always receive a real `PersistentWorklist`; the alias exists only so test mocks can present an object literal with four methods. This is the residue of the SPEC-05 dissolution that collapsed a 75-line interface file into a Pick — one step short of deleting the alias entirely.
+
+### 1e. Scope-identity diffusion — owner dissolved, state externalized
+
+`SpecializationEngine` was deleted in commit `efe8951`; its one invariant (`pinSet.clear()` on throw) became the free function `runPinned`. The pin-set became an external `Map<Scope, number>` shared by reference between the CSE evaluator, the SVML-JIT evaluator, and `PersistentWorklist.activeScopes`. `FunctionUnit` already owns a `Map<Scope, FunctionUnit>` as the unit registry and already holds mutable state (`hints`, body splicing, `structuralVersion`). The pin-count is the single remaining piece of per-scope state that isn't on the unit. Putting it there collapses three nouns (`pinSet`, `activeScopes`, and the parameter aliasing) into one field.
 
 ---
 
-## 2. Noun-to-pattern mapping
+## 2. Monkey-patch inventory — which missing step does each compensate for?
 
-| Pattern | Our implementation |
+| Escape hatch | Compensates for |
 |---|---|
-| **Truffle** (self-optimizing AST) | `ObservationSink` interface; `observeWrite`/`observeCall` hooks; transforms' in-place AST mutation; `InPlaceASTStrategy` (no-op) |
-| **SELF-93** (adaptive recompilation) | `OSRCoordinator`; `StateDeltaStrategy<Delta>`; `SVMLSwapStrategy`; `needsInstall` flag; function-table swap |
-| **Kildall** (worklist DFA) | `PersistentWorklist` tier-1; `MutableEnv`; `AnalysisModule`; `computeBlockIN`; `transferBlock`; `TypeAnalysisModule`, `ConstAnalysisModule` |
-| **Cross-pattern bandaids** | pin-set three-layer gate; `generation` bookkeeping; `rebuildAndReseed`; `MEMOIZED_FIELD` self-latch; `HintStore` registry trio; drain stall-tripwire; `pinSet.clear()` on throw |
+| `needsInstall=false` (StateDeltaStrategy) | S2 — subscriber filters what the scheduler should not have notified |
+| `canInstallOnStack` (per-strategy) | S3 — wrong locus; safety is per-delta, not per-strategy |
+| `safeOnStack` (per-rule) | S4 — one bit substituting for a `reconcileLiveFrame` hook |
+| `ObservationSink` Pick<> alias | 1d — ghost interface, dissolution stopped short |
+| `hasSafeOnStackScopeRule` cache + conditional tick in `observeCall` | S1 — non-incremental scheduler second-guesses when to flush |
+| `generation` stamp on queue items | S1 — stale-item discrimination in a reseed-everything scheme |
+| `hintEquals` switch + `default: return false` | 1c — dictionary bypassed, open-record contract broken |
+| external `pinSet` param aliasing `activeScopes` | 1e — unit registry already exists; pin-count belongs on the unit |
+
+Eight patches, four gaps. Closing S1 alone retires three of them.
 
 ---
 
-## 3. The bandaids
+## 3. Survives / delete / relocate
 
-Each compensation maps to a specific mechanism an underlying parent pattern would have supplied.
+### Survives (earns keep)
+- `PersistentWorklist` itself (Kildall + attempted incremental layer).
+- `withActiveScope` — SPEC-15 structural owner of pin/tick/throw ordering.
+- `OSRCoordinator` — real event-dispatch noun (kept distinct from data ownership).
+- `StateDeltaStrategy` interface — SVMLSwapStrategy is real.
+- `MemoizationTransformRule` — load-bearing; its `fireOnce` + `safeOnStack` flags encode a genuine non-monotone contract (pending S4 resolution).
+- `ScopeIndexMap` — orthogonal SVML backend index.
+- `isPureFunctionDef` — SPEC-16 carve-out; syntactic purity gate, not DFA.
 
-| Compensation | Site(s) | Absent mechanism (from parent pattern) |
-|---|---|---|
-| Three-layer pin gate: `safeOnStack` + `canInstallOnStack` + `allowOnStack` | `interfaces.ts:67`; `osr.ts:87`; `svml-interpreter.ts:129` | Truffle `Assumption` + deopt |
-| `pinSet.clear()` on throw | `engine.ts:105` | Truffle assumption-invalidation semantics |
-| Drain stall-tripwire | `persistent-worklist.ts:440` | Rewrite-loop detection under deopt |
-| `needsInstall=false` short-circuit | `osr.ts:97, 159` | SELF-93: AST mutation is not a recompile event |
-| `generation` bookkeeping (analysis queues) | `persistent-worklist.ts` (throughout) | Profile-timing surrogate under DFA triggers |
-| `rebuildAndReseed` / `structuralVersion` | `persistent-worklist.ts:646-655` | Kildall does not model CFG mutation |
-| `MEMOIZED_FIELD` self-latch in rule predicate | `transforms/memoization.ts:58` | Kildall does not model non-monotone one-shot rules |
-| `HintStore` registry + `LatticeEquality` + `buildRegistry` trio | `framework/hint.ts` (whole file) | Kildall does not model change-notification equality |
-| `structuralVersion` on `FunctionUnit` | `framework/function-unit.ts` | Invalidation cue for observers |
+### Delete (cluster verdicts accepted by reviewer)
+- `deactivateAndTick` — 2-line private method, single caller; inline.
+- `InPlaceASTStrategy` — zero production instantiations.
+- `needsInstall` flag — closed setter/reader loop within the dead strategy.
+- `OSRStats` interface — test-only consumer; inline counters on coordinator.
+- `hintEquals` as separate export — single production caller (HintStore.setById); inline.
+- `HintStore` class (conditional) — reduces to `Map<number, OptimizationHint>` + free `setHint` once the SPEC-02 dispatch is resolved.
+- external `pinSet` Map aliasing — collapses into `FunctionUnit.pinCount`.
+- `assertSyncObservationSink` — self-targeted; inline into constructor.
+- `ObservationSink` alias — delete once test mocks resolved (see cleanup plan).
+- `MEMO_MISS` export — replace with `memoHas`-gate pattern (SVML already uses this).
 
-The bandaids are **real compensations, not cargo**. Each one addresses a specific gap. The cost is not redundancy — it is that the *union* of three partial patterns requires stitching that no single completed pattern would require.
+### Relocate
+- `memoization-analysis/runtime.ts` → `src/runtime/memo.ts`. Consumers are stdlib + svml/builtins; it is not DFA infra.
+- Optional: `memoization-analysis/` → `memoization/` (drops the "-analysis" suffix that miscategorizes `isPureFunctionDef`).
 
----
+### Refine
+- `MEMO_INTRINSIC_NAMES` — extend the constant to all 5 use sites (transform + 2 builtin registries + resolver + stdlib), or inline and delete. Current state (1 of 5) is DRY-by-halves.
+- `index.ts` barrel — trim dead re-exports last, after upstream deletions land.
 
-## 4. Consequences on the codebase
-
-Six concrete symptoms of the stacking:
-
-1. **Dead patterns never completed.** `runCFGOptimization` (framework/worklist.ts:302) has **zero callers**. The `stabilizeStatic` + DFA-driver stack (framework/dfa-driver.ts) is tests-only; the production-claim comment at `src/tests/review-findings.test.ts:123` is **stale**. Both are independent Kildall implementations that predate Tier-1 of `PersistentWorklist` and were never removed.
-
-2. **Miscategorized work.** `MemoizationAnalysisModule` implements the Kildall `AnalysisModule` interface but carries no lattice behaviour — `MemoizationVisitor` returns `0` from every visit, and all lattice ops are inert. The real work is `onCallObservation` (SELF-93 profile machinery) plus a one-shot rewrite. It has been forced into a Kildall-shaped slot because the framework offers no better shape. The `MEMOIZED_FIELD` self-latch in `matches()` smuggles non-monotonicity past a fixpoint driver that cannot reason about it.
-
-3. **Infrastructure that exists to do nothing.** `InPlaceASTStrategy` exists because the SELF-93 `StateDeltaStrategy` contract demands a strategy per engine. CSE has no SELF-93-style install step — AST mutation is not a recompile event — so the strategy is a no-op. The coordinator loops, calls the strategy, sees `needsInstall=false`, returns. On every CSE tick, the coordinator is observably inert. It exists only because SVML needs it.
-
-4. **Three-layer pin gate that each layer's author likely thought was "the gate."** `safeOnStack` (rule level, allow-explicit), `canInstallOnStack` (strategy level, deny-by-default via optional-chain at `osr.ts:163`), `allowOnStack` (interpreter-side assertion override, `svml-interpreter.ts:129`). Each gates a distinct concern: AST-mutation safety, install-mechanism safety, live-frame assertion. The reason there are **three** concerns is that none of Truffle's Assumption-based safety is present. With Assumptions, a single gate — "does the assumption still hold?" — would suffice.
-
-5. **Roadmap doc stores its own anxiety.** `docs/optimization-roadmap.md` contains eight distinct groupings of claims that restate the same demand (see Phase 1b SECTION 3 of the audit). Pin-set + finally (4 restatements), ObservationSink collapse (4), strategy + `needsInstall` (4), scope-set notification without diff (4), open-record hint (3), non-cached body getter (4), StmtNS.Visitor completeness (3), fixpoint-before-mutation (3). Repetition at this density is evidence the authors suspected the design was underjustified.
-
-6. **`SpecializationEngine` facade centralizes exactly one real invariant.** `pinSet.clear()` on throw (`engine.ts:105`) is the sole non-trivial thing the class does. Everything else is pass-through (`observationSink` getter, `units` getter, `converge()`, optional-strategy default). The roadmap's SPEC-01 prohibition on direct `PersistentWorklist` construction is asserted without argument; tests freely bypass the facade via `createReactiveOptimization`. The facade hides `installStrategy` ordering but `PySvmlJitEvaluator.ts:27-30` re-documents that ordering in a comment, so callers must reason about it anyway — hiding a constraint callers cannot ignore is anti-signal.
-
----
-
-## 5. Diagnosis
-
-The subsystem is **three partial patterns layered**: a Kildall tier-1 feeds dataflow-derived triggers into a SELF-93-style installer via Truffle-shaped observation hooks, with the inter-pattern seams hand-stitched.
-
-Two coherent cleanup directions exist:
-
-- **(a) Accept the hand-stitching; remove dead/miscategorized pieces; document the pattern-compensation mapping.** This is what the current adjudication commits to. Net: ≈ −900 LoC with the architectural shape intact.
-
-- **(b) Complete one of the three patterns.** Most plausibly SELF-93 for SVML + Truffle for CSE, retiring the compensating infra. Per-site observation cache replaces `observeValue → lattice` feed; Assumption tokens replace the 3-layer gate; `OneShotScopeRule` marker replaces `MEMOIZED_FIELD` predicate smuggling. This is a future initiative; not a prerequisite.
+### Explicitly rejected by reviewer (left in place)
+- `canInstallOnStack` — role-distinct from `canInstall` despite current body-equivalence. Left as an independent prosecution target; see S3 note.
+- `safeOnStack` relocation onto FunctionUnit — category error (static rule contract, not scope state). Left as an independent prosecution target; see S4 note.
 
 ---
 
-## 6. Where each surviving noun earns its keep
+## 4. Answers to reviewer's open questions
 
-After the Path-(a) cleanup, these remain as genuinely load-bearing:
+**Q1 — Wire `AnalysisModule.latticeEquals` through a registry, or delete it?**
+**Wire it.** Every other lattice operation (`join`, `leq`, `top`) already dispatches through the registered module; equality is the sole exception. Deleting `latticeEquals` maximizes surface-area inconsistency. The fix is mechanical: `hintEquals(a, b, modules)` receives the registry (already threaded through the worklist) and calls `modules.get(name)?.latticeEquals(av, bv) ?? (av === bv)`. The `default: return false` bug disappears; new analyses are a one-file edit.
 
-- `PersistentWorklist` — sole fixpoint engine after α prune.
-- `OptimizationHint` — wire format between analyses, transforms, and the SVML compiler.
-- `FunctionUnit` — ties AST + hints + slot-lookup per scope (post-γ, no longer owns HintStore).
-- `OSRCoordinator`, `StateDeltaStrategy<Delta>`, `InPlaceASTStrategy`, three-layer pin gate — **deferred** because each compensates for an absent mechanism; deletion without replacement regresses. Safe removal requires completing Truffle Assumption semantics.
-- `activeScopes` + `withActiveScope` + `runPinned` helper — prevent AST rewrite mid-interpretation. Load-bearing under path (a); dissolved under path (b).
-- `isPureFunctionDef` — standalone purity gate; roadmap SPEC-16 endorses this shape explicitly.
-- `AnalysisModule`, `MutableEnv`, `buildCFG`, `makeSession`, `computeBlockIN`, `transferBlock` — textbook Kildall substrate; earn their keep by the literature.
+Counter-case: if the set of analyses is closed forever (four and no more), deletion + canonical switch is simpler. The memoization additions and the roadmap's extensibility claim don't read as closed.
 
-The analysis lattices (`TypeLattice`, `ConstLattice`) and the direct transform rules (`ConstantFoldingRule`, `DeadBranchEliminationRule`) were never prosecuted because they are textbook Kildall transforms with no pattern stacking.
+**Q3 — Close `OptimizationHint` to exhaustive dispatch, or document the openness?**
+**Downstream of Q1, not independent.** If Q1 = wire, keep the open index signature — dispatch is data-driven, any field works, honesty preserved. If Q1 = delete/canonicalize, `OptimizationHint` **must** close (drop the index signature, enumerate fields, let TS exhaustiveness-check the switch). Leaving the index signature open alongside a closed switch is the worst cell of the matrix — it invites the extension the switch silently rejects.
+
+**Q2 — Prosecute `canInstallOnStack` and `safeOnStack` separately?**
+Yes, but with the forensic framing:
+- `canInstallOnStack` — the real fix is moving the flag from strategy to *delta shape* (`delta.onStackSafe: boolean`, computed by `computeDelta`). Whole-function → true, operand-patch → false, CSE void → N/A. Today's per-strategy flag is a monkey patch for the wrong locus; the reviewer is right that the role is distinct from `canInstall`, and the fix preserves the distinction while moving it to the correct noun.
+- `safeOnStack` — the real fix is `reconcileLiveFrame(unit, frame): void` as a required sibling method whenever `safeOnStack=true`. Today's one-bit flag documents an invariant the framework does not check. The reviewer's "static rule contract" framing is correct *as a placement judgment* (it doesn't belong on FunctionUnit); the prosecution it warrants is a shape change on `ScopeTransformRule`, not a relocation.
+
+Both are substantive, both are independent of C1/C3/C6/C8, and both are lower priority than closing S1.
 
 ---
 
-## 7. Falsified roadmap claims
+## 5. Priority
 
-Items the present audit demonstrates the roadmap overstates or mis-describes:
+The ordering the reviewer gave (C7 → C1+C8 → C3 → C2 → C6 → C4) is correct for risk isolation. From the forensic lens, the **load-bearing gap** is S1 (per-block dependency tracking in the incremental layer); closing it retires `generation`, `hasSafeOnStackScopeRule`, and `needsInstall` as side effects, and the per-cluster sequencing the reviewer picked lands into a framework that no longer needs them.
 
-- **SPEC-07** ("`applyDelta` is *never* called while a frame of the target scope is on the stack") — code has `canInstallOnStack` (strategy-level) and `safeOnStack` (rule-level) opt-ins. "Never" → "default-deny with explicit overrides." The roadmap's own narrative and the code diverge.
-- **Class-6 non-monotone scheduler** (roadmap: "out of scope until first such transform lands") — `MemoizationTransformRule` IS such a transform and has already landed. No Class-6 path exists; the rule smuggles through via Class-5 + self-latching predicate.
-- **Resolved-gap L701-702** ("no module-level `DEFAULT_REGISTRY` Map; lazy `buildRegistry` helper") — inaccurate. Both shapes coexist: `DEFAULT_REGISTRY_ENTRIES` (array) is the constructor default, and `buildRegistry` runs unconditionally per `HintStore` construction.
-- **Gap 4** (incremental CFG mutation: `addEdge`/`removeEdge`/`splitBlock`) — **absent**. `rebuildAndReseed` blows away the CFG and rebuilds from scratch.
-- **Gap 5** (`registerScopeSubtree` for memoization-introduced scopes) — **absent**. `addScope` is private; no public entry point exists.
-- **Consumer-strategies claim** ("coordinator fires only when a transform actually fires") — **partial**. The coordinator fires on any non-empty changed set, including analysis-induced lattice movement; filtering happens downstream via `needsInstall`/`canInstall`, not at notification time.
+See `docs/specialization-cleanup-plan.md` for step-by-step execution.
