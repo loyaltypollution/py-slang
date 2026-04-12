@@ -7,7 +7,7 @@
  * - Subscription notifications.
  */
 
-import { StmtNS } from "../ast-types";
+import { ExprNS, StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SpecializationEngine, createReactiveOptimization } from "../specialization";
@@ -187,6 +187,107 @@ describe("ReactiveOptimization: subscriptions", () => {
     // After convergence, tick should have nothing to do
     const didWork = reactive.tick();
     expect(didWork).toBe(false);
+  });
+});
+
+// ── Post-optimization AST and hint assertions ──────────────────────────────
+// Ported from legacy `transform-rules.test.ts` / `const-analysis.test.ts`
+// (which exercised the deleted `stabilizeStatic`/`runAnalysisPass` drivers).
+// These assert the concrete post-convergence AST and hint annotations that
+// differential + counter-based tests above would not catch if folding/
+// dead-branch elimination stopped firing on a specific shape.
+
+describe("PersistentWorklist: post-optimization AST", () => {
+  function optimise(code: string): StmtNS.Stmt[] {
+    const { ast, environments } = parseAndResolve(code);
+    const reactive = createReactiveOptimization(ast, environments);
+    reactive.converge();
+    return reactive.units.get(ast)!.body;
+  }
+
+  describe("dead branch elimination", () => {
+    test("True condition: collapses to then-body", () => {
+      const stmts = optimise("if True:\n  x = 1\nelse:\n  x = 2");
+      expect(stmts.length).toBe(1);
+      const assign = stmts[0] as StmtNS.Assign;
+      expect(assign).toBeInstanceOf(StmtNS.Assign);
+      expect((assign.value as ExprNS.Literal).value).toBe("1");
+    });
+
+    test("False condition: collapses to else-body", () => {
+      const stmts = optimise("if False:\n  x = 1\nelse:\n  x = 2");
+      expect(stmts.length).toBe(1);
+      const assign = stmts[0] as StmtNS.Assign;
+      expect(assign).toBeInstanceOf(StmtNS.Assign);
+      expect((assign.value as ExprNS.Literal).value).toBe("2");
+    });
+
+    test("False condition, no else: statement deleted", () => {
+      const stmts = optimise("if False:\n  x = 1");
+      expect(stmts.length).toBe(0);
+    });
+  });
+
+  describe("constant folding", () => {
+    test("1 + 2 folds to Literal(3)", () => {
+      const stmts = optimise("x = 1 + 2");
+      const assign = stmts[0] as StmtNS.Assign;
+      const lit = assign.value as ExprNS.Literal;
+      expect(lit).toBeInstanceOf(ExprNS.Literal);
+      expect(lit.value).toBe(3);
+    });
+
+    test("nested: 1 + 2 + 3 folds to Literal(6)", () => {
+      const stmts = optimise("x = 1 + 2 + 3");
+      const assign = stmts[0] as StmtNS.Assign;
+      const lit = assign.value as ExprNS.Literal;
+      expect(lit).toBeInstanceOf(ExprNS.Literal);
+      expect(lit.value).toBe(6);
+    });
+
+    test("compound: if True: x = 1 + 2 else: x = 99 → x = 3", () => {
+      const stmts = optimise("if True:\n  x = 1 + 2\nelse:\n  x = 99");
+      expect(stmts.length).toBe(1);
+      const assign = stmts[0] as StmtNS.Assign;
+      const lit = assign.value as ExprNS.Literal;
+      expect(lit).toBeInstanceOf(ExprNS.Literal);
+      expect(lit.value).toBe(3);
+    });
+
+    test("no-op: x = 1; y = 2 returns two assignments", () => {
+      const stmts = optimise("x = 1\ny = 2");
+      expect(stmts.length).toBe(2);
+    });
+  });
+});
+
+describe("PersistentWorklist: post-optimization hints", () => {
+  function analyse(code: string): { hints: HintStore; body: StmtNS.Stmt[] } {
+    const { ast, environments } = parseAndResolve(code);
+    const reactive = createReactiveOptimization(ast, environments);
+    reactive.converge();
+    const unit = reactive.units.get(ast)!;
+    return { hints: unit.hints, body: unit.body };
+  }
+
+  test("x = 3 + 4: BinOp (pre-fold) or Literal(7) (post-fold) has constVal const(7)", () => {
+    // After convergence, 3+4 has already folded to Literal(7). Verify either
+    // the surviving Literal carries constVal=const(7), OR (if folding didn't
+    // fire for some reason) the original BinOp does.
+    const { hints, body } = analyse("x = 3 + 4");
+    const assign = body[0] as StmtNS.Assign;
+    const hint = hints.get(assign.value) as any;
+    expect(hint?.constVal?.tag).toBe("const");
+    expect(hint?.constVal?.value).toBe(7);
+  });
+
+  test("variable propagation: x = 5; y = x + 2 → x+2 has constVal const(7)", () => {
+    const { hints, body } = analyse("x = 5\ny = x + 2");
+    // After convergence, x + 2 folds to 7. Grab the second assignment's value.
+    const assignY = body[1] as StmtNS.Assign;
+    const hint = hints.get(assignY.value) as any;
+    expect(hint?.constVal?.tag).toBe("const");
+    expect(hint?.constVal?.value).toBe(7);
   });
 });
 

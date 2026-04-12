@@ -11,7 +11,7 @@ export type ConstValue = number | boolean | string;
  *   - top     = "overdefined / unknown"
  *
  * join(const(v), const(w)) = top when v ≠ w (paths disagree → lose the constant).
- * mergeKind = "may" so the existing DFAStatementDriver works unchanged.
+ * mergeKind = "may" (join at merge points).
  */
 export type ConstLattice =
   | { readonly tag: "bottom" }

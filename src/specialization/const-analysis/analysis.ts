@@ -209,8 +209,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
  * Constant-propagation AnalysisModule.
  *
  * Tracks whether each expression evaluates to a statically known constant.
- * mergeKind = "may" (join at control-flow merge points) so the existing
- * DFAStatementDriver runs it correctly without modification.
+ * mergeKind = "may" (join at control-flow merge points).
  */
 export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
   readonly name = "constVal";

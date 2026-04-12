@@ -1,79 +1,19 @@
 /**
- * Tests for the ConstLattice / ConstAnalysisModule (Phase 3).
+ * Unit tests for ConstLattice algebraic operations (leq/join/meet).
  *
- * Verifies:
- *  1. Lattice operations are correct (leq, join, meet)
- *  2. x = 3 + 4 produces constVal = const(7) on the BinOp node  [spec requirement]
- *  3. Two analyses coexist in the same HintStore (type + constVal on the same node)
- *  4. runMultiAnalysisPasses converges on a while loop (terminates)
- *  5. Variable propagation: x = 5; y = x + 2 → constVal const(7) on x+2
+ * End-to-end const-analysis behaviour (e.g. `x = 3 + 4 → const(7)`,
+ * variable propagation, while-loop convergence) is covered in
+ * `reactive-optimization.test.ts` via PersistentWorklist.
  */
 
-import { parse } from "../parser/parser-adapter";
-import { analyzeWithEnvironments } from "../resolver";
-import { StmtNS } from "../ast-types";
 import {
-  runAnalysisPass,
-  runMultiAnalysisPasses,
-  MutableEnv,
-  TypeAnalysisModule,
-  ConstAnalysisModule,
   constLeq,
   constJoin,
   constMeet,
-  HintStore,
-  buildSlotTable,
   CONST_BOTTOM,
   CONST_TOP,
   constOf,
-  INT_BIT,
 } from "../specialization";
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function analyseConst(code: string): {
-  hints: HintStore;
-  ast: StmtNS.FileInput;
-} {
-  const script = code + "\n";
-  const ast = parse(script);
-  const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const env = environments.get(ast)!;
-  const slotLookup = buildSlotTable(env, []);
-  const hints = new HintStore();
-  runAnalysisPass(
-    ast.statements,
-    new ConstAnalysisModule(),
-    new MutableEnv(),
-    hints,
-    slotLookup,
-  );
-  return { hints, ast };
-}
-
-function analyseBoth(code: string): {
-  hints: HintStore;
-  ast: StmtNS.FileInput;
-} {
-  const script = code + "\n";
-  const ast = parse(script);
-  const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const env = environments.get(ast)!;
-  const slotLookup = buildSlotTable(env, []);
-  const hints = new HintStore();
-  runMultiAnalysisPasses(
-    ast.statements,
-    [
-      { module: new TypeAnalysisModule(), env: new MutableEnv() },
-      { module: new ConstAnalysisModule(), env: new MutableEnv() },
-    ],
-    hints,
-    slotLookup,
-  );
-  return { hints, ast };
-}
-
-// ── 1. Lattice unit tests ─────────────────────────────────────────────────────
 
 describe("ConstLattice operations", () => {
   const c3 = constOf(3);
@@ -136,88 +76,5 @@ describe("ConstLattice operations", () => {
     test("meet(const(v), const(w)) = bottom when v ≠ w", () => {
       expect(constMeet(c3, c7)).toEqual(CONST_BOTTOM);
     });
-  });
-});
-
-// ── 2. Spec-required test: x = 3 + 4 → constVal = const(7) ──────────────────
-
-describe("ConstAnalysisModule — BinOp folding", () => {
-  test("x = 3 + 4 produces constVal = const(7) on the BinOp node", () => {
-    const { hints, ast } = analyseConst("x = 3 + 4");
-    const binExpr = (ast.statements[0] as any).value;
-    const hint = hints.get(binExpr);
-    expect(hint?.constVal?.tag).toBe("const");
-    expect((hint?.constVal as any)?.value).toBe(7);
-  });
-
-  test("literal 3 annotated as const(3)", () => {
-    const { hints, ast } = analyseConst("x = 3 + 4");
-    const binExpr = (ast.statements[0] as any).value;
-    const litHint = hints.get(binExpr.left);
-    expect(litHint?.constVal?.tag).toBe("const");
-    expect((litHint?.constVal as any)?.value).toBe(3);
-  });
-
-  test("int arithmetic ops fold correctly", () => {
-    const cases: [string, number][] = [
-      ["10 - 3", 7],
-      ["3 * 4", 12],
-      ["10 / 4", 2.5],
-      ["7 // 2", 3],
-      ["10 % 3", 1],
-    ];
-    for (const [expr, expected] of cases) {
-      const { hints, ast } = analyseConst(`z = ${expr}`);
-      const binNode = (ast.statements[0] as any).value;
-      const h = hints.get(binNode);
-      expect(h?.constVal?.tag).toBe("const");
-      expect((h?.constVal as any)?.value).toBeCloseTo(expected);
-    }
-  });
-
-  test("Python modulo: -7 % 3 = 2 (same sign as divisor)", () => {
-    const { hints, ast } = analyseConst("z = -7 % 3");
-    const binNode = (ast.statements[0] as any).value;
-    const h = hints.get(binNode);
-    expect(h?.constVal?.tag).toBe("const");
-    expect((h?.constVal as any)?.value).toBe(2);
-  });
-});
-
-// ── 3. Two analyses coexist on the same node ──────────────────────────────────
-
-describe("runMultiAnalysisPasses — product lattice coexistence", () => {
-  test("x = 3 + 4: BinOp has both type (INT_BIT) and constVal (const 7)", () => {
-    const { hints, ast } = analyseBoth("x = 3 + 4");
-    const binExpr = (ast.statements[0] as any).value;
-    const hint = hints.get(binExpr);
-    expect(hint?.type?.kinds).toBe(INT_BIT);
-    expect(hint?.constVal?.tag).toBe("const");
-    expect((hint?.constVal as any)?.value).toBe(7);
-  });
-
-  test("convergence: completes without hanging on a while loop", () => {
-    expect(() => analyseBoth("x = 1\nwhile x > 0:\n    x = x + 1")).not.toThrow();
-  });
-});
-
-// ── 4. Variable propagation ───────────────────────────────────────────────────
-
-describe("ConstAnalysisModule — variable propagation", () => {
-  test("x = 5; y = x + 2 → constVal = const(7) on x+2", () => {
-    const { hints, ast } = analyseConst("x = 5\ny = x + 2");
-    const binExpr = (ast.statements[1] as any).value;
-    const hint = hints.get(binExpr);
-    expect(hint?.constVal?.tag).toBe("const");
-    expect((hint?.constVal as any)?.value).toBe(7);
-  });
-
-  test("x = 0; if x > 0 → condition annotated as const(false)", () => {
-    // x is const(0) at the if, so 0 > 0 folds to false
-    const { hints, ast } = analyseConst("x = 0\nif x > 0:\n    x = 1\nelse:\n    x = 2");
-    const condition = (ast.statements[1] as any).condition;
-    const h = hints.get(condition);
-    expect(h?.constVal?.tag).toBe("const");
-    expect((h?.constVal as any)?.value).toBe(false);
   });
 });

@@ -49,12 +49,7 @@ export type {
 } from "./framework/interfaces";
 export type { LatticeEquality, OptimizationHint } from "./framework/hint";
 export { HintStore, hintEquals } from "./framework/hint";
-export {
-  MutableEnv,
-  runAnalysisPass,
-  runMultiAnalysisPasses,
-  stabilizeStatic,
-} from "./framework/dfa-driver";
+export { MutableEnv } from "./framework/worklist";
 export { OSRCoordinator, InPlaceASTStrategy } from "./framework/osr";
 export type { StateDeltaStrategy, OSRStats } from "./framework/osr";
 
@@ -62,7 +57,6 @@ export type { StateDeltaStrategy, OSRStats } from "./framework/osr";
 
 export type { BlockId, BasicBlock, CFG } from "./framework/cfg";
 export { buildCFG } from "./framework/cfg";
-export { runCFGOptimization } from "./framework/worklist";
 
 // ── Type lattice (codegen reads kind bits + refinements from hints) ──────────
 

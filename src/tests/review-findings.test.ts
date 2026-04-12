@@ -4,7 +4,6 @@
  *
  * [P1] and/or with non-boolean left operand → BRF throws instead of returning value
  * [P2] visitTernaryExpr returns TOP → downstream specialisation loss (correctness still ok)
- * [P2] stabilizeStatic not wired into evaluator → const folding / dead branch not live
  * [P3] for-loop single-pass body analysis → boolRef annotations inside body may be imprecise
  */
 
@@ -13,13 +12,6 @@ import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import {
-  stabilizeStatic,
-  TypeAnalysisModule,
-  ConstAnalysisModule,
-  ConstantFoldingRule,
-  DeadBranchEliminationRule,
-  HintStore,
-  buildSlotTable,
   SpecializationEngine,
   INT_BIT,
   BOOL_BIT,
@@ -113,44 +105,6 @@ describe("[P2] Ternary result type annotation", () => {
     // Currently TOP (all kinds set). Should be INT_BIT once fixed.
     // Flip this expectation to INT_BIT after the fix lands.
     expect(hint?.type?.kinds).not.toBe(INT_BIT);
-  });
-});
-
-// ── [P2] stabilizeStatic not wired into evaluator ─────────────────────────────
-
-describe("[P2] stabilizeStatic wiring", () => {
-  // ConstAnalysisModule + transform rules exist and are tested in transform-rules.test.ts,
-  // but PySvmlEvaluator only runs runAnalysisPass (type only). Verify that:
-  // (a) compileAndRun gives the correct *value* even without folding (correctness ok)
-  // (b) stabilizeStatic produces the folded AST when invoked manually (feature works)
-
-  test("1 + 2 evaluates to 3 without folding wired in (correctness ok)", () => {
-    expect(compileAndRun("1 + 2")).toBe(3);
-  });
-
-  test("if True: x=1 else: x=2 then x evaluates correctly without dead-branch elim", () => {
-    expect(compileAndRun("x = 0\nif True:\n    x = 1\nelse:\n    x = 2\nx")).toBe(1);
-  });
-
-  test("stabilizeStatic manually folds 1 + 2 to Literal(3)", () => {
-    const script = "1 + 2\n";
-    const ast = parse(script);
-    const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const env = environments.get(ast)!;
-    const slotLookup = buildSlotTable(env, []);
-    const hints = new HintStore();
-    stabilizeStatic(
-      ast.statements,
-      [new TypeAnalysisModule(), new ConstAnalysisModule()],
-      [new DeadBranchEliminationRule(), new ConstantFoldingRule()],
-      hints,
-      slotLookup,
-    );
-    // After folding, the SimpleExpr should contain a Literal(3)
-    const { ExprNS } = require("../ast-types");
-    const simpleExpr = ast.statements[0] as any;
-    expect(simpleExpr.expression).toBeInstanceOf(ExprNS.Literal);
-    expect(simpleExpr.expression.value).toBe(3);
   });
 });
 
