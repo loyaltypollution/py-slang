@@ -2,7 +2,7 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import { optimize, createReactiveOptimization } from "../specialization";
+import { SpecializationEngine, createReactiveOptimization } from "../specialization";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -18,8 +18,9 @@ function compileWithOptimization(code: string) {
   const script = code + "\n";
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const units = optimize(ast, environments);
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units);
+  const engine = new SpecializationEngine(ast, environments);
+  engine.converge();
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units);
   const program = compiler.compileProgram(ast);
   return { ast, environments, compiler, program };
 }

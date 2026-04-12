@@ -10,14 +10,16 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import OpCodes from "../engines/svml/opcodes";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { optimize } from "../specialization";
+import { SpecializationEngine } from "../specialization";
 
 function build(code: string) {
   const script = code + "\n";
   const ast = parse(script);
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
-  const units = optimize(ast, environments);
+  const engine = new SpecializationEngine(ast, environments);
+  engine.converge();
+  const units = engine.units;
   const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units);
   return { ast, environments, units, compiler };
 }

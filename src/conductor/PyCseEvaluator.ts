@@ -79,7 +79,7 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         throw errors[errors.length - 1];
       }
 
-      const engine = SpecializationEngine.create(ast, environments);
+      const engine = new SpecializationEngine(ast, environments);
       engine.converge();
 
       this.context.runtime.rootScope = ast;

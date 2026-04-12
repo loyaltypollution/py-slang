@@ -24,7 +24,11 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
       if (errors.length > 0) throw errors[0];
 
-      const engine = SpecializationEngine.create(ast, environments);
+      // Two-phase: engine → compile against engine.units → build interpreter →
+      // installStrategy(compiler, interpreter) → run. Each step captures
+      // outputs of the previous step; the strategy cannot be constructed
+      // without the compiler and interpreter, so `run()` must come last.
+      const engine = new SpecializationEngine(ast, environments);
       engine.converge();
 
       const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units);

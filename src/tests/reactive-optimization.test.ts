@@ -10,7 +10,7 @@
 import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { optimize, createReactiveOptimization } from "../specialization";
+import { SpecializationEngine, createReactiveOptimization } from "../specialization";
 import type { FunctionUnit } from "../specialization/framework/function-unit";
 import type { HintStore } from "../specialization/framework/hint";
 
@@ -89,7 +89,9 @@ describe("ReactiveOptimization: differential vs optimize()", () => {
   test.each(programs)("$name: converge() produces same AST structure", ({ code }) => {
     // One-shot path
     const oneShot = parseAndResolve(code);
-    const oneShotUnits = optimize(oneShot.ast, oneShot.environments);
+    const oneShotEngine = new SpecializationEngine(oneShot.ast, oneShot.environments);
+    oneShotEngine.converge();
+    const oneShotUnits = oneShotEngine.units;
 
     // Reactive path (fresh parse to get independent AST)
     const reactive = parseAndResolve(code);

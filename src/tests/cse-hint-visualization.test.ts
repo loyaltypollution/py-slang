@@ -14,7 +14,7 @@ import { Context } from "../engines/cse/context";
 import { generateCSEMachineStateStream } from "../engines/cse/interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { HintStore, optimize } from "../specialization";
+import { HintStore, SpecializationEngine } from "../specialization";
 
 function parseOptimizeAndMerge(code: string): {
   context: Context;
@@ -26,7 +26,9 @@ function parseOptimizeAndMerge(code: string): {
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
 
-  const units = optimize(ast, environments);
+  const engine = new SpecializationEngine(ast, environments);
+  engine.converge();
+  const units = engine.units;
 
   const merged = new HintStore();
   for (const unit of units.values()) unit.hints.mergeInto(merged);

@@ -66,8 +66,8 @@ function makeRecorder(base: StateDeltaStrategy<SVMLDelta>): {
     canInstall(key) {
       return base.canInstall ? base.canInstall(key) : true;
     },
-    computeDelta(unit: FunctionUnit, previous?: SVMLDelta) {
-      return base.computeDelta(unit, previous);
+    computeDelta(unit: FunctionUnit) {
+      return base.computeDelta(unit);
     },
     applyDelta(key, delta) {
       if (delta.kind === "whole") installs.push({ key, code: delta.ir });

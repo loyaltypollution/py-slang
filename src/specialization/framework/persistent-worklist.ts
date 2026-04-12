@@ -28,16 +28,18 @@ import {
   transferBlock,
 } from "./worklist";
 
+type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
+
 // ── Queue items ─────────────────────────────────────────────────────────────
 
 interface QueuedBlock {
-  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
+  readonly scopeKey: Scope;
   readonly blockId: BlockId;
   readonly generation: number;
 }
 
 interface QueuedTransform {
-  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
+  readonly scopeKey: Scope;
   readonly generation: number;
 }
 
@@ -45,20 +47,20 @@ interface QueuedTransform {
 
 export interface ValueObservationItem {
   readonly kind: "value-observation";
-  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
+  readonly scopeKey: Scope;
   readonly nodeId: number;
   readonly value: unknown;
 }
 
 export interface CallObservationItem {
   readonly kind: "call-observation";
-  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
-  readonly calleeKey: StmtNS.FileInput | StmtNS.FunctionDef;
+  readonly scopeKey: Scope;
+  readonly calleeKey: Scope;
 }
 
 export interface InvalidateItem {
   readonly kind: "invalidate";
-  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
+  readonly scopeKey: Scope;
 }
 
 export type ExternalWorkItem = ValueObservationItem | CallObservationItem | InvalidateItem;
@@ -76,7 +78,7 @@ export interface WorklistStats {
 
 // ── Subscribers ─────────────────────────────────────────────────────────────
 
-export type Subscriber = (changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>) => void;
+export type Subscriber = (changed: ReadonlySet<Scope>) => void;
 
 // ── Observation-capable analysis (narrowed subtype) ────────────────────────
 
@@ -98,15 +100,15 @@ interface ScopeWorkState {
 // ── PersistentWorklist ──────────────────────────────────────────────────────
 
 export class PersistentWorklist {
-  readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
+  readonly units: ReadonlyMap<Scope, FunctionUnit>;
 
   private readonly analysisQueues: QueuedBlock[][];
   private readonly analysisHeads: number[];
   private readonly transformQueue: QueuedTransform[] = [];
   private transformHead = 0;
 
-  private readonly scopes = new Map<StmtNS.FileInput | StmtNS.FunctionDef, ScopeWorkState>();
-  private readonly activeScopes = new Map<StmtNS.FileInput | StmtNS.FunctionDef, number>();
+  private readonly scopes = new Map<Scope, ScopeWorkState>();
+  private readonly activeScopes = new Map<Scope, number>();
   private readonly subscribers = new Set<Subscriber>();
 
   /**
@@ -144,7 +146,7 @@ export class PersistentWorklist {
     for (const [key, unit] of units) this.addScope(key, unit);
   }
 
-  private addScope(key: StmtNS.FileInput | StmtNS.FunctionDef, unit: FunctionUnit): void {
+  private addScope(key: Scope, unit: FunctionUnit): void {
     const cfg = buildCFG(unit.body);
     const sessions = this.analyses.map(m => makeSession(m, cfg));
     const blockMap = new Map<BlockId, BasicBlock>();
@@ -217,7 +219,7 @@ export class PersistentWorklist {
    * subscribers (e.g. OSRCoordinator → patchFunction) facing a dead runtime,
    * and we'd rather surface the original error than trigger swap machinery.
    */
-  async withActiveScope<T>(scope: StmtNS.FileInput | StmtNS.FunctionDef, fn: () => Promise<T> | T): Promise<T> {
+  async withActiveScope<T>(scope: Scope, fn: () => Promise<T> | T): Promise<T> {
     this.activateScope(scope);
     let threw = false;
     try {
@@ -238,7 +240,7 @@ export class PersistentWorklist {
    * "textual ordering" fragility that would bite if someone reordered the
    * two calls in the finally block of withActiveScope.
    */
-  private deactivateAndTick(scope: StmtNS.FileInput | StmtNS.FunctionDef, threw: boolean): void {
+  private deactivateAndTick(scope: Scope, threw: boolean): void {
     this.deactivateScope(scope);
     if (!threw) this.tick();
   }
@@ -254,11 +256,11 @@ export class PersistentWorklist {
     return sum;
   }
 
-  observeWrite(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, rhsNode: ExprNS.Expr, rawValue: unknown): void {
+  observeWrite(scopeKey: Scope, rhsNode: ExprNS.Expr, rawValue: unknown): void {
     this.enqueue({ kind: "value-observation", scopeKey, nodeId: rhsNode.id, value: rawValue });
   }
 
-  observeCall(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, calleeKey: StmtNS.FileInput | StmtNS.FunctionDef): void {
+  observeCall(scopeKey: Scope, calleeKey: Scope): void {
     this.enqueue({ kind: "call-observation", scopeKey, calleeKey });
   }
 
@@ -285,18 +287,18 @@ export class PersistentWorklist {
     }
   }
 
-  activateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void {
+  activateScope(key: Scope): void {
     this.activeScopes.set(key, (this.activeScopes.get(key) ?? 0) + 1);
   }
 
-  deactivateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void {
+  deactivateScope(key: Scope): void {
     const count = this.activeScopes.get(key);
     if (count === undefined) return;
     if (count <= 1) this.activeScopes.delete(key);
     else this.activeScopes.set(key, count - 1);
   }
 
-  isScopeActive(key: StmtNS.FileInput | StmtNS.FunctionDef): boolean {
+  isScopeActive(key: Scope): boolean {
     return this.activeScopes.has(key);
   }
 
@@ -315,10 +317,10 @@ export class PersistentWorklist {
 
   // ── Drain ────────────────────────────────────────────────────────────────
 
-  drain(limit = Infinity): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
+  drain(limit = Infinity): ReadonlySet<Scope> {
     const t0 = performance.now();
     this._drainCalls++;
-    const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
+    const changed = new Set<Scope>();
     let processed = 0;
 
     while (processed < limit) {
@@ -399,7 +401,7 @@ export class PersistentWorklist {
 
   // ── Analysis processing ─────────────────────────────────────────────────
 
-  private processAnalysisBlock(qIdx: number, changed: Set<StmtNS.FileInput | StmtNS.FunctionDef>): boolean {
+  private processAnalysisBlock(qIdx: number, changed: Set<Scope>): boolean {
     const queue = this.analysisQueues[qIdx];
     const item = queue[this.analysisHeads[qIdx]++];
 
@@ -437,7 +439,7 @@ export class PersistentWorklist {
 
   // ── Transform processing ────────────────────────────────────────────────
 
-  private processTransform(changed: Set<StmtNS.FileInput | StmtNS.FunctionDef>): boolean {
+  private processTransform(changed: Set<Scope>): boolean {
     let idx = this.transformHead;
     while (idx < this.transformQueue.length && this.activeScopes.has(this.transformQueue[idx].scopeKey)) {
       idx++;
@@ -473,7 +475,7 @@ export class PersistentWorklist {
 
   // ── Seeding ──────────────────────────────────────────────────────────────
 
-  private rebuildAndReseed(key: StmtNS.FileInput | StmtNS.FunctionDef, state: ScopeWorkState): void {
+  private rebuildAndReseed(key: Scope, state: ScopeWorkState): void {
     state.generation++;
     state.cfg = buildCFG(state.unit.body);
     state.blockMap.clear();
@@ -484,7 +486,7 @@ export class PersistentWorklist {
     this.enqueueTransform(key, state.generation);
   }
 
-  private seedAnalysis(key: StmtNS.FileInput | StmtNS.FunctionDef, state: ScopeWorkState): void {
+  private seedAnalysis(key: Scope, state: ScopeWorkState): void {
     for (let i = 0; i < this.analyses.length; i++) {
       const direction = this.analyses[i].direction;
       const seed = seedBlock(state.cfg, direction);
@@ -495,18 +497,18 @@ export class PersistentWorklist {
   // No dedup: the convergence check (outEnv.equals) short-circuits repeats.
   private enqueueAnalysisBlock(
     qIdx: number,
-    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
+    scopeKey: Scope,
     blockId: BlockId,
     generation: number,
   ): void {
     this.analysisQueues[qIdx].push({ scopeKey, blockId, generation });
   }
 
-  private enqueueTransform(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, generation: number): void {
+  private enqueueTransform(scopeKey: Scope, generation: number): void {
     this.transformQueue.push({ scopeKey, generation });
   }
 
-  private notify(changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>): void {
+  private notify(changed: ReadonlySet<Scope>): void {
     if (changed.size === 0) return;
     for (const cb of this.subscribers) cb(changed);
   }

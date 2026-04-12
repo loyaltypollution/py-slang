@@ -2,6 +2,8 @@
 
 import { StmtNS } from "../../ast-types";
 
+type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
+
 /**
  * Bidirectional map between AST scope nodes and SVML function indices.
  *
@@ -10,19 +12,19 @@ import { StmtNS } from "../../ast-types";
  * `SVMLProgram.withSpecializedFunction()` at the correct slot.
  */
 export class ScopeIndexMap {
-  private readonly scopeToIndex = new Map<StmtNS.FileInput | StmtNS.FunctionDef, number>();
-  private readonly indexToScope = new Map<number, StmtNS.FileInput | StmtNS.FunctionDef>();
+  private readonly scopeToIndex = new Map<Scope, number>();
+  private readonly indexToScope = new Map<number, Scope>();
 
-  register(scope: StmtNS.FileInput | StmtNS.FunctionDef, functionIndex: number): void {
+  register(scope: Scope, functionIndex: number): void {
     this.scopeToIndex.set(scope, functionIndex);
     this.indexToScope.set(functionIndex, scope);
   }
 
-  getIndex(scope: StmtNS.FileInput | StmtNS.FunctionDef): number | undefined {
+  getIndex(scope: Scope): number | undefined {
     return this.scopeToIndex.get(scope);
   }
 
-  getScope(index: number): StmtNS.FileInput | StmtNS.FunctionDef | undefined {
+  getScope(index: number): Scope | undefined {
     return this.indexToScope.get(index);
   }
 

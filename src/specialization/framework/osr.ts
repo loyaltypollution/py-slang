@@ -13,6 +13,8 @@ import type { StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "./function-unit";
 import type { PersistentWorklist } from "./persistent-worklist";
 
+type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
+
 /**
  * Pluggable state-delta backend. For each worklist change targeting an
  * inactive (unpinned) scope, the coordinator asks the strategy to
@@ -45,20 +47,18 @@ export interface StateDeltaStrategy<Delta> {
    * rebuilt whole-program rather than per-function). When false, the
    * coordinator skips both `computeDelta` and `applyDelta` for this scope.
    */
-  canInstall?(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef): boolean;
+  canInstall?(scopeKey: Scope): boolean;
 
   /**
    * Produce the delta between the pre-transform and post-transform
-   * materialized forms of `unit`. `previous` is the delta last applied for
-   * the same unit (if any) so strategies that can emit incremental patches
-   * may do so; strategies that always emit whole replacements ignore it.
+   * materialized forms of `unit`.
    */
-  computeDelta(unit: FunctionUnit, previous?: Delta): Delta;
+  computeDelta(unit: FunctionUnit): Delta;
 
   /**
    * Install the delta. Called only when the scope is not pinned.
    */
-  applyDelta(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, delta: Delta): void;
+  applyDelta(scopeKey: Scope, delta: Delta): void;
 }
 
 /**
@@ -71,23 +71,10 @@ export class InPlaceASTStrategy implements StateDeltaStrategy<void> {
   computeDelta(_unit: FunctionUnit): void {
     return;
   }
-  applyDelta(_scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, _delta: void): void {
+  applyDelta(_scopeKey: Scope, _delta: void): void {
     /* no-op */
   }
 }
-
-/**
- * @deprecated Renamed to `InPlaceASTStrategy` to reflect that the delta is
- * `void` *because* it was already applied in place, not *because* the engine
- * has no install concept. Kept as a re-export during the migration window.
- */
-export const NoopSwapStrategy = InPlaceASTStrategy;
-
-/**
- * @deprecated Renamed to `StateDeltaStrategy<Delta>`. Kept as a re-export
- * during the migration window.
- */
-export type CodeSwapStrategy<Code> = StateDeltaStrategy<Code>;
 
 export interface OSRStats {
   readonly notificationsSeen: number;
@@ -105,7 +92,6 @@ export interface OSRStats {
  */
 export class OSRCoordinator<Delta> {
   private unsubscribe: (() => void) | null = null;
-  private readonly lastDelta = new Map<StmtNS.FileInput | StmtNS.FunctionDef, Delta>();
 
   private _notificationsSeen = 0;
   private _skippedPinned = 0;
@@ -142,7 +128,7 @@ export class OSRCoordinator<Delta> {
     });
   }
 
-  private onChange(changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>): void {
+  private onChange(changed: ReadonlySet<Scope>): void {
     for (const key of changed) {
       this._notificationsSeen++;
       if (this.reactive.isScopeActive(key)) {
@@ -158,9 +144,8 @@ export class OSRCoordinator<Delta> {
         this._skippedNoUnit++;
         continue;
       }
-      const delta = this.strategy.computeDelta(unit, this.lastDelta.get(key));
+      const delta = this.strategy.computeDelta(unit);
       this.strategy.applyDelta(key, delta);
-      this.lastDelta.set(key, delta);
       this._installsFired++;
     }
   }

@@ -1,11 +1,14 @@
 // src/specialization/engine.ts — SpecializationEngine facade.
 //
 // Wraps PersistentWorklist + OSRCoordinator + default pipeline behind a
-// single object so evaluators don't assemble the pieces themselves. Two-phase
-// construction (create → installStrategy → run) accommodates SVML's
-// SVMLSwapStrategy(compiler, interpreter) dependency on `units` being known
-// first; engines with trivial install (CSE) skip installStrategy entirely and
-// get the default InPlaceASTStrategy.
+// single object so evaluators don't assemble the pieces themselves.
+//
+// Two-phase construction (new Engine → installStrategy → run) accommodates
+// SVML's `SVMLSwapStrategy(compiler, interpreter)` dependency on `units`
+// being known first: the compiler is built from `engine.units`, the
+// interpreter from the compiler's program, and only then can the strategy
+// be constructed. Engines with trivial install (CSE) skip `installStrategy`
+// entirely and get a default `InPlaceASTStrategy`.
 
 import type { ExprNS, StmtNS } from "../ast-types";
 import type { FunctionEnvironments } from "../resolver";
@@ -18,20 +21,15 @@ import type { StateDeltaStrategy } from "./framework/osr";
 import { PersistentWorklist } from "./framework/persistent-worklist";
 import { createAnalyses, createTransforms } from "./pipeline-config";
 
+type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
+
 export class SpecializationEngine {
   private readonly worklist: PersistentWorklist;
   private coordinator: OSRCoordinator<unknown> | null = null;
   private converged = false;
 
-  private constructor(worklist: PersistentWorklist) {
-    this.worklist = worklist;
-  }
-
-  static create(
-    ast: StmtNS.FileInput,
-    environments: FunctionEnvironments,
-  ): SpecializationEngine {
-    const worklist = new PersistentWorklist(
+  constructor(ast: StmtNS.FileInput, environments: FunctionEnvironments) {
+    this.worklist = new PersistentWorklist(
       ast,
       environments,
       createAnalyses(),
@@ -40,10 +38,7 @@ export class SpecializationEngine {
     // Tripwire for the synchrony invariant documented in ObservationSink.
     // Catches `async`-declared methods; other async shapes (explicit
     // `Promise.resolve()` returns, transpiled async) are out of scope.
-    // Callers that construct PersistentWorklist directly and install a
-    // custom sink should call `assertSyncObservationSink` themselves.
-    assertSyncObservationSink(worklist);
-    return new SpecializationEngine(worklist);
+    assertSyncObservationSink(this.worklist);
   }
 
   /** Run initial static analysis + transforms to fixpoint. Idempotent. */
@@ -53,7 +48,7 @@ export class SpecializationEngine {
     this.converged = true;
   }
 
-  get units(): ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
+  get units(): ReadonlyMap<Scope, FunctionUnit> {
     return this.worklist.units;
   }
 
@@ -67,11 +62,11 @@ export class SpecializationEngine {
   }
 
   /**
-   * Install the state-delta strategy. For SVML this is called after compiler
-   * + interpreter are constructed (SVMLSwapStrategy captures both). For CSE
-   * with AST-in-place semantics, skip this — `run()` installs a default
-   * `InPlaceASTStrategy` if none was set. Calling again replaces the previous
-   * strategy and restarts the coordinator subscription.
+   * Install the state-delta strategy. For SVML this is called after the
+   * compiler and interpreter are constructed (SVMLSwapStrategy captures
+   * both). For CSE, skip this — `run()` installs a default
+   * `InPlaceASTStrategy` if none was set. Calling again replaces the
+   * previous strategy.
    */
   installStrategy<Delta>(strategy: StateDeltaStrategy<Delta>): void {
     if (this.coordinator) this.coordinator.stop();
@@ -82,17 +77,12 @@ export class SpecializationEngine {
   }
 
   /**
-   * Pin `rootScope`, start the coordinator (installing a default
-   * `InPlaceASTStrategy` if none installed), run `fn`, then stop the
-   * coordinator and unpin. Asserts `converge()` has run.
+   * Converge (idempotent), pin `rootScope`, start the coordinator (with a
+   * default `InPlaceASTStrategy` if none was installed), run `fn`, then
+   * stop the coordinator and unpin.
    */
-  async run<T>(
-    rootScope: StmtNS.FileInput | StmtNS.FunctionDef,
-    fn: () => Promise<T> | T,
-  ): Promise<T> {
-    if (!this.converged) {
-      throw new Error("SpecializationEngine.run called before converge()");
-    }
+  async run<T>(rootScope: Scope, fn: () => Promise<T> | T): Promise<T> {
+    this.converge();
     if (!this.coordinator) {
       this.coordinator = new OSRCoordinator(this.worklist, new InPlaceASTStrategy());
     }

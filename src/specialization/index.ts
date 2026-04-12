@@ -1,10 +1,13 @@
 // src/specialization/index.ts — public API barrel
 
 // ── Pipeline entry points ────────────────────────────────────────────────────
+//
+// Production callers use `SpecializationEngine` for the full reactive
+// lifecycle. `createReactiveOptimization` returns a raw PersistentWorklist
+// and is @internal for tests and advanced consumers only.
 
-export { optimize } from "./optimize";
-export { createReactiveOptimization } from "./optimize";
 export { SpecializationEngine } from "./engine";
+export { createReactiveOptimization } from "./optimize";
 
 // ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
 
@@ -43,8 +46,8 @@ export {
   runMultiAnalysisPasses,
   stabilizeStatic,
 } from "./framework/dfa-driver";
-export { OSRCoordinator, InPlaceASTStrategy, NoopSwapStrategy } from "./framework/osr";
-export type { StateDeltaStrategy, CodeSwapStrategy, OSRStats } from "./framework/osr";
+export { OSRCoordinator, InPlaceASTStrategy } from "./framework/osr";
+export type { StateDeltaStrategy, OSRStats } from "./framework/osr";
 
 // ── CFG worklist driver ─────────────────────────────────────────────────────
 

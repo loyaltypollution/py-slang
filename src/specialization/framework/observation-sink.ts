@@ -31,11 +31,13 @@
 
 import type { ExprNS, StmtNS } from "../../ast-types";
 
+type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
+
 export interface ObservationSink {
-  observeWrite(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, rhsNode: ExprNS.Expr, rawValue: unknown): void;
-  observeCall(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, calleeKey: StmtNS.FileInput | StmtNS.FunctionDef): void;
-  activateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void;
-  deactivateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void;
+  observeWrite(scopeKey: Scope, rhsNode: ExprNS.Expr, rawValue: unknown): void;
+  observeCall(scopeKey: Scope, calleeKey: Scope): void;
+  activateScope(key: Scope): void;
+  deactivateScope(key: Scope): void;
 }
 
 /**

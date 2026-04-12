@@ -20,7 +20,7 @@ import {
   DeadBranchEliminationRule,
   HintStore,
   buildSlotTable,
-  optimize,
+  SpecializationEngine,
   INT_BIT,
   BOOL_BIT,
   BoolRef,
@@ -31,7 +31,9 @@ function compileAndRun(code: string): unknown {
   const ast = parse(script);
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
-  const units = optimize(ast, environments);
+  const engine = new SpecializationEngine(ast, environments);
+  engine.converge();
+  const units = engine.units;
   const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units);
   const program = compiler.compileProgram(ast);
   return SVMLInterpreter.toJSValue(new SVMLInterpreter(program).execute());
@@ -100,7 +102,9 @@ describe("[P2] Ternary result type annotation", () => {
     const script = "(5 if True else -3)\n";
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const units = optimize(ast, environments);
+    const engine = new SpecializationEngine(ast, environments);
+  engine.converge();
+  const units = engine.units;
     const rootUnit = units.get(ast)!;
 
     const simpleExpr = ast.statements[0] as any;
@@ -188,7 +192,9 @@ acc
     const script = "acc = 0\nfor i in [1, 2, 3]:\n    acc = acc + i\n    acc > 0\n";
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const units = optimize(ast, environments);
+    const engine = new SpecializationEngine(ast, environments);
+  engine.converge();
+  const units = engine.units;
     const rootUnit = units.get(ast)!;
 
     // The for-loop is stmt[1]. Its body[1] is `acc > 0` (a SimpleExpr).
