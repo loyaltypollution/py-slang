@@ -1,6 +1,7 @@
 import { ConductorError } from "@sourceacademy/conductor/common";
 import { StmtNS } from "../../ast-types";
 import { HintStore } from "../../specialization";
+import type { ObservationSink } from "../../specialization";
 import { ModuleContext, NativeStorage } from "../../types";
 import { Control } from "./control";
 import { Environment } from "./environment";
@@ -43,6 +44,10 @@ export class Context {
     breakpointSteps: number[];
     changepointSteps: number[];
     optimizationHints?: HintStore;
+    /** Push-side for runtime observations (wired by JIT-capable evaluators). */
+    observationSink?: ObservationSink;
+    /** Root scope key for emission when no enclosing closure exists (global scope). */
+    rootScope?: StmtNS.FileInput;
   };
 
   /**

@@ -9,7 +9,7 @@
 import { ErrorType } from "@sourceacademy/conductor/common";
 import { ExprNS, StmtNS } from "../../ast-types";
 import * as error from "../../errors/errors";
-import type { OptimizationHint } from "../../specialization";
+import type { OptimizationHint, ScopeKey } from "../../specialization";
 import { BuiltinReassignmentError, UnsupportedOperandTypeError } from "../../errors/errors";
 import { builtIns, toPythonString } from "../../stdlib";
 import { Group } from "../../stdlib/utils";
@@ -339,6 +339,20 @@ export async function* generateCSEMachineStateStream(
 
     yield { stash, control, steps, hint };
   }
+}
+
+/**
+ * Derive the nearest enclosing scope key for observation emission.
+ * Walks the environment chain to find a closure; falls back to the root
+ * program scope (`context.runtime.rootScope`) for top-level statements.
+ */
+function currentScopeKey(context: Context): ScopeKey | undefined {
+  for (let env: any = currentEnvironment(context); env; env = env.tail) {
+    if (env.closure && env.closure.node) {
+      return env.closure.node as ScopeKey;
+    }
+  }
+  return context.runtime.rootScope;
 }
 
 const cmdEvaluators: { [type: string]: CmdEvaluator } = {
@@ -800,6 +814,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
   /**
    * Instructions
    */
+  // (helper defined below the handlers object; hoisted via function declaration)
   [InstrType.RESET]: function (
     _code: string,
     _command: ControlItem,
@@ -830,6 +845,19 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         );
       }
       pyDefineVariable(context, instr.symbol, value);
+
+      // OBSERVE: push the raw runtime value to the optimization worklist.
+      // srcNode is the Assign statement; its `.value` field is the RHS expression
+      // — the same node analysis already annotates with type/const hints.
+      const sink = context.runtime.observationSink;
+      if (sink) {
+        const src = instr.srcNode as StmtNS.Assign;
+        if (src && typeof (src as any).value === "object" && (src as any).value !== null) {
+          const rhs = (src as any).value as ExprNS.Expr;
+          const scopeKey = currentScopeKey(context);
+          if (scopeKey) sink.observeWrite(scopeKey, rhs, value);
+        }
+      }
     }
   },
 
@@ -1088,6 +1116,21 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         control.push(instrCreator.endOfFunctionBodyInstr(instr.srcNode));
       }
 
+      // OBSERVE: notify the sink of the call BEFORE entering the callee so the
+      // caller scope is the `scopeKey`. Pin the callee's scope as active
+      // (ref-counted) — balanced by `deactivateScope` in END_OF_FUNCTION_BODY.
+      // Only applied to FunctionDef callees (Lambdas have no end-of-body instr
+      // and run too briefly to warrant suppression).
+      const sink = context.runtime.observationSink;
+      const calleeKey = closure.node as ScopeKey;
+      if (sink) {
+        const callerKey = currentScopeKey(context);
+        if (callerKey) sink.observeCall(callerKey, calleeKey);
+        if (closure.node.constructor.name === "FunctionDef") {
+          sink.activateScope(calleeKey);
+        }
+      }
+
       const newEnv = createEnvironment(code, context, closure, args, instr.srcNode as ExprNS.Call);
       pushEnvironment(context, newEnv);
 
@@ -1210,11 +1253,19 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
   [InstrType.END_OF_FUNCTION_BODY]: function (
     _code: string,
     _command: ControlItem,
-    _context: Context,
+    context: Context,
     _control: Control,
     stash: Stash,
     _isPrelude: boolean,
   ) {
+    // OBSERVE: balanced deactivation for the activate performed at call entry.
+    // Env has not yet been popped (RESET fires after this), so the enclosing
+    // closure's FunctionDef is still reachable via currentScopeKey.
+    const sink = context.runtime.observationSink;
+    if (sink) {
+      const scopeKey = currentScopeKey(context);
+      if (scopeKey) sink.deactivateScope(scopeKey);
+    }
     stash.push({ type: "none" });
   },
 };
