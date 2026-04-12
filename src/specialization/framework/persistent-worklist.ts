@@ -16,6 +16,7 @@ import type { FunctionUnit } from "./function-unit";
 import { buildFunctionUnits } from "./function-unit";
 import type { OptimizationHint } from "./hint";
 import type { AnalysisModule, TransformRule } from "./interfaces";
+import type { AnalysisKey } from "./hint";
 import { applyTransformPass } from "./transform";
 import type { AnalysisSession } from "./worklist";
 import {
@@ -101,6 +102,13 @@ export class PersistentWorklist {
   private readonly activeScopes = new Map<StmtNS.FileInput | StmtNS.FunctionDef, number>();
   private readonly subscribers = new Set<Subscriber>();
 
+  /**
+   * Pre-filtered subset of `analyses` that implement the runtime-observation
+   * hooks. Observation handling iterates this list rather than re-checking
+   * `observeValue` / `mergeIntoHint` on every analysis per write.
+   */
+  private readonly observers: readonly AnalysisModule<any>[];
+
   // Perf counters
   private _itemsProcessed = 0;
   private _analysisItemsProcessed = 0;
@@ -117,8 +125,10 @@ export class PersistentWorklist {
   ) {
     this.analysisQueues = analyses.map(() => []);
     this.analysisHeads = analyses.map(() => 0);
+    this.observers = analyses.filter(m => m.observeValue && m.mergeIntoHint);
 
-    const units = buildFunctionUnits(ast, functionEnvironments);
+    const analysisKeys: AnalysisKey<unknown>[] = analyses.map(m => m.key as AnalysisKey<unknown>);
+    const units = buildFunctionUnits(ast, functionEnvironments, analysisKeys);
     this.units = units;
     for (const [key, unit] of units) this.addScope(key, unit);
   }
@@ -264,11 +274,10 @@ export class PersistentWorklist {
     const hints = state.unit.hints;
     let next = hints.getById(item.nodeId) ?? {};
 
-    for (const module of this.analyses) {
-      if (!module.observeValue || !module.mergeIntoHint) continue;
-      const lattice = module.observeValue(item.value);
+    for (const module of this.observers) {
+      const lattice = module.observeValue!(item.value);
       if (lattice === undefined) continue;
-      next = module.mergeIntoHint(next, lattice);
+      next = module.mergeIntoHint!(next, lattice);
     }
 
     return hints.setById(item.nodeId, next);

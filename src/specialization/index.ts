@@ -27,8 +27,15 @@ export type {
   StmtTransformRule,
   ExprTransformRule,
 } from "./framework/interfaces";
-export type { OptimizationHint, HintChangeRecord } from "./framework/hint";
-export { HintStore, hintEquals } from "./framework/hint";
+export type { AnalysisKey, OptimizationHint, HintChangeRecord } from "./framework/hint";
+export {
+  HintStore,
+  hintEquals,
+  hintGet,
+  hintSet,
+  TYPE_ANALYSIS_KEY,
+  CONST_ANALYSIS_KEY,
+} from "./framework/hint";
 export {
   MutableEnv,
   runAnalysisPass,

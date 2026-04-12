@@ -1,6 +1,7 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import { HintStore } from "./hint";
+import type { AnalysisKey } from "./hint";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
@@ -29,8 +30,9 @@ export interface FunctionUnit {
 export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
-): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
-  const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
+  analysisKeys?: readonly AnalysisKey<unknown>[],
+): Map<Scope, FunctionUnit> {
+  const units = new Map<Scope, FunctionUnit>();
 
   function buildUnit(funcAst: Scope): void {
     const env = functionEnvironments.get(funcAst);
@@ -44,7 +46,7 @@ export function buildFunctionUnits(
     units.set(funcAst, {
       funcAst,
       body,
-      hints: new HintStore(),
+      hints: new HintStore(analysisKeys),
       slotLookup: buildSlotTable(env, paramNames),
       structuralVersion: 0,
     });

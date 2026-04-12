@@ -1,6 +1,6 @@
 import type { ExprNS, StmtNS } from "../../ast-types";
 import type { SlotLookup } from "./slot-table";
-import type { HintStore, OptimizationHint } from "./hint";
+import type { AnalysisKey, HintStore, OptimizationHint } from "./hint";
 
 export interface StmtTransformRule {
   readonly name: string;
@@ -22,6 +22,12 @@ export type TransformRule = StmtTransformRule | ExprTransformRule;
 
 export interface AnalysisModule<L> {
   readonly name: string;
+  /**
+   * Typed key under which this module stores its lattice value in hint
+   * records. Transforms and other consumers query the hint store via this
+   * key; the framework itself does not read the lattice type.
+   */
+  readonly key: AnalysisKey<L>;
   top(): L;
   bottom(): L;
   join(a: L, b: L): L;

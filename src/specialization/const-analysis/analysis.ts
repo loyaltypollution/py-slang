@@ -1,7 +1,7 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { AnalysisModule } from "../framework/interfaces";
-import type { HintStore, OptimizationHint } from "../framework/hint";
+import { CONST_ANALYSIS_KEY, type HintStore, type OptimizationHint } from "../framework/hint";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
@@ -210,6 +210,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
  */
 export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
   readonly name = "const";
+  readonly key = CONST_ANALYSIS_KEY;
   readonly mergeKind = "may" as const;
   readonly direction = "forward" as const;
   top(): ConstLattice {
