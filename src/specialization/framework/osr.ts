@@ -40,16 +40,6 @@ import type { PersistentWorklist } from "./persistent-worklist";
  */
 export interface StateDeltaStrategy<Delta> {
   /**
-   * When `false`, the coordinator skips the notification handler entirely —
-   * no iteration, no `computeDelta`, no `applyDelta`, no stat increments.
-   * Set by strategies whose materialized form was already updated at the
-   * transform call site (e.g. `InPlaceASTStrategy`: the AST mutation during
-   * `tick` IS the install). Default (undefined / true) preserves the
-   * existing behaviour for installing strategies like `SVMLSwapStrategy`.
-   */
-  readonly needsInstall?: boolean;
-
-  /**
    * Optional pre-filter. Return false to signal that `scopeKey` cannot be
    * patched by this strategy (e.g. the program entry for SVML, which is
    * rebuilt whole-program rather than per-function). When false, the
@@ -101,30 +91,6 @@ export interface StateDeltaStrategy<Delta> {
 }
 
 /**
- * Degenerate strategy for engines whose materialized form IS the AST (CSE).
- * The transform already mutated the AST in place during `tick`, so the delta
- * is `void` and `applyDelta` is a no-op — not because the feature is absent,
- * but because the delta was already applied at the transform call site.
- */
-export class InPlaceASTStrategy implements StateDeltaStrategy<void> {
-  readonly needsInstall = false;
-  computeDelta(_unit: FunctionUnit): void {
-    return;
-  }
-  applyDelta(_scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, _delta: void): void {
-    /* no-op */
-  }
-}
-
-export interface OSRStats {
-  readonly notificationsSeen: number;
-  readonly skippedPinned: number;
-  readonly skippedCanInstall: number;
-  readonly skippedNoUnit: number;
-  readonly installsFired: number;
-}
-
-/**
  * Subscribes to the worklist and drives the state-delta strategy. For each
  * changed scope: if active (pinned), skip — the worklist will re-notify
  * after deactivate, because transforms on pinned scopes are parked until the
@@ -158,18 +124,17 @@ export class OSRCoordinator<Delta> {
     }
   }
 
-  get stats(): OSRStats {
-    return Object.freeze({
+  get stats() {
+    return {
       notificationsSeen: this._notificationsSeen,
       skippedPinned: this._skippedPinned,
       skippedCanInstall: this._skippedCanInstall,
       skippedNoUnit: this._skippedNoUnit,
       installsFired: this._installsFired,
-    });
+    } as const;
   }
 
   private onChange(changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>): void {
-    if (this.strategy.needsInstall === false) return;
     for (const key of changed) {
       this._notificationsSeen++;
       if (this.reactive.isScopeActive(key)) {

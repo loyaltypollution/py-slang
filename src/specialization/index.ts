@@ -26,8 +26,8 @@ export type {
 export type { OptimizationHint } from "./framework/hint";
 export { HintStore, hintEquals } from "./framework/hint";
 export { MutableEnv } from "./framework/worklist";
-export { OSRCoordinator, InPlaceASTStrategy } from "./framework/osr";
-export type { StateDeltaStrategy, OSRStats } from "./framework/osr";
+export { OSRCoordinator } from "./framework/osr";
+export type { StateDeltaStrategy } from "./framework/osr";
 
 // ── CFG worklist driver ─────────────────────────────────────────────────────
 
