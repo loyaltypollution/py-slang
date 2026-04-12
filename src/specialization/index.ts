@@ -2,7 +2,7 @@
 
 // ── Pipeline entry points ────────────────────────────────────────────────────
 
-export { optimize, createOptimizationSessions } from "./optimize";
+export { optimize } from "./optimize";
 export { createReactiveOptimization } from "./reactive";
 export type { ReactiveOptimization, ReactiveSubscriber, ExternalWorkItem } from "./reactive";
 
@@ -15,6 +15,7 @@ export { buildFunctionUnits, buildVersionedFunctionUnits } from "./framework/fun
 
 export { PersistentWorklist } from "./framework/persistent-worklist";
 export { ScopeIndexMap } from "./framework/scope-index-map";
+export type { ObservationSink } from "./framework/observation-sink";
 export type { SlotInfo, SlotLookup } from "./framework/slot-table";
 export { buildSlotTable } from "./framework/slot-table";
 
@@ -40,11 +41,6 @@ export {
 export type { BlockId, BasicBlock, CFG } from "./framework/cfg";
 export { buildCFG } from "./framework/cfg";
 export { runCFGOptimization } from "./framework/worklist";
-
-// ── Session (reactive API) ──────────────────────────────────────────────────
-
-export type { OptimizationSubscriber, SessionState } from "./framework/session";
-export { OptimizationSession } from "./framework/session";
 
 // ── Type lattice (codegen reads kind bits + refinements from hints) ──────────
 

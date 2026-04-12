@@ -1,24 +1,15 @@
-// src/specialization/reactive.ts — reactive optimization API for JIT consumers
+// src/specialization/reactive.ts — reactive optimization API for JIT + OBSERVE consumers
 
-import type { StmtNS } from "../ast-types";
+import type { ExprNS, StmtNS } from "../ast-types";
 import type { FunctionEnvironments } from "../resolver";
-import { ConstAnalysisModule } from "./const-analysis/analysis";
 import type { ScopeKey, VersionedFunctionUnit } from "./framework/function-unit";
 import { buildVersionedFunctionUnits } from "./framework/function-unit";
-import type { AnalysisModule, TransformRule } from "./framework/interfaces";
 import type { ExternalWorkItem, WorklistStats } from "./framework/persistent-worklist";
 import { PersistentWorklist } from "./framework/persistent-worklist";
-import { ConstantFoldingRule } from "./transforms/constant-folding";
-import { DeadBranchEliminationRule } from "./transforms/dead-branch";
-import { TypeAnalysisModule } from "./type-analysis/analysis";
+import { createAnalyses, createTransforms } from "./pipeline-config";
 
 export type { ScopeKey, VersionedFunctionUnit } from "./framework/function-unit";
 export type { ExternalWorkItem, WorklistStats } from "./framework/persistent-worklist";
-
-// ── Pipeline configuration (shared with optimize.ts) ────────────────────────
-
-const ANALYSES: readonly AnalysisModule<any>[] = [new TypeAnalysisModule(), new ConstAnalysisModule()];
-const TRANSFORMS: readonly TransformRule[] = [new DeadBranchEliminationRule(), new ConstantFoldingRule()];
 
 // ── Subscription types ──────────────────────────────────────────────────────
 
@@ -33,11 +24,8 @@ export interface ReactiveOptimization {
   /** Subscribe to unit changes. Returns unsubscribe function. */
   subscribe(cb: ReactiveSubscriber): () => void;
 
-  /**
-   * Run to fixpoint (initial pass). Blocks synchronously until idle or
-   * `maxRounds` transform rounds have fired.
-   */
-  converge(maxRounds?: number): void;
+  /** Run to fixpoint (initial pass). Blocks synchronously until idle. */
+  converge(): void;
 
   /** Inject external work (runtime observations, scope invalidation). */
   enqueue(item: ExternalWorkItem): void;
@@ -56,26 +44,56 @@ export interface ReactiveOptimization {
 
   /** Reset performance counters to zero. */
   resetStats(): void;
+
+  // ── OBSERVE loop API ──────────────────────────────────────────────────────
+
+  /**
+   * Monotonically-increasing version across all unit HintStores. Intended as
+   * the scalar observable for `useSyncExternalStore`-style UI consumers.
+   * Bumps whenever any scope's hints change (either from analysis or from
+   * runtime observations).
+   */
+  readonly hintStoreVersion: number;
+
+  /**
+   * Push a runtime value written at `rhsNode` in `scopeKey`. Analysis modules
+   * translate the raw value via `observeValue` and widen the hint via join.
+   */
+  observeWrite(scopeKey: ScopeKey, rhsNode: ExprNS.Expr, rawValue: unknown): void;
+
+  /**
+   * Push a function call observation. Currently equivalent to invalidating
+   * `calleeKey`; future call-count analysis modules may consume it directly.
+   */
+  observeCall(scopeKey: ScopeKey, calleeKey: ScopeKey): void;
+
+  /**
+   * Pin a scope as active on an interpreter call stack. While pinned,
+   * transforms for that scope are parked (not dequeued). Reference-counted
+   * for recursion — match each `activateScope` with one `deactivateScope`.
+   */
+  activateScope(key: ScopeKey): void;
+  deactivateScope(key: ScopeKey): void;
 }
 
 // ── Factory ─────────────────────────────────────────────────────────────────
 
 /**
- * Create a reactive optimization session for JIT consumers.
+ * Create a reactive optimization session for JIT + OBSERVE-loop consumers.
  *
  * The returned object owns a PersistentWorklist that manages all scopes.
- * Call `converge()` for the initial static pass, then use `tick()` and
- * `enqueue()` for incremental updates driven by runtime observations.
+ * Call `converge()` for the initial static pass, then use `tick()`,
+ * `observeWrite()`, and `observeCall()` for incremental runtime-driven updates.
  *
- * Subscribers are notified after each `tick()` or `converge()` that
- * produces changes.
+ * Subscribers are notified after each `tick()` or `converge()` that produces
+ * changes.
  */
 export function createReactiveOptimization(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
 ): ReactiveOptimization {
   const units = buildVersionedFunctionUnits(ast, functionEnvironments);
-  const worklist = new PersistentWorklist(ANALYSES, TRANSFORMS);
+  const worklist = new PersistentWorklist(createAnalyses(), createTransforms());
 
   for (const [key, unit] of units) {
     worklist.addScope(key, unit);
@@ -88,6 +106,14 @@ export function createReactiveOptimization(
     for (const cb of subscribers) cb(changed);
   }
 
+  function computeHintVersion(): number {
+    // Aggregate across all units. Monotonicity follows because each unit's
+    // HintStore.version is itself monotonic and units are never removed.
+    let sum = 0;
+    for (const unit of units.values()) sum += unit.hints.version;
+    return sum;
+  }
+
   return {
     get units() {
       return units;
@@ -98,16 +124,8 @@ export function createReactiveOptimization(
       return () => subscribers.delete(cb);
     },
 
-    converge(maxRounds = 10): void {
-      // Track total transform rounds across all scopes.
-      // Each drain-to-idle constitutes one round (analysis + transforms).
-      const allChanged = new Set<ScopeKey>();
-      for (let round = 0; round <= maxRounds; round++) {
-        const changed = worklist.drain();
-        for (const key of changed) allChanged.add(key);
-        if (worklist.idle) break;
-      }
-      notifySubscribers(allChanged);
+    converge(): void {
+      notifySubscribers(worklist.drain());
     },
 
     enqueue(item: ExternalWorkItem): void {
@@ -130,6 +148,31 @@ export function createReactiveOptimization(
 
     resetStats(): void {
       worklist.resetStats();
+    },
+
+    get hintStoreVersion(): number {
+      return computeHintVersion();
+    },
+
+    observeWrite(scopeKey: ScopeKey, rhsNode: ExprNS.Expr, rawValue: unknown): void {
+      worklist.enqueue({
+        kind: "value-observation",
+        scopeKey,
+        nodeId: rhsNode.id,
+        value: rawValue,
+      });
+    },
+
+    observeCall(scopeKey: ScopeKey, calleeKey: ScopeKey): void {
+      worklist.enqueue({ kind: "call-observation", scopeKey, calleeKey });
+    },
+
+    activateScope(key: ScopeKey): void {
+      worklist.activateScope(key);
+    },
+
+    deactivateScope(key: ScopeKey): void {
+      worklist.deactivateScope(key);
     },
   };
 }
