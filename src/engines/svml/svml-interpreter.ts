@@ -102,10 +102,15 @@ export class SVMLInterpreter {
 
   /**
    * Swap a single function's IR in place. Used by the OSR coordinator for
-   * per-function hot-swap after recompile. Throws if any live call frame
-   * references `index` — the OSR safepoint contract (scope pinning in the
-   * reactive worklist) is expected to prevent this; the check is defense-
-   * in-depth.
+   * per-function hot-swap after recompile.
+   *
+   * The live-frame walk below is SECOND-LINE DEFENSE for the pin-set
+   * contract: the worklist parks transforms for scopes with a live frame
+   * (see `activateScope`/`deactivateScope` pinning), so by the time the
+   * coordinator calls `patchFunction`, no frame of `index` should be on
+   * the stack. If this loop ever throws, the pin-set contract is broken —
+   * surface as a crash rather than silently patching under a running
+   * frame.
    *
    * Correctness depends on `this.program` being read fresh inside the
    * dispatch loop and nowhere cached. CallFrames hold direct IR references

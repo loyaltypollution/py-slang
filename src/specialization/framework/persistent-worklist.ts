@@ -219,9 +219,21 @@ export class PersistentWorklist {
       threw = true;
       throw e;
     } finally {
-      this.deactivateScope(scope);
-      if (!threw) this.tick();
+      this.deactivateAndTick(scope, threw);
     }
+  }
+
+  /**
+   * Contractually atomic deactivate-then-tick. The worklist parks transforms
+   * for pinned scopes; unpinning must happen *before* the tick that fires
+   * those transforms, or the transform stays parked for another tick that
+   * may never come. Collapsing both into one private method removes the
+   * "textual ordering" fragility that would bite if someone reordered the
+   * two calls in the finally block of withActiveScope.
+   */
+  private deactivateAndTick(scope: StmtNS.FileInput | StmtNS.FunctionDef, threw: boolean): void {
+    this.deactivateScope(scope);
+    if (!threw) this.tick();
   }
 
   /**
