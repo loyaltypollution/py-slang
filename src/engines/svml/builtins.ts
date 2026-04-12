@@ -1,6 +1,11 @@
 import type { SVMLBoxType } from "./types";
 import { isSVMLObject } from "./types";
 import { MissingRequiredPositionalError, SVMLInterpreterError } from "./errors";
+import {
+  memoHas as _memoHas,
+  memoGet as _memoGet,
+  memoPut as _memoPut,
+} from "../../specialization/memoization-analysis/runtime";
 
 // Map Python builtin names to SVML primitive opcode indices
 export const PRIMITIVE_FUNCTIONS: Map<string, number> = new Map([
@@ -16,6 +21,9 @@ export const PRIMITIVE_FUNCTIONS: Map<string, number> = new Map([
   ["round", 26],
   ["range", 30],
   ["len", 31],
+  ["__memo_has", 40],
+  ["__memo_get", 41],
+  ["__memo_put", 42],
 ]);
 
 function assertNumericArgs(args: SVMLBoxType[], fn: string): number[] {
@@ -126,7 +134,40 @@ export function executePrimitive(
       throw new SVMLInterpreterError(`TypeError: object of type '${typeof v}' has no len()`);
     }
 
+    case 40: {
+      // __memo_has(id, *keyArgs)
+      const [id, ...keyArgs] = memoArgs(args, "__memo_has");
+      return _memoHas(id, keyArgs);
+    }
+
+    case 41: {
+      // __memo_get(id, *keyArgs) — transform always gates on __memo_has first,
+      // so a miss here returns undefined rather than a sentinel the VM cannot
+      // represent.
+      const [id, ...keyArgs] = memoArgs(args, "__memo_get");
+      return _memoHas(id, keyArgs) ? (_memoGet(id, keyArgs) as SVMLBoxType) : undefined;
+    }
+
+    case 42: {
+      // __memo_put(id, *keyArgs, value) — last positional is the value;
+      // returns the value so the caller can `return __memo_put(...)` inline.
+      if (args.length < 2)
+        throw new MissingRequiredPositionalError("__memo_put() requires id and value");
+      const [id, ...rest] = memoArgs(args, "__memo_put");
+      const value = rest[rest.length - 1];
+      _memoPut(id, rest.slice(0, -1), value);
+      return value;
+    }
+
     default:
       throw new SVMLInterpreterError(`Unknown primitive function index: ${primitiveIndex}`);
   }
+}
+
+function memoArgs(args: SVMLBoxType[], fn: string): [string, ...SVMLBoxType[]] {
+  if (args.length < 1) throw new MissingRequiredPositionalError(`${fn}() requires id`);
+  const id = args[0];
+  if (typeof id !== "string")
+    throw new SVMLInterpreterError(`${fn}() id must be a string`);
+  return [id, ...args.slice(1)];
 }

@@ -5,6 +5,7 @@ import { Token } from "../tokenizer/tokenizer";
 import { TokenType } from "../tokens";
 import { FeatureValidator } from "../validator/types";
 import { ResolverErrors } from "./errors";
+import { MEMO_INTRINSIC_NAMES } from "../specialization/memoization-analysis/runtime";
 type Expr = ExprNS.Expr;
 type Stmt = StmtNS.Stmt;
 
@@ -216,6 +217,14 @@ export class Resolver implements StmtNS.Visitor<void>, ExprNS.Visitor<void> {
           ),
         ),
         ...preludeNames.map(
+          name => [name, new Token(TokenType.NAME, name, 0, 0, 0)] as [string, Token],
+        ),
+        // Memoization intrinsics are emitted by the specialization transform
+        // into function bodies after the resolver has already run. Seeding
+        // them in the global env ensures lookup succeeds when the SVML
+        // compiler (or any post-transform resolver pass) re-analyses the
+        // wrapped body.
+        ...MEMO_INTRINSIC_NAMES.map(
           name => [name, new Token(TokenType.NAME, name, 0, 0, 0)] as [string, Token],
         ),
       ]),

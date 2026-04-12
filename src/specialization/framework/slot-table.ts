@@ -45,6 +45,15 @@ export function buildSlotTable(
     // Non-local: walk environment chain
     const declaringEnv = env.lookupNameEnvByString(name);
     if (declaringEnv === null) {
+      // Names introduced by post-resolution AST transforms (e.g. the
+      // `__memo_has` / `__memo_get` / `__memo_put` intrinsics emitted by
+      // MemoizationTransformRule) were never seen by the resolver and have
+      // no declaring environment. They resolve to interpreter builtins at
+      // runtime, so treat them as primitives here — the DFA widens to TOP
+      // which is conservative for call-site analysis.
+      if (name.startsWith("__memo_")) {
+        return { slot: -1, envLevel: 0, isPrimitive: true };
+      }
       throw new Error(`Variable ${name} not found in environment`);
     }
 

@@ -14,14 +14,11 @@ import type { ExprNS, StmtNS } from "../ast-types";
 import type { FunctionEnvironments } from "../resolver";
 import type { FunctionUnit } from "./framework/function-unit";
 import type { OptimizationHint } from "./framework/hint";
-import type { ObservationSink } from "./framework/observation-sink";
-import { assertSyncObservationSink } from "./framework/observation-sink";
+import type { ObservationSink } from "./framework/persistent-worklist";
 import { InPlaceASTStrategy, OSRCoordinator } from "./framework/osr";
 import type { StateDeltaStrategy } from "./framework/osr";
 import { PersistentWorklist } from "./framework/persistent-worklist";
 import { createAnalyses, createTransforms } from "./pipeline-config";
-
-type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
 
 export class SpecializationEngine {
   private readonly worklist: PersistentWorklist;
@@ -35,10 +32,6 @@ export class SpecializationEngine {
       createAnalyses(),
       createTransforms(),
     );
-    // Tripwire for the synchrony invariant documented in ObservationSink.
-    // Catches `async`-declared methods; other async shapes (explicit
-    // `Promise.resolve()` returns, transpiled async) are out of scope.
-    assertSyncObservationSink(this.worklist);
   }
 
   /** Run initial static analysis + transforms to fixpoint. Idempotent. */
@@ -48,7 +41,7 @@ export class SpecializationEngine {
     this.converged = true;
   }
 
-  get units(): ReadonlyMap<Scope, FunctionUnit> {
+  get units(): ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
     return this.worklist.units;
   }
 
@@ -81,7 +74,7 @@ export class SpecializationEngine {
    * default `InPlaceASTStrategy` if none was installed), run `fn`, then
    * stop the coordinator and unpin.
    */
-  async run<T>(rootScope: Scope, fn: () => Promise<T> | T): Promise<T> {
+  async run<T>(rootScope: StmtNS.FileInput | StmtNS.FunctionDef, fn: () => Promise<T> | T): Promise<T> {
     this.converge();
     if (!this.coordinator) {
       this.coordinator = new OSRCoordinator(this.worklist, new InPlaceASTStrategy());

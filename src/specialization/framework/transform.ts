@@ -18,6 +18,8 @@ class ExprRewriteVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     private readonly rule: ExprTransformRule,
     private readonly hints: HintStore,
   ) {}
+  // Scope-level rules bypass this visitor entirely; the worklist handles
+  // them via `rule.apply(unit)` directly.
 
   private tryRewrite(expr: ExprNS.Expr): ExprNS.Expr {
     if (this.rule.matches(expr, this.hints)) {
@@ -107,6 +109,7 @@ class ExprRewriteVisitor implements ExprNS.Visitor<ExprNS.Expr> {
  */
 class TransformApplyVisitor implements StmtNS.Visitor<void> {
   changed = false;
+  readonly invalidate = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
 
   constructor(
     private readonly rule: TransformRule,
@@ -122,13 +125,17 @@ class TransformApplyVisitor implements StmtNS.Visitor<void> {
   }
 
   applyToBlock(stmts: StmtNS.Stmt[]): void {
+    if (this.rule.level === "scope") return; // handled by worklist directly
     if (this.rule.level === "stmt") {
       let i = 0;
       while (i < stmts.length) {
         if (this.rule.matches(stmts[i], this.hints)) {
-          const replacements = this.rule.apply(stmts[i], this.hints);
+          const original = stmts[i];
+          const replacements = this.rule.apply(original, this.hints);
           stmts.splice(i, 1, ...replacements);
           this.changed = true;
+          const affected = this.rule.affectedScopes?.(original);
+          if (affected) for (const s of affected) this.invalidate.add(s);
         } else {
           stmts[i].accept(this);
           i++;
@@ -182,14 +189,22 @@ class TransformApplyVisitor implements StmtNS.Visitor<void> {
 
 /**
  * Apply one transformation rule to a statement list.
- * Returns true if any change was made.
+ * Returns `changed` flag plus any additional scopes the rule flagged via
+ * `affectedScopes` — the worklist rebuilds those too (used by non-monotone
+ * transforms like memoization that mutate a child scope's body from the
+ * parent's pass).
  */
+export interface TransformPassResult {
+  readonly changed: boolean;
+  readonly invalidate: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>;
+}
+
 export function applyTransformPass(
   stmts: StmtNS.Stmt[],
   rule: TransformRule,
   hints: HintStore,
-): boolean {
+): TransformPassResult {
   const visitor = new TransformApplyVisitor(rule, hints);
   visitor.applyToBlock(stmts);
-  return visitor.changed;
+  return { changed: visitor.changed, invalidate: visitor.invalidate };
 }

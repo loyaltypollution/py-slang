@@ -28,9 +28,7 @@ import {
 import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
 import type { AnalysisModule } from "../framework/interfaces";
 import {
-  TYPE_ANALYSIS_KEY,
-  hintGet,
-  hintSet,
+  typeLatticeEquals,
   type HintStore,
   type OptimizationHint,
 } from "../framework/hint";
@@ -72,7 +70,7 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
     const existing = this.hints.get(node) ?? {};
-    this.hints.set(node, hintSet(existing, TYPE_ANALYSIS_KEY, val));
+    this.hints.set(node, { ...existing, type: val });
     return val;
   }
 
@@ -242,7 +240,9 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
  */
 export class TypeAnalysisModule implements AnalysisModule<TypeLattice> {
   readonly name = "type";
-  readonly key = TYPE_ANALYSIS_KEY;
+  latticeEquals(a: unknown, b: unknown): boolean {
+    return typeLatticeEquals(a as TypeLattice, b as TypeLattice);
+  }
   readonly mergeKind = "may" as const;
   readonly direction = "forward" as const;
   top(): TypeLattice {
@@ -307,9 +307,9 @@ export class TypeAnalysisModule implements AnalysisModule<TypeLattice> {
 
   mergeIntoHint(hint: OptimizationHint, value: TypeLattice): OptimizationHint {
     // Widen (join) — observations add seen values, never narrow static facts.
-    const prev = hintGet(hint, TYPE_ANALYSIS_KEY);
+    const prev = hint.type;
     const next = prev ? join(prev, value) : value;
-    return hintSet(hint, TYPE_ANALYSIS_KEY, next);
+    return { ...hint, type: next };
   }
 }
 

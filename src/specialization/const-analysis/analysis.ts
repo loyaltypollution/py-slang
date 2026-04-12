@@ -2,9 +2,7 @@ import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { AnalysisModule } from "../framework/interfaces";
 import {
-  CONST_ANALYSIS_KEY,
-  hintGet,
-  hintSet,
+  constLatticeEquals,
   type HintStore,
   type OptimizationHint,
 } from "../framework/hint";
@@ -32,7 +30,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
 
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
     const existing = this.hints.get(node) ?? {};
-    this.hints.set(node, hintSet(existing, CONST_ANALYSIS_KEY, val));
+    this.hints.set(node, { ...existing, constVal: val });
     return val;
   }
 
@@ -215,8 +213,10 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
  * DFAStatementDriver runs it correctly without modification.
  */
 export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
-  readonly name = "const";
-  readonly key = CONST_ANALYSIS_KEY;
+  readonly name = "constVal";
+  latticeEquals(a: unknown, b: unknown): boolean {
+    return constLatticeEquals(a as ConstLattice, b as ConstLattice);
+  }
   readonly mergeKind = "may" as const;
   readonly direction = "forward" as const;
   top(): ConstLattice {
@@ -270,8 +270,8 @@ export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
 
   mergeIntoHint(hint: OptimizationHint, value: ConstLattice): OptimizationHint {
     // Widen via constJoin — two different observed constants collapse to CONST_TOP.
-    const prev = hintGet(hint, CONST_ANALYSIS_KEY);
+    const prev = hint.constVal;
     const next = prev ? constJoin(prev, value) : value;
-    return hintSet(hint, CONST_ANALYSIS_KEY, next);
+    return { ...hint, constVal: next };
   }
 }

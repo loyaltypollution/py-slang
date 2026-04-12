@@ -1,6 +1,5 @@
 /**
- * Tests for HintStore version tracking, change log, changesSince binary search,
- * and hintEquals structural comparison.
+ * Tests for HintStore write/read + hintEquals structural comparison.
  */
 
 import { ExprNS } from "../ast-types";
@@ -90,88 +89,31 @@ describe("hintEquals", () => {
 });
 
 describe("HintStore", () => {
-  describe("version tracking", () => {
-    test("version starts at 0", () => {
-      const store = new HintStore();
-      expect(store.version).toBe(0);
-    });
-
-    test("set with new value bumps version, returns true", () => {
-      const store = new HintStore();
-      const node = fakeNode(1);
-      const changed = store.set(node, { type: positiveInteger() });
-      expect(changed).toBe(true);
-      expect(store.version).toBe(1);
-    });
-
-    test("set with structurally equal value does not bump version, returns false", () => {
-      const store = new HintStore();
-      const node = fakeNode(1);
-      store.set(node, { type: positiveInteger() });
-      expect(store.version).toBe(1);
-
-      const changed = store.set(node, { type: positiveInteger() });
-      expect(changed).toBe(false);
-      expect(store.version).toBe(1);
-    });
-
-    test("multiple sets on different nodes each bump version", () => {
-      const store = new HintStore();
-      store.set(fakeNode(1), { type: positiveInteger() });
-      store.set(fakeNode(2), { type: negativeInteger() });
-      store.set(fakeNode(3), { constVal: constOf(10) });
-      expect(store.version).toBe(3);
-    });
+  test("get returns undefined for unknown node", () => {
+    const store = new HintStore();
+    expect(store.get(fakeNode(1))).toBeUndefined();
   });
 
-  describe("changesSince binary search", () => {
-    let store: HintStore;
+  test("set with new value returns true", () => {
+    const store = new HintStore();
+    expect(store.set(fakeNode(1), { type: positiveInteger() })).toBe(true);
+    expect(store.get(fakeNode(1))).toEqual({ type: positiveInteger() });
+  });
 
-    beforeEach(() => {
-      store = new HintStore();
-      // Insert 5 changes at versions 1..5
-      for (let i = 1; i <= 5; i++) {
-        store.set(fakeNode(i), { constVal: constOf(i * 10) });
-      }
-      expect(store.version).toBe(5);
-    });
+  test("set with structurally equal value returns false", () => {
+    const store = new HintStore();
+    const node = fakeNode(1);
+    store.set(node, { type: positiveInteger() });
+    expect(store.set(node, { type: positiveInteger() })).toBe(false);
+  });
 
-    test("changesSince(0) returns all changes", () => {
-      const changes = store.changesSince(0);
-      expect(changes.length).toBe(5);
-      expect(changes[0].version).toBe(1);
-      expect(changes[4].version).toBe(5);
-    });
-
-    test("changesSince(currentVersion) returns empty", () => {
-      expect(store.changesSince(5)).toHaveLength(0);
-    });
-
-    test("changesSince(mid) returns correct slice", () => {
-      const changes = store.changesSince(3);
-      expect(changes.length).toBe(2);
-      expect(changes[0].version).toBe(4);
-      expect(changes[1].version).toBe(5);
-    });
-
-    test("changesSince(1) skips the first change", () => {
-      const changes = store.changesSince(1);
-      expect(changes.length).toBe(4);
-      expect(changes[0].version).toBe(2);
-    });
-
-    test("change records contain correct oldHint/newHint", () => {
-      const changes = store.changesSince(0);
-      // First set on each node: oldHint is undefined
-      expect(changes[0].oldHint).toBeUndefined();
-      expect(changes[0].newHint).toEqual({ constVal: constOf(10) });
-
-      // Now update node 1 — oldHint should be the previous value
-      store.set(fakeNode(1), { constVal: constOf(100) });
-      const latest = store.changesSince(5);
-      expect(latest.length).toBe(1);
-      expect(latest[0].oldHint).toEqual({ constVal: constOf(10) });
-      expect(latest[0].newHint).toEqual({ constVal: constOf(100) });
-    });
+  test("iterate yields all (id, hint) pairs", () => {
+    const store = new HintStore();
+    store.set(fakeNode(1), { type: positiveInteger() });
+    store.set(fakeNode(2), { constVal: constOf(10) });
+    const entries = [...store];
+    expect(entries).toHaveLength(2);
+    expect(new Map(entries).get(1)).toEqual({ type: positiveInteger() });
+    expect(new Map(entries).get(2)).toEqual({ constVal: constOf(10) });
   });
 });

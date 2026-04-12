@@ -2377,6 +2377,82 @@ for (const name of constants.builtInFuncs) {
   });
 }
 
+// ── Memoization runtime intrinsics ────────────────────────────────────────
+//
+// Emitted by MemoizationTransformRule into hot, pure FunctionDef bodies.
+// The cache lives in src/specialization/memoization-analysis/runtime.ts;
+// these wrappers adapt tagged Value args to the raw JS side-table API.
+// Registered up-front (not gated on any runtime flag) because the transform
+// rewrites before execution resumes and the intrinsic names must always be
+// resolvable when the wrapped body runs.
+import {
+  memoHas as _memoHas,
+  memoGet as _memoGet,
+  memoPut as _memoPut,
+  MEMO_MISS as _MEMO_MISS,
+} from "./specialization/memoization-analysis/runtime";
+
+function unwrap(v: Value): unknown {
+  if (v === null || v === undefined) return v;
+  const t = (v as { type?: string }).type;
+  if (t === "none") return null;
+  if ((v as { value?: unknown }).value !== undefined) return (v as { value: unknown }).value;
+  return v;
+}
+
+function wrap(raw: unknown): Value {
+  if (raw === null || raw === undefined) return { type: "none" } as Value;
+  if (typeof raw === "number") return { type: "number", value: raw } as Value;
+  if (typeof raw === "boolean") return { type: "bool", value: raw } as Value;
+  if (typeof raw === "string") return { type: "string", value: raw } as Value;
+  if (typeof raw === "bigint") return { type: "bigint", value: raw } as Value;
+  return raw as Value;
+}
+
+function memoIdFrom(args: Value[]): { id: string; rest: Value[] } {
+  const first = args[0];
+  const id = typeof first === "object" && first && (first as StringValue).type === "string"
+    ? (first as StringValue).value
+    : String(unwrap(first));
+  return { id, rest: args.slice(1) };
+}
+
+builtIns.set("__memo_has", {
+  type: "builtin",
+  name: "__memo_has",
+  minArgs: 1,
+  func: (args: Value[]): Value => {
+    const { id, rest } = memoIdFrom(args);
+    return { type: "bool", value: _memoHas(id, rest.map(unwrap)) } as Value;
+  },
+});
+
+builtIns.set("__memo_get", {
+  type: "builtin",
+  name: "__memo_get",
+  minArgs: 1,
+  func: (args: Value[]): Value => {
+    const { id, rest } = memoIdFrom(args);
+    const raw = _memoGet(id, rest.map(unwrap));
+    if (raw === _MEMO_MISS) return { type: "none" } as Value;
+    return wrap(raw);
+  },
+});
+
+builtIns.set("__memo_put", {
+  type: "builtin",
+  name: "__memo_put",
+  minArgs: 2,
+  func: (args: Value[]): Value => {
+    const { id, rest } = memoIdFrom(args);
+    // Last positional arg is the value; preceding ones are the cache key args.
+    const value = rest[rest.length - 1];
+    const keyArgs = rest.slice(0, -1).map(unwrap);
+    _memoPut(id, keyArgs, unwrap(value));
+    return value;
+  },
+});
+
 /**
  * Converts a number to a string that mimics Python's float formatting behavior.
  *

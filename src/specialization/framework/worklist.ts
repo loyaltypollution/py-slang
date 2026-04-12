@@ -314,7 +314,7 @@ export function runCFGOptimization(
 
     let changed = false;
     for (const rule of transforms) {
-      changed = applyTransformPass(stmts, rule, hints) || changed;
+      changed = applyTransformPass(stmts, rule, hints).changed || changed;
     }
     if (!changed) return;
     // CFG is invalidated by stmt transforms — rebuild next round.

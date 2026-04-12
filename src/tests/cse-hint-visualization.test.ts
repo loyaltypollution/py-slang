@@ -31,7 +31,9 @@ function parseOptimizeAndMerge(code: string): {
   const units = engine.units;
 
   const merged = new HintStore();
-  for (const unit of units.values()) unit.hints.mergeInto(merged);
+  for (const unit of units.values()) {
+    for (const [id, hint] of unit.hints) merged.setById(id, hint);
+  }
 
   const context = new Context(ast);
   return { context, ast, merged };
@@ -42,7 +44,7 @@ function parseOptimizeAndMerge(code: string): {
 describe("CSE hint visualization: hints in merged store", () => {
   test("optimization populates hints for assignment with constant expression", () => {
     const { merged } = parseOptimizeAndMerge("x = 1 + 2");
-    expect(merged.version).toBeGreaterThan(0);
+    expect([...merged].length).toBeGreaterThan(0);
   });
 
   test("hints contain type info for integer literal", () => {
@@ -69,7 +71,7 @@ describe("CSE hint visualization: hints in merged store", () => {
 
   test("optimization runs without error on multi-statement programs", () => {
     const { merged } = parseOptimizeAndMerge("x = 1\ny = x + 2\nz = y * 3");
-    expect(merged.version).toBeGreaterThan(0);
+    expect([...merged].length).toBeGreaterThan(0);
   });
 });
 
@@ -94,7 +96,7 @@ describe("CSE hint visualization: nested function scopes", () => {
     const { ast, merged } = parseOptimizeAndMerge(
       "x = 10\ndef g():\n    return x + 5\ng()",
     );
-    expect(merged.version).toBeGreaterThan(0);
+    expect([...merged].length).toBeGreaterThan(0);
 
     const assignStmt = ast.statements[0] as StmtNS.Assign;
     const rootHint = merged.get(assignStmt.value);

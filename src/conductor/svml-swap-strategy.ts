@@ -23,8 +23,6 @@ import type { SVMLCompiler } from "../engines/svml/svml-compiler";
 import type { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import type { OperandPatch, SVMLIR } from "../engines/svml/types";
 
-type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
-
 export type SVMLDelta =
   | { readonly kind: "whole"; readonly ir: SVMLIR }
   | { readonly kind: "patches"; readonly patches: readonly OperandPatch[] };
@@ -40,7 +38,7 @@ export class SVMLSwapStrategy implements StateDeltaStrategy<SVMLDelta> {
    * (compileProgram handles the whole program). Per-function recompile only
    * applies to FunctionDef bodies.
    */
-  canInstall(scopeKey: Scope): boolean {
+  canInstall(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef): boolean {
     return scopeKey instanceof StmtNS.FunctionDef;
   }
 
@@ -48,7 +46,7 @@ export class SVMLSwapStrategy implements StateDeltaStrategy<SVMLDelta> {
     return { kind: "whole", ir: this.compiler.compileFunction(unit) };
   }
 
-  applyDelta(scopeKey: Scope, delta: SVMLDelta): void {
+  applyDelta(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, delta: SVMLDelta): void {
     const index = this.compiler.indexOf(scopeKey);
     if (index === undefined) return;
     switch (delta.kind) {

@@ -17,7 +17,7 @@ import { parse } from "../src/parser/parser-adapter";
 import { analyzeWithEnvironments } from "../src/resolver";
 import {
   HintStore,
-  optimize,
+  SpecializationEngine,
   type OptimizationHint,
   INT_BIT,
   BOOL_BIT,
@@ -291,7 +291,9 @@ if (errors.length > 0) {
   for (const e of errors) console.error(" ", String(e));
   process.exit(1);
 }
-const units = optimize(ast, environments);
+const engine = new SpecializationEngine(ast, environments);
+engine.converge();
+const units = engine.units;
 
 UNIT_HINTS = new Map();
 let totalHints = 0;
@@ -300,12 +302,10 @@ let constants = 0;
 for (const [scope, unit] of units) {
   UNIT_HINTS.set(scope, unit.hints);
   const scopeName = scope instanceof StmtNS.FunctionDef ? `def ${scope.name.lexeme}` : "<module>";
-  const latest = new Map<number, OptimizationHint>();
-  for (const c of unit.hints.changesSince(0)) latest.set(c.nodeId, c.newHint);
   let unitHints = 0;
   let unitConcrete = 0;
   let unitConsts = 0;
-  for (const h of latest.values()) {
+  for (const [, h] of unit.hints) {
     unitHints++;
     if (h.type?.kinds !== undefined && h.type.kinds !== ALL_KINDS) unitConcrete++;
     if (h.constVal?.tag === "const") unitConsts++;

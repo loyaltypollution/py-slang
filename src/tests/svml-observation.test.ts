@@ -37,12 +37,12 @@ x = "hello"
     const interpreter = new SVMLInterpreter(program, { observationSink: reactive });
 
     const merged = new HintStore();
-    for (const unit of reactive.units.values()) unit.hints.mergeInto(merged);
+    const mergeUnit = (u: { hints: HintStore } | undefined) => {
+      if (u) for (const [id, hint] of u.hints) merged.setById(id, hint);
+    };
+    for (const unit of reactive.units.values()) mergeUnit(unit);
     const unsubscribe = reactive.subscribe(changed => {
-      for (const key of changed) {
-        const unit = reactive.units.get(key);
-        if (unit) unit.hints.mergeInto(merged);
-      }
+      for (const key of changed) mergeUnit(reactive.units.get(key));
     });
 
     try {

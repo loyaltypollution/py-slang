@@ -274,7 +274,7 @@ export function stabilizeStatic(
 
     let changed = false;
     for (const rule of transforms) {
-      changed = applyTransformPass(stmts, rule, hints) || changed;
+      changed = applyTransformPass(stmts, rule, hints).changed || changed;
     }
     if (!changed) return;
   }

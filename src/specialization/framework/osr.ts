@@ -13,8 +13,6 @@ import type { StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "./function-unit";
 import type { PersistentWorklist } from "./persistent-worklist";
 
-type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
-
 /**
  * Pluggable state-delta backend. For each worklist change targeting an
  * inactive (unpinned) scope, the coordinator asks the strategy to
@@ -42,12 +40,22 @@ type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
  */
 export interface StateDeltaStrategy<Delta> {
   /**
+   * When `false`, the coordinator skips the notification handler entirely —
+   * no iteration, no `computeDelta`, no `applyDelta`, no stat increments.
+   * Set by strategies whose materialized form was already updated at the
+   * transform call site (e.g. `InPlaceASTStrategy`: the AST mutation during
+   * `tick` IS the install). Default (undefined / true) preserves the
+   * existing behaviour for installing strategies like `SVMLSwapStrategy`.
+   */
+  readonly needsInstall?: boolean;
+
+  /**
    * Optional pre-filter. Return false to signal that `scopeKey` cannot be
    * patched by this strategy (e.g. the program entry for SVML, which is
    * rebuilt whole-program rather than per-function). When false, the
    * coordinator skips both `computeDelta` and `applyDelta` for this scope.
    */
-  canInstall?(scopeKey: Scope): boolean;
+  canInstall?(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef): boolean;
 
   /**
    * Produce the delta between the pre-transform and post-transform
@@ -58,7 +66,7 @@ export interface StateDeltaStrategy<Delta> {
   /**
    * Install the delta. Called only when the scope is not pinned.
    */
-  applyDelta(scopeKey: Scope, delta: Delta): void;
+  applyDelta(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, delta: Delta): void;
 }
 
 /**
@@ -68,10 +76,11 @@ export interface StateDeltaStrategy<Delta> {
  * but because the delta was already applied at the transform call site.
  */
 export class InPlaceASTStrategy implements StateDeltaStrategy<void> {
+  readonly needsInstall = false;
   computeDelta(_unit: FunctionUnit): void {
     return;
   }
-  applyDelta(_scopeKey: Scope, _delta: void): void {
+  applyDelta(_scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, _delta: void): void {
     /* no-op */
   }
 }
@@ -128,7 +137,8 @@ export class OSRCoordinator<Delta> {
     });
   }
 
-  private onChange(changed: ReadonlySet<Scope>): void {
+  private onChange(changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>): void {
+    if (this.strategy.needsInstall === false) return;
     for (const key of changed) {
       this._notificationsSeen++;
       if (this.reactive.isScopeActive(key)) {

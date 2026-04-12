@@ -634,7 +634,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
   Return: function (
     _code: string,
     command: ControlItem,
-    _context: Context,
+    context: Context,
     control: Control,
     stash: Stash,
     _isPrelude: boolean,
@@ -643,8 +643,18 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     let head;
     while (true) {
       head = control.pop();
-      if (!head || ("instrType" in head && head.instrType === InstrType.RESET)) {
-        break;
+      if (!head) break;
+      if ("instrType" in head && head.instrType === InstrType.RESET) break;
+      // Early return unwinds past END_OF_FUNCTION_BODY without executing it,
+      // so fire its observation side-effect here to keep activateScope /
+      // deactivateScope balanced. Missing deactivations permanently pin the
+      // scope and livelock the worklist drain.
+      if ("instrType" in head && head.instrType === InstrType.END_OF_FUNCTION_BODY) {
+        const sink = context.runtime.observationSink;
+        if (sink) {
+          const scopeKey = currentScopeKey(context);
+          if (scopeKey) sink.deactivateScope(scopeKey);
+        }
       }
     }
     if (head) {

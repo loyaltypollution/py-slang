@@ -3,7 +3,7 @@
  *
  * Verifies that the CSE interpreter emits runtime observations which the
  * reactive optimization worklist translates into HintStore refinements,
- * visible to consumers via `hintStoreVersion` and `.get(node)`.
+ * visible to consumers via `.get(node)`.
  */
 
 import { StmtNS } from "../ast-types";
@@ -32,14 +32,16 @@ async function runWithReactive(code: string) {
   reactive.converge();
 
   const merged = new HintStore();
-  for (const unit of reactive.units.values()) unit.hints.mergeInto(merged);
+  for (const unit of reactive.units.values()) {
+    for (const [id, hint] of unit.hints) merged.setById(id, hint);
+  }
   context.runtime.observationSink = reactive;
   context.runtime.rootScope = ast;
 
   const unsubscribe = reactive.subscribe(changed => {
     for (const key of changed) {
       const unit = reactive.units.get(key);
-      if (unit) unit.hints.mergeInto(merged);
+      if (unit) for (const [id, hint] of unit.hints) merged.setById(id, hint);
     }
   });
 
@@ -81,28 +83,19 @@ x = "hello"
     expect(secondHint!.type!.kinds & STR_BIT).toBeTruthy();
   });
 
-  test("hintStoreVersion increases monotonically across the run", async () => {
-    const { reactive } = setupReactive("x = 1\nx = 2");
-    const v0 = reactive.hintStoreVersion;
-    reactive.converge();
-    const v1 = reactive.hintStoreVersion;
-    expect(v1).toBeGreaterThanOrEqual(v0);
-  });
-
-  test("program with no runtime mutations: no spurious version bumps after converge", async () => {
-    // Verify nothing enqueues a no-op observation that accidentally increments version.
+  test("program with no runtime mutations: observing a known value leaves hints unchanged", async () => {
+    // If a runtime observation of a value that static analysis already
+    // covered lands at a node, the hint's lattice element should be equal
+    // before and after.
     const { ast, reactive } = setupReactive("x = 1");
     reactive.converge();
-    const baseline = reactive.hintStoreVersion;
-
-    // Simulate a CSE observe of the same value — observeValue returns the
-    // same lattice the static pass already wrote, so mergeIntoHint produces
-    // an equal hint and setById returns false (no version bump).
     const assign = ast.statements[0] as StmtNS.Assign;
+    const before = reactive.units.get(ast)!.hints.get(assign.value);
+
     reactive.observeWrite(ast, assign.value, 1);
-    // Worklist may re-seed analysis, but hintStoreVersion should not change
-    // from the observation alone.
-    expect(reactive.hintStoreVersion).toBe(baseline);
+    const after = reactive.units.get(ast)!.hints.get(assign.value);
+
+    expect(after?.type).toEqual(before?.type);
   });
 
   test("subscribe is called with changed scope keys during converge", async () => {
@@ -178,16 +171,17 @@ def g():
 });
 
 describe("OBSERVE loop: regression guard", () => {
-  test("observation of an already-known value does not bump version", async () => {
+  test("observation of an already-known value leaves the node's hint equal", async () => {
     // If a runtime observation of value X lands at a node whose hint
-    // already covers X, setById returns false and version stays.
+    // already covers X, the stored hint should be equal (same lattice).
     const { ast, reactive } = setupReactive("x = 42");
     reactive.converge();
-    const baseline = reactive.hintStoreVersion;
 
     const assign = ast.statements[0] as StmtNS.Assign;
-    // Observe exactly the same primitive value that static analysis saw.
+    const before = reactive.units.get(ast)!.hints.get(assign.value);
     reactive.observeWrite(ast, assign.value, 42);
-    expect(reactive.hintStoreVersion).toBe(baseline);
+    const after = reactive.units.get(ast)!.hints.get(assign.value);
+
+    expect(after?.type).toEqual(before?.type);
   });
 });

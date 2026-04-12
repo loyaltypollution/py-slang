@@ -6,8 +6,24 @@
 // lifecycle. `createReactiveOptimization` returns a raw PersistentWorklist
 // and is @internal for tests and advanced consumers only.
 
+import type { StmtNS } from "../ast-types";
+import type { FunctionEnvironments } from "../resolver";
+import { PersistentWorklist } from "./framework/persistent-worklist";
+import { createAnalyses, createTransforms } from "./pipeline-config";
+
 export { SpecializationEngine } from "./engine";
-export { createReactiveOptimization } from "./optimize";
+
+/**
+ * @internal Build a `PersistentWorklist` pre-loaded with the default
+ * analyses and transforms. For tests and advanced consumers that drive the
+ * reactive loop directly; production callers use `SpecializationEngine`.
+ */
+export function createReactiveOptimization(
+  ast: StmtNS.FileInput,
+  functionEnvironments: FunctionEnvironments,
+): PersistentWorklist {
+  return new PersistentWorklist(ast, functionEnvironments, createAnalyses(), createTransforms());
+}
 
 // ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
 
@@ -18,7 +34,8 @@ export { buildFunctionUnits } from "./framework/function-unit";
 
 export { PersistentWorklist } from "./framework/persistent-worklist";
 export type { ExternalWorkItem, Subscriber, WorklistStats } from "./framework/persistent-worklist";
-export type { ObservationSink } from "./framework/observation-sink";
+export type { ObservationSink } from "./framework/persistent-worklist";
+export { assertSyncObservationSink } from "./framework/persistent-worklist";
 export type { SlotInfo, SlotLookup } from "./framework/slot-table";
 export { buildSlotTable } from "./framework/slot-table";
 
@@ -30,16 +47,8 @@ export type {
   StmtTransformRule,
   ExprTransformRule,
 } from "./framework/interfaces";
-export { assertSyncObservationSink } from "./framework/observation-sink";
-export type { AnalysisKey, OptimizationHint, HintChangeRecord } from "./framework/hint";
-export {
-  HintStore,
-  hintEquals,
-  hintGet,
-  hintSet,
-  TYPE_ANALYSIS_KEY,
-  CONST_ANALYSIS_KEY,
-} from "./framework/hint";
+export type { LatticeEquality, OptimizationHint } from "./framework/hint";
+export { HintStore, hintEquals } from "./framework/hint";
 export {
   MutableEnv,
   runAnalysisPass,
@@ -101,3 +110,18 @@ export { CONST_BOTTOM, CONST_TOP, constOf } from "./const-analysis/lattice";
 
 export { ConstantFoldingRule } from "./transforms/constant-folding";
 export { DeadBranchEliminationRule } from "./transforms/dead-branch";
+export { MemoizationTransformRule } from "./transforms/memoization";
+export {
+  MemoizationAnalysisModule,
+  MEMOIZATION_THRESHOLD,
+  CALL_COUNT_FIELD,
+  MEMOIZED_FIELD,
+} from "./memoization-analysis/analysis";
+export {
+  memoHas,
+  memoGet,
+  memoPut,
+  clearMemoCache,
+  memoCacheSnapshot,
+  MEMO_MISS,
+} from "./memoization-analysis/runtime";

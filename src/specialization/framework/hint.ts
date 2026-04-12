@@ -3,27 +3,9 @@ import type { ConstLattice } from "../const-analysis/lattice";
 import type { ExprNS, StmtNS } from "../../ast-types";
 
 /**
- * Typed key under which an analysis stores its lattice value in a hint record.
- *
- * Each `AnalysisModule` exports a key; transforms and consumers that want an
- * analysis-specific value read it via `HintStore.getTyped(node, key)` or
- * `hintGet(hint, key)`. This is the extensibility seam — a new analysis adds
- * a key and nothing else in the framework needs to know about it.
- */
-export interface AnalysisKey<L = unknown> {
-  readonly name: string;
-  equals(a: L, b: L): boolean;
-}
-
-/**
- * Open record of analysis values keyed by `AnalysisKey.name`.
- *
- * `type` and `constVal` are **legacy convenience accessors** equivalent to
- * reading under `TYPE_ANALYSIS_KEY.name` / `CONST_ANALYSIS_KEY.name` through
- * the index signature. They exist because built-in analyses and pre-existing
- * tests still destructure them directly; new analyses must **not** add named
- * fields here — they declare their own `AnalysisKey` and are read via
- * `hintGet` / `HintStore.getTyped`.
+ * Open record of analysis values keyed by `AnalysisModule.name`. Built-in
+ * analyses write to the named fields below; a new analysis adds an
+ * optional field here and exposes the same name on its module.
  */
 export interface OptimizationHint {
   readonly [fieldName: string]: unknown;
@@ -31,52 +13,7 @@ export interface OptimizationHint {
   readonly constVal?: ConstLattice;
 }
 
-/** Typed accessor on a plain hint record. */
-export function hintGet<L>(
-  hint: OptimizationHint | undefined,
-  key: AnalysisKey<L>,
-): L | undefined {
-  return hint ? (hint[key.name] as L | undefined) : undefined;
-}
-
-/** Functional setter: returns a new hint record with `key.name` set to `value`. */
-export function hintSet<L>(
-  hint: OptimizationHint,
-  key: AnalysisKey<L>,
-  value: L,
-): OptimizationHint {
-  return { ...hint, [key.name]: value };
-}
-
-// ── Built-in analysis keys ────────────────────────────────────────────────────
-//
-// These are defined here (rather than in the analysis modules) so that
-// `HintStore` can default-register them without importing from the analysis
-// packages. Analysis modules re-export these constants as their `.key`.
-
-export const TYPE_ANALYSIS_KEY: AnalysisKey<TypeLattice> = {
-  name: "type",
-  equals: typeLatticeEquals,
-};
-
-export const CONST_ANALYSIS_KEY: AnalysisKey<ConstLattice> = {
-  name: "constVal",
-  equals: constLatticeEquals,
-};
-
-const DEFAULT_ANALYSIS_KEYS: readonly AnalysisKey<unknown>[] = [
-  TYPE_ANALYSIS_KEY as AnalysisKey<unknown>,
-  CONST_ANALYSIS_KEY as AnalysisKey<unknown>,
-];
-
-export interface HintChangeRecord {
-  readonly nodeId: number;
-  readonly version: number;
-  readonly oldHint: OptimizationHint | undefined;
-  readonly newHint: OptimizationHint;
-}
-
-// ── Lattice equality ──────────────────────────────────────────────────────────
+// ── Built-in lattice equality helpers ────────────────────────────────────────
 
 export function typeLatticeEquals(a: TypeLattice, b: TypeLattice): boolean {
   return (
@@ -90,15 +27,49 @@ export function constLatticeEquals(a: ConstLattice, b: ConstLattice): boolean {
 }
 
 /**
+ * Minimum shape the `HintStore` registry needs: a field name and a
+ * per-field lattice equality. `AnalysisModule` extends this, so the store
+ * can register modules directly.
+ */
+export interface LatticeEquality {
+  readonly name: string;
+  latticeEquals(a: unknown, b: unknown): boolean;
+}
+
+const DEFAULT_REGISTRY_ENTRIES: readonly LatticeEquality[] = [
+  {
+    name: "type",
+    latticeEquals: (a, b) => typeLatticeEquals(a as TypeLattice, b as TypeLattice),
+  },
+  {
+    name: "constVal",
+    latticeEquals: (a, b) => constLatticeEquals(a as ConstLattice, b as ConstLattice),
+  },
+];
+
+function buildRegistry(
+  entries: readonly LatticeEquality[],
+): ReadonlyMap<string, LatticeEquality> {
+  const m = new Map<string, LatticeEquality>();
+  for (const e of entries) m.set(e.name, e);
+  return m;
+}
+
+let _defaultRegistry: ReadonlyMap<string, LatticeEquality> | undefined;
+function defaultRegistry(): ReadonlyMap<string, LatticeEquality> {
+  return (_defaultRegistry ??= buildRegistry(DEFAULT_REGISTRY_ENTRIES));
+}
+
+/**
  * Compare two hint records by iterating the union of their fields and
- * consulting the registered `AnalysisKey` for each. Fields without a
- * registered key fall back to strict equality (conservative: over-invalidates
+ * consulting the registered module for each. Fields without a registered
+ * module fall back to strict equality (conservative: over-invalidates
  * rather than under-invalidates).
  */
 export function hintEquals(
   a: OptimizationHint,
   b: OptimizationHint,
-  registry: ReadonlyMap<string, AnalysisKey<unknown>> = DEFAULT_KEY_REGISTRY,
+  registry: ReadonlyMap<string, LatticeEquality> = defaultRegistry(),
 ): boolean {
   const names = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
   for (const name of names) {
@@ -106,101 +77,47 @@ export function hintEquals(
     const bv = b[name];
     if (av === bv) continue;
     if (av === undefined || bv === undefined) return false;
-    const key = registry.get(name);
-    if (!key) return false;
-    if (!key.equals(av, bv)) return false;
+    const entry = registry.get(name);
+    if (!entry) return false;
+    if (!entry.latticeEquals(av, bv)) return false;
   }
   return true;
 }
 
-const DEFAULT_KEY_REGISTRY: ReadonlyMap<string, AnalysisKey<unknown>> = new Map(
-  DEFAULT_ANALYSIS_KEYS.map(k => [k.name, k]),
-);
-
-// ── HintStore ─────────────────────────────────────────────────────────────────
-
 /**
- * Map-based hint storage keyed by node.id.
- *
- * Analysis visitors call `hints.get(node)` / `hints.set(node, hint)`.
- * Version tracking: each mutation that actually changes a value bumps the
- * version counter and appends to the change log.
+ * Map-based hint storage keyed by node.id. Analysis visitors call
+ * `hints.get(node)` / `hints.set(node, hint)`. Equality on write suppresses
+ * no-op updates.
  */
 export class HintStore {
   private readonly map = new Map<number, OptimizationHint>();
-  private _version = 0;
-  private readonly _changes: HintChangeRecord[] = [];
-  private readonly registry: ReadonlyMap<string, AnalysisKey<unknown>>;
+  private readonly registry: ReadonlyMap<string, LatticeEquality>;
 
-  /**
-   * @param keys Analysis keys known to this store; used by `hintEquals` to
-   * compare field values. Unknown fields fall back to strict equality.
-   * Defaults to built-in keys (`type`, `constVal`) for call-sites that build
-   * a store without a specific analysis registry.
-   */
-  constructor(keys: readonly AnalysisKey<unknown>[] = DEFAULT_ANALYSIS_KEYS) {
-    const m = new Map<string, AnalysisKey<unknown>>();
-    for (const k of keys) m.set(k.name, k);
-    this.registry = m;
-  }
-
-  get version(): number {
-    return this._version;
+  constructor(modules: readonly LatticeEquality[] = DEFAULT_REGISTRY_ENTRIES) {
+    this.registry = buildRegistry(modules);
   }
 
   get(node: ExprNS.Expr | StmtNS.Stmt): OptimizationHint | undefined {
     return this.map.get(node.id);
   }
 
-  /** Look up a hint by raw node id (used by the observation handler). */
   getById(id: number): OptimizationHint | undefined {
     return this.map.get(id);
   }
 
-  /** Typed lookup: returns this analysis's lattice value under its key. */
-  getTyped<L>(node: ExprNS.Expr | StmtNS.Stmt, key: AnalysisKey<L>): L | undefined {
-    return hintGet(this.map.get(node.id), key);
-  }
-
-  /** Returns true if the value actually changed. */
   set(node: ExprNS.Expr | StmtNS.Stmt, hint: OptimizationHint): boolean {
     return this.setById(node.id, hint);
   }
 
-  /** Set a hint by raw node id. Returns true if value changed. */
   setById(id: number, hint: OptimizationHint): boolean {
     const old = this.map.get(id);
     if (old !== undefined && hintEquals(old, hint, this.registry)) return false;
-    this._version++;
-    this._changes.push({ nodeId: id, version: this._version, oldHint: old, newHint: hint });
     this.map.set(id, hint);
     return true;
   }
 
-  /**
-   * Copy all entries from this store into `target`, overwriting on conflict.
-   * Equality checks during copy use `target`'s registry — if `target` was
-   * constructed without the analysis keys whose fields appear in these hints,
-   * those fields fall back to strict equality (conservative over-invalidation,
-   * not incorrect). Construct `target` with the union of known keys if you
-   * want precise equality.
-   */
-  mergeInto(target: HintStore): void {
-    for (const [id, hint] of this.map) {
-      target.setById(id, hint);
-    }
-  }
-
-  /** Returns all changes since the given version (exclusive). */
-  changesSince(version: number): ReadonlyArray<HintChangeRecord> {
-    // Binary search for the first change with version > requested
-    let lo = 0;
-    let hi = this._changes.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (this._changes[mid].version <= version) lo = mid + 1;
-      else hi = mid;
-    }
-    return this._changes.slice(lo);
+  /** Iterate (nodeId, hint) entries. */
+  [Symbol.iterator](): IterableIterator<[number, OptimizationHint]> {
+    return this.map.entries();
   }
 }

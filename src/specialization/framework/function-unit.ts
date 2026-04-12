@@ -1,72 +1,99 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import { HintStore } from "./hint";
-import type { AnalysisKey } from "./hint";
+import type { LatticeEquality } from "./hint";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
-type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
-
 /**
- * Per-scope optimization unit: owns its body, hints, slot lookup, and a
- * `structuralVersion` that the worklist bumps on each AST-mutating transform.
- * Consumers comparing structure across time should watch `structuralVersion`;
- * consumers watching annotations should read `hints.version` directly.
+ * Per-scope optimization unit. `body` is a read-through getter onto the
+ * AST's statement array so consumers can never observe a stale cached
+ * array if memoization or another non-monotone transform swaps the
+ * subtree.
  */
 export interface FunctionUnit {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
-  readonly body: StmtNS.Stmt[];
   readonly hints: HintStore;
   readonly slotLookup: SlotLookup;
+  readonly body: StmtNS.Stmt[];
   structuralVersion: number;
 }
 
 /**
- * Build a flat map of scope node → FunctionUnit.
+ * Walks every statement subtree through a `StmtNS.Visitor<void>` and
+ * registers each `FunctionDef` as its own unit. The visitor dispatch (vs
+ * a hand-rolled `instanceof` chain) means any new control-flow form added
+ * to `StmtNS.Visitor` forces a compile-time decision here — important for
+ * future constructs (try/with/class/method) that introduce blocks.
  *
- * Walks scope boundaries (FileInput → FunctionDef → nested defs). Lambda is
- * skipped (DFA does not analyze single-expression lambda bodies).
+ * Lambda bodies are a separate scope and not analyzed here (DFA does not
+ * analyze single-expression lambda bodies).
  */
-export function buildFunctionUnits(
-  ast: StmtNS.FileInput,
-  functionEnvironments: FunctionEnvironments,
-  analysisKeys?: readonly AnalysisKey<unknown>[],
-): Map<Scope, FunctionUnit> {
-  const units = new Map<Scope, FunctionUnit>();
+class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
+  constructor(
+    private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
+    private readonly functionEnvironments: FunctionEnvironments,
+    private readonly analysisModules: readonly LatticeEquality[] | undefined,
+  ) {}
 
-  function buildUnit(funcAst: Scope): void {
-    const env = functionEnvironments.get(funcAst);
+  register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
+    const env = this.functionEnvironments.get(funcAst);
     if (!env) {
       throw new Error(`Environment not found for scope node ${funcAst.kind}`);
     }
-
-    const body = funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
-    const paramNames = funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
-
-    units.set(funcAst, {
+    const paramNames =
+      funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
+    const unit: FunctionUnit = {
       funcAst,
-      body,
-      hints: new HintStore(analysisKeys),
+      hints: new HintStore(this.analysisModules),
       slotLookup: buildSlotTable(env, paramNames),
       structuralVersion: 0,
-    });
-
-    for (const stmt of body) collectNested(stmt, buildUnit);
+      get body(): StmtNS.Stmt[] {
+        return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
+      },
+    };
+    this.units.set(funcAst, unit);
+    for (const stmt of unit.body) stmt.accept(this);
   }
 
-  buildUnit(ast);
-  return units;
+  visitFunctionDefStmt(stmt: StmtNS.FunctionDef): void {
+    this.register(stmt);
+  }
+  visitFileInputStmt(stmt: StmtNS.FileInput): void {
+    for (const s of stmt.statements) s.accept(this);
+  }
+  visitIfStmt(stmt: StmtNS.If): void {
+    for (const s of stmt.body) s.accept(this);
+    if (stmt.elseBlock) for (const s of stmt.elseBlock) s.accept(this);
+  }
+  visitWhileStmt(stmt: StmtNS.While): void {
+    for (const s of stmt.body) s.accept(this);
+  }
+  visitForStmt(stmt: StmtNS.For): void {
+    for (const s of stmt.body) s.accept(this);
+  }
+
+  // Leaf / non-block-introducing statements — no recursion, no new scope.
+  visitAssignStmt(_stmt: StmtNS.Assign): void {}
+  visitAnnAssignStmt(_stmt: StmtNS.AnnAssign): void {}
+  visitReturnStmt(_stmt: StmtNS.Return): void {}
+  visitSimpleExprStmt(_stmt: StmtNS.SimpleExpr): void {}
+  visitAssertStmt(_stmt: StmtNS.Assert): void {}
+  visitPassStmt(_stmt: StmtNS.Pass): void {}
+  visitBreakStmt(_stmt: StmtNS.Break): void {}
+  visitContinueStmt(_stmt: StmtNS.Continue): void {}
+  visitGlobalStmt(_stmt: StmtNS.Global): void {}
+  visitNonLocalStmt(_stmt: StmtNS.NonLocal): void {}
+  visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-function collectNested(stmt: StmtNS.Stmt, buildUnit: (f: Scope) => void): void {
-  if (stmt instanceof StmtNS.FunctionDef) {
-    buildUnit(stmt);
-  } else if (stmt instanceof StmtNS.If) {
-    for (const s of stmt.body) collectNested(s, buildUnit);
-    if (stmt.elseBlock) for (const s of stmt.elseBlock) collectNested(s, buildUnit);
-  } else if (stmt instanceof StmtNS.While) {
-    for (const s of stmt.body) collectNested(s, buildUnit);
-  } else if (stmt instanceof StmtNS.For) {
-    for (const s of stmt.body) collectNested(s, buildUnit);
-  }
+export function buildFunctionUnits(
+  ast: StmtNS.FileInput,
+  functionEnvironments: FunctionEnvironments,
+  analysisModules?: readonly LatticeEquality[],
+): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
+  const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
+  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, analysisModules);
+  visitor.register(ast);
+  return units;
 }

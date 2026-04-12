@@ -16,7 +16,6 @@ import type { FunctionUnit } from "./function-unit";
 import { buildFunctionUnits } from "./function-unit";
 import type { OptimizationHint } from "./hint";
 import type { AnalysisModule, TransformRule } from "./interfaces";
-import type { AnalysisKey } from "./hint";
 import { applyTransformPass } from "./transform";
 import type { AnalysisSession } from "./worklist";
 import {
@@ -28,18 +27,33 @@ import {
   transferBlock,
 } from "./worklist";
 
-type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
+// ── Queue compaction ────────────────────────────────────────────────────────
+//
+// Both the analysis and transform queues are FIFOs served via an advancing
+// `head` index. When the consumed prefix grows large we drop it to keep
+// memory bounded. Unified threshold: compact when `head > 64` *and* the
+// dead prefix is more than half the queue — cheap for small queues, bounds
+// growth for large ones.
+
+const QUEUE_COMPACT_THRESHOLD = 64;
+function compactQueue<T>(queue: T[], head: number): number {
+  if (head > QUEUE_COMPACT_THRESHOLD && head > queue.length / 2) {
+    queue.splice(0, head);
+    return 0;
+  }
+  return head;
+}
 
 // ── Queue items ─────────────────────────────────────────────────────────────
 
 interface QueuedBlock {
-  readonly scopeKey: Scope;
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly blockId: BlockId;
   readonly generation: number;
 }
 
 interface QueuedTransform {
-  readonly scopeKey: Scope;
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly generation: number;
 }
 
@@ -47,20 +61,20 @@ interface QueuedTransform {
 
 export interface ValueObservationItem {
   readonly kind: "value-observation";
-  readonly scopeKey: Scope;
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly nodeId: number;
   readonly value: unknown;
 }
 
 export interface CallObservationItem {
   readonly kind: "call-observation";
-  readonly scopeKey: Scope;
-  readonly calleeKey: Scope;
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
+  readonly calleeKey: StmtNS.FileInput | StmtNS.FunctionDef;
 }
 
 export interface InvalidateItem {
   readonly kind: "invalidate";
-  readonly scopeKey: Scope;
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
 }
 
 export type ExternalWorkItem = ValueObservationItem | CallObservationItem | InvalidateItem;
@@ -78,7 +92,52 @@ export interface WorklistStats {
 
 // ── Subscribers ─────────────────────────────────────────────────────────────
 
-export type Subscriber = (changed: ReadonlySet<Scope>) => void;
+export type Subscriber = (changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>) => void;
+
+// ── Push-side interface ─────────────────────────────────────────────────────
+//
+// The four methods interpreters call on the worklist during execution. Kept
+// as a structural alias so interpreter modules document their dependency on
+// the observation surface without importing the full scheduler API.
+//
+// SYNCHRONY INVARIANT: all four methods return `void`, not `Promise<void>`.
+// Observation emission is a synchronous sub-call of the interpreter step
+// that produced it — `observeWrite`/`observeCall` enqueue work;
+// `activateScope`/`deactivateScope` mutate the pin-set in place. The OSR
+// safepoint contract (transforms on pinned scopes parked until deactivation)
+// rests on this synchrony. TypeScript accepts `() => Promise<void>` where
+// `() => void` is expected, so the construction-time check in the
+// `PersistentWorklist` constructor catches the common mistake of declaring
+// one of these `async`.
+
+export type ObservationSink = Pick<
+  PersistentWorklist,
+  "observeWrite" | "observeCall" | "activateScope" | "deactivateScope"
+>;
+
+const SINK_METHODS = ["observeWrite", "observeCall", "activateScope", "deactivateScope"] as const;
+
+/**
+ * Construction-time tripwire that rejects the common mistake of declaring
+ * a sink method `async`. Inspects each method's runtime constructor name
+ * and throws if it is `AsyncFunction`. Catches `async function`/`async () =>
+ * ...` only; explicit `Promise.resolve()` returns and transpiled async are
+ * out of scope (the `void` return in `ObservationSink` is the declared
+ * contract).
+ */
+export function assertSyncObservationSink(sink: ObservationSink): void {
+  for (const name of SINK_METHODS) {
+    const fn = (sink as unknown as Record<string, unknown>)[name];
+    if (typeof fn !== "function") {
+      throw new Error(`ObservationSink.${name} is not a function`);
+    }
+    if ((fn as { constructor?: { name?: string } }).constructor?.name === "AsyncFunction") {
+      throw new Error(
+        `ObservationSink.${name} must be synchronous; async implementations break the OSR safepoint contract`,
+      );
+    }
+  }
+}
 
 // ── Observation-capable analysis (narrowed subtype) ────────────────────────
 
@@ -100,15 +159,15 @@ interface ScopeWorkState {
 // ── PersistentWorklist ──────────────────────────────────────────────────────
 
 export class PersistentWorklist {
-  readonly units: ReadonlyMap<Scope, FunctionUnit>;
+  readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
 
   private readonly analysisQueues: QueuedBlock[][];
   private readonly analysisHeads: number[];
   private readonly transformQueue: QueuedTransform[] = [];
   private transformHead = 0;
 
-  private readonly scopes = new Map<Scope, ScopeWorkState>();
-  private readonly activeScopes = new Map<Scope, number>();
+  private readonly scopes = new Map<StmtNS.FileInput | StmtNS.FunctionDef, ScopeWorkState>();
+  private readonly activeScopes = new Map<StmtNS.FileInput | StmtNS.FunctionDef, number>();
   private readonly subscribers = new Set<Subscriber>();
 
   /**
@@ -139,14 +198,16 @@ export class PersistentWorklist {
       (m): m is ObservingAnalysis =>
         m.observeValue !== undefined && m.mergeIntoHint !== undefined,
     );
+    this.cacheSafeOnStackFlag();
 
-    const analysisKeys: AnalysisKey<unknown>[] = analyses.map(m => m.key as AnalysisKey<unknown>);
-    const units = buildFunctionUnits(ast, functionEnvironments, analysisKeys);
+    const units = buildFunctionUnits(ast, functionEnvironments, analyses);
     this.units = units;
     for (const [key, unit] of units) this.addScope(key, unit);
+
+    assertSyncObservationSink(this);
   }
 
-  private addScope(key: Scope, unit: FunctionUnit): void {
+  private addScope(key: StmtNS.FileInput | StmtNS.FunctionDef, unit: FunctionUnit): void {
     const cfg = buildCFG(unit.body);
     const sessions = this.analyses.map(m => makeSession(m, cfg));
     const blockMap = new Map<BlockId, BasicBlock>();
@@ -219,7 +280,7 @@ export class PersistentWorklist {
    * subscribers (e.g. OSRCoordinator → patchFunction) facing a dead runtime,
    * and we'd rather surface the original error than trigger swap machinery.
    */
-  async withActiveScope<T>(scope: Scope, fn: () => Promise<T> | T): Promise<T> {
+  async withActiveScope<T>(scope: StmtNS.FileInput | StmtNS.FunctionDef, fn: () => Promise<T> | T): Promise<T> {
     this.activateScope(scope);
     let threw = false;
     try {
@@ -240,27 +301,16 @@ export class PersistentWorklist {
    * "textual ordering" fragility that would bite if someone reordered the
    * two calls in the finally block of withActiveScope.
    */
-  private deactivateAndTick(scope: Scope, threw: boolean): void {
+  private deactivateAndTick(scope: StmtNS.FileInput | StmtNS.FunctionDef, threw: boolean): void {
     this.deactivateScope(scope);
     if (!threw) this.tick();
   }
 
-  /**
-   * Monotonic sentinel that bumps whenever any scope's hints change. Sum of
-   * per-store monotonic versions — not a change count. Intended for
-   * `useSyncExternalStore`-style "something changed" detection.
-   */
-  get hintStoreVersion(): number {
-    let sum = 0;
-    for (const unit of this.units.values()) sum += unit.hints.version;
-    return sum;
-  }
-
-  observeWrite(scopeKey: Scope, rhsNode: ExprNS.Expr, rawValue: unknown): void {
+  observeWrite(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, rhsNode: ExprNS.Expr, rawValue: unknown): void {
     this.enqueue({ kind: "value-observation", scopeKey, nodeId: rhsNode.id, value: rawValue });
   }
 
-  observeCall(scopeKey: Scope, calleeKey: Scope): void {
+  observeCall(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, calleeKey: StmtNS.FileInput | StmtNS.FunctionDef): void {
     this.enqueue({ kind: "call-observation", scopeKey, calleeKey });
   }
 
@@ -281,24 +331,34 @@ export class PersistentWorklist {
         return;
       case "call-observation": {
         const calleeState = this.scopes.get(item.calleeKey);
-        if (calleeState) this.rebuildAndReseed(item.calleeKey, calleeState);
+        if (!calleeState) return;
+        for (const mod of this.analyses) {
+          mod.onCallObservation?.(item.scopeKey, item.calleeKey, calleeState.unit.hints);
+        }
+        this.rebuildAndReseed(item.calleeKey, calleeState);
+        // Tick once so any newly-enabled safeOnStack transforms (e.g.
+        // memoization crossing its call-count threshold) fire *during*
+        // execution. Without this, a recursive workload like fib(20) stays
+        // pinned to completion and the transform runs only after the program
+        // exits — too late to help the current run.
+        if (this.hasSafeOnStackScopeRule) this.tick();
         return;
       }
     }
   }
 
-  activateScope(key: Scope): void {
+  activateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void {
     this.activeScopes.set(key, (this.activeScopes.get(key) ?? 0) + 1);
   }
 
-  deactivateScope(key: Scope): void {
+  deactivateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void {
     const count = this.activeScopes.get(key);
     if (count === undefined) return;
     if (count <= 1) this.activeScopes.delete(key);
     else this.activeScopes.set(key, count - 1);
   }
 
-  isScopeActive(key: Scope): boolean {
+  isScopeActive(key: StmtNS.FileInput | StmtNS.FunctionDef): boolean {
     return this.activeScopes.has(key);
   }
 
@@ -317,10 +377,10 @@ export class PersistentWorklist {
 
   // ── Drain ────────────────────────────────────────────────────────────────
 
-  drain(limit = Infinity): ReadonlySet<Scope> {
+  drain(limit = Infinity): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
     const t0 = performance.now();
     this._drainCalls++;
-    const changed = new Set<Scope>();
+    const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     let processed = 0;
 
     while (processed < limit) {
@@ -389,26 +449,35 @@ export class PersistentWorklist {
     return -1;
   }
 
+  private hasSafeOnStackScopeRule = false;
+  private cacheSafeOnStackFlag(): void {
+    this.hasSafeOnStackScopeRule = this.transforms.some(
+      r => r.level === "scope" && r.safeOnStack === true,
+    );
+  }
+
   private hasProcessableTransform(): boolean {
+    // Must match `processTransform`'s acceptance predicate exactly: pinned
+    // scopes are parked regardless of staleness — UNLESS at least one
+    // scope-level rule is `safeOnStack`, in which case pinned items can
+    // still make progress (that subset of rules fires). If the two
+    // predicates disagree, drain() spins (findActiveQueue claims work
+    // exists, processTransform refuses it).
     for (let i = this.transformHead; i < this.transformQueue.length; i++) {
       const item = this.transformQueue[i];
-      const state = this.scopes.get(item.scopeKey);
-      if (!state || item.generation !== state.generation) return true;
       if (!this.activeScopes.has(item.scopeKey)) return true;
+      if (this.hasSafeOnStackScopeRule) return true;
     }
     return false;
   }
 
   // ── Analysis processing ─────────────────────────────────────────────────
 
-  private processAnalysisBlock(qIdx: number, changed: Set<Scope>): boolean {
+  private processAnalysisBlock(qIdx: number, changed: Set<StmtNS.FileInput | StmtNS.FunctionDef>): boolean {
     const queue = this.analysisQueues[qIdx];
     const item = queue[this.analysisHeads[qIdx]++];
 
-    if (this.analysisHeads[qIdx] > 256 && this.analysisHeads[qIdx] > queue.length / 2) {
-      this.analysisQueues[qIdx] = queue.slice(this.analysisHeads[qIdx]);
-      this.analysisHeads[qIdx] = 0;
-    }
+    this.analysisHeads[qIdx] = compactQueue(queue, this.analysisHeads[qIdx]);
 
     const state = this.scopes.get(item.scopeKey);
     if (!state || item.generation !== state.generation) return false;
@@ -439,9 +508,16 @@ export class PersistentWorklist {
 
   // ── Transform processing ────────────────────────────────────────────────
 
-  private processTransform(changed: Set<Scope>): boolean {
+  private processTransform(changed: Set<StmtNS.FileInput | StmtNS.FunctionDef>): boolean {
+    // Pick the first item whose scope is either unpinned, OR pinned but has
+    // at least one safeOnStack scope rule that could fire. For fully pinned
+    // items with no safe rules, we can't make progress — skip them so they
+    // stay in the queue until the pin releases.
     let idx = this.transformHead;
-    while (idx < this.transformQueue.length && this.activeScopes.has(this.transformQueue[idx].scopeKey)) {
+    while (idx < this.transformQueue.length) {
+      const it = this.transformQueue[idx];
+      if (!this.activeScopes.has(it.scopeKey)) break;
+      if (this.hasSafeOnStackScopeRule) break;
       idx++;
     }
     if (idx >= this.transformQueue.length) return false;
@@ -450,17 +526,29 @@ export class PersistentWorklist {
     if (idx === this.transformHead) this.transformHead++;
     else this.transformQueue.splice(idx, 1);
 
-    if (this.transformHead > 64 && this.transformHead > this.transformQueue.length / 2) {
-      this.transformQueue.splice(0, this.transformHead);
-      this.transformHead = 0;
-    }
+    this.transformHead = compactQueue(this.transformQueue, this.transformHead);
 
     const state = this.scopes.get(item.scopeKey);
     if (!state || item.generation !== state.generation) return false;
 
+    const pinned = this.activeScopes.has(item.scopeKey);
     let anyChanged = false;
+    const extraInvalidate = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     for (const rule of this.transforms) {
-      anyChanged = applyTransformPass(state.unit.body, rule, state.unit.hints) || anyChanged;
+      if (rule.level === "scope") {
+        // Pinned scope: only rules that opt in via safeOnStack. Non-safe
+        // rules (e.g. full-body rewrites that could race with on-stack
+        // frames) stay parked until the pin releases.
+        if (pinned && !rule.safeOnStack) continue;
+        if (rule.matches(state.unit) && rule.apply(state.unit)) anyChanged = true;
+        continue;
+      }
+      // Expr/stmt rules on pinned scopes are unsafe in general (they can
+      // rewrite expressions on the current control stack), so defer.
+      if (pinned) continue;
+      const res = applyTransformPass(state.unit.body, rule, state.unit.hints);
+      if (res.changed) anyChanged = true;
+      for (const s of res.invalidate) extraInvalidate.add(s);
     }
 
     if (anyChanged) {
@@ -469,13 +557,26 @@ export class PersistentWorklist {
       changed.add(item.scopeKey);
       this.rebuildAndReseed(item.scopeKey, state);
     }
+    // Rule-requested invalidations (e.g. memoization mutated a child
+    // FunctionDef's body from the parent pass) run even if the local body
+    // array wasn't spliced — the body list of the parent stays the same
+    // reference, but the child's CFG needs a rebuild.
+    for (const scope of extraInvalidate) {
+      if (scope === item.scopeKey) continue;
+      const childState = this.scopes.get(scope);
+      if (childState) {
+        childState.unit.structuralVersion++;
+        changed.add(scope);
+        this.rebuildAndReseed(scope, childState);
+      }
+    }
 
     return true;
   }
 
   // ── Seeding ──────────────────────────────────────────────────────────────
 
-  private rebuildAndReseed(key: Scope, state: ScopeWorkState): void {
+  private rebuildAndReseed(key: StmtNS.FileInput | StmtNS.FunctionDef, state: ScopeWorkState): void {
     state.generation++;
     state.cfg = buildCFG(state.unit.body);
     state.blockMap.clear();
@@ -486,7 +587,7 @@ export class PersistentWorklist {
     this.enqueueTransform(key, state.generation);
   }
 
-  private seedAnalysis(key: Scope, state: ScopeWorkState): void {
+  private seedAnalysis(key: StmtNS.FileInput | StmtNS.FunctionDef, state: ScopeWorkState): void {
     for (let i = 0; i < this.analyses.length; i++) {
       const direction = this.analyses[i].direction;
       const seed = seedBlock(state.cfg, direction);
@@ -497,18 +598,18 @@ export class PersistentWorklist {
   // No dedup: the convergence check (outEnv.equals) short-circuits repeats.
   private enqueueAnalysisBlock(
     qIdx: number,
-    scopeKey: Scope,
+    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
     blockId: BlockId,
     generation: number,
   ): void {
     this.analysisQueues[qIdx].push({ scopeKey, blockId, generation });
   }
 
-  private enqueueTransform(scopeKey: Scope, generation: number): void {
+  private enqueueTransform(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, generation: number): void {
     this.transformQueue.push({ scopeKey, generation });
   }
 
-  private notify(changed: ReadonlySet<Scope>): void {
+  private notify(changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>): void {
     if (changed.size === 0) return;
     for (const cb of this.subscribers) cb(changed);
   }

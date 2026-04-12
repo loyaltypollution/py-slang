@@ -34,7 +34,7 @@ describe("PersistentWorklist.enqueue value-observation", () => {
     const assign = ast.statements[0] as StmtNS.Assign;
     const rhsId = assign.value.id;
 
-    const versionBefore = rootUnit.hints.version;
+    const hintBefore = rootUnit.hints.getById(rhsId);
     worklist.enqueue({
       kind: "value-observation",
       scopeKey: ast,
@@ -43,9 +43,9 @@ describe("PersistentWorklist.enqueue value-observation", () => {
     });
 
     // Observation should have merged a string lattice fact into the existing hint.
-    expect(rootUnit.hints.version).toBeGreaterThan(versionBefore);
     const hint = rootUnit.hints.getById(rhsId)!;
     expect(hint.type).toBeDefined();
+    expect(hint.type).not.toEqual(hintBefore?.type);
   });
 
   test("unknown scopeKey is silently ignored", () => {
@@ -60,17 +60,18 @@ describe("PersistentWorklist.enqueue value-observation", () => {
     const { ast, units, worklist } = setup("x = 1");
     worklist.drain();
     const rootUnit = units.get(ast)!;
-    const versionBefore = rootUnit.hints.version;
+    const rhsId = (ast.statements[0] as StmtNS.Assign).value.id;
+    const hintBefore = rootUnit.hints.getById(rhsId);
 
     worklist.enqueue({
       kind: "value-observation",
       scopeKey: ast,
-      nodeId: (ast.statements[0] as StmtNS.Assign).value.id,
+      nodeId: rhsId,
       value: Symbol("weird"),
     });
 
-    // Neither module returned a lattice delta — version unchanged.
-    expect(rootUnit.hints.version).toBe(versionBefore);
+    // Neither module returned a lattice delta — hint unchanged.
+    expect(rootUnit.hints.getById(rhsId)).toEqual(hintBefore);
   });
 });
 
