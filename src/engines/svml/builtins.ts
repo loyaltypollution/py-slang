@@ -2,9 +2,9 @@ import type { SVMLBoxType } from "./types";
 import { isSVMLObject } from "./types";
 import { MissingRequiredPositionalError, SVMLInterpreterError } from "./errors";
 import {
-  memoHas as _memoHas,
-  memoGet as _memoGet,
+  memoLookup as _memoLookup,
   memoPut as _memoPut,
+  MEMO_MISS,
 } from "../../specialization/memoization-analysis/runtime";
 
 // Map Python builtin names to SVML primitive opcode indices
@@ -137,7 +137,7 @@ export function executePrimitive(
     case 40: {
       // __memo_has(id, *keyArgs)
       const [id, ...keyArgs] = memoArgs(args, "__memo_has");
-      return _memoHas(id, keyArgs);
+      return _memoLookup(id, keyArgs) !== MEMO_MISS;
     }
 
     case 41: {
@@ -145,7 +145,8 @@ export function executePrimitive(
       // so a miss here returns undefined rather than a sentinel the VM cannot
       // represent.
       const [id, ...keyArgs] = memoArgs(args, "__memo_get");
-      return _memoHas(id, keyArgs) ? (_memoGet(id, keyArgs) as SVMLBoxType) : undefined;
+      const v = _memoLookup(id, keyArgs);
+      return v === MEMO_MISS ? undefined : (v as SVMLBoxType);
     }
 
     case 42: {

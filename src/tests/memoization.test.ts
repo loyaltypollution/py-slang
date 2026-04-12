@@ -21,9 +21,14 @@ import {
   CALL_COUNT_FIELD,
   MEMOIZED_FIELD,
   memoCacheSnapshot,
-  memoHas,
+  memoLookup,
+  MEMO_MISS,
   memoPut,
 } from "../specialization";
+
+function memoHas(id: string, args: readonly unknown[]): boolean {
+  return memoLookup(id, args) !== MEMO_MISS;
+}
 import { buildTestWorklist } from "./utils";
 
 function setup(code: string) {

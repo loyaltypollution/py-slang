@@ -2386,8 +2386,7 @@ for (const name of constants.builtInFuncs) {
 // rewrites before execution resumes and the intrinsic names must always be
 // resolvable when the wrapped body runs.
 import {
-  memoHas as _memoHas,
-  memoGet as _memoGet,
+  memoLookup as _memoLookup,
   memoPut as _memoPut,
   MEMO_MISS as _MEMO_MISS,
 } from "./specialization/memoization-analysis/runtime";
@@ -2423,7 +2422,7 @@ builtIns.set("__memo_has", {
   minArgs: 1,
   func: (args: Value[]): Value => {
     const { id, rest } = memoIdFrom(args);
-    return { type: "bool", value: _memoHas(id, rest.map(unwrap)) } as Value;
+    return { type: "bool", value: _memoLookup(id, rest.map(unwrap)) !== _MEMO_MISS } as Value;
   },
 });
 
@@ -2433,7 +2432,7 @@ builtIns.set("__memo_get", {
   minArgs: 1,
   func: (args: Value[]): Value => {
     const { id, rest } = memoIdFrom(args);
-    const raw = _memoGet(id, rest.map(unwrap));
+    const raw = _memoLookup(id, rest.map(unwrap));
     if (raw === _MEMO_MISS) return { type: "none" } as Value;
     return wrap(raw);
   },

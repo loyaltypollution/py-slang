@@ -90,8 +90,7 @@ export {
 } from "./memoization-analysis/analysis";
 export type { CallObserver } from "./framework/interfaces";
 export {
-  memoHas,
-  memoGet,
+  memoLookup,
   memoPut,
   clearMemoCache,
   memoCacheSnapshot,

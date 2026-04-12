@@ -21,14 +21,12 @@ function argKey(args: readonly unknown[]): string {
   return args.map(a => `${typeof a}:${String(a)}`).join("\x1f");
 }
 
-export function memoHas(id: string, args: readonly unknown[]): boolean {
-  const inner = cache.get(id);
-  if (!inner) return false;
-  return inner.has(argKey(args));
-}
-
-/** Returns the cached value, or the MISS sentinel if not present. */
-export function memoGet(id: string, args: readonly unknown[]): unknown {
+/**
+ * Look up a cached value. Returns the value on hit, `MEMO_MISS` on miss.
+ * Callers compare against `MEMO_MISS` rather than calling a separate
+ * `memoHas` then `memoGet` — one Map lookup, one comparison.
+ */
+export function memoLookup(id: string, args: readonly unknown[]): unknown {
   const inner = cache.get(id);
   if (!inner) return MISS;
   const key = argKey(args);
@@ -63,5 +61,11 @@ export const MEMO_MISS = MISS;
  * Names of the runtime intrinsics the transform emits. Consumed by the
  * resolver (to seed the global env) and by the CSE/SVML builtin registries
  * (to route calls). Single source of truth so the three sites cannot drift.
+ *
+ * Python-side intrinsics remain the two-call form `__memo_has` / `__memo_get`
+ * / `__memo_put` — collapsing to a single `__memo_lookup` in the emitted
+ * Python AST requires a Python-level identity for `MEMO_MISS` and is
+ * deliberately deferred to a future step. The JS helper layer is already
+ * collapsed: both intrinsics route through `memoLookup` internally.
  */
 export const MEMO_INTRINSIC_NAMES = ["__memo_has", "__memo_get", "__memo_put"] as const;
