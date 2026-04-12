@@ -42,6 +42,23 @@ export class SVMLSwapStrategy implements StateDeltaStrategy<SVMLDelta> {
     return scopeKey instanceof StmtNS.FunctionDef;
   }
 
+  /**
+   * Safe for the current delta shape (`{ kind: "whole" }`): `patchFunction`
+   * swaps the IR slot, and `CallFrame` holds a direct IR reference captured
+   * at call time, so live frames execute the old IR to completion while new
+   * dispatches land on the new IR. Only FunctionDef scopes — FileInput is
+   * rebuilt whole-program.
+   *
+   * Operand-level patches (`{ kind: "patches" }`) mutate the typed arrays
+   * live frames are reading from, so they are NOT safe on-stack. If/when
+   * `computeDelta` starts emitting patches, this guard must branch on delta
+   * shape — today it always emits whole, so a simple scope-level answer is
+   * sufficient.
+   */
+  canInstallOnStack(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef): boolean {
+    return scopeKey instanceof StmtNS.FunctionDef;
+  }
+
   computeDelta(unit: FunctionUnit): SVMLDelta {
     return { kind: "whole", ir: this.compiler.compileFunction(unit) };
   }
@@ -51,9 +68,15 @@ export class SVMLSwapStrategy implements StateDeltaStrategy<SVMLDelta> {
     if (index === undefined) return;
     switch (delta.kind) {
       case "whole":
-        this.interpreter.patchFunction(index, delta.ir);
+        // canInstallOnStack guarantees this is safe even when `scopeKey` is
+        // on the live call stack; pass the opt-in so `patchFunction` skips
+        // its strict pin-set assertion.
+        this.interpreter.patchFunction(index, delta.ir, /* allowOnStack */ true);
         return;
       case "patches":
+        // Typed-array mutation is NOT on-stack safe; strategy never emits
+        // this for pinned scopes (canInstallOnStack semantics — once this
+        // branch is exercised it must gate on delta kind).
         this.interpreter.applyOperandPatches(index, delta.patches);
         return;
     }

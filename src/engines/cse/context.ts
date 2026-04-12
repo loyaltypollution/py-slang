@@ -46,6 +46,17 @@ export class Context {
     observationSink?: ObservationSink;
     /** Root scope key for emission when no enclosing closure exists (global scope). */
     rootScope?: StmtNS.FileInput;
+    /**
+     * Live-frame ref-counted pin-set. Owned by the runtime (this context)
+     * and shared with the specialization engine's worklist. Anchored to
+     * `pushEnvironment` / `popEnvironment` so the pin invariant is
+     * data-derived from the env stack (balanced by scope-resolution
+     * correctness requirements) rather than a protocol pairing of
+     * activate/deactivate calls the interpreter must remember to emit on
+     * every exit path. Optional — absent for non-engine evaluators that
+     * never observe hints.
+     */
+    pinSet?: Map<StmtNS.FileInput | StmtNS.FunctionDef, number>;
   };
 
   /**

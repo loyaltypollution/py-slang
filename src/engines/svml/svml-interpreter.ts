@@ -119,8 +119,14 @@ export class SVMLInterpreter {
    * from the reassignment below. Do not introduce any method that closes
    * over `this.program` at construction time.
    */
-  patchFunction(index: number, ir: SVMLIR): void {
-    this.assertFunctionNotLive(index);
+  patchFunction(index: number, ir: SVMLIR, allowOnStack = false): void {
+    // The IR-reference invariant documented above makes whole-function swaps
+    // safe-on-stack: live frames keep executing the old IR they captured,
+    // new dispatches see the new slot. `allowOnStack=true` is the caller's
+    // explicit acknowledgement that the pin-set has been relaxed for this
+    // strategy (see `StateDeltaStrategy.canInstallOnStack`). Default stays
+    // strict so existing call sites and tests retain their contract.
+    if (!allowOnStack) this.assertFunctionNotLive(index);
     this.program = this.program.withSpecializedFunction(index, ir);
   }
 

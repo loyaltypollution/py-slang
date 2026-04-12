@@ -22,15 +22,29 @@ import { createAnalyses, createTransforms } from "./pipeline-config";
 
 export class SpecializationEngine {
   private readonly worklist: PersistentWorklist;
+  private readonly pinSet: Map<StmtNS.FileInput | StmtNS.FunctionDef, number>;
   private coordinator: OSRCoordinator<unknown> | null = null;
   private converged = false;
 
-  constructor(ast: StmtNS.FileInput, environments: FunctionEnvironments) {
+  /**
+   * Optional `pinSet` injection: when the evaluator already owns a
+   * live-frame ref-count map (CSE's `context.runtime.pinSet`, SVML's
+   * frame-anchored map), pass it here so the worklist and the engine
+   * share a single source of truth. Omit for standalone usage (tests,
+   * non-engine drivers); the engine creates its own.
+   */
+  constructor(
+    ast: StmtNS.FileInput,
+    environments: FunctionEnvironments,
+    pinSet?: Map<StmtNS.FileInput | StmtNS.FunctionDef, number>,
+  ) {
+    this.pinSet = pinSet ?? new Map();
     this.worklist = new PersistentWorklist(
       ast,
       environments,
       createAnalyses(),
       createTransforms(),
+      this.pinSet,
     );
   }
 
@@ -82,6 +96,14 @@ export class SpecializationEngine {
     const stop = this.coordinator.start();
     try {
       return await this.worklist.withActiveScope(rootScope, fn);
+    } catch (e) {
+      // An in-flight exception leaves the pin-set dirty: CSE does not
+      // pop envs during JS-stack unwind, so any FunctionDef envs still
+      // on `context.runtime.environments` never ran their leave-hook.
+      // Rather than trying to reconstruct the correct set, reset — the
+      // execution is aborted anyway, next run starts from scratch.
+      this.pinSet.clear();
+      throw e;
     } finally {
       stop();
     }

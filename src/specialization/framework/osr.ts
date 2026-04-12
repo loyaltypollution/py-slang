@@ -64,9 +64,27 @@ export interface StateDeltaStrategy<Delta> {
   computeDelta(unit: FunctionUnit): Delta;
 
   /**
-   * Install the delta. Called only when the scope is not pinned.
+   * Install the delta. Called when the scope is not pinned, OR when the
+   * scope is pinned and `canInstallOnStack(scopeKey)` returned true.
    */
   applyDelta(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, delta: Delta): void;
+
+  /**
+   * Opt-in override for the default "skip pinned scopes" policy. Return true
+   * if installing this strategy's delta for `scopeKey` is safe while a frame
+   * of `scopeKey` is live on the stack. For SVML whole-function recompile:
+   * safe because `CallFrame` holds a direct IR reference (not an indirection
+   * through `program.functions[i]`), so the old IR executes to completion
+   * while new calls dispatch through the patched slot. For in-place operand
+   * patches that mutate the same typed arrays a live frame is reading from:
+   * NOT safe — omit or return false.
+   *
+   * Without this, a recursive workload (fib) never installs a specialized
+   * version of itself during a single execution: the scope is pinned from
+   * outermost entry to outermost return, so `onChange` skips every
+   * notification until after the program finishes.
+   */
+  canInstallOnStack?(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef): boolean;
 }
 
 /**
@@ -142,8 +160,11 @@ export class OSRCoordinator<Delta> {
     for (const key of changed) {
       this._notificationsSeen++;
       if (this.reactive.isScopeActive(key)) {
-        this._skippedPinned++;
-        continue;
+        if (!this.strategy.canInstallOnStack?.(key)) {
+          this._skippedPinned++;
+          continue;
+        }
+        // fallthrough: strategy accepts on-stack install.
       }
       if (this.strategy.canInstall && !this.strategy.canInstall(key)) {
         this._skippedCanInstall++;

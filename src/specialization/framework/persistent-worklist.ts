@@ -167,7 +167,22 @@ export class PersistentWorklist {
   private transformHead = 0;
 
   private readonly scopes = new Map<StmtNS.FileInput | StmtNS.FunctionDef, ScopeWorkState>();
-  private readonly activeScopes = new Map<StmtNS.FileInput | StmtNS.FunctionDef, number>();
+  /**
+   * Pin-set: multiset of currently-executing scopes. Source of truth is
+   * **external** — engines mutate this via env/frame push/pop (CSE's
+   * `pushEnvironment`/`popEnvironment`; SVML's frame push/pop and
+   * exception-finally frame walk). Anchoring to the engine's own lifecycle
+   * primitive (which must be balanced for correctness-unrelated reasons:
+   * scope resolution, return-address management) converts the pin
+   * invariant from protocol ("every activate paired with deactivate on
+   * every exit path") to data ("pin-count = live-frame-count").
+   *
+   * The worklist retains `activateScope`/`deactivateScope` methods for
+   * the root-scope pinning performed by `withActiveScope`, and for tests
+   * that construct a worklist without an interpreter. Both write to this
+   * same map.
+   */
+  private readonly activeScopes: Map<StmtNS.FileInput | StmtNS.FunctionDef, number>;
   private readonly subscribers = new Set<Subscriber>();
 
   /**
@@ -191,7 +206,9 @@ export class PersistentWorklist {
     functionEnvironments: FunctionEnvironments,
     private readonly analyses: readonly AnalysisModule<any>[],
     private readonly transforms: readonly TransformRule[],
+    pinSet?: Map<StmtNS.FileInput | StmtNS.FunctionDef, number>,
   ) {
+    this.activeScopes = pinSet ?? new Map();
     this.analysisQueues = analyses.map(() => []);
     this.analysisHeads = analyses.map(() => 0);
     this.observers = analyses.filter(
@@ -382,28 +399,76 @@ export class PersistentWorklist {
     this._drainCalls++;
     const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     let processed = 0;
+    // Bounded-progress guard. `findActiveQueue` returning != -1 must
+    // coincide with at least one process*() call succeeding; otherwise
+    // drain() spins forever (the exact livelock the pin-set refactor is
+    // designed to prevent). We track queue fingerprints across iterations
+    // and throw on stall — converts a silent 99% CPU hang into a loud
+    // failure pointing at the diverging predicate.
+    let stallWindow = 0;
+    let lastQueueShape = this.queueShape();
 
     while (processed < limit) {
       const qIdx = this.findActiveQueue();
       if (qIdx === -1) break;
 
+      let madeProgress = false;
       if (qIdx < this.analyses.length) {
         if (this.processAnalysisBlock(qIdx, changed)) {
           processed++;
           this._itemsProcessed++;
           this._analysisItemsProcessed++;
+          madeProgress = true;
         }
       } else {
         if (this.processTransform(changed)) {
           processed++;
           this._itemsProcessed++;
           this._transformItemsProcessed++;
+          madeProgress = true;
         }
+      }
+
+      if (madeProgress) {
+        stallWindow = 0;
+        lastQueueShape = this.queueShape();
+        continue;
+      }
+
+      // findActiveQueue claimed work but the process*() refused. A single
+      // stall can still be legitimate progress (item popped, generation
+      // mismatch → returned false but queue shrank). Compare shape; if
+      // the queues didn't change either, this is a genuine stall.
+      const shape = this.queueShape();
+      if (shape === lastQueueShape) {
+        stallWindow++;
+        if (stallWindow >= 2) {
+          throw new Error(
+            `[PersistentWorklist] drain stalled: findActiveQueue returned ${qIdx} but no queue advanced across two iterations. ` +
+              `queueShape=${shape} pending=${this.pending} activeScopes=${this.activeScopes.size}`,
+          );
+        }
+      } else {
+        stallWindow = 0;
+        lastQueueShape = shape;
       }
     }
 
     this._wallClockMs += performance.now() - t0;
     return changed;
+  }
+
+  /**
+   * Cheap fingerprint of queue state — enough to detect non-progress
+   * across drain iterations. Changes whenever any queue advances or any
+   * item is removed.
+   */
+  private queueShape(): string {
+    let s = `${this.transformHead}/${this.transformQueue.length}`;
+    for (let i = 0; i < this.analysisQueues.length; i++) {
+      s += `|${this.analysisHeads[i]}/${this.analysisQueues[i].length}`;
+    }
+    return s;
   }
 
   get idle(): boolean {
@@ -456,17 +521,22 @@ export class PersistentWorklist {
     );
   }
 
+  /**
+   * Single source of truth for "is this transform item runnable right now?"
+   * Both `hasProcessableTransform` (queue-existence check for drain
+   * scheduling) and `processTransform` (item acceptance in drain) consult
+   * this predicate. Drift between the two was the root of a prior livelock
+   * where `hasProcessableTransform` said yes on a stale pinned item and
+   * `processTransform` then refused to advance past it.
+   */
+  private isTransformProcessable(item: QueuedTransform): boolean {
+    if (!this.activeScopes.has(item.scopeKey)) return true;
+    return this.hasSafeOnStackScopeRule;
+  }
+
   private hasProcessableTransform(): boolean {
-    // Must match `processTransform`'s acceptance predicate exactly: pinned
-    // scopes are parked regardless of staleness — UNLESS at least one
-    // scope-level rule is `safeOnStack`, in which case pinned items can
-    // still make progress (that subset of rules fires). If the two
-    // predicates disagree, drain() spins (findActiveQueue claims work
-    // exists, processTransform refuses it).
     for (let i = this.transformHead; i < this.transformQueue.length; i++) {
-      const item = this.transformQueue[i];
-      if (!this.activeScopes.has(item.scopeKey)) return true;
-      if (this.hasSafeOnStackScopeRule) return true;
+      if (this.isTransformProcessable(this.transformQueue[i])) return true;
     }
     return false;
   }
@@ -509,15 +579,12 @@ export class PersistentWorklist {
   // ── Transform processing ────────────────────────────────────────────────
 
   private processTransform(changed: Set<StmtNS.FileInput | StmtNS.FunctionDef>): boolean {
-    // Pick the first item whose scope is either unpinned, OR pinned but has
-    // at least one safeOnStack scope rule that could fire. For fully pinned
-    // items with no safe rules, we can't make progress — skip them so they
-    // stay in the queue until the pin releases.
+    // Skip items that `isTransformProcessable` rejects so they stay in
+    // the queue until the pin releases. Using the shared predicate keeps
+    // this in lock-step with `hasProcessableTransform` — any future
+    // acceptance-rule change lands in one place.
     let idx = this.transformHead;
-    while (idx < this.transformQueue.length) {
-      const it = this.transformQueue[idx];
-      if (!this.activeScopes.has(it.scopeKey)) break;
-      if (this.hasSafeOnStackScopeRule) break;
+    while (idx < this.transformQueue.length && !this.isTransformProcessable(this.transformQueue[idx])) {
       idx++;
     }
     if (idx >= this.transformQueue.length) return false;

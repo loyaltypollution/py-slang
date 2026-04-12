@@ -645,17 +645,10 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       head = control.pop();
       if (!head) break;
       if ("instrType" in head && head.instrType === InstrType.RESET) break;
-      // Early return unwinds past END_OF_FUNCTION_BODY without executing it,
-      // so fire its observation side-effect here to keep activateScope /
-      // deactivateScope balanced. Missing deactivations permanently pin the
-      // scope and livelock the worklist drain.
-      if ("instrType" in head && head.instrType === InstrType.END_OF_FUNCTION_BODY) {
-        const sink = context.runtime.observationSink;
-        if (sink) {
-          const scopeKey = currentScopeKey(context);
-          if (scopeKey) sink.deactivateScope(scopeKey);
-        }
-      }
+      // No per-instruction pin bookkeeping — the env stack owns pin
+      // state via push/popEnvironment. The Return-unwind loop preserves
+      // RESET on the control stack (re-pushed below), and RESET's
+      // handler pops the env, which decrements the pin-set.
     }
     if (head) {
       control.push(head);
@@ -1107,14 +1100,16 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         control.push(instrCreator.endOfFunctionBodyInstr(instr.srcNode));
       }
 
-      // Pin callee scope (balanced by deactivate in END_OF_FUNCTION_BODY).
-      // FunctionDef only — Lambdas have no end-of-body instr.
+      // Pinning is now env-anchored: pushEnvironment increments the
+      // runtime pin-set for FunctionDef closures, popEnvironment
+      // decrements. Early return / exception unwind inherit correctness
+      // because the env stack is balanced by scope-resolution semantics
+      // independently of this observation path.
       const sink = context.runtime.observationSink;
       if (sink) {
         const calleeKey = closure.node as StmtNS.FileInput | StmtNS.FunctionDef;
         const callerKey = currentScopeKey(context);
         if (callerKey) sink.observeCall(callerKey, calleeKey);
-        if (closure.node instanceof StmtNS.FunctionDef) sink.activateScope(calleeKey);
       }
 
       const newEnv = createEnvironment(code, context, closure, args, instr.srcNode as ExprNS.Call);
@@ -1244,14 +1239,11 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     stash: Stash,
     _isPrelude: boolean,
   ) {
-    // OBSERVE: balanced deactivation for the activate performed at call entry.
-    // Env has not yet been popped (RESET fires after this), so the enclosing
-    // closure's FunctionDef is still reachable via currentScopeKey.
-    const sink = context.runtime.observationSink;
-    if (sink) {
-      const scopeKey = currentScopeKey(context);
-      if (scopeKey) sink.deactivateScope(scopeKey);
-    }
+    // No explicit deactivate — popEnvironment on the forthcoming RESET
+    // decrements the pin-set. Early return's control-unwind loop also
+    // reaches RESET (it re-pushes the RESET instr after popping the
+    // END_OF_FUNCTION_BODY marker), so the env pop fires on every exit
+    // path without per-path bookkeeping.
     stash.push({ type: "none" });
   },
 };
