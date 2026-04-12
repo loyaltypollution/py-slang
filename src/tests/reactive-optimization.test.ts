@@ -11,7 +11,7 @@ import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { optimize, createReactiveOptimization } from "../specialization";
-import type { ScopeKey, FunctionUnit } from "../specialization/framework/function-unit";
+import type { FunctionUnit } from "../specialization/framework/function-unit";
 import type { HintStore } from "../specialization/framework/hint";
 
 function parseAndResolve(code: string) {
@@ -145,13 +145,13 @@ describe("ReactiveOptimization: subscriptions", () => {
     const { ast, environments } = parseAndResolve("x = 1 + 2");
     const reactive = createReactiveOptimization(ast, environments);
 
-    const notifications: ReadonlySet<ScopeKey>[] = [];
+    const notifications: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>[] = [];
     reactive.subscribe(changed => notifications.push(changed));
     reactive.converge();
 
     expect(notifications.length).toBeGreaterThanOrEqual(1);
     // Root scope should appear in at least one notification
-    const allChanged = new Set<ScopeKey>();
+    const allChanged = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     for (const set of notifications) for (const key of set) allChanged.add(key);
     expect(allChanged.has(ast)).toBe(true);
   });
@@ -210,7 +210,7 @@ describe("ReactiveOptimization: multi-scope", () => {
  * and structural position (since separate parses produce different objects).
  */
 function findMatchingUnit(
-  units: ReadonlyMap<ScopeKey, FunctionUnit>,
+  units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
   target: StmtNS.FileInput | StmtNS.FunctionDef,
 ): FunctionUnit | undefined {
   if (target instanceof StmtNS.FileInput) {

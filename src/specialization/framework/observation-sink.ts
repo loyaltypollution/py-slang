@@ -1,12 +1,11 @@
 // Narrow push-side interface the CSE interpreter depends on. Keeps engines
 // decoupled from PersistentWorklist.
 
-import type { ExprNS } from "../../ast-types";
-import type { ScopeKey } from "./function-unit";
+import type { ExprNS, StmtNS } from "../../ast-types";
 
 export interface ObservationSink {
-  observeWrite(scopeKey: ScopeKey, rhsNode: ExprNS.Expr, rawValue: unknown): void;
-  observeCall(scopeKey: ScopeKey, calleeKey: ScopeKey): void;
-  activateScope(key: ScopeKey): void;
-  deactivateScope(key: ScopeKey): void;
+  observeWrite(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, rhsNode: ExprNS.Expr, rawValue: unknown): void;
+  observeCall(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, calleeKey: StmtNS.FileInput | StmtNS.FunctionDef): void;
+  activateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void;
+  deactivateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void;
 }

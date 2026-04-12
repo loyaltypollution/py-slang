@@ -14,7 +14,11 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { HintStore, optimize } from "../specialization";
 
-function parseOptimizeAndAttach(code: string): { context: Context; ast: StmtNS.FileInput } {
+function parseOptimizeAndAttach(code: string): {
+  context: Context;
+  ast: StmtNS.FileInput;
+  merged: HintStore;
+} {
   const script = code + "\n";
   const ast = parse(script) as StmtNS.FileInput;
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
@@ -23,56 +27,50 @@ function parseOptimizeAndAttach(code: string): { context: Context; ast: StmtNS.F
   const units = optimize(ast, environments);
 
   const context = new Context(ast);
+  const merged = new HintStore();
   if (units.size > 0) {
-    const merged = new HintStore();
     for (const unit of units.values()) {
       unit.hints.mergeInto(merged);
     }
-    context.runtime.optimizationHints = merged;
+    context.runtime.hintsFor = node => merged.get(node);
   }
-  return { context, ast };
+  return { context, ast, merged };
 }
 
 // ── 1. Hints populated on context ────────────────────────────────────────────
 
 describe("CSE hint visualization: hints on context", () => {
   test("optimization populates hints for assignment with constant expression", () => {
-    const { context, ast } = parseOptimizeAndAttach("x = 1 + 2");
-    const hints = context.runtime.optimizationHints;
-    expect(hints).toBeInstanceOf(HintStore);
-    // The HintStore should have been written to during optimization
-    expect(hints!.version).toBeGreaterThan(0);
+    const { merged } = parseOptimizeAndAttach("x = 1 + 2");
+    expect(merged.version).toBeGreaterThan(0);
   });
 
   test("hints contain type info for integer literal", () => {
-    const { context, ast } = parseOptimizeAndAttach("x = 42");
-    const hints = context.runtime.optimizationHints!;
+    const { ast, merged } = parseOptimizeAndAttach("x = 42");
 
     // Walk the AST to find the integer literal node
     const assignStmt = ast.statements[0] as StmtNS.Assign;
     const valueExpr = assignStmt.value;
 
-    const hint = hints.get(valueExpr);
+    const hint = merged.get(valueExpr);
     expect(hint).toBeDefined();
     expect(hint!.type).toBeDefined();
   });
 
   test("hints contain const info for known constant", () => {
-    const { context, ast } = parseOptimizeAndAttach("x = 42");
-    const hints = context.runtime.optimizationHints!;
+    const { ast, merged } = parseOptimizeAndAttach("x = 42");
 
     const assignStmt = ast.statements[0] as StmtNS.Assign;
     const valueExpr = assignStmt.value;
 
-    const hint = hints.get(valueExpr);
+    const hint = merged.get(valueExpr);
     expect(hint).toBeDefined();
     expect(hint!.constVal).toBeDefined();
   });
 
   test("optimization runs without error on multi-statement programs", () => {
-    const { context } = parseOptimizeAndAttach("x = 1\ny = x + 2\nz = y * 3");
-    expect(context.runtime.optimizationHints).toBeInstanceOf(HintStore);
-    expect(context.runtime.optimizationHints!.version).toBeGreaterThan(0);
+    const { merged } = parseOptimizeAndAttach("x = 1\ny = x + 2\nz = y * 3");
+    expect(merged.version).toBeGreaterThan(0);
   });
 });
 
@@ -80,39 +78,36 @@ describe("CSE hint visualization: hints on context", () => {
 
 describe("CSE hint visualization: nested function scopes", () => {
   test("hints are available for nodes inside function bodies", () => {
-    const { context, ast } = parseOptimizeAndAttach(
+    const { ast, merged } = parseOptimizeAndAttach(
       "def f():\n    return 1 + 2\nf()",
     );
-    const hints = context.runtime.optimizationHints;
-    expect(hints).toBeInstanceOf(HintStore);
 
     // Find the FunctionDef's body: the BinOp (1 + 2) inside return
     const funcDef = ast.statements[0] as StmtNS.FunctionDef;
     const returnStmt = funcDef.body[0] as StmtNS.Return;
     const binOp = returnStmt.value!;
 
-    const hint = hints!.get(binOp);
+    const hint = merged.get(binOp);
     expect(hint).toBeDefined();
     expect(hint!.type).toBeDefined();
   });
 
   test("merged hints include both root and function scope entries", () => {
-    const { context, ast } = parseOptimizeAndAttach(
+    const { ast, merged } = parseOptimizeAndAttach(
       "x = 10\ndef g():\n    return x + 5\ng()",
     );
-    const hints = context.runtime.optimizationHints!;
-    expect(hints.version).toBeGreaterThan(0);
+    expect(merged.version).toBeGreaterThan(0);
 
     // Root scope: the literal 10
     const assignStmt = ast.statements[0] as StmtNS.Assign;
-    const rootHint = hints.get(assignStmt.value);
+    const rootHint = merged.get(assignStmt.value);
     expect(rootHint).toBeDefined();
 
     // Function scope: the BinOp (x + 5) inside return
     const funcDef = ast.statements[1] as StmtNS.FunctionDef;
     const returnStmt = funcDef.body[0] as StmtNS.Return;
     const binOp = returnStmt.value!;
-    const fnHint = hints.get(binOp);
+    const fnHint = merged.get(binOp);
     expect(fnHint).toBeDefined();
   });
 });
@@ -121,7 +116,7 @@ describe("CSE hint visualization: nested function scopes", () => {
 
 describe("CSE hint visualization: hints during stepping", () => {
   test("yielded state includes hint field", async () => {
-    const { context, ast } = parseOptimizeAndAttach("x = 1 + 2");
+    const { context } = parseOptimizeAndAttach("x = 1 + 2");
 
     const gen = generateCSEMachineStateStream(
       "", context, context.control, context.stash,
@@ -141,7 +136,7 @@ describe("CSE hint visualization: hints during stepping", () => {
   });
 
   test("hint includes type or constVal when available", async () => {
-    const { context, ast } = parseOptimizeAndAttach("x = 42");
+    const { context } = parseOptimizeAndAttach("x = 42");
 
     const gen = generateCSEMachineStateStream(
       "", context, context.control, context.stash,
@@ -164,14 +159,14 @@ describe("CSE hint visualization: hints during stepping", () => {
 // ── 3. Graceful handling without optimization hints ──────────────────────────
 
 describe("CSE hint visualization: no hints", () => {
-  test("context without optimizationHints works normally", async () => {
+  test("context without hintsFor works normally", async () => {
     const script = "x = 1\n";
     const ast = parse(script) as StmtNS.FileInput;
     const { errors } = analyzeWithEnvironments(ast, script, 4);
     expect(errors).toHaveLength(0);
 
     const context = new Context(ast);
-    // Do NOT set optimizationHints — leave undefined
+    // Do NOT set hintsFor — leave undefined
 
     const gen = generateCSEMachineStateStream(
       "", context, context.control, context.stash,
@@ -186,8 +181,8 @@ describe("CSE hint visualization: no hints", () => {
     expect(stepCount).toBeGreaterThan(0);
   });
 
-  test("optimizationHints field is undefined by default", () => {
+  test("hintsFor field is undefined by default", () => {
     const context = new Context();
-    expect(context.runtime.optimizationHints).toBeUndefined();
+    expect(context.runtime.hintsFor).toBeUndefined();
   });
 });

@@ -99,6 +99,20 @@ export interface Instruction {
 // ========================================================================
 
 import OpCodes from "./opcodes";
+import type { ExprNS } from "../../ast-types";
+
+/**
+ * Runtime observation site attached to a specific pc in an SVMLIR.
+ *
+ * - `kind: "write"` — STORE (STLG/STLF/STLB/STPG/STPF/STPB) of `node` (the RHS
+ *   expression). At dispatch the interpreter pushes `(scopeKey, node, value)`
+ *   into the reactive sink.
+ * - `kind: "call"` — CALL/CALLT of a user function. The callee's scopeKey is
+ *   derived at runtime from the closure's functionIndex.
+ */
+export type ObservationSite =
+  | { kind: "write"; node: ExprNS.Expr }
+  | { kind: "call" };
 
 /**
  * IR representation of a single compiled function.
@@ -106,6 +120,8 @@ import OpCodes from "./opcodes";
  * Produced by SVMLIRBuilder.build() and consumed by SVMLInterpreter.
  * Uses struct-of-arrays typed arrays for cache-friendly dispatch.
  */
+const EMPTY_SITES: ReadonlyMap<number, ObservationSite> = new Map();
+
 export class SVMLIR {
   readonly opcodes: Int32Array;
   readonly arg1s: Float64Array;
@@ -115,6 +131,10 @@ export class SVMLIR {
   readonly stackSize: number;
   readonly envSize: number;
   readonly numArgs: number;
+  /** Scope this IR was compiled for (if known — FileInput or FunctionDef). */
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef | undefined;
+  /** pc → observation site metadata. Empty when no sink is attached. */
+  readonly observationSites: ReadonlyMap<number, ObservationSite>;
 
   constructor(
     opcodes: Int32Array,
@@ -124,6 +144,8 @@ export class SVMLIR {
     stackSize: number,
     symbolCount: number,
     numArgs: number,
+    scopeKey?: StmtNS.FileInput | StmtNS.FunctionDef,
+    observationSites?: ReadonlyMap<number, ObservationSite>,
   ) {
     this.opcodes = opcodes;
     this.arg1s = arg1s;
@@ -133,6 +155,8 @@ export class SVMLIR {
     this.stackSize = stackSize;
     this.envSize = symbolCount + numArgs;
     this.numArgs = numArgs;
+    this.scopeKey = scopeKey;
+    this.observationSites = observationSites ?? EMPTY_SITES;
   }
 
   /** Compatibility: reconstruct Instruction[] for assembler/debug (not hot path). */

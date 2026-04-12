@@ -2,7 +2,7 @@
 
 import type { StmtNS } from "../ast-types";
 import type { FunctionEnvironments } from "../resolver";
-import type { FunctionUnit, ScopeKey } from "./framework/function-unit";
+import type { FunctionUnit } from "./framework/function-unit";
 import { PersistentWorklist } from "./framework/persistent-worklist";
 import { createAnalyses, createTransforms } from "./pipeline-config";
 
@@ -18,7 +18,7 @@ export function createReactiveOptimization(
 export function optimize(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
-): ReadonlyMap<ScopeKey, FunctionUnit> {
+): ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const worklist = createReactiveOptimization(ast, functionEnvironments);
   worklist.drain();
   return worklist.units;

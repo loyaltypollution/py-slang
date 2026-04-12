@@ -3,17 +3,21 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { createReactiveOptimization } from "../specialization";
+import { createReactiveOptimization, OSRCoordinator } from "../specialization";
+import { SVMLSwapStrategy } from "./svml-swap-strategy";
 import { EvaluatorError } from "./errors";
 
 /**
- * JIT-capable SVML evaluator. Runs initial static optimization to fixpoint,
- * then compiles and executes. The subscribe → recompile → replaceProgram()
- * hot-swap glue is not wired here; `replaceProgram()` itself is covered by
- * `interpreter-replace-program.test.ts`.
+ * JIT-capable SVML evaluator. Converges the static reactive-optimization
+ * pipeline once, compiles the program with stable per-function indices, and
+ * runs the interpreter with an `observationSink` wired into the worklist.
+ * An `OSRCoordinator` subscribes to worklist changes and patches individual
+ * function IRs in place whenever runtime observations trigger additional
+ * transforms. The worklist's `activateScope` pinning supplies the safepoint
+ * contract that prevents patching a frame that is currently on the stack.
  */
 export class PySvmlJitEvaluator extends BasicEvaluator {
-  evaluateChunk(chunk: string): Promise<void> {
+  async evaluateChunk(chunk: string): Promise<void> {
     try {
       const script = chunk + "\n";
       const ast = parse(script);
@@ -25,13 +29,21 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
 
       const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units);
       const program = compiler.compileProgram(ast);
-      const interpreter = new SVMLInterpreter(program, { sendOutput: this.conductor.sendOutput });
+      const interpreter = new SVMLInterpreter(program, {
+        sendOutput: this.conductor.sendOutput,
+        observationSink: reactive,
+      });
 
-      const returnValue = interpreter.execute();
-      this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
+      const coord = new OSRCoordinator(reactive, new SVMLSwapStrategy(compiler, interpreter));
+      const stop = coord.start();
+      try {
+        const returnValue = await reactive.withActiveScope(ast, () => interpreter.execute());
+        this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
+      } finally {
+        stop();
+      }
     } catch (e) {
       this.conductor.sendError(new EvaluatorError(e));
     }
-    return Promise.resolve();
   }
 }

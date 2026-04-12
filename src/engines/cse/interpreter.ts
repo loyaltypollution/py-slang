@@ -9,7 +9,7 @@
 import { ErrorType } from "@sourceacademy/conductor/common";
 import { ExprNS, StmtNS } from "../../ast-types";
 import * as error from "../../errors/errors";
-import type { OptimizationHint, ScopeKey } from "../../specialization";
+import type { OptimizationHint } from "../../specialization";
 import { BuiltinReassignmentError, UnsupportedOperandTypeError } from "../../errors/errors";
 import { builtIns, toPythonString } from "../../stdlib";
 import { Group } from "../../stdlib/utils";
@@ -334,7 +334,7 @@ export async function* generateCSEMachineStateStream(
     let hint: OptimizationHint | undefined;
     if (commandIsNode) {
       const currentNode = context.runtime.nodes[0] as (ExprNS.Expr | StmtNS.Stmt) | undefined;
-      hint = currentNode ? context.runtime.optimizationHints?.get(currentNode) : undefined;
+      hint = currentNode ? context.runtime.hintsFor?.(currentNode) : undefined;
     }
 
     yield { stash, control, steps, hint };
@@ -346,10 +346,10 @@ export async function* generateCSEMachineStateStream(
  * Walks the environment chain to find a closure; falls back to the root
  * program scope (`context.runtime.rootScope`) for top-level statements.
  */
-function currentScopeKey(context: Context): ScopeKey | undefined {
+function currentScopeKey(context: Context): StmtNS.FileInput | StmtNS.FunctionDef | undefined {
   for (let env: any = currentEnvironment(context); env; env = env.tail) {
     if (env.closure && env.closure.node) {
-      return env.closure.node as ScopeKey;
+      return env.closure.node as StmtNS.FileInput | StmtNS.FunctionDef;
     }
   }
   return context.runtime.rootScope;
@@ -1113,7 +1113,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       // FunctionDef only — Lambdas have no end-of-body instr.
       const sink = context.runtime.observationSink;
       if (sink) {
-        const calleeKey = closure.node as ScopeKey;
+        const calleeKey = closure.node as StmtNS.FileInput | StmtNS.FunctionDef;
         const callerKey = currentScopeKey(context);
         if (callerKey) sink.observeCall(callerKey, calleeKey);
         if (closure.node instanceof StmtNS.FunctionDef) sink.activateScope(calleeKey);

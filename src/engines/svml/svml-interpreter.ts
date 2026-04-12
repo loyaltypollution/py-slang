@@ -5,6 +5,7 @@ import { executePrimitive } from "./builtins";
 import {
   getSVMLType,
   isSVMLObject,
+  ObservationSite,
   SVMLArray,
   SVMLBoxType,
   SVMLClosure,
@@ -14,6 +15,7 @@ import {
   SVMLProgram,
   SVMLType,
 } from "./types";
+import type { ObservationSink } from "../../specialization";
 
 const __DEBUG__ =
   typeof (globalThis as Record<string, unknown>).__DEBUG__ !== "undefined" &&
@@ -56,6 +58,13 @@ export class SVMLInterpreter {
   private instructionCount: number = 0;
   private maxInstructionLimit: number = 1000000;
 
+  /**
+   * Optional push-side hook invoked at STORE / CALL / scope-entry / scope-exit.
+   * Wired by `PySvmlJitEvaluator` to the reactive worklist; unset for standalone
+   * bytecode execution. All callbacks are best-effort and must not throw.
+   */
+  private observationSink?: ObservationSink;
+
   constructor(
     program: SVMLProgram,
     options?: {
@@ -63,6 +72,7 @@ export class SVMLInterpreter {
       maxCallDepth?: number;
       maxInstructions?: number;
       sendOutput?: (msg: string) => void;
+      observationSink?: ObservationSink;
     },
   ) {
     this.program = program;
@@ -75,6 +85,7 @@ export class SVMLInterpreter {
       if (options.maxStackSize) this.maxStackSize = options.maxStackSize;
       if (options.maxCallDepth) this.maxCallDepth = options.maxCallDepth;
       if (options.maxInstructions) this.maxInstructionLimit = options.maxInstructions;
+      this.observationSink = options.observationSink;
     }
   }
 
@@ -87,6 +98,30 @@ export class SVMLInterpreter {
       throw new Error("Cannot replace program while interpreter is executing");
     }
     this.program = newProgram;
+  }
+
+  /**
+   * Swap a single function's IR in place. Used by the OSR coordinator for
+   * per-function hot-swap after recompile. Throws if any live call frame
+   * references `index` — the OSR safepoint contract (scope pinning in the
+   * reactive worklist) is expected to prevent this; the check is defense-
+   * in-depth.
+   *
+   * Correctness depends on `this.program` being read fresh inside the
+   * dispatch loop and nowhere cached. CallFrames hold direct IR references
+   * (not `program.functions[i]` indirections), so live frames are insulated
+   * from the reassignment below. Do not introduce any method that closes
+   * over `this.program` at construction time.
+   */
+  patchFunction(index: number, ir: SVMLIR): void {
+    for (let f: CallFrame | null = this.currentFrame; f !== null; f = f.callerFrame) {
+      if (f.closure.functionIndex === index) {
+        throw new Error(
+          `Cannot patch function at index ${index}: it is currently executing`,
+        );
+      }
+    }
+    this.program = this.program.withSpecializedFunction(index, ir);
   }
 
   /**
@@ -121,6 +156,10 @@ export class SVMLInterpreter {
     this.halted = false;
     this.instructionCount = 0;
 
+    // NOTE: the root scope's activate/deactivate is owned by the *caller*
+    // (e.g. `reactive.withActiveScope(ast, () => interpreter.execute())`), not
+    // the interpreter. The interpreter only activates/deactivates scopes for
+    // nested frames it creates/pops via CALL/RETURN.
     return this.run();
   }
 
@@ -131,6 +170,18 @@ export class SVMLInterpreter {
     try {
       return this.runInner();
     } finally {
+      // If runInner threw, every nested CALL's activateScope has no matching
+      // deactivate. Walk the live frame chain and release each one so the
+      // reactive worklist doesn't keep those scopes pinned forever. The root
+      // scope is owned by the caller (e.g. withActiveScope) and skipped.
+      const sink = this.observationSink;
+      if (sink) {
+        for (let f: CallFrame | null = this.currentFrame; f !== null; f = f.callerFrame) {
+          if (f.callerFrame === null) break;
+          const key = f.ir.scopeKey;
+          if (key !== undefined) sink.deactivateScope(key);
+        }
+      }
       // Clear execution state so replaceProgram() can be called between runs,
       // even if runInner threw.
       this.currentFrame = null;
@@ -416,7 +467,7 @@ export class SVMLInterpreter {
         case OpCodes.STLG:
         case OpCodes.STLF:
         case OpCodes.STLB:
-          this.storeLocal(a1);
+          this.storeLocal(a1, pc);
           break;
 
         case OpCodes.LDPG:
@@ -428,7 +479,7 @@ export class SVMLInterpreter {
         case OpCodes.STPG:
         case OpCodes.STPF:
         case OpCodes.STPB:
-          this.storeParent(a1, a2);
+          this.storeParent(a1, a2, pc);
           break;
 
         // Control flow
@@ -450,11 +501,11 @@ export class SVMLInterpreter {
           break;
 
         case OpCodes.CALL:
-          this.call(a1, false);
+          this.call(a1, false, pc);
           break;
 
         case OpCodes.CALLT:
-          this.call(a1, true);
+          this.call(a1, true, pc);
           break;
 
         case OpCodes.CALLP:
@@ -688,7 +739,7 @@ export class SVMLInterpreter {
     this.push(value);
   }
 
-  private storeLocal(slot: number): void {
+  private storeLocal(slot: number, pc: number): void {
     if (!this.currentFrame) {
       throw new Error("No current frame");
     }
@@ -696,6 +747,7 @@ export class SVMLInterpreter {
     if (__DEBUG__)
       debug(`[STLG] Storing to slot ${slot}: ${JSON.stringify(SVMLInterpreter.toJSValue(value))}`);
     this.currentFrame.env.set(slot, value);
+    this.dispatchWriteSite(pc, value);
   }
 
   private loadParent(slot: number, level: number): void {
@@ -713,13 +765,42 @@ export class SVMLInterpreter {
     this.push(value);
   }
 
-  private storeParent(slot: number, level: number): void {
+  private storeParent(slot: number, level: number, pc: number): void {
     if (!this.currentFrame) {
       throw new Error("No current frame");
     }
     const value = this.pop();
     const parentEnv = this.currentFrame.env.getParent(level);
     parentEnv.set(slot, value);
+    this.dispatchWriteSite(pc, value);
+  }
+
+  /**
+   * Look up the observation site at `pc` in the current frame's IR. If it's
+   * a "write" site, push the RHS node + stored value into the sink. No-op
+   * when no sink is attached or the pc has no recorded site.
+   */
+  private dispatchWriteSite(pc: number, value: SVMLBoxType): void {
+    const sink = this.observationSink;
+    if (!sink || !this.currentFrame) return;
+    const ir = this.currentFrame.ir;
+    if (ir.scopeKey === undefined) return;
+    const site = ir.observationSites.get(pc);
+    if (!site || site.kind !== "write") return;
+    sink.observeWrite(ir.scopeKey, site.node, value);
+  }
+
+  /** Dispatch observeCall for a recorded call site. Caller scope = current frame. */
+  private dispatchCallSite(pc: number, calleeIR: SVMLIR): void {
+    const sink = this.observationSink;
+    if (!sink || !this.currentFrame) return;
+    const callerKey = this.currentFrame.ir.scopeKey;
+    const calleeKey = calleeIR.scopeKey;
+    if (callerKey === undefined || calleeKey === undefined) return;
+    const site: ObservationSite | undefined =
+      this.currentFrame.ir.observationSites.get(pc);
+    if (!site || site.kind !== "call") return;
+    sink.observeCall(callerKey, calleeKey);
   }
 
   // ========================================================================
@@ -778,7 +859,7 @@ export class SVMLInterpreter {
     this.push(closure);
   }
 
-  private call(numArgs: number, isTailCall: boolean): void {
+  private call(numArgs: number, isTailCall: boolean, pc: number): void {
     if (!this.currentFrame) {
       throw new Error("No current frame");
     }
@@ -844,12 +925,25 @@ export class SVMLInterpreter {
         `[CALL] Created new env with ${funcDef.envSize} slots, parent exists: ${closure.parentEnv !== null}`,
       );
 
+    // Observation: fire observeCall (caller still current) and activateScope
+    // for the callee before the transfer. Fire in that order so the sink can
+    // see "from -> to" edges before pinning the callee.
+    this.dispatchCallSite(pc, funcDef);
+
     if (isTailCall) {
+      // Tail call: outgoing frame logically "returns" and is replaced.
+      const outgoingScope = this.currentFrame.ir.scopeKey;
+      if (this.observationSink && outgoingScope !== undefined) {
+        this.observationSink.deactivateScope(outgoingScope);
+      }
       this.currentFrame.closure = closure;
       this.currentFrame.ir = funcDef;
       this.currentFrame.pc = 0;
       this.currentFrame.env = newEnv;
       this.currentFrame.stack = [];
+      if (this.observationSink && funcDef.scopeKey !== undefined) {
+        this.observationSink.activateScope(funcDef.scopeKey);
+      }
     } else {
       const newFrame: CallFrame = {
         closure,
@@ -861,6 +955,9 @@ export class SVMLInterpreter {
       };
       this.currentFrame = newFrame;
       this.callDepth++;
+      if (this.observationSink && funcDef.scopeKey !== undefined) {
+        this.observationSink.activateScope(funcDef.scopeKey);
+      }
     }
   }
 
@@ -900,11 +997,18 @@ export class SVMLInterpreter {
       debug(`[RETG] Returning value: ${JSON.stringify(SVMLInterpreter.toJSValue(returnValue))}`);
 
     const callerFrame = this.currentFrame.callerFrame;
+    const poppedScope = this.currentFrame.ir.scopeKey;
 
     if (!callerFrame) {
+      // Root frame: caller (e.g. withActiveScope) owns its activate/deactivate.
       this.halted = true;
       this.push(returnValue);
       return;
+    }
+
+    // Deactivate the callee scope we are about to pop.
+    if (this.observationSink && poppedScope !== undefined) {
+      this.observationSink.deactivateScope(poppedScope);
     }
 
     this.currentFrame = callerFrame;

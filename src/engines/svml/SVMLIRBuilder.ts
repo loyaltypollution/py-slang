@@ -1,6 +1,7 @@
 import OpCodes, { OPCODE_MAX } from "./opcodes";
-import { SVMLBoxType, SVMLIR } from "./types";
+import { ObservationSite, SVMLBoxType, SVMLIR } from "./types";
 import { SVMLCompilerError } from "./errors";
+import type { ExprNS } from "../../ast-types";
 
 /**
  * Mutable builder for constructing SVMLIR.
@@ -25,25 +26,54 @@ export class SVMLIRBuilder {
   private symbolCount: number = 0;
   private numArgs: number = 0;
   private functionIndex: number;
-  private static _functionIndex: number = 0;
 
   private lastLabelId: number = 0;
 
-  constructor(numArgs: number) {
-    this.numArgs = numArgs;
-    this.functionIndex = SVMLIRBuilder._functionIndex++;
+  /** Observation sidecar: pc → site metadata. See ObservationSite. */
+  private observationSites: Map<number, ObservationSite> = new Map();
+  private scopeKey: StmtNS.FileInput | StmtNS.FunctionDef | undefined;
+
+  /** Set the scope identity for this builder's function (if any). */
+  setScopeKey(key: StmtNS.FileInput | StmtNS.FunctionDef | undefined): void {
+    this.scopeKey = key;
+  }
+  getScopeKey(): StmtNS.FileInput | StmtNS.FunctionDef | undefined {
+    return this.scopeKey;
   }
 
-  static resetIndex(): void {
-    SVMLIRBuilder._functionIndex = 0;
+  /** Record the pc of the *next* emitted instruction as an observation site. */
+  recordWriteSite(rhs: ExprNS.Expr): void {
+    this.observationSites.set(this.ops.length, { kind: "write", node: rhs });
+  }
+  recordCallSite(): void {
+    this.observationSites.set(this.ops.length, { kind: "call" });
+  }
+
+  /**
+   * Construct a builder for a single function.
+   *
+   * `functionIndex` is now passed in explicitly (no static counter) so that
+   * indices can be pre-assigned deterministically by the caller and remain
+   * stable across per-function recompiles. Required for SVML OSR / patching:
+   * `NEWC <index>` operands in sibling functions must keep resolving to the
+   * same function after a patched recompile.
+   */
+  constructor(numArgs: number, functionIndex: number) {
+    this.numArgs = numArgs;
+    this.functionIndex = functionIndex;
   }
 
   getFunctionIndex(): number {
     return this.functionIndex;
   }
 
-  createChildBuilder(numArgs: number): SVMLIRBuilder {
-    const child = new SVMLIRBuilder(numArgs);
+  /**
+   * Create a child builder for a nested function with a caller-supplied index.
+   * The parent records the child so `getAllBuilders()` can assemble the whole
+   * program IR in one pass.
+   */
+  createChildBuilder(numArgs: number, functionIndex: number): SVMLIRBuilder {
+    const child = new SVMLIRBuilder(numArgs, functionIndex);
     this.children.push(child);
     return child;
   }
@@ -182,6 +212,13 @@ export class SVMLIRBuilder {
       }
     }
 
+    // Copy observation sites so the builder can be reused without mutating
+    // the IR's sidecar.
+    const sites =
+      this.observationSites.size > 0
+        ? new Map<number, ObservationSite>(this.observationSites)
+        : undefined;
+
     return new SVMLIR(
       opcodes,
       arg1s,
@@ -190,6 +227,8 @@ export class SVMLIRBuilder {
       this.maxStackDepth,
       this.symbolCount,
       this.numArgs,
+      this.scopeKey,
+      sites,
     );
   }
 }

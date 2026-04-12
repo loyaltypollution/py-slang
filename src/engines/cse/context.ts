@@ -1,7 +1,6 @@
 import { ConductorError } from "@sourceacademy/conductor/common";
-import { StmtNS } from "../../ast-types";
-import { HintStore } from "../../specialization";
-import type { ObservationSink } from "../../specialization";
+import { ExprNS, StmtNS } from "../../ast-types";
+import type { ObservationSink, OptimizationHint } from "../../specialization";
 import { ModuleContext, NativeStorage } from "../../types";
 import { Control } from "./control";
 import { Environment } from "./environment";
@@ -43,7 +42,12 @@ export class Context {
     envStepsTotal: number;
     breakpointSteps: number[];
     changepointSteps: number[];
-    optimizationHints?: HintStore;
+    /**
+     * Node → hint lookup wired by evaluators that run the optimization
+     * pipeline. The CSE stepper consults this at every node-step to surface
+     * type/const info in the yielded state.
+     */
+    hintsFor?: (node: ExprNS.Expr | StmtNS.Stmt) => OptimizationHint | undefined;
     /** Push-side for runtime observations (wired by JIT-capable evaluators). */
     observationSink?: ObservationSink;
     /** Root scope key for emission when no enclosing closure exists (global scope). */

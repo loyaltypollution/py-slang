@@ -7,7 +7,7 @@ export { createReactiveOptimization } from "./optimize";
 
 // ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
 
-export type { FunctionUnit, ScopeKey } from "./framework/function-unit";
+export type { FunctionUnit } from "./framework/function-unit";
 export { buildFunctionUnits } from "./framework/function-unit";
 
 // ── Persistent worklist ─────────────────────────────────────────────────────
@@ -35,6 +35,8 @@ export {
   runMultiAnalysisPasses,
   stabilizeStatic,
 } from "./framework/dfa-driver";
+export { OSRCoordinator, NoopSwapStrategy } from "./framework/osr";
+export type { CodeSwapStrategy, OSRStats } from "./framework/osr";
 
 // ── CFG worklist driver ─────────────────────────────────────────────────────
 

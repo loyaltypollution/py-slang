@@ -11,7 +11,7 @@ import {
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { HintStore, createReactiveOptimization } from "../specialization";
+import { createReactiveOptimization, OSRCoordinator, NoopSwapStrategy } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import pairmutator from "../stdlib/pairmutator";
@@ -79,47 +79,26 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         throw errors[errors.length - 1];
       }
 
-      // Build a reactive optimization session; converge once for the initial
-      // static pass; wire it as the runtime observation sink so CSE steps push
-      // runtime values back through the worklist.
-      this.context.runtime.optimizationHints = undefined;
-      this.context.runtime.observationSink = undefined;
-      this.context.runtime.rootScope = ast;
       const reactive = createReactiveOptimization(ast, environments);
       reactive.converge();
 
-      // Attach a single merged HintStore that the stepper reads from.
-      // A subscription keeps it current as the reactive worklist refines hints
-      // during (and after) CSE stepping.
-      const merged = new HintStore();
-      for (const unit of reactive.units.values()) {
-        unit.hints.mergeInto(merged);
-      }
-      this.context.runtime.optimizationHints = merged;
+      this.context.runtime.rootScope = ast;
+      this.context.runtime.hintsFor = node => reactive.hintsFor(node);
       this.context.runtime.observationSink = reactive;
 
-      const unsubscribe = reactive.subscribe(changed => {
-        for (const key of changed) {
-          const unit = reactive.units.get(key);
-          if (unit) unit.hints.mergeInto(merged);
-        }
-      });
-
-      // Pin the root scope: top-level statements execute inside it, so
-      // transforms on it must be deferred until the chunk completes.
-      reactive.activateScope(ast);
-
+      const coord = new OSRCoordinator(reactive, new NoopSwapStrategy());
+      const stop = coord.start();
       try {
-        await evaluate("", ast, this.context, {
-          variant: this.variant,
-          groups: this.groups,
-        });
+        await reactive.withActiveScope(ast, () =>
+          evaluate("", ast, this.context, {
+            variant: this.variant,
+            groups: this.groups,
+          }),
+        );
       } finally {
-        reactive.deactivateScope(ast);
-        // Drain any pending transforms now that the root scope is inactive.
-        reactive.tick();
-        unsubscribe();
+        stop();
         this.context.runtime.observationSink = undefined;
+        this.context.runtime.hintsFor = undefined;
       }
     } catch (e) {
       if (e instanceof SyntaxError) {

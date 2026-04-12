@@ -33,7 +33,7 @@ async function runWithReactive(code: string) {
 
   const merged = new HintStore();
   for (const unit of reactive.units.values()) unit.hints.mergeInto(merged);
-  context.runtime.optimizationHints = merged;
+  context.runtime.hintsFor = node => reactive.hintsFor(node);
   context.runtime.observationSink = reactive;
   context.runtime.rootScope = ast;
 
@@ -44,12 +44,11 @@ async function runWithReactive(code: string) {
     }
   });
 
-  reactive.activateScope(ast);
   try {
-    await evaluate("", ast, context, { variant: 4, groups: [] });
+    await reactive.withActiveScope(ast, () =>
+      evaluate("", ast, context, { variant: 4, groups: [] }),
+    );
   } finally {
-    reactive.deactivateScope(ast);
-    reactive.tick();
     unsubscribe();
   }
 

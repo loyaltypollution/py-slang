@@ -10,12 +10,30 @@ import { TokenType } from "../../tokens";
 import { SVMLIRBuilder } from "./SVMLIRBuilder";
 import { PRIMITIVE_FUNCTIONS } from "./builtins";
 import OpCodes from "./opcodes";
-import { SVMLProgram } from "./types";
+import { SVMLIR, SVMLProgram } from "./types";
+import { traverseAST } from "../../validator/traverse";
 
 
 /** Signed 32-bit integer bounds used to decide LGCI vs LGCF64 encoding. */
 const I32_MIN = -2_147_483_648;
 const I32_MAX = 2_147_483_647;
+
+/**
+ * A hint is "concrete" when the static analysis already pinned both the type
+ * kind (exactly one bit set) and a known constant value — runtime observation
+ * cannot refine it further. Used to elide observation-site recording on
+ * trivially monomorphic stores.
+ */
+function isHintConcrete(hint: OptimizationHint | undefined): boolean {
+  if (!hint) return false;
+  const type = hint.type;
+  const constVal = hint.constVal;
+  if (!type || !constVal) return false;
+  // Singleton kind: exactly one bit set.
+  const kinds = type.kinds;
+  if (kinds === 0 || (kinds & (kinds - 1)) !== 0) return false;
+  return constVal.tag === "const";
+}
 
 interface CompilerAnnotation {
   slot: number;
@@ -38,6 +56,15 @@ export class SVMLCompiler
   private hints: HintStore | undefined;
   private unitMap?: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
   private _scopeIndexMap?: ScopeIndexMap;
+  /**
+   * Pre-computed function index assignments for every function-like node in
+   * the program (FileInput, FunctionDef, Lambda, MultiLambda). Built once at
+   * top-level compiler construction and shared with child compilers through
+   * `fromFunctionNode`. Stable across recompiles — the critical invariant
+   * that lets `compileFunction()` produce a patched IR whose `NEWC` operands
+   * still match sibling functions.
+   */
+  private functionIndices!: Map<StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda, number>;
 
   private tokenAnnotations = new WeakMap<Token, CompilerAnnotation>();
   private envSlotCounters = new WeakMap<Environment, number>();
@@ -77,6 +104,38 @@ export class SVMLCompiler
   }
 
   /**
+   * Pre-compute a deterministic `node → functionIndex` map for every function-like
+   * node in `program` (FileInput plus nested FunctionDef/Lambda/MultiLambda).
+   *
+   * Traversal order matches the compiler's recursive `compile()` visitor
+   * (pre-order DFS via `traverseAST`), so the indices this assigns are
+   * byte-for-byte identical to what the old static counter produced — but
+   * they are now knowable *before* compilation begins, which is what makes
+   * per-function recompile (`compileFunction`) produce a patched IR whose
+   * `NEWC` operands still match every other sibling.
+   */
+  private static computeFunctionIndices(
+    program: StmtNS.FileInput,
+  ): Map<StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda, number> {
+    const indices = new Map<
+      StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda,
+      number
+    >();
+    let next = 0;
+    indices.set(program, next++);
+    traverseAST(program, node => {
+      if (
+        node instanceof StmtNS.FunctionDef ||
+        node instanceof ExprNS.Lambda ||
+        node instanceof ExprNS.MultiLambda
+      ) {
+        indices.set(node, next++);
+      }
+    });
+    return indices;
+  }
+
+  /**
    * Create SVMLCompiler from program AST.
    * Pass pre-computed environments (from analyzeWithEnvironments) to avoid a second resolver run.
    */
@@ -92,9 +151,12 @@ export class SVMLCompiler
     if (!mainEnv) {
       throw new Error("Main program environment not found");
     }
-    SVMLIRBuilder.resetIndex();
-    const builder = new SVMLIRBuilder(0);
-    return new SVMLCompiler(mainEnv, functionEnvironments, builder);
+    const functionIndices = SVMLCompiler.computeFunctionIndices(program);
+    const builder = new SVMLIRBuilder(0, functionIndices.get(program)!);
+    builder.setScopeKey(program);
+    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder);
+    compiler.functionIndices = functionIndices;
+    return compiler;
   }
 
   /**
@@ -110,13 +172,24 @@ export class SVMLCompiler
     if (!mainEnv) {
       throw new Error("Main program environment not found");
     }
-    SVMLIRBuilder.resetIndex();
-    const builder = new SVMLIRBuilder(0);
+    const functionIndices = SVMLCompiler.computeFunctionIndices(program);
+    const builder = new SVMLIRBuilder(0, functionIndices.get(program)!);
+    builder.setScopeKey(program);
     const rootHints = unitMap.get(program)?.hints;
     const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, rootHints);
     compiler.unitMap = unitMap;
+    compiler.functionIndices = functionIndices;
+
+    // Populate ScopeIndexMap eagerly so it is the source of truth for NEWC
+    // emissions on the very first compile (and matches lookups during any
+    // subsequent compileFunction). Only FunctionDef/FileInput qualify as
+    // ScopeKeys — Lambda/MultiLambda carry indices but are not DFA units.
     compiler._scopeIndexMap = new ScopeIndexMap();
-    compiler._scopeIndexMap.register(program, builder.getFunctionIndex());
+    for (const [node, index] of functionIndices) {
+      if (node instanceof StmtNS.FileInput || node instanceof StmtNS.FunctionDef) {
+        compiler._scopeIndexMap.register(node, index);
+      }
+    }
     return compiler;
   }
 
@@ -129,7 +202,15 @@ export class SVMLCompiler
       nextEnvironment.lookupNameCurrentEnvWithError(param);
     }
     const numArgs = node.parameters.length;
-    const builder = this.builder.createChildBuilder(numArgs);
+    const childIndex = this.functionIndices.get(node);
+    if (childIndex === undefined) {
+      throw new Error("Function index not pre-computed for nested function");
+    }
+    const builder = this.builder.createChildBuilder(numArgs, childIndex);
+    // Only FunctionDef bodies are ScopeKeys; Lambda/MultiLambda are not DFA units.
+    if (node instanceof StmtNS.FunctionDef) {
+      builder.setScopeKey(node);
+    }
 
     // Per-unit hints: if a FunctionUnit exists for this scope, use its HintStore
     const childUnit = this.unitMap?.get(node as StmtNS.FunctionDef);
@@ -138,9 +219,7 @@ export class SVMLCompiler
     const compiler = new SVMLCompiler(nextEnvironment, this.functionEnvironments, builder, childHints);
     compiler.unitMap = this.unitMap;
     compiler._scopeIndexMap = this._scopeIndexMap;
-    if (this._scopeIndexMap && node instanceof StmtNS.FunctionDef) {
-      this._scopeIndexMap.register(node, builder.getFunctionIndex());
-    }
+    compiler.functionIndices = this.functionIndices;
     const slotMap = new Map<string, number>();
     compiler.envSlotMaps.set(nextEnvironment, slotMap);
 
@@ -164,6 +243,74 @@ export class SVMLCompiler
     const functions = allBuilders.map(b => b.build());
 
     return new SVMLProgram(0, functions);
+  }
+
+  /**
+   * Lookup the stable function index for a scope. Safe to call after
+   * construction (indices are pre-assigned); does not depend on compilation
+   * having run.
+   */
+  indexOf(scope: StmtNS.FileInput | StmtNS.FunctionDef): number | undefined {
+    return this.functionIndices.get(scope);
+  }
+
+  /**
+   * Recompile a single `FunctionUnit`'s body into fresh SVMLIR, without
+   * touching any sibling builder. The returned IR's function index matches
+   * what `compileProgram` would have assigned, so callers can splice it
+   * into an existing `SVMLProgram` via `withSpecializedFunction(index, ir)`
+   * and every `NEWC <index>` operand in unaffected siblings remains valid.
+   *
+   * Only `FunctionDef` bodies are supported (matches `FunctionUnit.funcAst`
+   * excluding `FileInput`, which is the entry-point program and is rebuilt
+   * via `compileProgram`). Lambdas are never `FunctionUnit` keys.
+   */
+  compileFunction(unit: FunctionUnit): SVMLIR {
+    const funcAst = unit.funcAst;
+    if (!(funcAst instanceof StmtNS.FunctionDef)) {
+      throw new Error("compileFunction only supports FunctionDef units; use compileProgram for FileInput");
+    }
+    const nextEnvironment = this.functionEnvironments.get(funcAst);
+    if (!nextEnvironment) {
+      throw new Error("Function environment not found");
+    }
+    for (const param of funcAst.parameters) {
+      nextEnvironment.lookupNameCurrentEnvWithError(param);
+    }
+    const index = this.functionIndices.get(funcAst);
+    if (index === undefined) {
+      throw new Error("Function index not pre-computed for unit");
+    }
+
+    // Fresh standalone builder — NOT attached as a child of `this.builder`.
+    // That keeps compileProgram idempotent and leaves sibling builders
+    // untouched so their IR stays byte-identical.
+    const numArgs = funcAst.parameters.length;
+    const builder = new SVMLIRBuilder(numArgs, index);
+    builder.setScopeKey(funcAst);
+
+    const childHints = unit.hints;
+    const subCompiler = new SVMLCompiler(
+      nextEnvironment,
+      this.functionEnvironments,
+      builder,
+      childHints,
+    );
+    subCompiler.unitMap = this.unitMap;
+    subCompiler._scopeIndexMap = this._scopeIndexMap;
+    subCompiler.functionIndices = this.functionIndices;
+
+    const slotMap = new Map<string, number>();
+    subCompiler.envSlotMaps.set(nextEnvironment, slotMap);
+    for (let i = 0; i < funcAst.parameters.length; i++) {
+      slotMap.set(funcAst.parameters[i].lexeme, i);
+    }
+    subCompiler.envSlotCounters.set(nextEnvironment, numArgs);
+
+    subCompiler.compileStatements(funcAst.body);
+    builder.emitNullary(OpCodes.RETG);
+
+    return builder.build();
   }
 
   compile(node: StmtNS.Stmt | ExprNS.Expr): ExpressionResult {
@@ -260,6 +407,11 @@ export class SVMLCompiler
       const primitiveOpcode = this.isTailCall ? OpCodes.CALLTP : OpCodes.CALLP;
       this.builder.emitPrimitiveCall(primitiveOpcode, annotation.primitiveIndex!, numArgs);
     } else {
+      // Record a call observation site at the CALL/CALLT pc. Primitives have
+      // no scopeKey and are skipped. Call sites are always recorded: the
+      // callee identity comes from the closure on the stack, not a hint on
+      // the call expression, so a static hint can't pre-refine it.
+      this.builder.recordCallSite();
       const userOpcode = this.isTailCall ? OpCodes.CALLT : OpCodes.CALL;
       this.builder.emitCall(userOpcode, numArgs);
     }
@@ -570,6 +722,14 @@ export class SVMLCompiler
   visitAssignStmt(stmt: StmtNS.Assign): ExpressionResult {
     const initResult = this.compile(stmt.value);
 
+    // Record an observation write site at the STORE pc so the runtime can
+    // push (scopeKey, rhsNode, value) into the reactive sink. Skip when the
+    // RHS hint is already concrete (singleton type kind + known constVal) —
+    // a runtime observation cannot refine it further, so the Map.get(pc) on
+    // every STORE would be dead overhead.
+    if (!isHintConcrete(this.getHint(stmt.value))) {
+      this.builder.recordWriteSite(stmt.value);
+    }
     this.emitStoreSymbol((stmt.target as ExprNS.Variable).name);
 
     this.builder.emitNullary(OpCodes.LGCU);

@@ -12,8 +12,9 @@ import type { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
-import type { FunctionUnit, ScopeKey } from "./function-unit";
+import type { FunctionUnit } from "./function-unit";
 import { buildFunctionUnits } from "./function-unit";
+import type { OptimizationHint } from "./hint";
 import type { AnalysisModule, TransformRule } from "./interfaces";
 import { applyTransformPass } from "./transform";
 import type { AnalysisSession } from "./worklist";
@@ -29,13 +30,13 @@ import {
 // ── Queue items ─────────────────────────────────────────────────────────────
 
 interface QueuedBlock {
-  readonly scopeKey: ScopeKey;
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly blockId: BlockId;
   readonly generation: number;
 }
 
 interface QueuedTransform {
-  readonly scopeKey: ScopeKey;
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly generation: number;
 }
 
@@ -43,20 +44,20 @@ interface QueuedTransform {
 
 export interface ValueObservationItem {
   readonly kind: "value-observation";
-  readonly scopeKey: ScopeKey;
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly nodeId: number;
   readonly value: unknown;
 }
 
 export interface CallObservationItem {
   readonly kind: "call-observation";
-  readonly scopeKey: ScopeKey;
-  readonly calleeKey: ScopeKey;
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
+  readonly calleeKey: StmtNS.FileInput | StmtNS.FunctionDef;
 }
 
 export interface InvalidateItem {
   readonly kind: "invalidate";
-  readonly scopeKey: ScopeKey;
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef;
 }
 
 export type ExternalWorkItem = ValueObservationItem | CallObservationItem | InvalidateItem;
@@ -74,7 +75,7 @@ export interface WorklistStats {
 
 // ── Subscribers ─────────────────────────────────────────────────────────────
 
-export type Subscriber = (changed: ReadonlySet<ScopeKey>) => void;
+export type Subscriber = (changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>) => void;
 
 // ── Per-scope state ─────────────────────────────────────────────────────────
 
@@ -89,15 +90,15 @@ interface ScopeWorkState {
 // ── PersistentWorklist ──────────────────────────────────────────────────────
 
 export class PersistentWorklist {
-  readonly units: ReadonlyMap<ScopeKey, FunctionUnit>;
+  readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
 
   private readonly analysisQueues: QueuedBlock[][];
   private readonly analysisHeads: number[];
   private readonly transformQueue: QueuedTransform[] = [];
   private transformHead = 0;
 
-  private readonly scopes = new Map<ScopeKey, ScopeWorkState>();
-  private readonly activeScopes = new Map<ScopeKey, number>();
+  private readonly scopes = new Map<StmtNS.FileInput | StmtNS.FunctionDef, ScopeWorkState>();
+  private readonly activeScopes = new Map<StmtNS.FileInput | StmtNS.FunctionDef, number>();
   private readonly subscribers = new Set<Subscriber>();
 
   // Perf counters
@@ -122,7 +123,7 @@ export class PersistentWorklist {
     for (const [key, unit] of units) this.addScope(key, unit);
   }
 
-  private addScope(key: ScopeKey, unit: FunctionUnit): void {
+  private addScope(key: StmtNS.FileInput | StmtNS.FunctionDef, unit: FunctionUnit): void {
     const cfg = buildCFG(unit.body);
     const sessions = this.analyses.map(m => makeSession(m, cfg));
     const blockMap = new Map<BlockId, BasicBlock>();
@@ -154,6 +155,55 @@ export class PersistentWorklist {
   }
 
   /**
+   * nodeId → owning FunctionUnit cache for `hintsFor`. Ownership is
+   * structural (set by AST scope) and immutable across the worklist's
+   * lifetime, so positive hits can be cached permanently. A miss may become
+   * a hit later (hint populated by a transform), so misses are not cached.
+   */
+  private readonly nodeUnitCache = new Map<number, FunctionUnit>();
+
+  /**
+   * Look up the hint for an AST node by routing to the owning FunctionUnit.
+   * Node IDs are globally unique, so a linear scan across units suffices —
+   * every unit's HintStore keys on the same id space and at most one owns
+   * any given id. Repeated lookups for the same node are O(1) via cache.
+   */
+  hintsFor(node: ExprNS.Expr | StmtNS.Stmt): OptimizationHint | undefined {
+    const id = node.id;
+    const cached = this.nodeUnitCache.get(id);
+    if (cached !== undefined) return cached.hints.getById(id);
+    for (const unit of this.units.values()) {
+      const h = unit.hints.getById(id);
+      if (h !== undefined) {
+        this.nodeUnitCache.set(id, unit);
+        return h;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Pin `scope` as active, run `fn`, then unpin and (on success) tick once so
+   * any transforms parked during execution fire before returning. If `fn`
+   * throws, we still deactivate but skip the tick: a thrown execution leaves
+   * subscribers (e.g. OSRCoordinator → patchFunction) facing a dead runtime,
+   * and we'd rather surface the original error than trigger swap machinery.
+   */
+  async withActiveScope<T>(scope: StmtNS.FileInput | StmtNS.FunctionDef, fn: () => Promise<T> | T): Promise<T> {
+    this.activateScope(scope);
+    let threw = false;
+    try {
+      return await fn();
+    } catch (e) {
+      threw = true;
+      throw e;
+    } finally {
+      this.deactivateScope(scope);
+      if (!threw) this.tick();
+    }
+  }
+
+  /**
    * Monotonic sentinel that bumps whenever any scope's hints change. Sum of
    * per-store monotonic versions — not a change count. Intended for
    * `useSyncExternalStore`-style "something changed" detection.
@@ -164,11 +214,11 @@ export class PersistentWorklist {
     return sum;
   }
 
-  observeWrite(scopeKey: ScopeKey, rhsNode: ExprNS.Expr, rawValue: unknown): void {
+  observeWrite(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, rhsNode: ExprNS.Expr, rawValue: unknown): void {
     this.enqueue({ kind: "value-observation", scopeKey, nodeId: rhsNode.id, value: rawValue });
   }
 
-  observeCall(scopeKey: ScopeKey, calleeKey: ScopeKey): void {
+  observeCall(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, calleeKey: StmtNS.FileInput | StmtNS.FunctionDef): void {
     this.enqueue({ kind: "call-observation", scopeKey, calleeKey });
   }
 
@@ -195,18 +245,18 @@ export class PersistentWorklist {
     }
   }
 
-  activateScope(key: ScopeKey): void {
+  activateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void {
     this.activeScopes.set(key, (this.activeScopes.get(key) ?? 0) + 1);
   }
 
-  deactivateScope(key: ScopeKey): void {
+  deactivateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void {
     const count = this.activeScopes.get(key);
     if (count === undefined) return;
     if (count <= 1) this.activeScopes.delete(key);
     else this.activeScopes.set(key, count - 1);
   }
 
-  isScopeActive(key: ScopeKey): boolean {
+  isScopeActive(key: StmtNS.FileInput | StmtNS.FunctionDef): boolean {
     return this.activeScopes.has(key);
   }
 
@@ -226,10 +276,10 @@ export class PersistentWorklist {
 
   // ── Drain ────────────────────────────────────────────────────────────────
 
-  drain(limit = Infinity): ReadonlySet<ScopeKey> {
+  drain(limit = Infinity): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
     const t0 = performance.now();
     this._drainCalls++;
-    const changed = new Set<ScopeKey>();
+    const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     let processed = 0;
 
     while (processed < limit) {
@@ -310,7 +360,7 @@ export class PersistentWorklist {
 
   // ── Analysis processing ─────────────────────────────────────────────────
 
-  private processAnalysisBlock(qIdx: number, changed: Set<ScopeKey>): boolean {
+  private processAnalysisBlock(qIdx: number, changed: Set<StmtNS.FileInput | StmtNS.FunctionDef>): boolean {
     const queue = this.analysisQueues[qIdx];
     const item = queue[this.analysisHeads[qIdx]++];
 
@@ -348,7 +398,7 @@ export class PersistentWorklist {
 
   // ── Transform processing ────────────────────────────────────────────────
 
-  private processTransform(changed: Set<ScopeKey>): boolean {
+  private processTransform(changed: Set<StmtNS.FileInput | StmtNS.FunctionDef>): boolean {
     let idx = this.transformHead;
     while (idx < this.transformQueue.length && this.activeScopes.has(this.transformQueue[idx].scopeKey)) {
       idx++;
@@ -384,7 +434,7 @@ export class PersistentWorklist {
 
   // ── Seeding ──────────────────────────────────────────────────────────────
 
-  private rebuildAndReseed(key: ScopeKey, state: ScopeWorkState): void {
+  private rebuildAndReseed(key: StmtNS.FileInput | StmtNS.FunctionDef, state: ScopeWorkState): void {
     state.generation++;
     state.cfg = buildCFG(state.unit.body);
     state.blockMap.clear();
@@ -395,7 +445,7 @@ export class PersistentWorklist {
     this.enqueueTransform(key, state.generation);
   }
 
-  private seedAnalysis(key: ScopeKey, state: ScopeWorkState): void {
+  private seedAnalysis(key: StmtNS.FileInput | StmtNS.FunctionDef, state: ScopeWorkState): void {
     for (let i = 0; i < this.analyses.length; i++) {
       const direction = this.analyses[i].direction;
       const seed = seedBlock(state.cfg, direction);
@@ -406,18 +456,18 @@ export class PersistentWorklist {
   // No dedup: the convergence check (outEnv.equals) short-circuits repeats.
   private enqueueAnalysisBlock(
     qIdx: number,
-    scopeKey: ScopeKey,
+    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
     blockId: BlockId,
     generation: number,
   ): void {
     this.analysisQueues[qIdx].push({ scopeKey, blockId, generation });
   }
 
-  private enqueueTransform(scopeKey: ScopeKey, generation: number): void {
+  private enqueueTransform(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, generation: number): void {
     this.transformQueue.push({ scopeKey, generation });
   }
 
-  private notify(changed: ReadonlySet<ScopeKey>): void {
+  private notify(changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>): void {
     if (changed.size === 0) return;
     for (const cb of this.subscribers) cb(changed);
   }

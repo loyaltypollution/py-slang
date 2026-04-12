@@ -4,8 +4,7 @@ import { HintStore } from "./hint";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
-/** Stable identity for a function scope across recompilations. */
-export type ScopeKey = StmtNS.FileInput | StmtNS.FunctionDef;
+type Scope = StmtNS.FileInput | StmtNS.FunctionDef;
 
 /**
  * Per-scope optimization unit: owns its body, hints, slot lookup, and a
@@ -14,7 +13,7 @@ export type ScopeKey = StmtNS.FileInput | StmtNS.FunctionDef;
  * consumers watching annotations should read `hints.version` directly.
  */
 export interface FunctionUnit {
-  readonly funcAst: ScopeKey;
+  readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly body: StmtNS.Stmt[];
   readonly hints: HintStore;
   readonly slotLookup: SlotLookup;
@@ -30,10 +29,10 @@ export interface FunctionUnit {
 export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
-): Map<ScopeKey, FunctionUnit> {
-  const units = new Map<ScopeKey, FunctionUnit>();
+): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
+  const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
 
-  function buildUnit(funcAst: ScopeKey): void {
+  function buildUnit(funcAst: Scope): void {
     const env = functionEnvironments.get(funcAst);
     if (!env) {
       throw new Error(`Environment not found for scope node ${funcAst.kind}`);
@@ -57,7 +56,7 @@ export function buildFunctionUnits(
   return units;
 }
 
-function collectNested(stmt: StmtNS.Stmt, buildUnit: (f: ScopeKey) => void): void {
+function collectNested(stmt: StmtNS.Stmt, buildUnit: (f: Scope) => void): void {
   if (stmt instanceof StmtNS.FunctionDef) {
     buildUnit(stmt);
   } else if (stmt instanceof StmtNS.If) {

@@ -15,7 +15,18 @@ import fs from "fs";
 import { ExprNS, StmtNS } from "../src/ast-types";
 import { parse } from "../src/parser/parser-adapter";
 import { analyzeWithEnvironments } from "../src/resolver";
-import { optimize } from "../src/specialization";
+import {
+  HintStore,
+  optimize,
+  type OptimizationHint,
+  INT_BIT,
+  BOOL_BIT,
+  STR_BIT,
+  NULL_BIT,
+  CLOSURE_BIT,
+  FLOAT_BIT,
+  COMPLEX_BIT,
+} from "../src/specialization";
 
 // ── CLI ──────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -45,14 +56,45 @@ if (!source) {
   }
 }
 
+// ── Hint formatting ──────────────────────────────────────────────────
+const KIND_BITS: Array<[number, string]> = [
+  [INT_BIT, "int"],
+  [FLOAT_BIT, "float"],
+  [BOOL_BIT, "bool"],
+  [STR_BIT, "str"],
+  [NULL_BIT, "None"],
+  [CLOSURE_BIT, "fn"],
+  [COMPLEX_BIT, "complex"],
+];
+
+const ALL_KINDS = KIND_BITS.reduce((acc, [b]) => acc | b, 0);
+
+function formatHint(h: OptimizationHint | undefined): string {
+  if (!h) return "";
+  const parts: string[] = [];
+  if (h.type?.kinds !== undefined && h.type.kinds !== ALL_KINDS) {
+    const names = KIND_BITS.filter(([b]) => (h.type!.kinds & b) !== 0).map(([, n]) => n);
+    if (names.length) parts.push(names.join("|"));
+  }
+  if (h.constVal?.tag === "const") parts.push(`=${JSON.stringify(h.constVal.value)}`);
+  return parts.length ? `\\n[${parts.join(" ")}]` : "";
+}
+
 // ── DOT graph builder ────────────────────────────────────────────────
 class DotGraph {
   private id = 0;
   private readonly prefix: string;
   private readonly lines: string[] = [];
+  private hints: HintStore | undefined;
 
-  constructor(prefix: string) {
+  constructor(prefix: string, hints?: HintStore) {
     this.prefix = prefix;
+    this.hints = hints;
+  }
+
+  annotate(node: ExprNS.Expr | StmtNS.Stmt, base: string): string {
+    if (!this.hints) return base;
+    return base + formatHint(this.hints.get(node));
   }
 
   node(label: string, color?: string): string {
@@ -75,24 +117,25 @@ class DotGraph {
 
 // ── AST -> DOT emitters ─────────────────────────────────────────────
 function emitExpr(expr: ExprNS.Expr, g: DotGraph): string {
+  const hint = formatHint(g["hints"]?.get(expr));
   if (expr instanceof ExprNS.Literal) {
-    return g.node(`${JSON.stringify(expr.value)}`, "#d4edda");
+    return g.node(`${JSON.stringify(expr.value)}${hint}`, "#d4edda");
   } else if (expr instanceof ExprNS.BigIntLiteral) {
-    return g.node(`${expr.value}`, "#d4edda");
+    return g.node(`${expr.value}${hint}`, "#d4edda");
   } else if (expr instanceof ExprNS.Variable) {
-    return g.node(expr.name.lexeme, "#fff3cd");
+    return g.node(`${expr.name.lexeme}${hint}`, "#fff3cd");
   } else if (expr instanceof ExprNS.Binary) {
-    const id = g.node(`${expr.operator.lexeme}`, "#e2e3f1");
+    const id = g.node(`${expr.operator.lexeme}${hint}`, "#e2e3f1");
     g.edge(id, emitExpr(expr.left, g), "L");
     g.edge(id, emitExpr(expr.right, g), "R");
     return id;
   } else if (expr instanceof ExprNS.Compare) {
-    const id = g.node(`${expr.operator.lexeme}`, "#e2e3f1");
+    const id = g.node(`${expr.operator.lexeme}${hint}`, "#e2e3f1");
     g.edge(id, emitExpr(expr.left, g), "L");
     g.edge(id, emitExpr(expr.right, g), "R");
     return id;
   } else if (expr instanceof ExprNS.BoolOp) {
-    const id = g.node(`${expr.operator.lexeme}`, "#e2e3f1");
+    const id = g.node(`${expr.operator.lexeme}${hint}`, "#e2e3f1");
     g.edge(id, emitExpr(expr.left, g), "L");
     g.edge(id, emitExpr(expr.right, g), "R");
     return id;
@@ -109,7 +152,7 @@ function emitExpr(expr: ExprNS.Expr, g: DotGraph): string {
     g.edge(id, emitExpr(expr.alternative, g), "else");
     return id;
   } else if (expr instanceof ExprNS.Call) {
-    const id = g.node("call", "#fce4ec");
+    const id = g.node(`call${hint}`, "#fce4ec");
     g.edge(id, emitExpr(expr.callee, g), "fn");
     expr.args.forEach((a, i) => g.edge(id, emitExpr(a, g), `${i}`));
     return id;
@@ -195,7 +238,11 @@ function emitStmt(stmt: StmtNS.Stmt, g: DotGraph): string {
   } else if (stmt instanceof StmtNS.FunctionDef) {
     const params = stmt.parameters.map(p => p.lexeme).join(", ");
     const id = g.node(`def ${stmt.name.lexeme}(${params})`, "#e0f7fa");
+    const childHints = UNIT_HINTS?.get(stmt);
+    const prev = g["hints"];
+    if (childHints) g["hints"] = childHints;
     emitBody(stmt.body, g, id);
+    g["hints"] = prev;
     return id;
   } else if (stmt instanceof StmtNS.Return) {
     const id = g.node("return", "#fce4ec");
@@ -230,6 +277,8 @@ function emitStmt(stmt: StmtNS.Stmt, g: DotGraph): string {
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
+let UNIT_HINTS: Map<StmtNS.FileInput | StmtNS.FunctionDef, HintStore> | undefined;
+
 const ast = parse(source);
 
 const before = new DotGraph("b");
@@ -242,9 +291,37 @@ if (errors.length > 0) {
   for (const e of errors) console.error(" ", String(e));
   process.exit(1);
 }
-optimize(ast, environments);
+const units = optimize(ast, environments);
 
-const after = new DotGraph("a");
+UNIT_HINTS = new Map();
+let totalHints = 0;
+let concreteTypes = 0;
+let constants = 0;
+for (const [scope, unit] of units) {
+  UNIT_HINTS.set(scope, unit.hints);
+  const scopeName = scope instanceof StmtNS.FunctionDef ? `def ${scope.name.lexeme}` : "<module>";
+  const latest = new Map<number, OptimizationHint>();
+  for (const c of unit.hints.changesSince(0)) latest.set(c.nodeId, c.newHint);
+  let unitHints = 0;
+  let unitConcrete = 0;
+  let unitConsts = 0;
+  for (const h of latest.values()) {
+    unitHints++;
+    if (h.type?.kinds !== undefined && h.type.kinds !== ALL_KINDS) unitConcrete++;
+    if (h.constVal?.tag === "const") unitConsts++;
+  }
+  totalHints += unitHints;
+  concreteTypes += unitConcrete;
+  constants += unitConsts;
+  console.error(
+    `  unit ${scopeName}: hints=${unitHints} concreteTypes=${unitConcrete} consts=${unitConsts} structuralVersion=${unit.structuralVersion}`,
+  );
+}
+console.error(
+  `Specialization summary: units=${units.size} hints=${totalHints} concreteTypes=${concreteTypes} consts=${constants}`,
+);
+
+const after = new DotGraph("a", UNIT_HINTS.get(ast));
 for (const s of ast.statements) emitStmt(s, after);
 
 // Compose DOT
