@@ -61,13 +61,23 @@ export class HintStore {
     return this.map.get(node.id);
   }
 
+  /** Look up a hint by raw node id (used by the observation handler). */
+  getById(id: number): OptimizationHint | undefined {
+    return this.map.get(id);
+  }
+
   /** Returns true if the value actually changed. */
   set(node: ExprNS.Expr | StmtNS.Stmt, hint: OptimizationHint): boolean {
-    const old = this.map.get(node.id);
+    return this.setById(node.id, hint);
+  }
+
+  /** Set a hint by raw node id. Returns true if value changed. */
+  setById(id: number, hint: OptimizationHint): boolean {
+    const old = this.map.get(id);
     if (old !== undefined && hintEquals(old, hint)) return false;
     this._version++;
-    this._changes.push({ nodeId: node.id, version: this._version, oldHint: old, newHint: hint });
-    this.map.set(node.id, hint);
+    this._changes.push({ nodeId: id, version: this._version, oldHint: old, newHint: hint });
+    this.map.set(id, hint);
     return true;
   }
 
@@ -76,16 +86,6 @@ export class HintStore {
     for (const [id, hint] of this.map) {
       target.setById(id, hint);
     }
-  }
-
-  /** Set a hint by raw node id (used by mergeInto). Returns true if value changed. */
-  setById(id: number, hint: OptimizationHint): boolean {
-    const old = this.map.get(id);
-    if (old !== undefined && hintEquals(old, hint)) return false;
-    this._version++;
-    this._changes.push({ nodeId: id, version: this._version, oldHint: old, newHint: hint });
-    this.map.set(id, hint);
-    return true;
   }
 
   /** Returns all changes since the given version (exclusive). */

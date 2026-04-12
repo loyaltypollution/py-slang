@@ -6,10 +6,8 @@
 
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
-import type { HintStore } from "./hint";
 import type { AnalysisModule, TransformRule } from "./interfaces";
 import type { ScopeKey, VersionedFunctionUnit } from "./function-unit";
-import type { SlotLookup } from "./slot-table";
 import { applyTransformPass } from "./transform";
 import type { AnalysisSession } from "./worklist";
 import {
@@ -37,11 +35,26 @@ interface QueuedTransform {
 
 // ── External work items (public API for enqueue) ────────────────────────────
 
-export interface ObservationItem {
-  readonly kind: "observation";
+/**
+ * A runtime value was written to `nodeId` (the RHS expression of an assignment,
+ * or a parameter binding). Analysis modules interpret `value` via their
+ * `observeValue` hook and merge the result into the scope's HintStore.
+ */
+export interface ValueObservationItem {
+  readonly kind: "value-observation";
   readonly scopeKey: ScopeKey;
-  readonly slot: number;
+  readonly nodeId: number;
   readonly value: unknown;
+}
+
+/**
+ * A function call was observed. For now: equivalent to invalidation of the
+ * callee's scope. A future call-count AnalysisModule would interpret these.
+ */
+export interface CallObservationItem {
+  readonly kind: "call-observation";
+  readonly scopeKey: ScopeKey;
+  readonly calleeKey: ScopeKey;
 }
 
 export interface InvalidateItem {
@@ -49,7 +62,7 @@ export interface InvalidateItem {
   readonly scopeKey: ScopeKey;
 }
 
-export type ExternalWorkItem = ObservationItem | InvalidateItem;
+export type ExternalWorkItem = ValueObservationItem | CallObservationItem | InvalidateItem;
 
 // ── Performance stats ──────────────────────────────────────────────────────
 
@@ -95,6 +108,13 @@ export class PersistentWorklist {
 
   private readonly scopes = new Map<ScopeKey, ScopeWorkState>();
 
+  /**
+   * Scopes currently on a live interpreter's call stack. Transforms for these
+   * scopes are parked (not dequeued) because mutating their AST would break
+   * the interpreter's references. Reference-counted to handle recursion.
+   */
+  private readonly activeScopes = new Map<ScopeKey, number>();
+
   // ── Performance counters ───────────────────────────────────────────────
   private _itemsProcessed = 0;
   private _analysisItemsProcessed = 0;
@@ -134,10 +154,68 @@ export class PersistentWorklist {
     const state = this.scopes.get(item.scopeKey);
     if (!state) return;
 
-    if (item.kind === "invalidate") {
-      this.rebuildAndReseed(item.scopeKey, state);
+    switch (item.kind) {
+      case "invalidate":
+        this.rebuildAndReseed(item.scopeKey, state);
+        return;
+      case "value-observation":
+        if (this.handleValueObservation(item, state)) {
+          this.rebuildAndReseed(item.scopeKey, state);
+        }
+        return;
+      case "call-observation": {
+        // Invalidate the callee; a future call-count analysis could read these
+        // rather than treating them as invalidations.
+        const calleeState = this.scopes.get(item.calleeKey);
+        if (calleeState) this.rebuildAndReseed(item.calleeKey, calleeState);
+        return;
+      }
     }
-    // observation: future — write lattice value to HintStore, then invalidate
+  }
+
+  /**
+   * Mark a scope as live on an interpreter's call stack. While any reference
+   * count > 0, transforms for that scope are deferred.
+   */
+  activateScope(key: ScopeKey): void {
+    this.activeScopes.set(key, (this.activeScopes.get(key) ?? 0) + 1);
+  }
+
+  /** Release one reference; transforms resume when count reaches 0. */
+  deactivateScope(key: ScopeKey): void {
+    const count = this.activeScopes.get(key);
+    if (count === undefined) return;
+    if (count <= 1) this.activeScopes.delete(key);
+    else this.activeScopes.set(key, count - 1);
+  }
+
+  /** True iff any reference count for `key` is > 0. */
+  isScopeActive(key: ScopeKey): boolean {
+    return this.activeScopes.has(key);
+  }
+
+  /**
+   * Apply an observation: iterate analysis modules, merge per-module lattice
+   * deltas into the unit's HintStore at `nodeId`. Returns true if any hint
+   * actually changed (caller then invalidates the scope to re-propagate).
+   */
+  private handleValueObservation(item: ValueObservationItem, state: ScopeWorkState): boolean {
+    let anyChanged = false;
+    const hints = state.unit.hints;
+    const existing = hints.getById(item.nodeId) ?? {};
+    let next = existing;
+
+    for (const module of this.analyses) {
+      if (!module.observeValue || !module.mergeIntoHint) continue;
+      const lattice = module.observeValue(item.value);
+      if (lattice === undefined) continue;
+      next = module.mergeIntoHint(next, lattice);
+    }
+
+    if (next !== existing) {
+      anyChanged = hints.setById(item.nodeId, next) || anyChanged;
+    }
+    return anyChanged;
   }
 
   // ── Drain ─────────────────────────────────────────────────────────────────
@@ -212,13 +290,29 @@ export class PersistentWorklist {
 
   // ── Internal: queue selection ─────────────────────────────────────────────
 
-  /** Returns index of lowest non-empty queue, or -1 if idle. */
+  /**
+   * Returns index of lowest non-empty queue with a processable item, or -1.
+   * A transform queue entry is "processable" only if its scopeKey is not
+   * currently active on an interpreter call stack.
+   */
   private findActiveQueue(): number {
     for (let i = 0; i < this.analysisQueues.length; i++) {
       if (this.analysisHeads[i] < this.analysisQueues[i].length) return i;
     }
-    if (this.transformHead < this.transformQueue.length) return this.analyses.length;
+    if (this.hasProcessableTransform()) return this.analyses.length;
     return -1;
+  }
+
+  /** True iff any transform queue entry is for a non-active scope. */
+  private hasProcessableTransform(): boolean {
+    for (let i = this.transformHead; i < this.transformQueue.length; i++) {
+      const item = this.transformQueue[i];
+      const state = this.scopes.get(item.scopeKey);
+      // Stale or missing items count as processable (processTransform will skip them).
+      if (!state || item.generation !== state.generation) return true;
+      if (!this.activeScopes.has(item.scopeKey)) return true;
+    }
+    return false;
   }
 
   // ── Internal: analysis block processing ───────────────────────────────────
@@ -267,11 +361,27 @@ export class PersistentWorklist {
   // ── Internal: transform processing ────────────────────────────────────────
 
   /**
-   * Process one item from the transform queue.
-   * Returns true if the item was current (processed), false if stale (skipped).
+   * Process the first non-suppressed item from the transform queue.
+   * Skips items whose scope is active (still executing) — they stay in place
+   * until `deactivateScope` is called.
+   * Returns true if the item was current (processed), false if stale.
    */
   private processTransform(changed: Set<ScopeKey>): boolean {
-    const item = this.transformQueue[this.transformHead++];
+    // Find the first item whose scope is not active.
+    let idx = this.transformHead;
+    while (idx < this.transformQueue.length && this.activeScopes.has(this.transformQueue[idx].scopeKey)) {
+      idx++;
+    }
+    if (idx >= this.transformQueue.length) return false;
+
+    const item = this.transformQueue[idx];
+    // Remove the selected item. If it was at head, just advance head;
+    // otherwise splice it out (rare — only when earlier items are parked).
+    if (idx === this.transformHead) {
+      this.transformHead++;
+    } else {
+      this.transformQueue.splice(idx, 1);
+    }
 
     // Compact
     if (this.transformHead > 64 && this.transformHead > this.transformQueue.length / 2) {
