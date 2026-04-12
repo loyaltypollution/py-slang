@@ -1,34 +1,46 @@
 ## What exists now
 
 Branch `worktree-pr3-hint-store` has the reactive optimization architecture
-implemented. All 2587 tests pass (2563 existing + 24 new differential tests).
+implemented plus the OBSERVE loop (CSE interpreter pushes runtime observations
+back into the worklist). All 5,225 tests pass across 49 suites.
 
 ### Architecture overview
 
 ```
 createReactiveOptimization(ast, envs) → ReactiveOptimization
-  .units           → ReadonlyMap<ScopeKey, VersionedFunctionUnit>
-  .subscribe(cb)   → notified when any unit changes
-  .converge()      → run to fixpoint (initial static pass)
-  .tick(limit?)    → incremental processing
-  .enqueue(item)   → inject runtime observations
-  .idle            → true when no work remains
+  .units                → ReadonlyMap<ScopeKey, VersionedFunctionUnit>
+  .subscribe(cb)        → notified when any unit changes
+  .converge()           → run to fixpoint (initial static pass)
+  .tick(limit?)         → incremental processing
+  .enqueue(item)        → inject runtime observations
+  .observeWrite(...)    → push a runtime value at an RHS node
+  .observeCall(...)     → push a closure invocation
+  .activateScope(key)   → pin scope as live on an interpreter call stack
+  .deactivateScope(key) → release one pin; transforms resume at count 0
+  .hintStoreVersion     → monotonic aggregate for useSyncExternalStore
+  .idle                 → true when no non-suppressed work remains
 ```
 
-Two paths coexist:
-- **One-shot:** `optimize()` → `OptimizationSession.converge()` → done. Used by `PySvmlEvaluator`. Unchanged.
-- **Reactive:** `createReactiveOptimization()` → `PersistentWorklist` with unified priority scheduling. Used by `PySvmlJitEvaluator` (skeleton). New.
+Single scheduler: `PersistentWorklist`. The former `OptimizationSession`
+state-machine has been dissolved (roadmap Decision 1 now realised). `optimize()`
+is a thin addScope + drain on a fresh worklist. Both `PySvmlEvaluator`
+(one-shot, no observations) and `PyCseEvaluator` (OBSERVE loop, reactive)
+share this scheduler.
 
 ### Files created
 
-**`src/specialization/framework/persistent-worklist.ts`** (~200 lines)
+**`src/specialization/framework/persistent-worklist.ts`**
 - `PersistentWorklist`: unified scheduler with multi-queue priority.
 - Priority order: type analysis blocks → const analysis blocks → transforms.
   Transforms only fire at local fixpoint (all analysis drained first).
 - Generation counters on per-scope state prevent stale block items from
   processing after a CFG rebuild.
 - `addScope()`, `enqueue()`, `drain(limit?)`, `idle`, `pending`.
-- Work item types: `AnalysisBlockItem`, `TransformScopeItem`, `ObservationItem`.
+- Per-scope transform suppression via `activateScope`/`deactivateScope`
+  (ref-counted). `findActiveQueue` and `processTransform` skip transforms
+  whose scope is active on an interpreter call stack.
+- External work items: `ValueObservationItem` (node-keyed runtime value),
+  `CallObservationItem` (closure invocation), `InvalidateItem`.
 
 **`src/specialization/reactive.ts`** (~100 lines)
 - `createReactiveOptimization()` factory.
