@@ -28,6 +28,7 @@ export type {
   StmtTransformRule,
   ExprTransformRule,
 } from "./framework/interfaces";
+export { assertSyncObservationSink } from "./framework/observation-sink";
 export type { AnalysisKey, OptimizationHint, HintChangeRecord } from "./framework/hint";
 export {
   HintStore,

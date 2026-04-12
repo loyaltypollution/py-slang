@@ -12,6 +12,7 @@ import type { FunctionEnvironments } from "../resolver";
 import type { FunctionUnit } from "./framework/function-unit";
 import type { OptimizationHint } from "./framework/hint";
 import type { ObservationSink } from "./framework/observation-sink";
+import { assertSyncObservationSink } from "./framework/observation-sink";
 import { InPlaceASTStrategy, OSRCoordinator } from "./framework/osr";
 import type { StateDeltaStrategy } from "./framework/osr";
 import { PersistentWorklist } from "./framework/persistent-worklist";
@@ -36,6 +37,12 @@ export class SpecializationEngine {
       createAnalyses(),
       createTransforms(),
     );
+    // Tripwire for the synchrony invariant documented in ObservationSink.
+    // Catches `async`-declared methods; other async shapes (explicit
+    // `Promise.resolve()` returns, transpiled async) are out of scope.
+    // Callers that construct PersistentWorklist directly and install a
+    // custom sink should call `assertSyncObservationSink` themselves.
+    assertSyncObservationSink(worklist);
     return new SpecializationEngine(worklist);
   }
 

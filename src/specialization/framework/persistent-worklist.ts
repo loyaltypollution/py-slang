@@ -163,7 +163,14 @@ export class PersistentWorklist {
     this.notify(this.drain());
   }
 
-  /** Process pending work incrementally. Returns true if any units changed. */
+  /**
+   * Process pending work incrementally. Returns true if any units changed.
+   *
+   * In production, tick is invoked automatically at the end of each
+   * `withActiveScope` via `deactivateAndTick`. External callers (tests,
+   * advanced consumers driving the reactive loop manually) may invoke it
+   * directly; the return value is a drain-progress signal for those flows.
+   */
   tick(limit?: number): boolean {
     const changed = this.drain(limit);
     this.notify(changed);
