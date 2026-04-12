@@ -27,7 +27,13 @@ import {
 } from "./lattice";
 import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
 import type { AnalysisModule } from "../framework/interfaces";
-import { TYPE_ANALYSIS_KEY, type HintStore, type OptimizationHint } from "../framework/hint";
+import {
+  TYPE_ANALYSIS_KEY,
+  hintGet,
+  hintSet,
+  type HintStore,
+  type OptimizationHint,
+} from "../framework/hint";
 import type { SlotLookup } from "../framework/slot-table";
 
 /**
@@ -65,8 +71,8 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   ) {}
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
-    const existing = this.hints.get(node);
-    this.hints.set(node, { ...existing, type: val });
+    const existing = this.hints.get(node) ?? {};
+    this.hints.set(node, hintSet(existing, TYPE_ANALYSIS_KEY, val));
     return val;
   }
 
@@ -301,8 +307,9 @@ export class TypeAnalysisModule implements AnalysisModule<TypeLattice> {
 
   mergeIntoHint(hint: OptimizationHint, value: TypeLattice): OptimizationHint {
     // Widen (join) — observations add seen values, never narrow static facts.
-    const next = hint.type ? join(hint.type, value) : value;
-    return { ...hint, type: next };
+    const prev = hintGet(hint, TYPE_ANALYSIS_KEY);
+    const next = prev ? join(prev, value) : value;
+    return hintSet(hint, TYPE_ANALYSIS_KEY, next);
   }
 }
 

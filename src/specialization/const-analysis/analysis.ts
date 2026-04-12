@@ -1,7 +1,13 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { AnalysisModule } from "../framework/interfaces";
-import { CONST_ANALYSIS_KEY, type HintStore, type OptimizationHint } from "../framework/hint";
+import {
+  CONST_ANALYSIS_KEY,
+  hintGet,
+  hintSet,
+  type HintStore,
+  type OptimizationHint,
+} from "../framework/hint";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
@@ -25,8 +31,8 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   ) {}
 
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
-    const existing = this.hints.get(node);
-    this.hints.set(node, { ...existing, constVal: val });
+    const existing = this.hints.get(node) ?? {};
+    this.hints.set(node, hintSet(existing, CONST_ANALYSIS_KEY, val));
     return val;
   }
 
@@ -264,7 +270,8 @@ export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
 
   mergeIntoHint(hint: OptimizationHint, value: ConstLattice): OptimizationHint {
     // Widen via constJoin — two different observed constants collapse to CONST_TOP.
-    const next = hint.constVal ? constJoin(hint.constVal, value) : value;
-    return { ...hint, constVal: next };
+    const prev = hintGet(hint, CONST_ANALYSIS_KEY);
+    const next = prev ? constJoin(prev, value) : value;
+    return hintSet(hint, CONST_ANALYSIS_KEY, next);
   }
 }
