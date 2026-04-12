@@ -9,7 +9,7 @@
 import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { createReactiveOptimization } from "../specialization";
+import { buildTestWorklist } from "./utils";
 import { Context } from "../engines/cse/context";
 import { evaluate } from "../engines/cse/interpreter";
 import { HintStore } from "../specialization";
@@ -19,7 +19,7 @@ function setupReactive(code: string) {
   const script = code + "\n";
   const ast = parse(script) as StmtNS.FileInput;
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const reactive = createReactiveOptimization(ast, environments);
+  const reactive = buildTestWorklist(ast, environments);
   return { ast, environments, reactive };
 }
 
@@ -28,7 +28,7 @@ async function runWithReactive(code: string) {
   const ast = parse(script) as StmtNS.FileInput;
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const context = new Context();
-  const reactive = createReactiveOptimization(ast, environments);
+  const reactive = buildTestWorklist(ast, environments);
   reactive.converge();
 
   const merged = new HintStore();

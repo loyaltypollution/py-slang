@@ -1,29 +1,6 @@
 // src/specialization/index.ts — public API barrel
 
-// ── Pipeline entry points ────────────────────────────────────────────────────
-//
-// Production callers use `SpecializationEngine` for the full reactive
-// lifecycle. `createReactiveOptimization` returns a raw PersistentWorklist
-// and is @internal for tests and advanced consumers only.
-
-import type { StmtNS } from "../ast-types";
-import type { FunctionEnvironments } from "../resolver";
-import { PersistentWorklist } from "./framework/persistent-worklist";
-import { createAnalyses, createTransforms } from "./pipeline-config";
-
-export { SpecializationEngine } from "./engine";
-
-/**
- * @internal Build a `PersistentWorklist` pre-loaded with the default
- * analyses and transforms. For tests and advanced consumers that drive the
- * reactive loop directly; production callers use `SpecializationEngine`.
- */
-export function createReactiveOptimization(
-  ast: StmtNS.FileInput,
-  functionEnvironments: FunctionEnvironments,
-): PersistentWorklist {
-  return new PersistentWorklist(ast, functionEnvironments, createAnalyses(), createTransforms());
-}
+export { runPinned } from "./run-pinned";
 
 // ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
 

@@ -1,6 +1,6 @@
 /**
  * Tests for the reactive optimization architecture:
- * - Differential correctness: createReactiveOptimization().converge() produces
+ * - Differential correctness: buildTestWorklist().converge() produces
  *   the same hints and AST structure as the one-shot optimize() path.
  * - PersistentWorklist priority ordering.
  * - Structural versioning.
@@ -10,7 +10,7 @@
 import { ExprNS, StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { SpecializationEngine, createReactiveOptimization } from "../specialization";
+import { buildTestWorklist } from "./utils";
 import type { FunctionUnit } from "../specialization/framework/function-unit";
 import type { HintStore } from "../specialization/framework/hint";
 
@@ -89,13 +89,13 @@ describe("ReactiveOptimization: differential vs optimize()", () => {
   test.each(programs)("$name: converge() produces same AST structure", ({ code }) => {
     // One-shot path
     const oneShot = parseAndResolve(code);
-    const oneShotEngine = new SpecializationEngine(oneShot.ast, oneShot.environments);
+    const oneShotEngine = buildTestWorklist(oneShot.ast, oneShot.environments);
     oneShotEngine.converge();
     const oneShotUnits = oneShotEngine.units;
 
     // Reactive path (fresh parse to get independent AST)
     const reactive = parseAndResolve(code);
-    const reactiveOpt = createReactiveOptimization(reactive.ast, reactive.environments);
+    const reactiveOpt = buildTestWorklist(reactive.ast, reactive.environments);
     reactiveOpt.converge();
 
     // Compare AST structure per scope
@@ -109,7 +109,7 @@ describe("ReactiveOptimization: differential vs optimize()", () => {
 
   test.each(programs)("$name: converge() reaches idle", ({ code }) => {
     const { ast, environments } = parseAndResolve(code);
-    const reactive = createReactiveOptimization(ast, environments);
+    const reactive = buildTestWorklist(ast, environments);
     reactive.converge();
     expect(reactive.idle).toBe(true);
   });
@@ -120,7 +120,7 @@ describe("ReactiveOptimization: differential vs optimize()", () => {
 describe("ReactiveOptimization: dual versioning", () => {
   test("no-transform code: structuralVersion stays 0", () => {
     const { ast, environments } = parseAndResolve("x = 1\ny = 2");
-    const reactive = createReactiveOptimization(ast, environments);
+    const reactive = buildTestWorklist(ast, environments);
     reactive.converge();
 
     for (const unit of reactive.units.values()) {
@@ -130,7 +130,7 @@ describe("ReactiveOptimization: dual versioning", () => {
 
   test("dead branch elimination: structuralVersion > 0 for root scope", () => {
     const { ast, environments } = parseAndResolve("if True:\n  x = 1\nelse:\n  x = 2");
-    const reactive = createReactiveOptimization(ast, environments);
+    const reactive = buildTestWorklist(ast, environments);
     reactive.converge();
 
     const rootUnit = reactive.units.get(ast);
@@ -145,7 +145,7 @@ describe("ReactiveOptimization: dual versioning", () => {
 describe("ReactiveOptimization: subscriptions", () => {
   test("subscribe receives changed scope keys on converge", () => {
     const { ast, environments } = parseAndResolve("x = 1 + 2");
-    const reactive = createReactiveOptimization(ast, environments);
+    const reactive = buildTestWorklist(ast, environments);
 
     const notifications: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>[] = [];
     reactive.subscribe(changed => notifications.push(changed));
@@ -160,7 +160,7 @@ describe("ReactiveOptimization: subscriptions", () => {
 
   test("unsubscribe stops notifications", () => {
     const { ast, environments } = parseAndResolve("x = 1");
-    const reactive = createReactiveOptimization(ast, environments);
+    const reactive = buildTestWorklist(ast, environments);
 
     const count = { value: 0 };
     const unsub = reactive.subscribe(() => count.value++);
@@ -172,7 +172,7 @@ describe("ReactiveOptimization: subscriptions", () => {
 
   test("tick() returns true when work was done", () => {
     const { ast, environments } = parseAndResolve("x = 1 + 2");
-    const reactive = createReactiveOptimization(ast, environments);
+    const reactive = buildTestWorklist(ast, environments);
 
     // First tick should do work
     const didWork = reactive.tick(100);
@@ -181,7 +181,7 @@ describe("ReactiveOptimization: subscriptions", () => {
 
   test("tick() returns false when idle", () => {
     const { ast, environments } = parseAndResolve("x = 1");
-    const reactive = createReactiveOptimization(ast, environments);
+    const reactive = buildTestWorklist(ast, environments);
     reactive.converge();
 
     // After convergence, tick should have nothing to do
@@ -200,7 +200,7 @@ describe("ReactiveOptimization: subscriptions", () => {
 describe("PersistentWorklist: post-optimization AST", () => {
   function optimise(code: string): StmtNS.Stmt[] {
     const { ast, environments } = parseAndResolve(code);
-    const reactive = createReactiveOptimization(ast, environments);
+    const reactive = buildTestWorklist(ast, environments);
     reactive.converge();
     return reactive.units.get(ast)!.body;
   }
@@ -264,7 +264,7 @@ describe("PersistentWorklist: post-optimization AST", () => {
 describe("PersistentWorklist: post-optimization hints", () => {
   function analyse(code: string): { hints: HintStore; body: StmtNS.Stmt[] } {
     const { ast, environments } = parseAndResolve(code);
-    const reactive = createReactiveOptimization(ast, environments);
+    const reactive = buildTestWorklist(ast, environments);
     reactive.converge();
     const unit = reactive.units.get(ast)!;
     return { hints: unit.hints, body: unit.body };
@@ -297,7 +297,7 @@ describe("ReactiveOptimization: multi-scope", () => {
   test("function scopes are optimized independently", () => {
     const code = "def f(a):\n  if True:\n    return a\n  else:\n    return 0\nx = f(1)";
     const { ast, environments } = parseAndResolve(code);
-    const reactive = createReactiveOptimization(ast, environments);
+    const reactive = buildTestWorklist(ast, environments);
     reactive.converge();
 
     // Should have at least 2 scopes (root + function f)

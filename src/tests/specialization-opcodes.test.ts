@@ -14,7 +14,7 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import OpCodes from "../engines/svml/opcodes";
-import { SpecializationEngine } from "../specialization";
+import { buildTestWorklist } from "./utils";
 import type { SVMLProgram } from "../engines/svml/types";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ function compileOptimized(code: string): SVMLProgram {
   const ast = parse(script);
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
-  const engine = new SpecializationEngine(ast, environments);
+  const engine = buildTestWorklist(ast, environments);
   engine.converge();
   const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units);
   return compiler.compileProgram(ast);

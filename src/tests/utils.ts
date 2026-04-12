@@ -9,11 +9,41 @@ import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { RuntimeSourceError } from "../errors";
 import { parse } from "../parser/parser-adapter";
 import { Resolver } from "../resolver";
+import type { FunctionEnvironments } from "../resolver";
+import {
+  ConstAnalysisModule,
+  ConstantFoldingRule,
+  DeadBranchEliminationRule,
+  MemoizationAnalysisModule,
+  MemoizationTransformRule,
+  PersistentWorklist,
+  TypeAnalysisModule,
+} from "../specialization";
 import { Group } from "../stdlib/utils";
 import { RecursivePartial, Result } from "../types";
 import { PyComplexNumber } from "../types";
 import { makeValidatorsForChapter } from "../validator";
 import Stmt = StmtNS.Stmt;
+
+/**
+ * Test-only helper. Builds a `PersistentWorklist` preloaded with the
+ * standard analyses and transforms. Replaces the deleted
+ * `createReactiveOptimization` / `SpecializationEngine` production
+ * factories — do not introduce new callers in production code.
+ */
+export function buildTestWorklist(
+  ast: StmtNS.FileInput,
+  functionEnvironments: FunctionEnvironments,
+  pinSet?: Map<StmtNS.FileInput | StmtNS.FunctionDef, number>,
+): PersistentWorklist {
+  return new PersistentWorklist(
+    ast,
+    functionEnvironments,
+    [new TypeAnalysisModule(), new ConstAnalysisModule(), new MemoizationAnalysisModule()],
+    [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
+    pinSet,
+  );
+}
 
 /**
  * Test-local replacement for the deleted pyRunner.runInContext.

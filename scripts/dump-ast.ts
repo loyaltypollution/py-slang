@@ -16,8 +16,14 @@ import { ExprNS, StmtNS } from "../src/ast-types";
 import { parse } from "../src/parser/parser-adapter";
 import { analyzeWithEnvironments } from "../src/resolver";
 import {
+  ConstAnalysisModule,
+  ConstantFoldingRule,
+  DeadBranchEliminationRule,
   HintStore,
-  SpecializationEngine,
+  MemoizationAnalysisModule,
+  MemoizationTransformRule,
+  PersistentWorklist,
+  TypeAnalysisModule,
   type OptimizationHint,
   INT_BIT,
   BOOL_BIT,
@@ -291,9 +297,14 @@ if (errors.length > 0) {
   for (const e of errors) console.error(" ", String(e));
   process.exit(1);
 }
-const engine = new SpecializationEngine(ast, environments);
-engine.converge();
-const units = engine.units;
+const worklist = new PersistentWorklist(
+  ast,
+  environments,
+  [new TypeAnalysisModule(), new ConstAnalysisModule(), new MemoizationAnalysisModule()],
+  [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
+);
+worklist.converge();
+const units = worklist.units;
 
 UNIT_HINTS = new Map();
 let totalHints = 0;

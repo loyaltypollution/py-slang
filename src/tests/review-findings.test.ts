@@ -12,18 +12,18 @@ import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import {
-  SpecializationEngine,
   INT_BIT,
   BOOL_BIT,
   BoolRef,
 } from "../specialization";
+import { buildTestWorklist } from "./utils";
 
 function compileAndRun(code: string): unknown {
   const script = code + "\n";
   const ast = parse(script);
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
-  const engine = new SpecializationEngine(ast, environments);
+  const engine = buildTestWorklist(ast, environments);
   engine.converge();
   const units = engine.units;
   const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units);
@@ -94,7 +94,7 @@ describe("[P2] Ternary result type annotation", () => {
     const script = "(5 if True else -3)\n";
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const engine = new SpecializationEngine(ast, environments);
+    const engine = buildTestWorklist(ast, environments);
   engine.converge();
   const units = engine.units;
     const rootUnit = units.get(ast)!;
@@ -146,7 +146,7 @@ acc
     const script = "acc = 0\nfor i in [1, 2, 3]:\n    acc = acc + i\n    acc > 0\n";
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const engine = new SpecializationEngine(ast, environments);
+    const engine = buildTestWorklist(ast, environments);
   engine.converge();
   const units = engine.units;
     const rootUnit = units.get(ast)!;

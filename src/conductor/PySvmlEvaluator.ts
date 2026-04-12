@@ -3,7 +3,15 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { SpecializationEngine } from "../specialization";
+import {
+  ConstAnalysisModule,
+  ConstantFoldingRule,
+  DeadBranchEliminationRule,
+  MemoizationAnalysisModule,
+  MemoizationTransformRule,
+  PersistentWorklist,
+  TypeAnalysisModule,
+} from "../specialization";
 import { EvaluatorError } from "./errors";
 
 export class PySvmlEvaluator extends BasicEvaluator {
@@ -15,9 +23,14 @@ export class PySvmlEvaluator extends BasicEvaluator {
       if (errors.length > 0) {
         throw errors[0];
       }
-      const engine = new SpecializationEngine(ast, environments);
-      engine.converge();
-      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units);
+      const worklist = new PersistentWorklist(
+        ast,
+        environments,
+        [new TypeAnalysisModule(), new ConstAnalysisModule(), new MemoizationAnalysisModule()],
+        [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
+      );
+      worklist.converge();
+      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units);
       const program = compiler.compileProgram(ast);
       const interpreter = new SVMLInterpreter(program, {
         sendOutput: this.conductor.sendOutput,

@@ -16,7 +16,7 @@
 import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { createReactiveOptimization } from "../specialization";
+import { buildTestWorklist } from "./utils";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { OpCodes } from "../engines/svml/opcodes";
@@ -31,7 +31,7 @@ add(2, 3)
 `;
   const ast = parse(script) as StmtNS.FileInput;
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const reactive = createReactiveOptimization(ast, environments);
+  const reactive = buildTestWorklist(ast, environments);
   reactive.converge();
   const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units);
   const program = compiler.compileProgram(ast);

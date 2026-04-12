@@ -1,452 +1,704 @@
-# Optimization Architecture: Vision and Open Design Space
+# Optimization Architecture: Spec and Walkthrough
 
-This document describes the optimization vision for py-slang. It is meant to
-orient LLMs toward the right design space and trigger cumulative brainstorming
-on unsettled architectural questions — particularly around how analysis results
-flow to consumers.
+Point of reference for the py-slang specialization engine.
 
----
+**Above the evolving-work divider is intended to be stable**: numbered
+`SPEC-NN` claims describe the contracts that code and reviews can cite,
+followed by the architecture walkthrough that grounds them and the
+principles that shaped them. **Below the divider is forward-looking**:
+consumer strategies, experiments, open gaps, and the changelog of
+resolved work.
 
-## Core Vision: Background DFA as Incremental Computing Substrate
-
-One DFA worklist algorithm runs continuously in the background, slowly
-accumulating annotations across multiple analyses (type narrowing, constant
-propagation, etc.). The worklist is the single propagation mechanism — all
-analyses share it, all consumers read from it.
-
-The key insight: this will not be a batch "analyze then compile" pipeline. It is an
-**incremental computing system** where analysis results trickle in over time and
-consumers react to updates at their own pace.
-
-```
-                    +------------------+
-  push: runtime     |                  |   pull: consumers
-  observations ---->|  DFA Worklist    |<---- subscribe to results
-  new analyses ---->|  (background)    |
-  AST edits ------->|                  |
-                    +------------------+
-                           |
-                    annotations accumulate
-                    monotonically on lattices
-```
-
-### Push Interface (Settled)
-
-Any source can push work into the worklist:
-
-- **New analysis modules** register transfer functions; the worklist picks them
-  up on the next iteration.
-- **Runtime observations** (type tags from OBSERVE opcodes, call counts) feed
-  back as lattice refinements on variable slots.
-- **AST edits** (from transforms like constant folding, dead branch elimination)
-  invalidate affected nodes and their dependents.
-
-The push side is well-understood. Each push narrows lattice values; the worklist
-propagates until convergence. Monotonicity guarantees termination.
-
-### Pull Interface (Open Design Question)
-
-**This is the central unsettled question.** How do consumers get analysis
-results, and how do they learn that results have improved?
+For step-by-step pipeline walk-through see `docs/compilation-flow.md`.
 
 ---
 
-## Design Space: How Consumers Subscribe to Analysis Results
+## Spec claims (stable reference)
 
-The following are candidate architectures. None is chosen. Each has different
-tradeoffs around latency, complexity, and coupling.
+Cite these as `SPEC-NN` in PR discussions, code comments, and reviewer
+rebuttals. Each claim names the contract, points at where it lives, and
+flags the guarding principle (see "Principles" section below) that keeps
+it from being eroded.
 
-### Option A: Polling with Version Stamps
+### SPEC-01 — One facade per evaluator
 
-Each annotation carries a version counter. Consumers poll: "has anything changed
-since version N?" If yes, re-read the relevant annotations.
+Every evaluator constructs exactly one `SpecializationEngine` and uses it
+for all specialization work. Evaluators **must not** construct
+`PersistentWorklist`, `OSRCoordinator`, or `HintStore` directly.
+*Location*: `src/specialization/engine.ts`.
+*Principle*: P-01 (Abstract over what's shared, not what differs).
 
-```
-Consumer:
-  on_tick():
-    if hint_store.version > my_last_version:
-      new_hints = hint_store.diff_since(my_last_version)
-      apply(new_hints)
-      my_last_version = hint_store.version
-```
+### SPEC-02 — HintStore is an open record
 
-- **Pro:** Dead simple. No subscription machinery. Consumer controls when to
-  check.
-- **Con:** Latency proportional to poll interval. Consumers must implement their
-  own diffing logic to figure out what changed.
-- **Good for:** Compilers that recompile in bulk at natural pause points.
+`OptimizationHint` is an open record keyed on `AnalysisModule.name`. A
+new analysis slots in by adding an optional field to the hint record and
+shipping a module whose `name` matches. Equality is delegated to the
+module's `latticeEquals`. No separate key sub-object, no `hintGet` /
+`hintSet` helpers.
+*Location*: `src/specialization/framework/hint.ts`.
+*Principle*: P-02 (Extension shape follows the extension point).
 
-### Option B: React-Style Subscriptions (Fine-Grained Reactivity)
+### SPEC-03 — `FunctionUnit.body` is a read-through getter
 
-Consumers subscribe to specific annotation slots. When the DFA refines an
-annotation, subscribers are notified. Analogous to React's `useSyncExternalStore`
-or Solid's signals.
+The unit never caches its body array. Consumers reading `unit.body` see
+the current `funcAst.statements` / `funcAst.body` on every access,
+eliminating the latent aliasing invariant between a unit field and an
+AST field.
+*Location*: `src/specialization/framework/function-unit.ts`.
+*Principle*: P-03 (Don't cache what a getter can read).
 
-```
-// Consumer subscribes to a specific node's type annotation
-const unsubscribe = hintStore.subscribe(nodeId, "type", (oldType, newType) => {
-  // recompile just this function / update visualization
-});
-```
+### SPEC-04 — Two-tier worklist priority
 
-- **Pro:** Minimal recomputation — consumers learn exactly what changed.
-- **Con:** Subscription management is complex. Must handle subscription during
-  analysis (circular?). Memory pressure from many fine-grained subscriptions.
-- **Open question:** What is the subscription granularity? Per-node? Per-function?
-  Per-analysis? Too fine wastes memory; too coarse loses the benefit.
-- **Good for:** CSE tree-walkers that want live visualization updates.
+`PersistentWorklist` drains all pending analysis blocks before any
+transforms. Within analysis, earlier modules complete before later
+(type before const). Transforms fire only at local analysis fixpoint.
+Monotonicity is preserved within each tier; non-monotone transforms
+(Class 6) are out of scope until the first such transform lands.
+*Location*: `src/specialization/framework/persistent-worklist.ts`
+(`findActiveQueue`, `hasProcessableTransform`).
+*Principle*: P-04 (Order matters; fixpoint before mutation).
 
-### Option C: Salsa-Style Query Engine (Demand-Driven Memoization)
+### SPEC-05 — `ObservationSink` is a `Pick<>` alias, not an interface
 
-Each transfer function becomes a memoized query. Consumers pull results by
-calling queries; the engine tracks dependencies and incrementally recomputes
-only what changed. See: Rust-Analyzer's Salsa, Adapton.
+The push-side interpreter-facing surface is
+`Pick<PersistentWorklist, "observeWrite" | "observeCall" |
+"activateScope" | "deactivateScope">`. There is exactly one implementer
+by design. Do not introduce a separate interface file until a second
+non-worklist implementer actually lands.
+*Location*: `src/specialization/framework/persistent-worklist.ts` (type
+alias + `assertSyncObservationSink`).
+*Principle*: P-05 (Don't coin nouns ahead of implementers).
 
-```
-// Query: "what is the type of variable X at statement S?"
-fn type_at(var: SlotId, stmt: StmtId) -> TypeLattice {
-  // engine memoizes result, tracks that this depends on
-  // type_at(var, predecessor(stmt)) and transfer(stmt)
-}
-```
+### SPEC-06 — Observation methods are synchronous (void return)
 
-- **Pro:** Optimal recomputation — only recomputes queries whose inputs changed.
-  Handles complex inter-analysis dependencies naturally.
-- **Con:** Requires stable node IDs on AST (currently plain objects). Transfer
-  functions must be pure and wrapped as queries. Cycle handling (loops, recursion)
-  needs special support. Significant infrastructure investment.
-- **Open question:** Is the overhead of the query engine justified when we only
-  have 2-3 analyses? Salsa pays off at scale. For a small number of forward
-  analyses, the worklist might be cheaper.
-- **Good for:** IDE-style incremental analysis where edits are frequent and
-  re-analysis must be fast.
+All four `ObservationSink` methods return `void`, never
+`Promise<void>`. The OSR safepoint contract rests on observation being
+a synchronous sub-call of the interpreter step that emits it. The
+construction-time tripwire `assertSyncObservationSink` rejects
+`async`-declared methods; hand-rolled `Promise.resolve()` returns and
+transpiled async are out of scope — the declared `void` type is the
+contract.
+*Location*: `src/specialization/framework/persistent-worklist.ts`
+(`assertSyncObservationSink`, called from the worklist constructor).
+*Principle*: P-06 (Convert accidentally-correct orderings into
+structural ones).
 
-### Option D: Event Log with Batch Delivery
+### SPEC-07 — Pin-set gates transform installation
 
-The DFA writes annotation changes to an append-only log. Consumers drain the log
-at their own pace, applying changes in batch.
+`PersistentWorklist.activateScope(key)` / `deactivateScope(key)` bracket
+every interpreter frame on the target scope. While pinned, transforms
+for that scope park in the worklist; the worklist re-fires them after
+the pin count drops to zero and the surrounding `engine.run()` finally
+block calls `tick()`. **`StateDeltaStrategy.applyDelta` is never called
+while a frame of the target scope is on the stack.**
+This is stronger than "no mid-execution mutation" — it is per-scope,
+so a transform can install on function F while G is mid-execution, as
+long as F is not on the current stack.
+*Location*: `src/specialization/framework/persistent-worklist.ts`
+(`activeScopes`, `hasProcessableTransform`, `withActiveScope`);
+`src/specialization/framework/osr.ts` (`onChange` skip-when-pinned).
+*Principle*: P-06 (structural ordering) + P-07 (Gates live where the
+gated condition is tracked).
 
-```
-// DFA side
-log.append({ node: nodeId, analysis: "type", old: INT|FLOAT, new: INT });
+### SPEC-08 — `StateDeltaStrategy<Delta>` is the unified install primitive
 
-// Consumer side (compiler)
-const batch = log.drain_since(my_cursor);
-const affected_functions = unique(batch.map(e => enclosing_function(e.node)));
-recompile(affected_functions);
-```
+Both engines install through the same seam. `Delta` is opaque to the
+framework: CSE uses `Delta = void` (`InPlaceASTStrategy`), SVML uses
+`Delta = { kind: 'whole' | 'patches' }` (`SVMLSwapStrategy`). The
+coordinator sequences `computeDelta` → `applyDelta` inside the pin-set
+gate.
+*Location*: `src/specialization/framework/osr.ts`.
+*Principle*: P-01 (Share the contract, vary the instantiation).
 
-- **Pro:** Decouples producers and consumers temporally. Consumers can batch
-  intelligently (e.g., "recompile only if 5+ functions changed"). Natural for
-  async/background analysis.
-- **Con:** Log can grow. Consumers must interpret raw events into actionable
-  deltas. Ordering and deduplication need care.
-- **Open question:** How does a consumer express "I care about type annotations
-  on nodes inside function F" without scanning the full log?
-- **Good for:** Compilers that want batched recompilation with control over
-  "how much change triggers a recompile."
+### SPEC-09 — `needsInstall = false` short-circuits the coordinator
 
-### Option E: Hybrid — Coarse Notifications + Fine-Grained Queries
+Strategies whose materialized form is updated at the transform call
+site (currently `InPlaceASTStrategy`: the AST mutation during `tick`
+IS the install) set `needsInstall = false`. The coordinator's
+`onChange` early-exits — no iteration, no stats increments, no delta
+calls. This is the explicit contract for "install already happened" vs.
+the default `needsInstall = true` path that drives `computeDelta` +
+`applyDelta`.
+*Location*: `src/specialization/framework/osr.ts` (`OSRCoordinator.onChange`).
+*Principle*: P-08 (Express "nothing to do" as data on the strategy,
+not as absence of plumbing on the caller).
 
-Combine cheap coarse-grained notifications ("function F's annotations changed")
-with on-demand fine-grained queries ("what exactly changed in F?").
+### SPEC-10 — Notifications carry scope sets, not diffs
 
-```
-hintStore.onFunctionDirty(funcId, () => {
-  // Coarse notification: something changed in this function
-  const hints = hintStore.queryFunction(funcId);
-  // Fine-grained read: get current annotations, diff locally
-  if (worthRecompiling(hints)) recompile(funcId);
-});
-```
+`PersistentWorklist.subscribe(cb: (changed: ReadonlySet<Scope>) =>
+void)` delivers a set of scope keys synchronously at the end of
+`tick()`. Subscribers re-read current state via `engine.units` /
+`engine.hintsFor`. The pin-set is the temporal gate that makes re-read
+safe. Do not add diff/version plumbing unless a consumer with a
+demonstrated need for it exists.
+*Location*: `src/specialization/framework/persistent-worklist.ts`
+(`subscribe`, `notify`).
+*Principle*: P-09 (Shape persistence APIs against actual consumers).
 
-- **Pro:** Low overhead for the common case (nothing changed). Fine detail
-  available on demand. Matches how compilers actually think (function-level
-  granularity for compiled backends, node-level for tree-walkers).
-- **Con:** Two mechanisms to maintain. "Function dirty" requires tracking which
-  nodes belong to which function.
-- **Good for:** Mixed consumer ecosystem where compilers want function-level
-  batching and tree-walkers want node-level reactivity.
+### SPEC-11 — AST dispatch uses `kind` discriminants
+
+Every AST dispatch site uses the `kind` discriminant field (or
+`instanceof` on the `StmtNS` / `ExprNS` class hierarchy).
+`constructor.name` is never used for dispatch; minification (rollup)
+rewrites it to unstable short names.
+*Location*: grep for `constructor.name` should return zero dispatch
+sites. Positive examples in `src/specialization/framework/transform.ts`.
+*Principle*: P-10 (Use identifiers under your control; avoid runtime
+representation leaks).
+
+### SPEC-12 — Function-unit discovery via `StmtNS.Visitor<void>`
+
+`buildFunctionUnits` walks the AST through a
+`StmtNS.Visitor<void>`. New statement kinds added to the visitor
+interface fail the build here until scope semantics are resolved —
+no silent drop of block-introducing forms (future `Try`/`With`/class/
+method). Hand-rolled `instanceof` chains for AST traversal are out.
+*Location*: `src/specialization/framework/function-unit.ts`
+(`ScopeDiscoveryVisitor`).
+*Principle*: P-11 (Let the type system carry the completeness check).
+
+### SPEC-13 — Analyze and compile are two passes
+
+Analysis runs to fixpoint before any compile pass begins. Single-pass
+interleaving (analyze some, compile that, analyze more) is out — it is
+incompatible with loop-body revisits during fixpoint iteration. The
+order is permanent: parse → resolve → specialize → compile → execute.
+*Location*: observed flow in `PySvmlJitEvaluator.ts` /
+`PySvmlEvaluator.ts` / `PyCseEvaluator.ts`.
+*Principle*: P-04 (Order matters).
+
+### SPEC-14 — Interpreters have zero hint reads on hot paths
+
+No interpreter (CSE, SVML, Sinter) queries `engine.hintsFor` during
+execution. SVML bakes hints at compile time; CSE expresses
+specialization as AST-level transforms. Visualizers and debuggers
+consume `HintStore` externally.
+*Location*: grep `hintsFor` in `src/engines/**/*.ts` — only the
+compiler reads at compile time; interpreters do not.
+*Principle*: P-12 (Specialization flows through compile-time or
+transform, not runtime query).
+
+### SPEC-15 — `engine.run()` owns the `deactivateScope → tick` ordering
+
+The pin-release-then-tick sequence is not a caller responsibility.
+`engine.run(rootScope, fn)` internally calls
+`withActiveScope(rootScope, fn)`, whose `finally` block runs
+`deactivateScope` before `tick()`. Callers do not hand-roll the
+finally block.
+*Location*: `src/specialization/engine.ts` (`run`);
+`src/specialization/framework/persistent-worklist.ts`
+(`withActiveScope`).
+*Principle*: P-06 (Structural ordering).
+
+### SPEC-16 — New transforms land as `AnalysisModule` + `TransformRule`
+
+Memoization, inlining, and any future optimization land through the
+existing extension points: an `AnalysisModule<L>` for the analysis side
+(if one is needed) and a `TransformRule` for the rewrite. Purity
+checks, syntactic gates, etc., that have no lattice to accumulate stay
+as standalone walkers (see Decision 4 in the narrative below).
+*Location*: `src/specialization/framework/interfaces.ts`;
+existing transforms in `src/specialization/transforms/`.
+*Principle*: P-02 (Extension shape follows the extension point).
 
 ---
 
-## The AST Mutability Problem
+## Architecture walkthrough
 
-**Architectural principle: DFA mutations to the AST must be opt-in for consumers.**
+Five layers. The facade contains the coordinator, which contains the
+worklist, which owns the units and hints. Dependency points downward;
+composition points upward.
 
-Today's DFA mutates the AST in-place: array splices (dead branch elimination),
-child field overwrites (constant folding), and property additions (.hint
-stamping). In the AOT model this is fine — DFA runs before consumers start.
-In the concurrent model, consumers hold live references into the AST while
-DFA is mutating it.
+```mermaid
+flowchart TB
+    ENG["SpecializationEngine<br/>facade: converge / run / installStrategy"]
+    OSR["OSRCoordinator<br/>safepoint-gated subscriber"]
+    SDS["StateDeltaStrategy&lt;Delta&gt;<br/>engine-specific install"]
+    WL["PersistentWorklist<br/>two-tier priority (analysis → transforms)<br/>pin-set, observation sink"]
+    FU["FunctionUnit<br/>per-scope body (getter) + hints + slots"]
+    HS["HintStore<br/>open-record per-node hints; registry keyed on AnalysisModule.name"]
 
-The CSE machine is the most exposed: `Closure.node` permanently stores a
-`FunctionDef` reference whose `.body` array can be spliced. `WhileInstr.test`
-is re-read on every iteration. `BoolOpInstr.srcNode.right` is read at
-execution time, not creation time. All of these break silently if DFA mutates
-the referenced nodes.
+    ENG --> OSR
+    ENG --> WL
+    OSR --> SDS
+    OSR --> WL
+    WL --> FU
+    FU --> HS
+```
 
-**This means the pull interface (Options A-E above) is not just about
-annotations — it must also mediate structural AST transforms.** Annotations
-are monotonic and conservative (a stale hint is safe, just suboptimal).
-Structural transforms are not — a spliced-out statement is gone.
+### `HintStore` (SPEC-02)
 
-See `docs/ast-mutation-hazards.md` for:
-- Five classified failure modes (structural shift, identity orphaning, dangling
-  reference, mid-expression mutation, annotation flicker)
-- Five candidate isolation approaches (snapshot, epoch fencing, mutation log,
-  dual-AST, transform deferral)
-- A coverage matrix mapping approaches to failure classes
+Open-record map from `node.id` to `OptimizationHint`. Analyses read and
+write named fields (`hint.type`, `hint.constVal`, …). The constructor
+accepts a module list (`LatticeEquality[]`); defaults to the built-in
+two. Equality-on-write consults the registry keyed by module name;
+unregistered fields fall back to strict equality (conservative
+over-invalidation).
 
-The most promising starting point: **split annotations from transforms.**
-Annotations flow freely (safe, monotonic). Structural transforms become
-deferred intents that consumers apply when ready. This matches the existing
-code structure (`annotateTree()` vs `applyTransformPass()`) and requires the
-least new infrastructure.
+### `FunctionUnit` (SPEC-03)
+
+Per-scope container: `funcAst` reference, `HintStore`, `SlotLookup`,
+`structuralVersion`. The unit is the scope's identity; `body` is a
+getter onto `funcAst`, never a cached field. Units are built by
+`buildFunctionUnits` via `ScopeDiscoveryVisitor` (SPEC-12).
+
+### `PersistentWorklist` (SPEC-04, SPEC-05, SPEC-06, SPEC-07, SPEC-10)
+
+The scheduler. Two-tier priority; pin-set; the `ObservationSink`
+surface interpreters call into. `subscribe(cb)` publishes scope-set
+notifications. The sink synchrony tripwire
+(`assertSyncObservationSink`) runs from the constructor.
+
+Compaction helper `compactQueue` unifies the analysis and transform
+FIFO compaction with a single threshold (64). No two parallel
+ring-buffer implementations.
+
+### `OSRCoordinator` (SPEC-07, SPEC-09)
+
+Subscribes to the worklist. For each changed scope that is not pinned
+and passes `strategy.canInstall`, drives `computeDelta` → `applyDelta`.
+Short-circuits entirely when `strategy.needsInstall === false`.
+
+### `StateDeltaStrategy<Delta>` (SPEC-08, SPEC-09)
+
+Engine-specific install seam. Current instances:
+
+| Engine | Strategy | `Delta` | `needsInstall` |
+|---|---|---|---|
+| CSE | `InPlaceASTStrategy` | `void` | `false` |
+| SVML | `SVMLSwapStrategy` | `{ kind: 'whole', ir } \| { kind: 'patches', patches }` | `true` (default) |
+
+`SVMLSwapStrategy` supports both granularities; operand-diff emission
+from `computeDelta` is pending (see open gaps).
+
+### `SpecializationEngine` (SPEC-01, SPEC-15)
+
+Evaluator-facing facade. Owns worklist + coordinator; exposes
+`converge()`, `units`, `hintsFor`, `observationSink`,
+`installStrategy`, `run`. Two-phase construction accommodates
+`SVMLSwapStrategy(compiler, interpreter)` — the strategy captures
+engine-specific objects that are themselves constructed from
+`engine.units`, so the engine is built first, then the strategy, then
+installed.
+
+### `ObservationSink` (SPEC-05)
+
+Structural alias. Four methods: `observeWrite`, `observeCall`,
+`activateScope`, `deactivateScope`. Interpreters declare their
+dependency on this surface without importing the full scheduler API.
 
 ---
 
-## Consumer Strategies (Also Open)
+## Why the pin-set exists (hazard catalogue)
 
-Different consumers have fundamentally different consumption patterns. The
-pull architecture must accommodate all of them.
+The AST is a shared mutable structure. Transforms mutate it in place.
+The safepoint contract (SPEC-07) prevents consumers from observing
+partially-applied mutations. Five failure classes motivate it:
 
-### Compiled Backends (SVML, WASM)
+**Class 1 — Structural shift.** `stmts.splice()` while a consumer
+iterates the same array. Dead-branch elimination replaces an `If` with
+its taken branch; if the CSE machine is iterating the parent
+`StatementSequence.body`, it skips statements or visits the same one
+twice. Silent wrong behavior.
 
-- **Recompilation is expensive.** A compiler won't recompile after every lattice
-  refinement. It needs a strategy for "how much change justifies recompilation?"
-- **Batching:** Accumulate annotation changes, then recompile affected functions
-  in one pass. The specialization engine decides when to trigger this.
-- **Decision strategies to explore:**
-  - Threshold-based: recompile when N annotations changed, or when a high-value
-    annotation changed (e.g., a hot loop's type narrowed from `INT|FLOAT` to
-    `INT`).
-  - Epoch-based: recompile at natural pause points (end of REPL entry, between
-    program steps in the stepper).
-  - Priority-based: hot functions first, cold functions lazily or never.
+**Class 2 — Identity orphaning.** A node replaced via
+`parent[field] = newNode` breaks maps keyed on node identity (e.g.
+`functionEnvironments`). Current transforms don't replace `FunctionDef`
+nodes, but this is latent the moment function inlining or dead-function
+elimination lands.
 
-### Tree-Walking Consumers (CSE Machine)
+**Class 3 — Dangling reference.** The CSE machine stores persistent
+references: `Closure.node` is re-read on every call,
+`WhileInstr.test`/`body` re-read on every iteration,
+`BoolOpInstr.srcNode.right` is a deferred read. If a transform splices
+the referenced subtree, these references are stale.
 
-- **Recomputation is cheap.** The CSE machine interprets one node at a time. It
-  can react to annotation changes per-node, per-step.
-- **Live visualization opportunity:** As background DFA analysis refines types,
-  the CSE machine's visualization could update in real time — showing the user
-  that "this variable is now known to be an integer" as the analysis converges.
-  This is a novel pedagogical feature: students watch the optimizer think.
-- **The hard case:** What if DFA decides to prune a function the CSE machine is
-  currently executing (side-effect-free, memoizable result)? The tree-walker
-  holds `Closure.node` pointing to that function. With deferred transforms,
-  the closure continues executing the old body — the prune intent sits in a
-  log until the consumer is ready. Without deferral, the closure's body array
-  is spliced out from under it.
-- **Architectural questions:**
-  - Does the CSE machine read annotations eagerly (check before each node
-    evaluation) or lazily (only on subscription notification)?
-  - How does the visualization layer learn that an annotation changed? Does it
-    poll the hint store, or does the hint store push to a UI event bus?
-  - When the CSE machine finishes executing a function marked for pruning,
-    how does it signal "I'm done, you can apply the transform now"?
+**Class 4 — Mid-expression mutation.** Constant folding overwrites
+`expr.right` between the creation of a `BoolOpInstr` (from `expr.left`)
+and the handler reading `srcNode.right`. Short-circuit evaluation uses
+the wrong operand.
 
-### Future Consumers
+**Class 5 — Annotation flicker.** A node is replaced, loses its hint,
+and is re-annotated on a later pass. Consumers may see inconsistent
+hints across an expression. Low severity because hints are
+monotonically refined and conservative fallbacks are safe.
 
-- **LSP / IDE integration:** Wants annotation-as-diagnostics. Needs per-file or
-  per-function granularity with fast incremental updates after edits.
-- **REPL autocompletion:** Wants type annotations at the cursor position.
-  Latency-sensitive — must read current best-effort analysis, not wait for
+**Resolution.** The pin-set (SPEC-07) covers Classes 1–4 completely:
+while a scope is pinned, transforms targeting that scope's unit stay
+parked. They fire after `deactivateScope` reduces the pin count and
+the `engine.run` finally block calls `tick()` (SPEC-15). Class 5 is
+handled conservatively.
+
+**Class 6 — Non-monotone transforms — open.** A transform that
+introduces new nodes at lattice ⊥ (memoization wrapping) creates a
+temporary precision dip before re-analysis propagates upward. The
+current two-tier scheduler doesn't special-case this. Until
+memoization lands, shelved. See open gaps.
+
+---
+
+## Principles
+
+What we're reaching for, and the kinds of drift that pull us away from
+it. These ground the `SPEC-NN` claims above and also frame why certain
+past proposals didn't land.
+
+### P-01 — Abstract over what's shared, not over what differs
+
+The install seam is shared (`StateDeltaStrategy<Delta>`); the install
+implementation differs per engine. That's the right cut. A past
+`Backend` interface tried to abstract over the *implementation* —
+dissolved because the leaks were larger than the shared surface.
+When tempted to unify two things, ask what's actually common; often
+the answer is "a contract with two instantiations," not "a class with
+two subclasses."
+
+### P-02 — Extension shape follows the extension point
+
+A new analysis is an `AnalysisModule` + a named hint field. The module
+carries the name; the name doubles as the hint-record field key and
+the equality-registry key. No auxiliary `AnalysisKey<L>` sub-object
+— adding one would double the nouns for the same data. When designing
+an extension surface, make the extension artifact be the registry
+entry.
+
+### P-03 — Don't cache what a getter can read
+
+`FunctionUnit.body` used to be a cached array field that had to be
+kept in sync with `funcAst`. It's now a getter. The invariant "unit
+field matches AST field" evaporates when the unit field doesn't
+exist. Applies whenever "these two things must stay equal" is a
+candidate comment.
+
+### P-04 — Order matters; fixpoint before mutation
+
+Analysis to fixpoint, *then* transforms. Analyze-compile
+interleaving was considered and rejected — while-loop fixpoint
+iteration revisits loop bodies multiple times, and locality arguments
+don't outweigh the correctness cost. Two-tier within the worklist
+reflects the same principle at finer grain.
+
+### P-05 — Don't coin nouns ahead of implementers
+
+`ObservationSink` used to be a 75-line interface file with one
+implementer and a tripwire the compiler couldn't structurally enforce.
+Collapsed into `Pick<PersistentWorklist, …>`. If a second non-worklist
+implementer appears, re-introduce the interface then — not before.
+The question to ask any new interface is "what's the second
+implementer, and when does it land?"
+
+### P-06 — Convert accidentally-correct orderings into structural ones
+
+Three orderings in this codebase were previously only textually
+enforced: `converge→execute`, `deactivate→tick`,
+observe-is-synchronous. Each was found through explicit
+async-lifecycle review. Remediation:
+`engine.run()` owns the finally (SPEC-15); the sink tripwire rejects
+`async` declarations (SPEC-06). When you see "this works because the
+statements happen to be in this order," ask whether a wrapper or a
+type-level check can make it structural.
+
+### P-07 — Gates live where the gated condition is tracked
+
+The pin-set lives on `PersistentWorklist` because the worklist is
+what schedules transforms. Earlier drafts considered a separate
+`SafepointManager`; rejected because the pin data was already in the
+worklist and splitting it just created a synchronization problem.
+When a gate needs to reference state, put the gate next to the state.
+
+### P-08 — Express "nothing to do" as data on the strategy
+
+`needsInstall = false` on `InPlaceASTStrategy` is a data-level
+statement that short-circuits the coordinator. The earlier shape —
+"don't install a strategy, and the coordinator won't exist" — pushed
+engine-specific knowledge into the evaluator. When two paths differ
+only in "we need/don't need this step," prefer a flag on the
+participant over a branch in the caller.
+
+### P-09 — Shape persistence APIs against actual consumers
+
+`HintStore.version`, `changesSince`, `mergeInto`, and
+`hintStoreVersion` were built for a hypothetical incremental-pull
+consumer (LSP) that never materialized. Decision 5 settled the pull
+interface as "notification set + re-read," which doesn't need any of
+them. Stripped. Don't build change-log / version plumbing on
+speculation; wait for the consumer and shape the API around what they
+actually query.
+
+### P-10 — Use identifiers under your control
+
+AST dispatch uses the `kind` discriminant, never `constructor.name`,
+because rollup / minification rewrites runtime names. Applies broadly:
+anything you key on should be something you set explicitly, not a
+name the runtime happens to expose.
+
+### P-11 — Let the type system carry the completeness check
+
+`ScopeDiscoveryVisitor implements StmtNS.Visitor<void>` means any new
+`visitXStmt` method added to the visitor interface forces a compile
+error here until the scope-discovery decision for that form is made.
+The earlier `instanceof` chain silently dropped unknown forms. When
+enumerating a closed set, ask whether the type system can enforce the
+enumeration rather than the enumeration being by code review.
+
+### P-12 — Specialization flows through compile-time or transform, not runtime query
+
+The interpreter is specialization-agnostic on the hot path.
+SVML bakes hints at compile time into opcode selection; CSE expresses
+specialization as AST-level rewrites. Runtime hint queries are a
+coupling that ties interpreter evolution to framework evolution, and
+they're expensive (per-step lookup). If you find yourself wanting to
+read a hint from the interpreter, first ask whether the same effect
+can be achieved by a transform that rewrites the operation into its
+specialized form.
+
+---
+
+## Narrative history of decisions
+
+The numbered decisions below are the original design-decision log.
+They remain accurate but are now secondary to the `SPEC-NN` claims
+above; they stay here for context and rationale.
+
+### Decision 1: Persistent worklist — unified scheduling primitive
+
+The worklist is the single scheduling primitive for all work:
+
+| Work item            | Producer                    | Effect                                                    |
+|----------------------|-----------------------------|-----------------------------------------------------------|
+| Analysis fact        | DFA transfer function       | Compute block OUT, propagate to successors                |
+| Runtime observation  | Interpreter (via sink)      | Write to HintStore, enqueue affected blocks               |
+| Transform            | Analysis crossing threshold | Mutate AST, bump `structuralVersion`, enqueue neighbours  |
+
+Two-tier priority (SPEC-04). The worklist is a long-lived mailbox:
+`tick()` processes available items and returns when idle. `converge()`
+is an initial drain before execution begins. After-execution ticks are
+driven by the `withActiveScope` finally block (SPEC-15).
+
+### Decision 2: Non-coupled evaluators
+
+Four evaluators in `src/conductor/`, each `BasicEvaluator`:
+
+- `PySvmlEvaluator` — one-shot: converge, compile, execute. No OSR loop.
+- `PySvmlJitEvaluator` — reactive JIT: runtime observations feed the
+  worklist; OSR swaps IR between safepoints.
+- `PySvmlSinterEvaluator` — compiles to SVML bytecode and executes on
+  the Sinter WebAssembly VM. No reactive loop.
+- `PyCseEvaluator` — tree-walking CSE machine.
+
+All four construct a `SpecializationEngine`; only `PySvmlJitEvaluator`
+calls `installStrategy`. Shared code is the specialization phase;
+engines diverge in compile + execute.
+
+### Decision 3: Safepoint-gated mutation
+
+`StateDeltaStrategy.applyDelta` is never called while a frame of the
+target scope is on the stack. The pin-set is the gate (SPEC-07). This
+is a stronger statement than "no mid-execution mutation": it is
+per-scope rather than per-program, so a transform can install on
+function F while G is mid-execution, as long as F is not on the current
+stack.
+
+Install mechanisms available:
+
+- **CSE**: AST is the materialized form; transforms mutate it during
+  `tick`; `InPlaceASTStrategy.applyDelta` is a no-op.
+- **SVML whole-function**: `SVMLProgram.withSpecializedFunction` +
+  `interpreter.patchFunction(index, newIR)`.
+- **SVML operand-level**: `interpreter.applyOperandPatches(index,
+  patches)` mutates the function's typed arrays in place. Pin-set
+  re-check via `assertFunctionNotLive` as belt-and-suspenders.
+
+### Decision 4: Memoization is an AnalysisModule + TransformRule
+
+Memoization detection is not an external profiler signal (SPEC-16). It
+is:
+
+- A `MemoizationAnalysisModule` that reads runtime call-count hints
+  (via `observeCall` → worklist) and detects overlapping-subproblem
+  patterns above a configurable threshold.
+- A `MemoizationTransformRule` that wraps the flagged `FunctionDef`
+  with cache logic.
+
+Open: this transform is non-monotone (new nodes at ⊥), the canonical
+Class 6 case. Mitigation strategy is part of the memoization landing,
+not a prerequisite. Gap 5 describes what the infrastructure changes
+here already enabled to make that landing cheap.
+
+**Footnote — purity is a standalone syntactic check, not a DFA
+module.** The landing implements the purity gate as a one-shot walker
+(`memoization-analysis/purity.ts::isPureFunctionDef`) consulted by
+`MemoizationTransformRule.matches`. Rationale: purity here has no
+amortization benefit (asked at most once per function per tick) and
+no lattice to accumulate. Upgrading to a module stays straightforward
+if cross-function purity summaries later become useful.
+
+### Decision 5: Subscription + pin-set (not event log)
+
+An earlier iteration chose "Option D: event log with batch delivery."
+The actual implementation is **Option B: subscriptions** with
+**scope-level granularity** and **Approach 5: deferred structural
+transforms** (SPEC-10). Notifications carry a `ReadonlySet<Scope>`,
+not a diff. Subscribers re-read current state.
+
+`ObservationSink` (SPEC-05) is not a separate interface file — it is a
+structural `Pick` alias over `PersistentWorklist`'s four push-side
+methods. Synchrony (SPEC-06) is enforced at worklist construction.
+
+---
+
+# Evolving work — below this line is not spec
+
+Forward-looking. Experiments, open gaps, resolved changelog. This
+section is expected to shift; do not cite lines below this divider as
+contract.
+
+---
+
+## Consumer strategies
+
+### Compiled backends (SVML)
+
+- **Recompilation is expensive.** SVML does not recompile after every
+  lattice refinement. The coordinator fires only when a transform
+  *actually* fires on an unpinned scope — analyses alone (hint
+  refinements without a transform) do not trigger install. This is the
+  batching.
+- **Two granularities.** `SVMLSwapStrategy` supports both whole-function
+  swap (`{ kind: 'whole', ir: SVMLIR }` via `patchFunction`) and
+  operand-level patch (`{ kind: 'patches', patches: OperandPatch[] }`
+  via `applyOperandPatches`). The seam is live; automatic operand-diff
+  emission is a follow-up (currently emits `{ kind: 'whole' }`
+  unconditionally).
+
+### Tree-walking consumers (CSE)
+
+- **No code install.** CSE's materialized form is the AST.
+  `InPlaceASTStrategy` with `needsInstall = false` (SPEC-09) short-
+  circuits the coordinator.
+- **No interpreter hint reads** (SPEC-14). Visualizer consumers read
+  `engine.hintsFor(node)` externally.
+
+### Future consumers
+
+- **LSP / IDE integration.** Wants annotations-as-diagnostics with fast
+  incremental updates after edits. Would subscribe at file granularity.
+- **REPL autocompletion.** Wants annotations at cursor position with
+  low latency — must read best-effort analysis, not wait for
   convergence.
 
 ---
 
-## Technical Experiments Worth Running
+## Experiments worth running
 
-### Experiment 1: Measure worklist convergence cost
+### Experiment 1: measure worklist convergence cost
 
-How many worklist iterations does a typical program take? Is re-analyzing the
-full program fast enough that incremental infrastructure is unnecessary for
-programs under 1000 LOC? If batch re-analysis takes <10ms, the entire
-subscription architecture may be premature.
+How many worklist iterations does a typical program take? Is
+re-analyzing the full program fast enough that incremental CFG mutation
+is unnecessary for programs under 1000 LOC? If batch re-analysis takes
+<10ms, Gap 4 stays deferred indefinitely.
 
-### Experiment 2: Function-level dirty tracking prototype
+### Experiment 2: function-level dirty-bit false-positive rate
 
-Implement coarse function-level invalidation: when a transform fires inside
-function F, mark F dirty. Measure how often "F is dirty" leads to "F's compiled
-output actually changed." If false-positive rate is low, coarse tracking
-suffices.
+When a transform fires inside function F, how often does F's compiled
+output actually change? If false-positive rate is low, coarse
+function-level invalidation suffices and we can skip operand-diff
+emission.
 
-### Experiment 3: OBSERVE opcode for runtime type profiling
+### Experiment 3: OBSERVE opcode profiling quality
 
-Add an SVML opcode that records type tags into a profiling buffer at runtime.
-After execution, decode the buffer and feed it back as lattice refinements on
-variable slots. This closes the JIT feedback loop: static analysis narrows types,
-runtime observation narrows further, re-analysis propagates.
+The SVML observation sites currently record type tags for write + call
+sites. After execution, does the feedback loop produce useful hint
+refinements beyond the static pass? Requires end-to-end benchmark with
+shaped inputs.
 
-### Experiment 4: Live annotation visualization in CSE stepper
+### Experiment 4: live annotation visualization in CSE stepper
 
-Wire the CSE machine to read `.hint` annotations and display type/const
-information in the stepper UI. No subscription system — just eagerly read
-annotations before each step. Test whether this is pedagogically valuable before
-building reactive infrastructure for it.
+Wire the stepper UI to read `engine.hintsFor(node)` externally (the
+non-coupling path per SPEC-14) and display type/const info. Tests the
+pedagogical hypothesis ("students watch the optimizer think") before
+building more reactive infrastructure for it.
 
-### Experiment 5: Subscription overhead microbenchmark
+### Experiment 5: operand-patch savings vs whole-function recompile
 
-Implement the simplest possible subscription mechanism (Option B, per-function
-granularity). Measure memory and CPU overhead for programs with 100, 500, 2000
-AST nodes. Determine where fine-grained subscriptions become cheaper than
-full re-analysis.
-
----
-
-## Settled Design Decisions (2026-04-12)
-
-These decisions were reached through discussion and are now load-bearing.
-Do not revisit without new evidence.
-
-### Decision 1: Persistent Worklist — Unified Scheduling Primitive
-
-The worklist is the single scheduling primitive for ALL work:
-
-| Work item            | Producer                      | Effect                                              |
-|----------------------|-------------------------------|-----------------------------------------------------|
-| Analysis fact        | DFA transfer function         | Compute block OUT, propagate to successors           |
-| Runtime observation  | Interpreter (via enqueue)     | Write to HintStore, enqueue affected block           |
-| Transform            | Analysis crossing threshold   | Mutate AST, update CFG in-place, enqueue neighbors   |
-
-The worklist never "drains to completion." It is a long-lived mailbox that
-yields when idle and resumes when new items arrive. Conceptually, the worklist
-and the interpreter are separate threads sharing the worklist as a channel —
-even though the JS implementation will use cooperative scheduling for now.
-
-**Consequence:** `drainWorklist` (tight synchronous loop) is the wrong
-primitive for the persistent model. It becomes a `drain()` method on a
-persistent `PersistentWorklist` object that processes available items and
-returns when idle.
-
-**Consequence:** `OptimizationSession.step()` / `applyTransforms()` as
-separate phases dissolves. Analysis and transforms are interleaved within
-the worklist. The session state machine ("ready" / "analyzed") becomes
-unnecessary. `OptimizationSession` remains useful as a one-shot convenience
-for the non-JIT path (call `converge()` and forget).
-
-**CFG is also persistent.** The worklist references CFG blocks. Transforms
-that mutate the AST also update the CFG in-place (add/remove edges, split
-blocks). The CFG is not rebuilt from scratch between rounds.
-
-**Open:** Monotonicity of transforms in the unified worklist. Non-monotone
-transforms (memoization wrapping adds nodes at ⊥) create temporary precision
-dips. See `docs/ast-mutation-hazards.md` Class 6 for analysis and mitigation
-options.
-
-### Decision 2: JIT and Non-JIT Evaluators Are Non-Coupled
-
-Two evaluator classes, both extending `BasicEvaluator`:
-
-- `PySvmlEvaluator` — unchanged. Calls `optimize()` (one-shot convergence),
-  compiles, executes. No reactive machinery.
-- `PySvmlJitEvaluator` — subscribes to `FunctionUnit` changes. When units
-  change, recompiles. Interpreter uses a snapshot for each execution cycle.
-
-The downstream code (compile + interpret) is nearly identical in both paths.
-The difference is where the units come from: one-shot vs. subscribable.
-
-### Decision 3: No Mid-Execution Mutation
-
-Compiled `SVMLProgram` is an immutable snapshot (`Object.freeze`). The
-interpreter holds a reference for the duration of one execution cycle. If
-the reactive optimization produces a new version, the interpreter picks it
-up on the next cycle — not mid-execution.
-
-Same principle applies to CSE machine: the async generator captures its AST
-reference at entry. A new version published by the reactive optimization does
-not affect in-flight stepping.
-
-This is enforced by the subscription model: `FunctionUnit` publishes new
-versions, consumers subscribe and receive them, but consumers declare when
-they are ready to adopt a new version. No push-into-running-interpreter.
-
-`SVMLProgram.withSpecializedFunction(index, newIR)` (already exists in
-`types.ts`) is the hot-swap primitive: produces a new frozen program with one
-function slot replaced. All existing closures pointing to that index dispatch
-to new code on the next CALL (because `call()` reads `this.program.functions`
-at call time).
-
-### Decision 4: Memoization Is an AnalysisModule + TransformRule
-
-Memoization detection is not an external profiler signal. It is:
-- A `MemoizationAnalysisModule` that reads runtime call-count hints from the
-  HintStore (fed by interpreter observations) and detects overlapping
-  subproblem patterns above a configurable threshold.
-- A `MemoizationTransformRule` that wraps the flagged `FunctionDef` AST with
-  cache logic.
-
-Both plug into the existing session machinery via the `AnalysisModule` and
-`TransformRule` interfaces. The interpreter's role is limited to feeding
-runtime observations (call counts, argument patterns) into the HintStore
-via the worklist's enqueue interface.
-
-### Decision 5: Subscription Model for FunctionUnit Consumers
-
-The pull interface follows Option D (Event Log with Batch Delivery) from the
-design space above, with function-level granularity:
-
-```
-optimize(ast, environments)   → Map<scope, FunctionUnit>   (one-shot, non-JIT)
-
-createReactiveOptimization(ast, environments) → ReactiveOptimization
-  .units           → current snapshot (ReadonlyMap)
-  .subscribe(cb)   → notified when any unit changes
-  .converge()      → run all analyses/transforms to fixpoint (initial pass)
-```
-
-Subscribers receive the full unit map on change. Selective recompilation
-(only dirty functions) is a future optimization gated on Gap 1: the compiler
-currently assigns function indices by DFS traversal order with no
-`FunctionDef → functionIndex` lookup table.
-
-### Gaps Identified (Not Blocking, Needed for Full JIT)
-
-**Gap 1: `FunctionDef → functionIndex` mapping.** The SVML compiler assigns
-function indices implicitly by DFS order. No lookup table exists. Needed for
-`withSpecializedFunction()` to target the right slot. ~5 lines in
-`fromFunctionNode()`.
-
-**Gap 2: Interpreter program swap.** `SVMLInterpreter.program` is private
-and set at construction. Needs a `replaceProgram()` method or external
-mutable reference for the JIT evaluator to swap programs between cycles.
-
-**Gap 3: Persistent worklist implementation.** `drainWorklist` is a
-synchronous run-to-completion loop. Needs to become a `drain()` method on
-a persistent object with an external `enqueue()` interface.
-
-**Gap 4: CFG mutation API.** `buildCFG` produces a fresh immutable CFG.
-Persistent model needs `addEdge`, `removeEdge`, `splitBlock`, `mergeBlock`
-on a mutable CFG object.
-
-**Gap 5: `buildFunctionUnits` rebuild.** Called once at compile time. If a
-memoization transform adds wrapper functions, the new scopes have no
-`FunctionUnit`. Options: (a) memoization inlines cache logic (no new scopes),
-(b) re-run `buildFunctionUnits` on modified subtree.
+Measure wall-clock cost of `patchFunction` (whole-function) vs
+`applyOperandPatches` on realistic specialization events. Determines
+whether automatic operand-diff emission in
+`SVMLSwapStrategy.computeDelta` is worth implementing.
 
 ---
 
-## Dead Ends and Traps
+## Open gaps
 
-Things that were tried or considered and should not be revisited without new
-evidence.
+- **Gap 4 — CFG mutation API.** `buildCFG` still produces a fresh CFG
+  per transform round. Only becomes a bottleneck if Experiment 1 shows
+  batch re-analysis is too slow. Mitigation: incremental `addEdge` /
+  `removeEdge` / `splitBlock` on a mutable CFG.
+- **Gap 5 — `buildFunctionUnits` rebuild for new scopes.** Groundwork
+  landed: `FunctionUnit.body` is a getter (SPEC-03); scope discovery
+  is visitor-based (SPEC-12). With those in place, registering new
+  scopes after memoization wraps a `FunctionDef` is additive: run the
+  same visitor over the new subtree, call `addScope(key, new
+  FunctionUnit(...))` per newly-found `FunctionDef`, enqueue analysis
+  + transforms. No cross-module contract renegotiation. Still
+  deferred: wiring the actual
+  `PersistentWorklist.registerScopeSubtree(root)` method, which
+  should ride with the memoization landing (Decision 4) rather than
+  sit unused.
+- **Class 6 — non-monotone transform handling.** See hazard catalogue.
+  Blocked on memoization landing. Mitigations on the table:
+  - Epoch the transform: finish all pending analysis, apply the
+    transform, re-seed affected blocks, notify once.
+  - Accept the dip and document that consumers only read at idle points.
+- **Operand-diff emission in `SVMLSwapStrategy.computeDelta`.** The seam
+  supports both `{ kind: 'whole' }` and `{ kind: 'patches' }`, but the
+  strategy emits `whole` unconditionally. Automatic diff emission
+  (detecting type-specialization `ADDG → ADDF` and similar) is gated
+  on Experiment 5.
 
-- **Single-pass analyze+codegen interleaving.** Incompatible with while-loop
-  fixpoint iteration, which revisits loop bodies multiple times during analysis.
-  Two-pass (analyze then compile) is permanent.
+---
 
-- **`constructor.name` dispatch.** Breaks under minification (rollup). All AST
-  dispatch must use `kind` discriminant fields.
+## Resolved gaps (changelog)
 
-- **Unified Backend interface.** Dissolved — each engine has its own evaluator.
-  The abstraction was leaky. Don't re-introduce it.
-
-- **`mergeKind` and `direction` on AnalysisModule.** Dead interface fields. The
-  driver hardcodes `join()` and forward traversal. Don't implement dispatch on
-  these without a concrete backward-analysis use case.
-
-- **Inter-procedural analysis via call-graph construction.** Unnecessary. Lazy
-  memoized function summaries keyed on `(FunctionDef, paramLattices[])` are
-  sufficient — the summary cache IS the call graph.
+- **Gap 1 — `FunctionDef → functionIndex` mapping.** Resolved by
+  `ScopeIndexMap` (populated during `SVMLCompiler.fromProgramUnit` /
+  `fromFunctionNode` in DFS order).
+- **Gap 2 — Interpreter program swap.** Resolved by
+  `SVMLInterpreter.patchFunction` (whole-function) and
+  `SVMLInterpreter.applyOperandPatches` (operand-level).
+  `SVMLSwapStrategy` drives both.
+- **Gap 3 — Persistent worklist.** Resolved by `PersistentWorklist`
+  with external `enqueue` (via `ObservationSink`), `tick`,
+  `subscribe`, pin-set.
+- **Dead-infra review items.** Resolved by framework tightening
+  (`SpecializationEngine` facade, `StateDeltaStrategy` rename,
+  open-record hint store, `needsInstall` flag).
+- **Interpreter-hint coupling.** Resolved by removing CSE's per-step
+  `runtime.hintsFor` read; visualizer consumes `engine.hintsFor`
+  externally (SPEC-14).
+- **`AnalysisKey<L>` as a separate type.** Folded into
+  `AnalysisModule<L>`. The module's own `name` doubles as the
+  hint-record field name and the equality-registry key;
+  `latticeEquals` replaces `key.equals`. `hintGet` / `hintSet`
+  helpers and `TYPE_ANALYSIS_KEY` / `CONST_ANALYSIS_KEY` constants
+  deleted. Analyses read named fields directly (SPEC-02).
+- **`ObservationSink` as a separate interface file.** Replaced with a
+  `Pick<PersistentWorklist, …>` alias exported from the worklist
+  module. The construction-time synchrony tripwire is preserved and
+  runs from the worklist constructor (SPEC-05, SPEC-06).
+- **`HintStore` speculative surface.** `version`, `changesSince`,
+  `mergeInto`, `HintChangeRecord`, and
+  `PersistentWorklist.hintStoreVersion` were preparation for an
+  incremental subscriber that Decision 5 showed was unnecessary.
+  Stripped.
+- **`Scope` type alias duplicated across 7 files.** Inlined at all
+  sites as `StmtNS.FileInput | StmtNS.FunctionDef`.
+- **`FunctionUnit.body` cached field.** Replaced by read-through
+  getter (SPEC-03).
+- **`unitBody` free helper.** Folded into `FunctionUnit.body` getter.
+- **Dual ring-buffer compaction with drifting thresholds.** Unified as
+  `compactQueue` helper with single threshold (64).
+- **`hint.ts` registry double-state.** Module-level `DEFAULT_REGISTRY`
+  Map eliminated; `buildRegistry` helper + lazy default.
+- **Hand-rolled AST walk in `buildFunctionUnits`.** Replaced by
+  `ScopeDiscoveryVisitor implements StmtNS.Visitor<void>` (SPEC-12).

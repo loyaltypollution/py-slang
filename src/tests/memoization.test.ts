@@ -17,7 +17,6 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
   clearMemoCache,
-  createReactiveOptimization,
   MEMOIZATION_THRESHOLD,
   CALL_COUNT_FIELD,
   MEMOIZED_FIELD,
@@ -25,12 +24,13 @@ import {
   memoHas,
   memoPut,
 } from "../specialization";
+import { buildTestWorklist } from "./utils";
 
 function setup(code: string) {
   const script = code + "\n";
   const ast = parse(script) as StmtNS.FileInput;
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const reactive = createReactiveOptimization(ast, environments);
+  const reactive = buildTestWorklist(ast, environments);
   return { ast, reactive };
 }
 

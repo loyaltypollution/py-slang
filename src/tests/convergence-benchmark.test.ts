@@ -8,7 +8,7 @@
 
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { createReactiveOptimization } from "../specialization";
+import { buildTestWorklist } from "./utils";
 import type { WorklistStats } from "../specialization";
 
 // ── Test setup ─────────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ function parseAndResolve(code: string) {
 
 function benchmarkProgram(code: string): WorklistStats & { scopes: number } {
   const { ast, environments } = parseAndResolve(code);
-  const reactive = createReactiveOptimization(ast, environments);
+  const reactive = buildTestWorklist(ast, environments);
   reactive.resetStats();
   reactive.converge();
   return { ...reactive.stats, scopes: reactive.units.size };

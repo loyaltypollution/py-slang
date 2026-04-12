@@ -14,7 +14,8 @@ import { Context } from "../engines/cse/context";
 import { generateCSEMachineStateStream } from "../engines/cse/interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { HintStore, SpecializationEngine } from "../specialization";
+import { HintStore } from "../specialization";
+import { buildTestWorklist } from "./utils";
 
 function parseOptimizeAndMerge(code: string): {
   context: Context;
@@ -26,7 +27,7 @@ function parseOptimizeAndMerge(code: string): {
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
 
-  const engine = new SpecializationEngine(ast, environments);
+  const engine = buildTestWorklist(ast, environments);
   engine.converge();
   const units = engine.units;
 

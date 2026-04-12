@@ -35,11 +35,11 @@ import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
-  createReactiveOptimization,
   OSRCoordinator,
   type StateDeltaStrategy,
   type FunctionUnit,
 } from "../specialization";
+import { buildTestWorklist } from "./utils";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import type { SVMLIR } from "../engines/svml/types";
@@ -49,7 +49,7 @@ function buildUnit(code: string) {
   const script = code + "\n";
   const ast = parse(script) as StmtNS.FileInput;
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const reactive = createReactiveOptimization(ast, environments);
+  const reactive = buildTestWorklist(ast, environments);
   reactive.converge();
   const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units);
   const program = compiler.compileProgram(ast);

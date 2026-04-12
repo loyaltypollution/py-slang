@@ -12,11 +12,11 @@ import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
-  createReactiveOptimization,
   OSRCoordinator,
   type StateDeltaStrategy,
   type FunctionUnit,
 } from "../specialization";
+import { buildTestWorklist } from "./utils";
 
 interface Call {
   key: StmtNS.FileInput | StmtNS.FunctionDef;
@@ -47,7 +47,7 @@ function setup(code: string) {
   const script = code + "\n";
   const ast = parse(script) as StmtNS.FileInput;
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const reactive = createReactiveOptimization(ast, environments);
+  const reactive = buildTestWorklist(ast, environments);
   return { ast, reactive };
 }
 

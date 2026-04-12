@@ -12,7 +12,16 @@ import {
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { SpecializationEngine } from "../specialization";
+import {
+  ConstAnalysisModule,
+  ConstantFoldingRule,
+  DeadBranchEliminationRule,
+  MemoizationAnalysisModule,
+  MemoizationTransformRule,
+  PersistentWorklist,
+  runPinned,
+  TypeAnalysisModule,
+} from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import pairmutator from "../stdlib/pairmutator";
@@ -85,14 +94,20 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
       const pinSet = new Map<StmtNS.FileInput | StmtNS.FunctionDef, number>();
       this.context.runtime.pinSet = pinSet;
 
-      const engine = new SpecializationEngine(ast, environments, pinSet);
-      engine.converge();
+      const worklist = new PersistentWorklist(
+        ast,
+        environments,
+        [new TypeAnalysisModule(), new ConstAnalysisModule(), new MemoizationAnalysisModule()],
+        [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
+        pinSet,
+      );
+      worklist.converge();
 
       this.context.runtime.rootScope = ast;
-      this.context.runtime.observationSink = engine.observationSink;
+      this.context.runtime.observationSink = worklist;
 
       try {
-        await engine.run(ast, () =>
+        await runPinned(worklist, null, ast, pinSet, () =>
           evaluate("", ast, this.context, {
             variant: this.variant,
             groups: this.groups,
