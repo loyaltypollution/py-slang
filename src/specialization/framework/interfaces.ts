@@ -1,6 +1,6 @@
 import type { ExprNS, StmtNS } from "../../ast-types";
 import type { SlotLookup } from "./slot-table";
-import type { HintStore } from "./hint";
+import type { HintStore, OptimizationHint } from "./hint";
 
 export interface StmtTransformRule {
   readonly name: string;
@@ -40,4 +40,20 @@ export interface AnalysisModule<L> {
     env: { get(slot: number): L | undefined },
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<L>;
+
+  /**
+   * Map a raw runtime value (pushed by an interpreter on a slot write) to a
+   * lattice element of this analysis. Return `undefined` to ignore the value
+   * (e.g. ConstAnalysisModule returns `undefined` for non-primitive JS values
+   * rather than widening the hint to TOP).
+   */
+  observeValue?(rawValue: unknown): L | undefined;
+
+  /**
+   * Merge a lattice element produced by `observeValue` into the node's hint.
+   * Must use `join` semantics — observations widen the set of seen values,
+   * they never narrow static facts (narrowing would be unsound for
+   * specialization consumers).
+   */
+  mergeIntoHint?(hint: OptimizationHint, value: L): OptimizationHint;
 }

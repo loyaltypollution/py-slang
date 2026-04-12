@@ -27,7 +27,7 @@ import {
 } from "./lattice";
 import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
 import type { AnalysisModule } from "../framework/interfaces";
-import type { HintStore } from "../framework/hint";
+import type { HintStore, OptimizationHint } from "../framework/hint";
 import type { SlotLookup } from "../framework/slot-table";
 
 /**
@@ -261,4 +261,54 @@ export class TypeAnalysisModule implements AnalysisModule<TypeLattice> {
   ): ExprNS.Visitor<TypeLattice> {
     return new TypeAnalysisVisitor(hints, env, slotLookup);
   }
+
+  observeValue(rawValue: unknown): TypeLattice | undefined {
+    // CSE stack values are tagged objects with `.type` discriminator.
+    // Duck-type on the tag to avoid an engine → framework import.
+    if (rawValue === null || rawValue === undefined) return nullValue();
+    if (typeof rawValue === "number") return rawToNumberLattice(rawValue);
+    if (typeof rawValue === "boolean") return rawValue ? trueValue() : falseValue();
+    if (typeof rawValue === "string") return stringValue();
+    if (typeof rawValue === "bigint") return rawToNumberLattice(Number(rawValue));
+    if (typeof rawValue !== "object") return undefined;
+
+    const tagged = rawValue as { type?: string; value?: unknown };
+    switch (tagged.type) {
+      case "number":
+        return typeof tagged.value === "number" ? rawToNumberLattice(tagged.value) : undefined;
+      case "bigint":
+        return typeof tagged.value === "bigint"
+          ? rawToNumberLattice(Number(tagged.value))
+          : undefined;
+      case "bool":
+        return tagged.value === true ? trueValue() : tagged.value === false ? falseValue() : undefined;
+      case "string":
+        return stringValue();
+      case "none":
+        return nullValue();
+      case "closure":
+      case "function":
+      case "multi_lambda":
+      case "builtin":
+        return closureValue();
+      case "complex":
+        return complexValue();
+      default:
+        return undefined;
+    }
+  }
+
+  mergeIntoHint(hint: OptimizationHint, value: TypeLattice): OptimizationHint {
+    // Widen (join) — observations add seen values, never narrow static facts.
+    const next = hint.type ? join(hint.type, value) : value;
+    return { ...hint, type: next };
+  }
+}
+
+function rawToNumberLattice(value: number): TypeLattice {
+  if (Number.isInteger(value) && Number.isFinite(value)) {
+    return value > 0 ? positiveInteger() : value < 0 ? negativeInteger() : zeroInteger();
+  }
+  if (Number.isNaN(value)) return floatValue();
+  return value > 0 ? positiveFloat() : value < 0 ? negativeFloat() : zeroFloat();
 }

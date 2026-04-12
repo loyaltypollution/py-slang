@@ -1,7 +1,7 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { AnalysisModule } from "../framework/interfaces";
-import type { HintStore } from "../framework/hint";
+import type { HintStore, OptimizationHint } from "../framework/hint";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
@@ -234,5 +234,36 @@ export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<ConstLattice> {
     return new ConstAnalysisVisitor(hints, env, slotLookup);
+  }
+
+  observeValue(rawValue: unknown): ConstLattice | undefined {
+    // Return `undefined` (not CONST_TOP) when there is no useful constant —
+    // widening to TOP would erase existing static constants.
+    if (typeof rawValue === "number" || typeof rawValue === "boolean" || typeof rawValue === "string") {
+      return constOf(rawValue);
+    }
+    if (typeof rawValue === "bigint") return constOf(Number(rawValue));
+    if (typeof rawValue !== "object" || rawValue === null) return undefined;
+
+    const tagged = rawValue as { type?: string; value?: unknown };
+    switch (tagged.type) {
+      case "number":
+      case "string":
+        return typeof tagged.value === "number" || typeof tagged.value === "string"
+          ? constOf(tagged.value)
+          : undefined;
+      case "bool":
+        return typeof tagged.value === "boolean" ? constOf(tagged.value) : undefined;
+      case "bigint":
+        return typeof tagged.value === "bigint" ? constOf(Number(tagged.value)) : undefined;
+      default:
+        return undefined;
+    }
+  }
+
+  mergeIntoHint(hint: OptimizationHint, value: ConstLattice): OptimizationHint {
+    // Widen via constJoin — two different observed constants collapse to CONST_TOP.
+    const next = hint.constVal ? constJoin(hint.constVal, value) : value;
+    return { ...hint, constVal: next };
   }
 }
