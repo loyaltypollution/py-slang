@@ -2380,7 +2380,7 @@ for (const name of constants.builtInFuncs) {
 // ── Memoization runtime intrinsics ────────────────────────────────────────
 //
 // Emitted by MemoizationTransformRule into hot, pure FunctionDef bodies.
-// The cache lives in src/specialization/memoization-analysis/runtime.ts;
+// The cache lives in src/runtime/memo.ts;
 // these wrappers adapt tagged Value args to the raw JS side-table API.
 // Registered up-front (not gated on any runtime flag) because the transform
 // rewrites before execution resumes and the intrinsic names must always be
@@ -2389,7 +2389,8 @@ import {
   memoLookup as _memoLookup,
   memoPut as _memoPut,
   MEMO_MISS as _MEMO_MISS,
-} from "./specialization/memoization-analysis/runtime";
+  MEMO_INTRINSIC_NAMES,
+} from "./runtime/memo";
 
 function unwrap(v: Value): unknown {
   if (v === null || v === undefined) return v;
@@ -2416,9 +2417,11 @@ function memoIdFrom(args: Value[]): { id: string; rest: Value[] } {
   return { id, rest: args.slice(1) };
 }
 
-builtIns.set("__memo_has", {
+const [MEMO_HAS_NAME, MEMO_GET_NAME, MEMO_PUT_NAME] = MEMO_INTRINSIC_NAMES;
+
+builtIns.set(MEMO_HAS_NAME, {
   type: "builtin",
-  name: "__memo_has",
+  name: MEMO_HAS_NAME,
   minArgs: 1,
   func: (args: Value[]): Value => {
     const { id, rest } = memoIdFrom(args);
@@ -2426,9 +2429,9 @@ builtIns.set("__memo_has", {
   },
 });
 
-builtIns.set("__memo_get", {
+builtIns.set(MEMO_GET_NAME, {
   type: "builtin",
-  name: "__memo_get",
+  name: MEMO_GET_NAME,
   minArgs: 1,
   func: (args: Value[]): Value => {
     const { id, rest } = memoIdFrom(args);
@@ -2438,9 +2441,9 @@ builtIns.set("__memo_get", {
   },
 });
 
-builtIns.set("__memo_put", {
+builtIns.set(MEMO_PUT_NAME, {
   type: "builtin",
-  name: "__memo_put",
+  name: MEMO_PUT_NAME,
   minArgs: 2,
   func: (args: Value[]): Value => {
     const { id, rest } = memoIdFrom(args);

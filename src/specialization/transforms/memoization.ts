@@ -36,9 +36,9 @@ import { isPureFunctionDef } from "../memoization-analysis/purity";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokens";
 
-const MEMO_HAS = "__memo_has";
-const MEMO_GET = "__memo_get";
-const MEMO_PUT = "__memo_put";
+import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
+
+const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
 export class MemoizationTransformRule implements ScopeTransformRule {
   readonly name = "memoization";

@@ -1,4 +1,4 @@
-// src/specialization/memoization-analysis/runtime.ts
+// src/runtime/memo.ts
 //
 // Runtime side-table + intrinsic helpers backing MemoizationTransformRule.
 // The transform rewrites hot function bodies to call three intrinsics

@@ -5,7 +5,7 @@ import { Token } from "../tokenizer/tokenizer";
 import { TokenType } from "../tokens";
 import { FeatureValidator } from "../validator/types";
 import { ResolverErrors } from "./errors";
-import { MEMO_INTRINSIC_NAMES } from "../specialization/memoization-analysis/runtime";
+import { MEMO_INTRINSIC_NAMES } from "../runtime/memo";
 type Expr = ExprNS.Expr;
 type Stmt = StmtNS.Stmt;
 

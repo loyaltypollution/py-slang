@@ -94,4 +94,4 @@ export {
   clearMemoCache,
   memoCacheSnapshot,
   MEMO_MISS,
-} from "./memoization-analysis/runtime";
+} from "../runtime/memo";

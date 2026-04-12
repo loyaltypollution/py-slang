@@ -5,7 +5,8 @@ import {
   memoLookup as _memoLookup,
   memoPut as _memoPut,
   MEMO_MISS,
-} from "../../specialization/memoization-analysis/runtime";
+  MEMO_INTRINSIC_NAMES,
+} from "../../runtime/memo";
 
 // Map Python builtin names to SVML primitive opcode indices
 export const PRIMITIVE_FUNCTIONS: Map<string, number> = new Map([
@@ -21,9 +22,9 @@ export const PRIMITIVE_FUNCTIONS: Map<string, number> = new Map([
   ["round", 26],
   ["range", 30],
   ["len", 31],
-  ["__memo_has", 40],
-  ["__memo_get", 41],
-  ["__memo_put", 42],
+  [MEMO_INTRINSIC_NAMES[0], 40],
+  [MEMO_INTRINSIC_NAMES[1], 41],
+  [MEMO_INTRINSIC_NAMES[2], 42],
 ]);
 
 function assertNumericArgs(args: SVMLBoxType[], fn: string): number[] {
