@@ -15,7 +15,6 @@ export { buildFunctionUnits } from "./framework/function-unit";
 
 export { PersistentWorklist } from "./framework/persistent-worklist";
 export type { ExternalWorkItem, Subscriber, WorklistStats } from "./framework/persistent-worklist";
-export { ScopeIndexMap } from "./framework/scope-index-map";
 export type { ObservationSink } from "./framework/observation-sink";
 export type { SlotInfo, SlotLookup } from "./framework/slot-table";
 export { buildSlotTable } from "./framework/slot-table";

@@ -67,15 +67,6 @@ export class SpecializationEngine {
   }
 
   /**
-   * Direct worklist access for tests and tooling that need to drive the
-   * reactive loop manually (tick, subscribe, stats). Production code should
-   * prefer `run()` for the full lifecycle.
-   */
-  get worklistForAdvancedUse(): PersistentWorklist {
-    return this.worklist;
-  }
-
-  /**
    * Install the state-delta strategy. For SVML this is called after compiler
    * + interpreter are constructed (SVMLSwapStrategy captures both). For CSE
    * with AST-in-place semantics, skip this — `run()` installs a default
