@@ -15,6 +15,7 @@ import { buildCFG } from "./cfg";
 import type { FunctionUnit } from "./function-unit";
 import { buildFunctionUnits } from "./function-unit";
 import type { OptimizationHint } from "./hint";
+import type { ObservationSink } from "./observation-sink";
 import type {
   AnalysisModule,
   CallObserver,
@@ -101,48 +102,14 @@ export type Subscriber = (changed: ReadonlySet<StmtNS.FileInput | StmtNS.Functio
 
 // ── Push-side interface ─────────────────────────────────────────────────────
 //
-// The four methods interpreters call on the worklist during execution. Kept
-// as a structural alias so interpreter modules document their dependency on
-// the observation surface without importing the full scheduler API.
-//
-// SYNCHRONY INVARIANT: all four methods return `void`, not `Promise<void>`.
-// Observation emission is a synchronous sub-call of the interpreter step
-// that produced it — `observeWrite`/`observeCall` enqueue work;
-// `activateScope`/`deactivateScope` mutate the pin-set in place. The OSR
-// safepoint contract (transforms on pinned scopes parked until deactivation)
-// rests on this synchrony. TypeScript accepts `() => Promise<void>` where
-// `() => void` is expected, so the construction-time check in the
-// `PersistentWorklist` constructor catches the common mistake of declaring
-// one of these `async`.
+// `ObservationSink` is the nominal synchronous surface interpreters call on
+// the worklist during execution; see `./observation-sink.ts`. `PersistentWorklist
+// implements ObservationSink` below. Synchrony is enforced in-constructor
+// (see the `AsyncFunction` check at the bottom of the PersistentWorklist
+// constructor) because TypeScript accepts `() => Promise<void>` where
+// `() => void` is expected.
 
-export type ObservationSink = Pick<
-  PersistentWorklist,
-  "observeWrite" | "observeCall" | "activateScope" | "deactivateScope"
->;
-
-const SINK_METHODS = ["observeWrite", "observeCall", "activateScope", "deactivateScope"] as const;
-
-/**
- * Construction-time tripwire that rejects the common mistake of declaring
- * a sink method `async`. Inspects each method's runtime constructor name
- * and throws if it is `AsyncFunction`. Catches `async function`/`async () =>
- * ...` only; explicit `Promise.resolve()` returns and transpiled async are
- * out of scope (the `void` return in `ObservationSink` is the declared
- * contract).
- */
-export function assertSyncObservationSink(sink: ObservationSink): void {
-  for (const name of SINK_METHODS) {
-    const fn = (sink as unknown as Record<string, unknown>)[name];
-    if (typeof fn !== "function") {
-      throw new Error(`ObservationSink.${name} is not a function`);
-    }
-    if ((fn as { constructor?: { name?: string } }).constructor?.name === "AsyncFunction") {
-      throw new Error(
-        `ObservationSink.${name} must be synchronous; async implementations break the OSR safepoint contract`,
-      );
-    }
-  }
-}
+export type { ObservationSink } from "./observation-sink";
 
 // ── Observation-capable analysis (narrowed subtype) ────────────────────────
 
@@ -163,7 +130,7 @@ interface ScopeWorkState {
 
 // ── PersistentWorklist ──────────────────────────────────────────────────────
 
-export class PersistentWorklist {
+export class PersistentWorklist implements ObservationSink {
   readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
 
   private readonly analysisQueues: QueuedBlock[][];
@@ -237,7 +204,19 @@ export class PersistentWorklist {
     this.units = units;
     for (const [key, unit] of units) this.addScope(key, unit);
 
-    assertSyncObservationSink(this);
+    // Synchrony tripwire — TS accepts `() => Promise<void>` where `() => void`
+    // is declared. The OSR safepoint contract depends on all four sink
+    // methods being synchronous; catch the `async`-declared case at
+    // construction rather than at first observation.
+    const SINK_METHODS = ["observeWrite", "observeCall", "activateScope", "deactivateScope"] as const;
+    for (const name of SINK_METHODS) {
+      const fn = (this as unknown as Record<string, unknown>)[name];
+      if ((fn as { constructor?: { name?: string } }).constructor?.name === "AsyncFunction") {
+        throw new Error(
+          `ObservationSink.${name} must be synchronous; async implementations break the OSR safepoint contract`,
+        );
+      }
+    }
   }
 
   private addScope(key: StmtNS.FileInput | StmtNS.FunctionDef, unit: FunctionUnit): void {
