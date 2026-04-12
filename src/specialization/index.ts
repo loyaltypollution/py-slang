@@ -10,29 +10,16 @@ export { buildFunctionUnits } from "./framework/function-unit";
 // ── Persistent worklist ─────────────────────────────────────────────────────
 
 export { PersistentWorklist } from "./framework/persistent-worklist";
-export type { ExternalWorkItem, Subscriber, WorklistStats } from "./framework/persistent-worklist";
+export type { WorklistStats } from "./framework/persistent-worklist";
 export type { ObservationSink } from "./framework/observation-sink";
-export type { SlotInfo, SlotLookup } from "./framework/slot-table";
-export { buildSlotTable } from "./framework/slot-table";
 
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
 
-export type {
-  AnalysisModule,
-  TransformRule,
-  StmtTransformRule,
-  ExprTransformRule,
-} from "./framework/interfaces";
+export type { AnalysisModule, TransformRule } from "./framework/interfaces";
 export type { OptimizationHint } from "./framework/hint";
 export { HintStore, hintEquals } from "./framework/hint";
-export { MutableEnv } from "./framework/worklist";
 export { OSRCoordinator } from "./framework/osr";
 export type { StateDeltaStrategy } from "./framework/osr";
-
-// ── CFG worklist driver ─────────────────────────────────────────────────────
-
-export type { BlockId, BasicBlock, CFG } from "./framework/cfg";
-export { buildCFG } from "./framework/cfg";
 
 // ── Type lattice (codegen reads kind bits + refinements from hints) ──────────
 
