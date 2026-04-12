@@ -1,8 +1,10 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
-import { HintStore } from "./hint";
+import { HintStore, type OptimizationHint } from "./hint";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
+
+type HintEq = (a: OptimizationHint, b: OptimizationHint) => boolean;
 
 /**
  * Per-scope optimization unit. Aggregates scope-keyed state: the AST node
@@ -49,6 +51,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   constructor(
     private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
     private readonly functionEnvironments: FunctionEnvironments,
+    private readonly hintEq: HintEq,
   ) {}
 
   register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
@@ -60,7 +63,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
     const unit: FunctionUnit = {
       funcAst,
-      hints: new HintStore(),
+      hints: new HintStore(this.hintEq),
       slotLookup: buildSlotTable(env, paramNames),
       structuralVersion: 0,
       pinCount: 0,
@@ -106,9 +109,10 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
 export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
+  hintEq: HintEq,
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
-  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments);
+  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, hintEq);
   visitor.register(ast);
   return units;
 }

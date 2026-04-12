@@ -1,11 +1,7 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { AnalysisModule } from "../framework/interfaces";
-import {
-  constLatticeEquals,
-  type HintStore,
-  type OptimizationHint,
-} from "../framework/hint";
+import { type HintStore, type OptimizationHint } from "../framework/hint";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
@@ -214,7 +210,9 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
 export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
   readonly name = "constVal";
   latticeEquals(a: unknown, b: unknown): boolean {
-    return constLatticeEquals(a as ConstLattice, b as ConstLattice);
+    const ca = a as ConstLattice;
+    const cb = b as ConstLattice;
+    return ca === cb || (ca.tag !== "const" ? ca.tag === cb.tag : cb.tag === "const" && ca.value === cb.value);
   }
   readonly mergeKind = "may" as const;
   readonly direction = "forward" as const;

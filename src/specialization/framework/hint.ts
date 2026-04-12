@@ -1,6 +1,6 @@
+import type { ExprNS, StmtNS } from "../../ast-types";
 import type { TypeLattice } from "../type-analysis/lattice";
 import type { ConstLattice } from "../const-analysis/lattice";
-import type { ExprNS, StmtNS } from "../../ast-types";
 
 /**
  * Open record of analysis values keyed by `AnalysisModule.name`. Built-in
@@ -15,41 +15,41 @@ export interface OptimizationHint {
   readonly memoized?: boolean;
 }
 
-// ── Built-in lattice equality helpers ────────────────────────────────────────
-
-export function typeLatticeEquals(a: TypeLattice, b: TypeLattice): boolean {
-  return (
-    a === b ||
-    (a.kinds === b.kinds && a.intRef === b.intRef && a.boolRef === b.boolRef && a.floatRef === b.floatRef)
-  );
-}
-
-export function constLatticeEquals(a: ConstLattice, b: ConstLattice): boolean {
-  return a === b || (a.tag !== "const" ? a.tag === b.tag : b.tag === "const" && a.value === b.value);
+/**
+ * Minimal view of `AnalysisModule` needed for hint equality dispatch.
+ * Declared here (rather than importing the full interface) so `hint.ts`
+ * does not circularly depend on `interfaces.ts` / concrete analyses.
+ */
+export interface HintEqualsDispatcher {
+  get(name: string): { latticeEquals(a: unknown, b: unknown): boolean } | undefined;
 }
 
 /**
- * Field-level equality: each known hint field has a known lattice equality.
- * Unknown fields fall back to strict `===` (conservative — over-invalidates).
+ * Field-level equality over open `OptimizationHint` records. Each field's
+ * lattice equality is dispatched through the analysis module registered
+ * under that field's name; fields with no registered module default to
+ * inequality (consistent with "we don't know the lattice, so assume any
+ * difference is meaningful" — over-invalidates but never under-invalidates).
+ *
+ * The dispatcher is required: passing `undefined` would silently degrade
+ * every non-`===` field to `false`, which is the γ-era monkey-patch this
+ * rewrite is meant to retire. Callers that truly have no registry (a few
+ * test merge-helpers) should construct an empty `Map`.
  */
-export function hintEquals(a: OptimizationHint, b: OptimizationHint): boolean {
+export function hintEquals(
+  a: OptimizationHint,
+  b: OptimizationHint,
+  byName: HintEqualsDispatcher,
+): boolean {
   const names = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
   for (const name of names) {
     const av = a[name];
     const bv = b[name];
     if (av === bv) continue;
     if (av === undefined || bv === undefined) return false;
-    switch (name) {
-      case "type":
-        if (!typeLatticeEquals(av as TypeLattice, bv as TypeLattice)) return false;
-        break;
-      case "constVal":
-        if (!constLatticeEquals(av as ConstLattice, bv as ConstLattice)) return false;
-        break;
-      default:
-        // callCount, memoized, and any future scalar field fall through to ===.
-        return false;
-    }
+    const mod = byName.get(name);
+    if (!mod) return false;
+    if (!mod.latticeEquals(av, bv)) return false;
   }
   return true;
 }
@@ -57,10 +57,15 @@ export function hintEquals(a: OptimizationHint, b: OptimizationHint): boolean {
 /**
  * Map-based hint storage keyed by node.id. Analysis visitors call
  * `hints.get(node)` / `hints.set(node, hint)`. Equality on write suppresses
- * no-op updates.
+ * no-op updates via the injected `eq` callback — typically
+ * `(a, b) => hintEquals(a, b, worklist.analysesByName)`.
  */
 export class HintStore {
   private readonly map = new Map<number, OptimizationHint>();
+
+  constructor(
+    private readonly eq: (a: OptimizationHint, b: OptimizationHint) => boolean = () => false,
+  ) {}
 
   get(node: ExprNS.Expr | StmtNS.Stmt): OptimizationHint | undefined {
     return this.map.get(node.id);
@@ -76,7 +81,7 @@ export class HintStore {
 
   setById(id: number, hint: OptimizationHint): boolean {
     const old = this.map.get(id);
-    if (old !== undefined && hintEquals(old, hint)) return false;
+    if (old !== undefined && this.eq(old, hint)) return false;
     this.map.set(id, hint);
     return true;
   }

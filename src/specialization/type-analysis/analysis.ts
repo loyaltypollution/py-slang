@@ -27,11 +27,7 @@ import {
 } from "./lattice";
 import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
 import type { AnalysisModule } from "../framework/interfaces";
-import {
-  typeLatticeEquals,
-  type HintStore,
-  type OptimizationHint,
-} from "../framework/hint";
+import { type HintStore, type OptimizationHint } from "../framework/hint";
 import type { SlotLookup } from "../framework/slot-table";
 
 /**
@@ -241,7 +237,15 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 export class TypeAnalysisModule implements AnalysisModule<TypeLattice> {
   readonly name = "type";
   latticeEquals(a: unknown, b: unknown): boolean {
-    return typeLatticeEquals(a as TypeLattice, b as TypeLattice);
+    const ta = a as TypeLattice;
+    const tb = b as TypeLattice;
+    return (
+      ta === tb ||
+      (ta.kinds === tb.kinds &&
+        ta.intRef === tb.intRef &&
+        ta.boolRef === tb.boolRef &&
+        ta.floatRef === tb.floatRef)
+    );
   }
   readonly mergeKind = "may" as const;
   readonly direction = "forward" as const;
