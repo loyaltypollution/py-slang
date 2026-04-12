@@ -1,4 +1,4 @@
-// src/specialization/framework/osr.ts — OSR (on-stack replacement) coordinator
+// src/specialization/framework/osr.ts — state-delta coordinator (OSR)
 //
 // Names and extracts the safepoint contract already implicit in
 // PersistentWorklist's activateScope/deactivateScope pinning. The worklist
@@ -14,41 +14,81 @@ import type { FunctionUnit } from "./function-unit";
 import type { PersistentWorklist } from "./persistent-worklist";
 
 /**
- * Pluggable code-swap backend. `recompile` is called synchronously on each
- * notification for changed, non-active scopes; `install` atomically replaces
- * the running code for that scope. The OSR safepoint contract (the worklist's
- * activeScopes pinning) guarantees `install` is never called while a scope's
- * code is currently executing.
+ * Pluggable state-delta backend. For each worklist change targeting an
+ * inactive (unpinned) scope, the coordinator asks the strategy to
+ * `computeDelta(unit)` and then `applyDelta(scopeKey, delta)`. `Delta` is
+ * fully opaque to the framework — each engine picks the shape that matches
+ * its materialized form:
+ *
+ *   - CSE: `Delta = void`. The transform already wrote through to the AST
+ *     (the materialized form); there is nothing to install. See
+ *     `InPlaceASTStrategy` below — `applyDelta` is a no-op by design, not by
+ *     absence of feature.
+ *   - SVML (whole-function): `Delta = { kind: 'whole', ir: SVMLIR }`. The
+ *     strategy recompiles the unit and the interpreter patches the function
+ *     table.
+ *   - SVML (operand-level): `Delta = { kind: 'patches', patches: [...] }`.
+ *     The strategy emits a minimal set of (pc, opcode/operand) edits and the
+ *     interpreter mutates the existing typed arrays in place.
+ *
+ * The coordinator doesn't care which; it just sequences compute→apply inside
+ * the pin-set gate.
+ *
+ * The OSR safepoint contract (PersistentWorklist's activeScopes pinning)
+ * guarantees `applyDelta` is never called while a frame of the target scope
+ * is on the stack.
  */
-export interface CodeSwapStrategy<Code> {
+export interface StateDeltaStrategy<Delta> {
   /**
    * Optional pre-filter. Return false to signal that `scopeKey` cannot be
-   * hot-swapped by this strategy (e.g. the program entry for SVML, which is
+   * patched by this strategy (e.g. the program entry for SVML, which is
    * rebuilt whole-program rather than per-function). When false, the
-   * coordinator skips both `recompile` and `install` for this scope.
+   * coordinator skips both `computeDelta` and `applyDelta` for this scope.
    */
   canInstall?(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef): boolean;
-  recompile(unit: FunctionUnit): Code;
-  install(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, code: Code): void;
+
+  /**
+   * Produce the delta between the pre-transform and post-transform
+   * materialized forms of `unit`. `previous` is the delta last applied for
+   * the same unit (if any) so strategies that can emit incremental patches
+   * may do so; strategies that always emit whole replacements ignore it.
+   */
+  computeDelta(unit: FunctionUnit, previous?: Delta): Delta;
+
+  /**
+   * Install the delta. Called only when the scope is not pinned.
+   */
+  applyDelta(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, delta: Delta): void;
 }
 
-/** Degenerate strategy: AST is canonical (CSE case). `install` is a no-op. */
-export class NoopSwapStrategy implements CodeSwapStrategy<void> {
-  recompile(_unit: FunctionUnit): void {
+/**
+ * Degenerate strategy for engines whose materialized form IS the AST (CSE).
+ * The transform already mutated the AST in place during `tick`, so the delta
+ * is `void` and `applyDelta` is a no-op — not because the feature is absent,
+ * but because the delta was already applied at the transform call site.
+ */
+export class InPlaceASTStrategy implements StateDeltaStrategy<void> {
+  computeDelta(_unit: FunctionUnit): void {
     return;
   }
-  install(_scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, _code: void): void {
+  applyDelta(_scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, _delta: void): void {
     /* no-op */
   }
 }
 
 /**
- * Subscribes to the worklist and drives the swap strategy. For each changed
- * scope: if active (pinned), skip — the worklist will re-notify after
- * deactivate, because transforms on pinned scopes are parked until the scope
- * becomes inactive (see persistent-worklist.ts hasProcessableTransform).
- * If inactive: recompile and install.
+ * @deprecated Renamed to `InPlaceASTStrategy` to reflect that the delta is
+ * `void` *because* it was already applied in place, not *because* the engine
+ * has no install concept. Kept as a re-export during the migration window.
  */
+export const NoopSwapStrategy = InPlaceASTStrategy;
+
+/**
+ * @deprecated Renamed to `StateDeltaStrategy<Delta>`. Kept as a re-export
+ * during the migration window.
+ */
+export type CodeSwapStrategy<Code> = StateDeltaStrategy<Code>;
+
 export interface OSRStats {
   readonly notificationsSeen: number;
   readonly skippedPinned: number;
@@ -57,8 +97,15 @@ export interface OSRStats {
   readonly installsFired: number;
 }
 
-export class OSRCoordinator<Code> {
+/**
+ * Subscribes to the worklist and drives the state-delta strategy. For each
+ * changed scope: if active (pinned), skip — the worklist will re-notify
+ * after deactivate, because transforms on pinned scopes are parked until the
+ * scope becomes inactive. If inactive: computeDelta + applyDelta.
+ */
+export class OSRCoordinator<Delta> {
   private unsubscribe: (() => void) | null = null;
+  private readonly lastDelta = new Map<StmtNS.FileInput | StmtNS.FunctionDef, Delta>();
 
   private _notificationsSeen = 0;
   private _skippedPinned = 0;
@@ -68,12 +115,13 @@ export class OSRCoordinator<Code> {
 
   constructor(
     private readonly reactive: PersistentWorklist,
-    private readonly strategy: CodeSwapStrategy<Code>,
+    private readonly strategy: StateDeltaStrategy<Delta>,
   ) {}
 
   start(): () => void {
-    if (this.unsubscribe) return this.unsubscribe;
-    this.unsubscribe = this.reactive.subscribe(changed => this.onChange(changed));
+    if (!this.unsubscribe) {
+      this.unsubscribe = this.reactive.subscribe(changed => this.onChange(changed));
+    }
     return () => this.stop();
   }
 
@@ -110,8 +158,9 @@ export class OSRCoordinator<Code> {
         this._skippedNoUnit++;
         continue;
       }
-      const code = this.strategy.recompile(unit);
-      this.strategy.install(key, code);
+      const delta = this.strategy.computeDelta(unit, this.lastDelta.get(key));
+      this.strategy.applyDelta(key, delta);
+      this.lastDelta.set(key, delta);
       this._installsFired++;
     }
   }

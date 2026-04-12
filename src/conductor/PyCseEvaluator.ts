@@ -11,7 +11,7 @@ import {
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { createReactiveOptimization, OSRCoordinator, NoopSwapStrategy } from "../specialization";
+import { SpecializationEngine } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import pairmutator from "../stdlib/pairmutator";
@@ -79,24 +79,21 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         throw errors[errors.length - 1];
       }
 
-      const reactive = createReactiveOptimization(ast, environments);
-      reactive.converge();
+      const engine = SpecializationEngine.create(ast, environments);
+      engine.converge();
 
       this.context.runtime.rootScope = ast;
-      this.context.runtime.hintsFor = node => reactive.hintsFor(node);
-      this.context.runtime.observationSink = reactive;
+      this.context.runtime.hintsFor = node => engine.hintsFor(node);
+      this.context.runtime.observationSink = engine.observationSink;
 
-      const coord = new OSRCoordinator(reactive, new NoopSwapStrategy());
-      const stop = coord.start();
       try {
-        await reactive.withActiveScope(ast, () =>
+        await engine.run(ast, () =>
           evaluate("", ast, this.context, {
             variant: this.variant,
             groups: this.groups,
           }),
         );
       } finally {
-        stop();
         this.context.runtime.observationSink = undefined;
         this.context.runtime.hintsFor = undefined;
       }

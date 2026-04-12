@@ -1,5 +1,18 @@
 import type { StmtNS } from "../../ast-types";
 
+/**
+ * Operand-level edit to an already-loaded SVMLIR. Fields set to `undefined`
+ * leave the corresponding slot untouched. Intended for cheap specialization
+ * patches (e.g. opcode swap ADDG → ADDF after type analysis converges) where
+ * recompiling the whole function would be wasteful.
+ */
+export interface OperandPatch {
+  readonly pc: number;
+  readonly opcode?: number;
+  readonly arg1?: number;
+  readonly arg2?: number;
+}
+
 export type SVMLBoxType =
   | number
   | boolean

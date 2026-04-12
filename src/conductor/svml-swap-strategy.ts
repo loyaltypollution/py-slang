@@ -1,22 +1,33 @@
-// src/conductor/svml-swap-strategy.ts — SVML-backed OSR swap strategy.
+// src/conductor/svml-swap-strategy.ts — SVML state-delta strategy.
 //
-// Bridges the specialization engine's CodeSwapStrategy<Code> into the SVML
-// backend: `recompile` delegates to SVMLCompiler.compileFunction (which
-// preserves stable function indices across recompiles), `install` patches
-// the running interpreter's program via SVMLInterpreter.patchFunction.
+// Bridges the specialization engine's StateDeltaStrategy<Delta> into the SVML
+// backend. Supports two delta shapes:
 //
-// The OSR safepoint contract (PersistentWorklist's activateScope pinning)
-// guarantees `install` is never invoked for a scope whose frame is live, so
-// the patch is safe; patchFunction still checks defensively.
+//   - `{ kind: 'whole', ir }`  — whole-function recompile + patchFunction.
+//   - `{ kind: 'patches', patches }` — operand-level mutation in place.
+//
+// The coordinator calls `computeDelta(unit)` and then `applyDelta(key, delta)`;
+// the pin-set contract (PersistentWorklist.activateScope) guarantees neither
+// path runs while a frame of the target scope is on the stack.
+//
+// Current production behavior: emits `{ kind: 'whole', ir }` for every change,
+// preserving pre-rename semantics exactly. Operand-patch emission is unlocked
+// at the framework level (SVMLInterpreter.applyOperandPatches) so transform
+// code can emit targeted patches as they come online, without further
+// infrastructure churn.
 
 import { StmtNS } from "../ast-types";
 import type { FunctionUnit } from "../specialization";
-import type { CodeSwapStrategy } from "../specialization";
+import type { StateDeltaStrategy } from "../specialization";
 import type { SVMLCompiler } from "../engines/svml/svml-compiler";
 import type { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import type { SVMLIR } from "../engines/svml/types";
+import type { OperandPatch, SVMLIR } from "../engines/svml/types";
 
-export class SVMLSwapStrategy implements CodeSwapStrategy<SVMLIR> {
+export type SVMLDelta =
+  | { readonly kind: "whole"; readonly ir: SVMLIR }
+  | { readonly kind: "patches"; readonly patches: readonly OperandPatch[] };
+
+export class SVMLSwapStrategy implements StateDeltaStrategy<SVMLDelta> {
   constructor(
     private readonly compiler: SVMLCompiler,
     private readonly interpreter: SVMLInterpreter,
@@ -31,13 +42,20 @@ export class SVMLSwapStrategy implements CodeSwapStrategy<SVMLIR> {
     return scopeKey instanceof StmtNS.FunctionDef;
   }
 
-  recompile(unit: FunctionUnit): SVMLIR {
-    return this.compiler.compileFunction(unit);
+  computeDelta(unit: FunctionUnit, _previous?: SVMLDelta): SVMLDelta {
+    return { kind: "whole", ir: this.compiler.compileFunction(unit) };
   }
 
-  install(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, code: SVMLIR): void {
+  applyDelta(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, delta: SVMLDelta): void {
     const index = this.compiler.indexOf(scopeKey);
     if (index === undefined) return;
-    this.interpreter.patchFunction(index, code);
+    switch (delta.kind) {
+      case "whole":
+        this.interpreter.patchFunction(index, delta.ir);
+        return;
+      case "patches":
+        this.interpreter.applyOperandPatches(index, delta.patches);
+        return;
+    }
   }
 }

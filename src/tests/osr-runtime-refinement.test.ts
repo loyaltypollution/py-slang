@@ -22,7 +22,7 @@ import {
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { SVMLIR } from "../engines/svml/types";
-import { SVMLSwapStrategy } from "../conductor/svml-swap-strategy";
+import { SVMLSwapStrategy, type SVMLDelta } from "../conductor/svml-swap-strategy";
 
 function buildUnit(code: string) {
   const script = code + "\n";
@@ -68,10 +68,10 @@ f()
     const strategy = new SVMLSwapStrategy(compiler, interpreter);
 
     const installCalls: Array<{ key: StmtNS.FileInput | StmtNS.FunctionDef; ir: SVMLIR }> = [];
-    const realInstall = strategy.install.bind(strategy);
-    jest.spyOn(strategy, "install").mockImplementation((key, ir) => {
-      installCalls.push({ key, ir });
-      realInstall(key, ir);
+    const realApplyDelta = strategy.applyDelta.bind(strategy);
+    jest.spyOn(strategy, "applyDelta").mockImplementation((key, delta: SVMLDelta) => {
+      if (delta.kind === "whole") installCalls.push({ key, ir: delta.ir });
+      realApplyDelta(key, delta);
     });
 
     const coord = new OSRCoordinator(reactive, strategy);

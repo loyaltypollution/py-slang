@@ -14,7 +14,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import {
   createReactiveOptimization,
   OSRCoordinator,
-  type CodeSwapStrategy,
+  type StateDeltaStrategy,
   type FunctionUnit,
 } from "../specialization";
 
@@ -24,19 +24,19 @@ interface Call {
 }
 
 function makeRecordingStrategy(): {
-  strategy: CodeSwapStrategy<number>;
+  strategy: StateDeltaStrategy<number>;
   recompiles: Call[];
   installs: Array<{ key: StmtNS.FileInput | StmtNS.FunctionDef; code: number }>;
 } {
   const recompiles: Call[] = [];
   const installs: Array<{ key: StmtNS.FileInput | StmtNS.FunctionDef; code: number }> = [];
   let n = 0;
-  const strategy: CodeSwapStrategy<number> = {
-    recompile(unit) {
+  const strategy: StateDeltaStrategy<number> = {
+    computeDelta(unit) {
       recompiles.push({ key: unit.funcAst, unit });
       return ++n;
     },
-    install(key, code) {
+    applyDelta(key, code) {
       installs.push({ key, code });
     },
   };

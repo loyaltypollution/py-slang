@@ -37,13 +37,13 @@ import { analyzeWithEnvironments } from "../resolver";
 import {
   createReactiveOptimization,
   OSRCoordinator,
-  type CodeSwapStrategy,
+  type StateDeltaStrategy,
   type FunctionUnit,
 } from "../specialization";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import type { SVMLIR } from "../engines/svml/types";
-import { SVMLSwapStrategy } from "../conductor/svml-swap-strategy";
+import { SVMLSwapStrategy, type SVMLDelta } from "../conductor/svml-swap-strategy";
 
 function buildUnit(code: string) {
   const script = code + "\n";
@@ -56,22 +56,22 @@ function buildUnit(code: string) {
   return { ast, reactive, compiler, program };
 }
 
-/** Wrap a base strategy and record every install call. */
-function makeRecorder(base: CodeSwapStrategy<SVMLIR>): {
-  strategy: CodeSwapStrategy<SVMLIR>;
+/** Wrap a base strategy and record every applyDelta call. */
+function makeRecorder(base: StateDeltaStrategy<SVMLDelta>): {
+  strategy: StateDeltaStrategy<SVMLDelta>;
   installs: Array<{ key: StmtNS.FileInput | StmtNS.FunctionDef; code: SVMLIR }>;
 } {
   const installs: Array<{ key: StmtNS.FileInput | StmtNS.FunctionDef; code: SVMLIR }> = [];
-  const strategy: CodeSwapStrategy<SVMLIR> = {
+  const strategy: StateDeltaStrategy<SVMLDelta> = {
     canInstall(key) {
       return base.canInstall ? base.canInstall(key) : true;
     },
-    recompile(unit: FunctionUnit) {
-      return base.recompile(unit);
+    computeDelta(unit: FunctionUnit, previous?: SVMLDelta) {
+      return base.computeDelta(unit, previous);
     },
-    install(key, code) {
-      installs.push({ key, code });
-      base.install(key, code);
+    applyDelta(key, delta) {
+      if (delta.kind === "whole") installs.push({ key, code: delta.ir });
+      base.applyDelta(key, delta);
     },
   };
   return { strategy, installs };

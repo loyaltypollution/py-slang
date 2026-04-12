@@ -4,6 +4,7 @@
 
 export { optimize } from "./optimize";
 export { createReactiveOptimization } from "./optimize";
+export { SpecializationEngine } from "./engine";
 
 // ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
 
@@ -42,8 +43,8 @@ export {
   runMultiAnalysisPasses,
   stabilizeStatic,
 } from "./framework/dfa-driver";
-export { OSRCoordinator, NoopSwapStrategy } from "./framework/osr";
-export type { CodeSwapStrategy, OSRStats } from "./framework/osr";
+export { OSRCoordinator, InPlaceASTStrategy, NoopSwapStrategy } from "./framework/osr";
+export type { StateDeltaStrategy, CodeSwapStrategy, OSRStats } from "./framework/osr";
 
 // ── CFG worklist driver ─────────────────────────────────────────────────────
 

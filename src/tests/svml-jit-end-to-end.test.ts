@@ -29,7 +29,7 @@ function buildUnit(code: string) {
 }
 
 describe("SVML JIT end-to-end wiring", () => {
-  test("SVMLSwapStrategy.install patches the function at the compiler's stable index", () => {
+  test("SVMLSwapStrategy.applyDelta patches the function at the compiler's stable index", () => {
     const code = `
 def g():
     return 42
@@ -44,13 +44,16 @@ g()
     const strategy = new SVMLSwapStrategy(compiler, interpreter);
     const patchSpy = jest.spyOn(interpreter, "patchFunction");
 
-    const ir = strategy.recompile(gUnit!);
-    expect(ir).not.toBeNull();
-    strategy.install(gDef, ir);
+    const delta = strategy.computeDelta(gUnit!);
+    expect(delta.kind).toBe("whole");
+    strategy.applyDelta(gDef, delta);
 
     const expectedIndex = compiler.indexOf(gDef)!;
     expect(patchSpy).toHaveBeenCalledTimes(1);
-    expect(patchSpy).toHaveBeenCalledWith(expectedIndex, ir);
+    expect(patchSpy).toHaveBeenCalledWith(
+      expectedIndex,
+      (delta as { kind: "whole"; ir: unknown }).ir,
+    );
     patchSpy.mockRestore();
   });
 
@@ -65,7 +68,7 @@ g()
     const gDef = ast.statements[0] as StmtNS.FunctionDef;
 
     const strategy = new SVMLSwapStrategy(compiler, interpreter);
-    const installSpy = jest.spyOn(strategy, "install");
+    const installSpy = jest.spyOn(strategy, "applyDelta");
 
     const coord = new OSRCoordinator(reactive, strategy);
     const stop = coord.start();
@@ -80,8 +83,8 @@ g()
     // that *did* fire routed through the strategy, not that one must fire.
     for (const call of installSpy.mock.calls) {
       const [scopeKey] = call;
-      // Only FunctionDefs produce installable IR; FileInput returns null
-      // from recompile and is filtered by `install`.
+      // Only FunctionDefs produce installable IR; FileInput is filtered by
+      // `canInstall` and never reaches applyDelta.
       if (scopeKey === ast) continue;
       expect(scopeKey).toBe(gDef);
     }

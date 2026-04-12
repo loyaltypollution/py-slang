@@ -14,6 +14,7 @@ import {
   SVMLIterator,
   SVMLProgram,
   SVMLType,
+  OperandPatch,
 } from "./types";
 import type { ObservationSink } from "../../specialization";
 
@@ -119,6 +120,41 @@ export class SVMLInterpreter {
    * over `this.program` at construction time.
    */
   patchFunction(index: number, ir: SVMLIR): void {
+    this.assertFunctionNotLive(index);
+    this.program = this.program.withSpecializedFunction(index, ir);
+  }
+
+  /**
+   * Apply a minimal set of operand-level patches to an already-loaded
+   * function's IR in place. Cheaper than `patchFunction` when the delta is a
+   * handful of opcode/operand edits (e.g. specializing `ADDG` → `ADDF` after
+   * type analysis converges). Callers must ensure the patches preserve
+   * `observationSites` validity at the affected PCs — if a patch changes the
+   * opcode class in a way that invalidates an existing observation site,
+   * emit a whole-function delta instead.
+   *
+   * Same pin-set safepoint contract as `patchFunction`: the live-frame walk
+   * is second-line defense.
+   */
+  applyOperandPatches(index: number, patches: readonly OperandPatch[]): void {
+    this.assertFunctionNotLive(index);
+    const ir = this.program.functions[index];
+    if (!ir) {
+      throw new Error(`Cannot patch function at index ${index}: no such function`);
+    }
+    for (const patch of patches) {
+      if (patch.pc < 0 || patch.pc >= ir.count) {
+        throw new Error(
+          `Cannot patch function at index ${index}: pc ${patch.pc} out of bounds (count: ${ir.count})`,
+        );
+      }
+      if (patch.opcode !== undefined) ir.opcodes[patch.pc] = patch.opcode;
+      if (patch.arg1 !== undefined) ir.arg1s[patch.pc] = patch.arg1;
+      if (patch.arg2 !== undefined) ir.arg2s[patch.pc] = patch.arg2;
+    }
+  }
+
+  private assertFunctionNotLive(index: number): void {
     for (let f: CallFrame | null = this.currentFrame; f !== null; f = f.callerFrame) {
       if (f.closure.functionIndex === index) {
         throw new Error(
@@ -126,7 +162,6 @@ export class SVMLInterpreter {
         );
       }
     }
-    this.program = this.program.withSpecializedFunction(index, ir);
   }
 
   /**
