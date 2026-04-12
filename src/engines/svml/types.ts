@@ -1,3 +1,5 @@
+import type { StmtNS } from "../../ast-types";
+
 export type SVMLBoxType =
   | number
   | boolean

@@ -1,7 +1,7 @@
 import OpCodes, { OPCODE_MAX } from "./opcodes";
 import { ObservationSite, SVMLBoxType, SVMLIR } from "./types";
 import { SVMLCompilerError } from "./errors";
-import type { ExprNS } from "../../ast-types";
+import type { ExprNS, StmtNS } from "../../ast-types";
 
 /**
  * Mutable builder for constructing SVMLIR.

@@ -1,5 +1,6 @@
 // src/specialization/framework/scope-index-map.ts — bidirectional scope ↔ function index map
 
+import { StmtNS } from "../../ast-types";
 
 /**
  * Bidirectional map between AST scope nodes and SVML function indices.
