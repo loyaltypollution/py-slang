@@ -8,6 +8,17 @@ Sequenced per reviewer adjudication (2026-04-13). Each step is an independent co
 
 ---
 
+## Anti-oscillation rule
+
+This plan has gone through at least two cycles where one round's decisions were re-reversed by the next. Three cycles of oscillation have been adjudicated on 2026-04-13 (see verdicts inside Steps 3, 4, 5 below). **Before proposing a future plan-3 that reverses any decision here**, the agent MUST satisfy both:
+
+1. **Consumer-count evidence.** Cite `file:line` of each non-test consumer of every symbol proposed for deletion. Absence of consumers must be structural (interface with no implementations, factory with no callers), not incidental ("none exist because a prior commit deleted them").
+2. **Read-the-actual-code evidence.** Quote the specific line the plan claims has a particular shape. The round-2 MEMO_MISS failure (Step 5 below) was caused by asserting `svml/builtins.ts:148` was a "memoHas-gate shape" when reading the line showed it was already the sentinel shape.
+
+A plan that cannot produce both (1) and (2) for a deletion must downgrade the action to "defer pending audit." Adopting this discipline is the only way out of simplification hell.
+
+---
+
 ## Step 1 — C7 · Observation-sink dissolution
 
 **Blast radius:** `src/specialization/framework/persistent-worklist.ts`, `src/specialization/index.ts`, `src/engines/cse/context.ts`, `src/engines/svml/svml-interpreter.ts`, `src/tests/observation-sink-sync.test.ts`, `src/tests/svml-observation.test.ts`.
@@ -58,7 +69,25 @@ Substeps must land in this order:
 
 **Decision already taken (Q1):** wire `AnalysisModule.latticeEquals` through a registry.
 
-**Blast radius:** `framework/hint.ts`, `framework/interfaces.ts`, `framework/persistent-worklist.ts`, all three `*-analysis/analysis.ts`, `tests/hint-store.test.ts`.
+### Verdict (2026-04-13 synthesis — after γ)
+
+Round-1 step γ (commit `1d85550`) collapsed `hintEquals` to a hard-coded `switch (name)` over `"type"` / `"constVal"` with `default: return false`. Round-2 Step 3 reverses that direction. The reversal is **correct** — γ was an intermediate state, not terminal — for three structural reasons:
+
+1. **The axis is static vs dynamic dispatch.** Everything else in this step (class-vs-free-function for `HintStore`) is orthogonal noise. Both plans argue over the same line of code. The plan-author was flip-flopping on that single axis.
+2. **`OptimizationHint` has an open index signature** (`[fieldName: string]: unknown`). A static switch with `default: return false` is a latent correctness bug for any *extension* field (non-listed lattice values whose structural equality differs from `===`). γ's `default: return false` masks this because the two known fields (`type`, `constVal`) are singletons whose structural equality coincides with `===` most of the time.
+3. **`latticeEquals` is the odd-one-out.** The other module methods (`join`, `leq`, `top`, `meet`, `observeValue`, `mergeIntoHint`) already dispatch through the module instance. Every future reviewer who sees `latticeEquals` declared-but-unused in `interfaces.ts` and the two concrete modules will file the same bug — γ merely deferred that ticket.
+
+γ's "zero callers" justification was self-fulfilling: γ deleted the registry *because* nothing consumed it, and the reason nothing consumed it was that γ also deleted the call site.
+
+### Anti-oscillation caveat
+
+**Split this step into two commits.** Round-2's substep 6 ("Dissolve `HintStore`") is orthogonal to substeps 1–5 (registry dispatch). Either storage shape (class or free function) works with either dispatch shape. Bundling risks a plan-3 cycle where the next agent questions the HintStore dissolution on its own merits.
+
+### Blast radius
+
+`framework/hint.ts`, `framework/interfaces.ts`, `framework/persistent-worklist.ts`, all three `*-analysis/analysis.ts`, `tests/hint-store.test.ts`.
+
+### Substeps
 
 1. **Build the registry.** In `PersistentWorklist`'s constructor, build `this.analysesByName = new Map(this.analyses.map(a => [a.name, a]))`.
 2. **Rewrite `hintEquals`** to consult the registry:
@@ -78,11 +107,15 @@ Substeps must land in this order:
 3. **Thread the registry** into the equality callback given to `HintStore`. Smaller API: `HintStore` receives `(a,b) => boolean`, not the whole map.
 4. **Delete `typeLatticeEquals` / `constLatticeEquals` re-exports** from `framework/hint.ts` once each module owns its equality internally.
 5. **Q3 answer: keep the open index signature** on `OptimizationHint`. Dispatch is data-driven; honesty preserved.
-6. **Dissolve `HintStore`** into `Map<number, OptimizationHint>` + free `setHint(map, id, hint, eq): boolean`. 12 call sites, mechanical rename.
+6. **[SEPARATE COMMIT]** **Dissolve `HintStore`** into `Map<number, OptimizationHint>` + free `setHint(map, id, hint, eq): boolean`. 12 call sites, mechanical rename. Defer until substeps 1–5 land and CI is green.
 
-**Red test:** `hint-store.test.ts` unchanged except for eq callback threading. Add a test that registers a fake module with a non-`===` equality and confirms the worklist terminates on a circular write (prevents S1 regression once dispatch is live).
+### Red test
 
-**LoC delta:** −40.
+`hint-store.test.ts` unchanged except for eq callback threading. **Add a test that registers a fake module with a non-`===` equality** and confirms the worklist terminates on a circular write that toggles a non-singleton extension-field lattice (prevents S1 regression once dispatch is live, AND falsifies γ's `default: return false` path).
+
+### LoC delta
+
+−40 for substeps 1–5. The HintStore dissolution is a separate accounting line.
 
 ---
 
@@ -90,27 +123,68 @@ Substeps must land in this order:
 
 Runs after Step 2 (OSRStats inherited from C8 scope).
 
+### Verdict (2026-04-13 synthesis — against apparent β reversal)
+
+This is **not** a reversal of round-1's β-defer. It reads like one if you conflate scope; the two plans address disjoint concerns.
+
+**Round-1's β-defer protected the pin-gate flags** — `safeOnStack` (interfaces.ts:67), `canInstallOnStack` (osr.ts:163), `allowOnStack` (svml-interpreter.ts:129). Round-1's livelock warning ("fib-recursion mid-execution") was specifically about removing any of those three, because they compensate for the absent Truffle Assumption/deopt mechanism.
+
+**Round-2 Step 4 deletes the degenerate CSE strategy shell** — `InPlaceASTStrategy`, `needsInstall`, `OSRStats`. None of these are pin-gate flags. Concrete evidence:
+
+- `InPlaceASTStrategy`: zero non-test consumers. Re-exported at `index.ts:30` but never constructed. CSE path passes `coordinator: null` to `runPinned` — the strategy never runs even if it existed.
+- `needsInstall`: three uses total — declared (`osr.ts:50`), set to `false` on `InPlaceASTStrategy` (`osr.ts:110`), checked at `osr.ts:172`. If the only setter is deleted, the flag is unreachable.
+- `OSRStats`: zero non-test consumers. Tests read individual counter fields (`osr-runtime-refinement.test.ts:87-89`, `svml-jit-runtime-refinement.test.ts:114-115`); inlining the shape loses nothing.
+
+**Deliberately NOT deleted** (β-defer still holds): `OSRCoordinator`, `StateDeltaStrategy` interface (now single-impl), and all three pin-gate flags.
+
+A future plan-3 cannot re-justify the deleted items without inventing a caller that does not exist.
+
+### Substeps
+
 1. Delete `InPlaceASTStrategy` class (`framework/osr.ts:96-104`).
 2. Delete `needsInstall` from `StateDeltaStrategy`; delete the early-return guard in `OSRCoordinator.onChange` (osr.ts:159).
 3. Delete `OSRStats` interface; keep counter fields inline on `OSRCoordinator`.
 4. Update `index.ts` to drop `InPlaceASTStrategy` / `OSRStats` re-exports.
 
-**Red test:** SVML JIT end-to-end tests unchanged. CSE evaluator (already passes `coordinator: null`) unaffected.
+### Red test
 
-**LoC delta:** −30.
+SVML JIT end-to-end tests unchanged. CSE evaluator (already passes `coordinator: null`) unaffected. **Do NOT modify** `osr-coordinator.test.ts`'s pinned-scope assertions — those still exercise the pin-gate path that survives.
+
+### LoC delta
+
+−30.
 
 ---
 
 ## Step 5 — C6 · Runtime relocation + intrinsic dedup
 
-1. **Move** `src/specialization/memoization-analysis/runtime.ts` → `src/runtime/memo.ts`. Update imports at `src/stdlib.ts:2388-2393`, `src/engines/svml/builtins.ts:4-8`, `src/resolver/resolver.ts:8`. Drop re-exports from `src/specialization/index.ts:90-98`.
-2. **Delete `MEMO_MISS` export.** In `stdlib.ts:2437` replace the sentinel check with a `memoHas`-gate (SVML already uses this shape at `svml/builtins.ts:148`). Remove the sentinel import.
-3. **MEMO_INTRINSIC_NAMES dedup.** Import the constant at `transforms/memoization.ts:39-41`, `stdlib.ts:2420/2430/2442`, `svml/builtins.ts:24-26`. Five sites share one source. (Alternative: inline at resolver, delete the constant. Recommend dedup — the three names ARE a stable ABI.)
-4. **Optional rename:** `memoization-analysis/` → `memoization/` (drops the misleading suffix; `isPureFunctionDef` is explicitly not a DFA per SPEC-16).
+### Verdict (2026-04-13 synthesis — substep 2 STRICKEN)
 
-**Red test:** `yarn test memoization memoization-svml` green.
+**Substep 2 ("Delete `MEMO_MISS` export") is factually wrong and must NOT be executed.** The justification cites `svml/builtins.ts:148` as proof that SVML "uses a memoHas-gate shape" — but that line IS the `MEMO_MISS` sentinel shape. Verified: cases 40 and 41 in `src/engines/svml/builtins.ts` both call `_memoLookup` and compare the result to `MEMO_MISS`. There is no memoHas-gate to point at.
 
-**LoC delta:** −20.
+Deleting `MEMO_MISS` forces one of:
+- Re-introduce a separate `memoHas` JS helper (re-adding the double Map lookup that ε1/ε2 specifically eliminated — `cache.get(id)` then `inner.has(key)`, once for `memoHas`, then again for the subsequent `memoGet`/`memoLookup`).
+- Use `undefined` as the miss sentinel (breaks because stored `undefined` / Python `None` after unwrap is a valid cached value and cannot be distinguished from miss).
+- Out-parameter callback (allocation per call).
+
+All three are regressions. `MEMO_MISS` is the only sentinel that distinguishes "absent" from "stored any JS value" in one Map traversal. Any future plan-3 that deletes it must first answer "how do you distinguish stored-None from miss in a single lookup?" — the answer is always "a fresh Symbol," i.e. re-inventing `MEMO_MISS`.
+
+The real collapse win (going from two Python-level intrinsic calls `__memo_has` + `__memo_get` to a single `__memo_lookup`) is blocked at the **Python AST layer**, not the JS layer — it needs a Python-level `__memo_miss()` identity intrinsic or equivalent. That is where a future cleanup should focus.
+
+### Substeps (substep 2 stricken)
+
+1. **Move** `src/specialization/memoization-analysis/runtime.ts` → `src/runtime/memo.ts`. Update imports at `src/stdlib.ts:2388-2393`, `src/engines/svml/builtins.ts:4-8`, `src/resolver/resolver.ts:8`. Drop re-exports from `src/specialization/index.ts:90-98`. (Orthogonal to the sentinel question — safe.)
+2. ~~**Delete `MEMO_MISS` export.**~~ STRICKEN per verdict above. Keep `MEMO_MISS` exported. Keep the sentinel imports at `stdlib.ts:2393` and `svml/builtins.ts:8`.
+3. **MEMO_INTRINSIC_NAMES dedup.** Import the constant at `transforms/memoization.ts:39-41`, `stdlib.ts:2420/2430/2442`, `svml/builtins.ts:24-26`. Five sites share one source. The three names ARE a stable ABI — dedup, do not inline.
+4. **Optional rename:** `memoization-analysis/` → `memoization/` (drops the misleading suffix; `isPureFunctionDef` is explicitly not a DFA per SPEC-16). Subsumed by substep 1 if that move also renames.
+
+### Red test
+
+`yarn test memoization memoization-svml` green. **Additionally:** grep audit `grep -n "MEMO_MISS" src/` — must show hits in `runtime.ts`, `stdlib.ts`, `svml/builtins.ts`, and the barrel export. If any of those four sites loses the import during the move, STOP — the sentinel is load-bearing.
+
+### LoC delta
+
+−10 (moves + dedup; the MEMO_MISS deletion that would have contributed −10 is stricken).
 
 ---
 

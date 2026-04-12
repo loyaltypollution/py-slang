@@ -321,6 +321,10 @@ export class PersistentWorklist {
    * throws, we still deactivate but skip the tick: a thrown execution leaves
    * subscribers (e.g. OSRCoordinator → patchFunction) facing a dead runtime,
    * and we'd rather surface the original error than trigger swap machinery.
+   *
+   * Deactivate MUST precede the tick: the worklist parks transforms for
+   * pinned scopes, and the tick is what fires them once the pin releases.
+   * Reordering would leave transforms parked for a tick that may never come.
    */
   async withActiveScope<T>(scope: StmtNS.FileInput | StmtNS.FunctionDef, fn: () => Promise<T> | T): Promise<T> {
     this.activateScope(scope);
@@ -331,21 +335,9 @@ export class PersistentWorklist {
       threw = true;
       throw e;
     } finally {
-      this.deactivateAndTick(scope, threw);
+      this.deactivateScope(scope);
+      if (!threw) this.tick();
     }
-  }
-
-  /**
-   * Contractually atomic deactivate-then-tick. The worklist parks transforms
-   * for pinned scopes; unpinning must happen *before* the tick that fires
-   * those transforms, or the transform stays parked for another tick that
-   * may never come. Collapsing both into one private method removes the
-   * "textual ordering" fragility that would bite if someone reordered the
-   * two calls in the finally block of withActiveScope.
-   */
-  private deactivateAndTick(scope: StmtNS.FileInput | StmtNS.FunctionDef, threw: boolean): void {
-    this.deactivateScope(scope);
-    if (!threw) this.tick();
   }
 
   observeWrite(scopeKey: StmtNS.FileInput | StmtNS.FunctionDef, rhsNode: ExprNS.Expr, rawValue: unknown): void {
