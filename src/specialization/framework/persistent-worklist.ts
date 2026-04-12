@@ -404,8 +404,21 @@ export class PersistentWorklist {
   deactivateScope(key: StmtNS.FileInput | StmtNS.FunctionDef): void {
     const count = this.activeScopes.get(key);
     if (count === undefined) return;
-    if (count <= 1) this.activeScopes.delete(key);
-    else this.activeScopes.set(key, count - 1);
+    if (count > 1) {
+      this.activeScopes.set(key, count - 1);
+      return;
+    }
+    this.activeScopes.delete(key);
+    // Re-enqueue a transform for the now-unpinned scope. Any scope rules
+    // that were skipped during `processTransform` due to the `pinned &&
+    // !rule.safeOnStack` gate (and expr/stmt rules, which are all deferred
+    // while pinned) had their queue item consumed without firing. Without
+    // this re-enqueue, deactivate + tick would do nothing because the
+    // queue is empty. The enqueue is idempotent — duplicate-queueing of a
+    // scope is safe; `hasProcessableTransform` coalesces at processing
+    // time.
+    const state = this.scopes.get(key);
+    if (state) this.enqueueTransform(key, state.generation);
   }
 
   isScopeActive(key: StmtNS.FileInput | StmtNS.FunctionDef): boolean {

@@ -54,6 +54,7 @@ g()
     expect(patchSpy).toHaveBeenCalledWith(
       expectedIndex,
       (delta as { kind: "whole"; ir: unknown }).ir,
+      /* allowOnStack */ true,
     );
     patchSpy.mockRestore();
   });
