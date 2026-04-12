@@ -95,6 +95,13 @@ export interface ScopeTransformRule {
    * without a latch) from the monotone rules that `ScopeTransformRule`
    * models by default, and keeps the non-monotone-through-monotone
    * smuggling out of the rule's own `matches` predicate.
+   *
+   * **Scope of "once":** the latch lives for the lifetime of the worklist
+   * and survives `rebuildAndReseed` (which is itself triggered by the
+   * successful apply). Clearing the latch on rebuild would cause the rule
+   * to re-fire on the next tick, defeating the point. This is intentional —
+   * "fireOnce" means "once per (scope, rule) pair across the worklist's
+   * lifetime", not "once per structural version".
    */
   readonly fireOnce?: boolean;
 }

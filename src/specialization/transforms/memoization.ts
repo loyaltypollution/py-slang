@@ -90,7 +90,11 @@ export class MemoizationTransformRule implements ScopeTransformRule {
     // Splice the prelude as the first statement.
     fd.body.unshift(prelude);
 
-    // Mark memoized — matches() returns false on subsequent rounds.
+    // Annotate the FunctionDef so external consumers (tests,
+    // introspection) can detect that memoization fired on this scope.
+    // The re-fire guard is provided by the scheduler's `fireOnce`
+    // bookkeeping (this rule sets `fireOnce = true`), not by this
+    // hint — `matches()` no longer reads it.
     const prev = unit.hints.get(fd) ?? {};
     const nextHint: OptimizationHint = { ...prev, [MEMOIZED_FIELD]: true };
     unit.hints.set(fd, nextHint);

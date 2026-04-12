@@ -14,7 +14,7 @@ import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import type { FunctionUnit } from "./function-unit";
 import { buildFunctionUnits } from "./function-unit";
-import type { OptimizationHint } from "./hint";
+import { hintEquals, type OptimizationHint } from "./hint";
 import type { ObservationSink } from "./observation-sink";
 import type {
   AnalysisModule,
@@ -132,6 +132,7 @@ interface ScopeWorkState {
 
 export class PersistentWorklist implements ObservationSink {
   readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
+  private readonly analysesByName: ReadonlyMap<string, AnalysisModule<any>>;
 
   private readonly analysisQueues: QueuedBlock[][];
   private readonly analysisHeads: number[];
@@ -198,9 +199,12 @@ export class PersistentWorklist implements ObservationSink {
       (m): m is ObservingAnalysis =>
         m.observeValue !== undefined && m.mergeIntoHint !== undefined,
     );
+    this.analysesByName = new Map(analyses.map(a => [a.name, a]));
     this.cacheSafeOnStackFlag();
 
-    const units = buildFunctionUnits(ast, functionEnvironments);
+    const hintEq = (a: OptimizationHint, b: OptimizationHint) =>
+      hintEquals(a, b, this.analysesByName);
+    const units = buildFunctionUnits(ast, functionEnvironments, hintEq);
     this.units = units;
     for (const [key, unit] of units) this.addScope(key, unit);
 
@@ -242,9 +246,10 @@ export class PersistentWorklist implements ObservationSink {
    * Process pending work incrementally. Returns true if any units changed.
    *
    * In production, tick is invoked automatically at the end of each
-   * `withActiveScope` via `deactivateAndTick`. External callers (tests,
-   * advanced consumers driving the reactive loop manually) may invoke it
-   * directly; the return value is a drain-progress signal for those flows.
+   * `withActiveScope`'s finally block (after `deactivateScope`). External
+   * callers (tests, advanced consumers driving the reactive loop manually)
+   * may invoke it directly; the return value is a drain-progress signal
+   * for those flows.
    */
   tick(limit?: number): boolean {
     const changed = this.drain(limit);
@@ -371,14 +376,16 @@ export class PersistentWorklist implements ObservationSink {
     if (!state || state.unit.pinCount === 0) return;
     state.unit.pinCount--;
     if (state.unit.pinCount > 0) return;
-    // Re-enqueue a transform for the now-unpinned scope. Any scope rules
-    // that were skipped during `processTransform` due to the `pinned &&
-    // !rule.safeOnStack` gate (and expr/stmt rules, which are all deferred
-    // while pinned) had their queue item consumed without firing. Without
-    // this re-enqueue, deactivate + tick would do nothing because the
-    // queue is empty. The enqueue is idempotent — duplicate-queueing of a
-    // scope is safe; `hasProcessableTransform` coalesces at processing
-    // time.
+    // Re-enqueue a transform for the now-unpinned scope. While the scope
+    // was pinned, `processTransform` continued to accept queue items but
+    // the `pinned && !rule.safeOnStack` gate (and the unconditional
+    // `pinned → continue` for expr/stmt rules) meant all rules were
+    // skipped, `anyChanged` stayed false, `rebuildAndReseed` was never
+    // called, and no re-enqueue followed. Without this direct re-enqueue,
+    // deactivate + tick would find an empty queue. Duplicate-enqueue is
+    // safe: stale-generation items are filtered by the generation check
+    // in `processTransform`; current-generation duplicates are no-ops if
+    // nothing actually changed.
     this.enqueueTransform(key, state.generation);
   }
 

@@ -77,15 +77,21 @@ describe("ScopeTransformRule fireOnce scheduling", () => {
     // apply should have fired at most once per scope on the first round.
     // The second/third re-enqueue must not cause additional apply calls.
     expect(applyCalls).toBe(afterConvergeApply);
+    // Stronger claim: fd + fileInput contribute at most two applies total
+    // for the whole test (once each at converge time). This is the direct
+    // falsifiable guarantee — if fireOnce bookkeeping regresses for EITHER
+    // scope, applyCalls will grow past 2.
+    expect(applyCalls).toBeLessThanOrEqual(2);
     // matches may still be called on other scopes (root), but NOT on fd
     // after the first success. Because we record per-(scope, rule), fd
     // must be skipped entirely on the re-tick.
-    // Capture the matches count after all re-ticks — if fireOnce works,
-    // matches count did not keep growing unboundedly with each re-tick.
     const matchesAfterReticks = matchesCalls;
     worklist.observeCall(fileInput, fd);
     worklist.tick();
     expect(matchesCalls).toBe(matchesAfterReticks); // unchanged by a further re-tick on fd
+    // Final cross-check: applyCalls pinned at its initial value through
+    // all reticks; no rule run against fd after the first success.
+    expect(applyCalls).toBe(afterConvergeApply);
   });
 });
 

@@ -178,7 +178,7 @@ mitigates them) lives in `optimization-roadmap.md` under "Why the pin-set exists
 - `SpecializationEngine` — facade used by all evaluators.
 - `PersistentWorklist`, `ObservationSink`, `ExternalWorkItem`, `WorklistStats`.
 - `FunctionUnit`, `buildFunctionUnits`, `SlotInfo`, `SlotLookup`, `buildSlotTable`.
-- `HintStore`, `OptimizationHint`, `LatticeEquality`, `hintEquals`.
+- `HintStore`, `OptimizationHint`, `hintEquals`.
 - `OSRCoordinator`, `StateDeltaStrategy`, `InPlaceASTStrategy`, `OSRStats`.
 - `AnalysisModule`, `TransformRule`, `StmtTransformRule`, `ExprTransformRule`.
 - Analyses/lattices (`TypeAnalysisModule`, `ConstAnalysisModule`, lattice
@@ -367,7 +367,7 @@ flowchart TB
 | Internal escape hatch | `src/specialization/optimize.ts` | `createReactiveOptimization` (`@internal`) |
 | Units | `src/specialization/framework/function-unit.ts` | `FunctionUnit`, `buildFunctionUnits` |
 | Worklist | `src/specialization/framework/persistent-worklist.ts` | `PersistentWorklist`, `observeWrite`, `observeCall`, `observeValue`, `activateScope`, `deactivateScope`, `withActiveScope`, `subscribe` |
-| Hints | `src/specialization/framework/hint.ts` | `HintStore`, `OptimizationHint`, `LatticeEquality`, `hintEquals` |
+| Hints | `src/specialization/framework/hint.ts` | `HintStore`, `OptimizationHint`, `hintEquals` |
 | OSR | `src/specialization/framework/osr.ts` | `OSRCoordinator`, `StateDeltaStrategy`, `InPlaceASTStrategy` |
 | SVML compile | `src/engines/svml/svml-compiler.ts` | `SVMLCompiler.fromProgramUnit`, `compileProgram`, `getHint` |
 | SVML run | `src/engines/svml/svml-interpreter.ts` | `SVMLInterpreter.execute`, `patchFunction`, `applyOperandPatches`, `toJSValue` |
