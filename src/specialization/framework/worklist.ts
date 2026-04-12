@@ -297,7 +297,7 @@ export function drainAllAnalyses(
  * Repeats until no transform fires or `maxRounds` is reached.
  * After the final round, one last analysis pass annotates all surviving nodes.
  *
- * @deprecated Use OptimizationSession.converge() instead. Retained for differential testing.
+ * Retained as the legacy oracle for differential testing. Production uses PersistentWorklist.
  */
 export function runCFGOptimization(
   stmts: StmtNS.Stmt[],

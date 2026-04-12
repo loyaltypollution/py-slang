@@ -1,61 +1,25 @@
-// src/specialization/optimize.ts — entry points for the optimization pipeline
-
-export { createReactiveOptimization } from "./reactive";
-export type { ReactiveOptimization, ReactiveSubscriber, ExternalWorkItem } from "./reactive";
-export type { ScopeKey, VersionedFunctionUnit } from "./framework/function-unit";
+// src/specialization/optimize.ts — one-shot static optimization entry point
 
 import type { StmtNS } from "../ast-types";
 import type { FunctionEnvironments } from "../resolver";
-import { ConstAnalysisModule } from "./const-analysis/analysis";
 import type { FunctionUnit } from "./framework/function-unit";
-import { buildFunctionUnits } from "./framework/function-unit";
-import type { AnalysisModule, TransformRule } from "./framework/interfaces";
-import { OptimizationSession } from "./framework/session";
-import { ConstantFoldingRule } from "./transforms/constant-folding";
-import { DeadBranchEliminationRule } from "./transforms/dead-branch";
-import { TypeAnalysisModule } from "./type-analysis/analysis";
-
-const ANALYSES: readonly AnalysisModule<any>[] = [new TypeAnalysisModule(), new ConstAnalysisModule()];
-const TRANSFORMS: readonly TransformRule[] = [new DeadBranchEliminationRule(), new ConstantFoldingRule()];
+import { buildVersionedFunctionUnits } from "./framework/function-unit";
+import { PersistentWorklist } from "./framework/persistent-worklist";
+import { createAnalyses, createTransforms } from "./pipeline-config";
 
 /**
- * Run the full static optimization pipeline.
+ * Run the full static optimization pipeline to fixpoint.
  *
- * Builds one FunctionUnit per scope, creates an OptimizationSession per unit,
- * and runs each to convergence. Returns the flat map for the compiler to look up hints.
+ * Builds one FunctionUnit per scope, registers all with a PersistentWorklist,
+ * and drains until idle. Returns the flat map for the compiler to look up hints.
  */
 export function optimize(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
-  const units = buildFunctionUnits(ast, functionEnvironments);
-  for (const unit of units.values()) {
-    const session = new OptimizationSession(
-      unit.body, ANALYSES, TRANSFORMS, unit.hints, unit.slotLookup,
-    );
-    session.converge();
-  }
+  const units = buildVersionedFunctionUnits(ast, functionEnvironments);
+  const worklist = new PersistentWorklist(createAnalyses(), createTransforms());
+  for (const [key, unit] of units) worklist.addScope(key, unit);
+  worklist.drain();
   return units;
-}
-
-/**
- * Create sessions for consumers that want to control stepping.
- * Each session corresponds to one FunctionUnit (scope).
- */
-export function createOptimizationSessions(
-  ast: StmtNS.FileInput,
-  functionEnvironments: FunctionEnvironments,
-): Map<StmtNS.FileInput | StmtNS.FunctionDef, { unit: FunctionUnit; session: OptimizationSession }> {
-  const units = buildFunctionUnits(ast, functionEnvironments);
-  const result = new Map<
-    StmtNS.FileInput | StmtNS.FunctionDef,
-    { unit: FunctionUnit; session: OptimizationSession }
-  >();
-  for (const [key, unit] of units) {
-    const session = new OptimizationSession(
-      unit.body, ANALYSES, TRANSFORMS, unit.hints, unit.slotLookup,
-    );
-    result.set(key, { unit, session });
-  }
-  return result;
 }
