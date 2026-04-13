@@ -56,6 +56,50 @@ Implementation reuses pure transfer functions from
 legacy `Pass<K,V>`/`Worklist` machinery. A small standalone Kildall
 iterator lives at `src/specialization/runtime/queries/kildall.ts`.
 
+## End-of-run summary (HEAD = e3fb6e1)
+
+| Phase | Status | Commit | Notes |
+|---|---|---|---|
+| 0 — baseline | done | (uncommitted DECISIONS) | 32/35 baseline failures captured |
+| 1 — runtime core | done | d2c2bbf | Input/Query/Db, cycle_fn, early cutoff |
+| 2 — driver Inputs | done | e158782 | astOf, runtimeWrite, runtimeCall, environmentsOf |
+| 3a — cfgOf | done | 3a03754 | |
+| 3b — blockEnvs | done | 755b14c | per-unit DFA shape (deviation, see above) |
+| 3c+3d — typeOf, constOf | done | c20e8a6 | per-node projection |
+| 3e — scope queries | done | 73bd26b | callCountOf, purityOf, shouldMemoize |
+| 4 — lowering chain | done | 57ee225 | structural sharing preserved |
+| 5a — svml-compiler reads | done | 8cd2e73 | Worklist still constructed in evaluators |
+| 5b — evaluator migration | **deferred** | — | requires JitPass replacement design |
+| 6 — dissolve framework | **deferred** | — | requires 5b |
+| 7 — introspection | done | e3fb6e1 | depsOf/dependentsOf tested |
+
+**Final test count:** 45/48 suites, 2680/2682 passing. The 3 failing suites
+(`analysis-observe-value`, `worklist-observations`, `observation-sink-sync`)
+are pre-existing on pr3-fact-store-refactor — they exercise the dissolved
+`observeWrite` pathway and will be deleted with the framework in Phase 6.
+
+**Net delta vs branch base (e7eec65):** 37 files, +3184 / -13 LoC.
+
+**Recommended next steps for review:**
+1. Read `src/specialization/runtime/db.ts` first — load-bearing; everything
+   else is application of the primitives it defines.
+2. Then the queries in dependency order: `inputs.ts` → `queries/cfg.ts` →
+   `queries/block-envs.ts` (and `kildall.ts`) → `queries/type-of.ts` /
+   `queries/const-of.ts` → `queries/scope.ts` → `queries/lowering.ts`.
+3. The pure-extraction additions in
+   `{type,const}-analysis/analysis.ts` and `purity-analysis/analysis.ts`
+   are additive — they should not have changed any pre-existing test.
+4. The Phase 5a fallback `db === undefined` in `svml-compiler.ts` is a
+   deliberate staging shim; it goes away in 5b.
+
+**Open architectural questions to resolve before 5b:**
+- JitPass currently subscribes to `[callCountPass, purityScopePass,
+  structuralPass]` and triggers recompile on digest change. The query
+  equivalent is a polling tick over `optimizedAstOf(unit)` at safepoints.
+  Where are those safepoints in the interpreter dispatch loop?
+- Should the Db be per-evaluation (current) or per-conductor-session
+  (longer-lived, accumulates observations across multiple chunks)?
+
 ## Phase 5 — staged consumer migration (5a: svml-compiler reads only)
 
 Recon found ~27 read sites across 4 files. Full migration in one commit is high-risk:
