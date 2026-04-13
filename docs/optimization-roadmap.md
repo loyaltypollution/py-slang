@@ -1,13 +1,12 @@
 # Optimization Architecture: Spec and Walkthrough
 
-Point of reference for the py-slang specialization engine.
+Point of reference for the py-slang specialization framework.
 
 **Above the evolving-work divider is intended to be stable**: numbered
 `SPEC-NN` claims describe the contracts that code and reviews can cite,
 followed by the architecture walkthrough that grounds them and the
 principles that shaped them. **Below the divider is forward-looking**:
-consumer strategies, experiments, open gaps, and the changelog of
-resolved work.
+consumer strategies, open gaps, and the changelog of resolved work.
 
 For step-by-step pipeline walk-through see `docs/compilation-flow.md`.
 
@@ -20,22 +19,33 @@ rebuttals. Each claim names the contract, points at where it lives, and
 flags the guarding principle (see "Principles" section below) that keeps
 it from being eroded.
 
-### SPEC-01 — One facade per evaluator
+### SPEC-01 — No facade; evaluators wire the framework directly
 
-Every evaluator constructs exactly one `SpecializationEngine` and uses it
-for all specialization work. Evaluators **must not** construct
-`PersistentWorklist`, `OSRCoordinator`, or `HintStore` directly.
-*Location*: `src/specialization/engine.ts`.
-*Principle*: P-01 (Abstract over what's shared, not what differs).
+Every evaluator constructs exactly one `PersistentWorklist` and (for the
+JIT path) one `OSRCoordinator`, then drives execution through the free
+helper `runPinned`. Evaluators **must not** introduce a new facade layer
+between themselves and the worklist; the prior `SpecializationEngine`
+was dissolved because its sole load-bearing invariant (clear pins on
+throw) became `runPinned` and every other responsibility was already
+owned by the worklist or the evaluator.
+*Location*: `src/specialization/run-pinned.ts`; construction sites in
+`src/conductor/PyCseEvaluator.ts`, `PySvmlEvaluator.ts`,
+`PySvmlJitEvaluator.ts`, `PySvmlSinterEvaluator.ts`.
+*Principle*: P-01 (Abstract over what's shared, not what differs),
+P-05 (Don't coin nouns ahead of implementers).
 
 ### SPEC-02 — HintStore is an open record
 
 `OptimizationHint` is an open record keyed on `AnalysisModule.name`. A
 new analysis slots in by adding an optional field to the hint record and
 shipping a module whose `name` matches. Equality is delegated to the
-module's `latticeEquals`. No separate key sub-object, no `hintGet` /
-`hintSet` helpers.
-*Location*: `src/specialization/framework/hint.ts`.
+module's `latticeEquals`, dispatched through a per-worklist registry
+(`analysesByName`) constructed from the analyses passed to the worklist
+constructor. No separate key sub-object, no `hintGet` / `hintSet`
+helpers.
+*Location*: `src/specialization/framework/hint.ts` (`hintEquals`
+registry dispatch), `src/specialization/framework/persistent-worklist.ts`
+(`analysesByName`).
 *Principle*: P-02 (Extension shape follows the extension point).
 
 ### SPEC-03 — `FunctionUnit.body` is a read-through getter
@@ -53,89 +63,91 @@ AST field.
 transforms. Within analysis, earlier modules complete before later
 (type before const). Transforms fire only at local analysis fixpoint.
 Monotonicity is preserved within each tier; non-monotone transforms
-(Class 6) are out of scope until the first such transform lands.
+(`ScopeTransformRule.fireOnce = true` — currently
+`MemoizationTransformRule`) carry a framework-level one-shot latch so
+they cannot re-fire without a self-invalidating hint write.
 *Location*: `src/specialization/framework/persistent-worklist.ts`
-(`findActiveQueue`, `hasProcessableTransform`).
+(`findActiveQueue`, `hasProcessableTransform`, `firedOneShotRules`).
 *Principle*: P-04 (Order matters; fixpoint before mutation).
 
-### SPEC-05 — `ObservationSink` is a `Pick<>` alias, not an interface
+### SPEC-05 — `ObservationSink` is a nominal interface
 
-The push-side interpreter-facing surface is
-`Pick<PersistentWorklist, "observeWrite" | "observeCall" |
-"activateScope" | "deactivateScope">`. There is exactly one implementer
-by design. Do not introduce a separate interface file until a second
-non-worklist implementer actually lands.
-*Location*: `src/specialization/framework/persistent-worklist.ts` (type
-alias + `assertSyncObservationSink`).
-*Principle*: P-05 (Don't coin nouns ahead of implementers).
+The push-side interpreter-facing surface is a nominal interface in its
+own file. `PersistentWorklist implements ObservationSink`; test mocks
+and interpreter typings depend only on the interface shape, not on
+`PersistentWorklist`'s full API. The interface has exactly one
+production implementer today — the re-promotion from a prior `Pick<>`
+alias was driven by test-mock ergonomics rather than a second
+implementer landing.
+*Location*: `src/specialization/framework/observation-sink.ts`.
+*Principle*: P-13 (Re-promote dissolved nouns when the dissolution
+blocks something concrete).
 
 ### SPEC-06 — Observation methods are synchronous (void return)
 
 All four `ObservationSink` methods return `void`, never
 `Promise<void>`. The OSR safepoint contract rests on observation being
-a synchronous sub-call of the interpreter step that emits it. The
-construction-time tripwire `assertSyncObservationSink` rejects
-`async`-declared methods; hand-rolled `Promise.resolve()` returns and
-transpiled async are out of scope — the declared `void` type is the
-contract.
+a synchronous sub-call of the interpreter step that emits it. A
+tripwire at the end of the `PersistentWorklist` constructor rejects
+`async`-declared methods (`constructor.name === "AsyncFunction"`);
+hand-rolled `Promise.resolve()` returns and transpiled async are out of
+scope — the declared `void` type is the contract. The
+`SINK_METHODS` tuple is pinned with `satisfies readonly (keyof
+ObservationSink)[]` so interface drift is a compile error, not a silent
+runtime gap.
 *Location*: `src/specialization/framework/persistent-worklist.ts`
-(`assertSyncObservationSink`, called from the worklist constructor).
+(constructor tripwire).
 *Principle*: P-06 (Convert accidentally-correct orderings into
 structural ones).
 
-### SPEC-07 — Pin-set gates transform installation
+### SPEC-07 — Pin-count gates transform installation
 
 `PersistentWorklist.activateScope(key)` / `deactivateScope(key)` bracket
-every interpreter frame on the target scope. While pinned, transforms
-for that scope park in the worklist; the worklist re-fires them after
-the pin count drops to zero and the surrounding `engine.run()` finally
-block calls `tick()`. **`StateDeltaStrategy.applyDelta` is never called
-while a frame of the target scope is on the stack.**
-This is stronger than "no mid-execution mutation" — it is per-scope,
-so a transform can install on function F while G is mid-execution, as
-long as F is not on the current stack.
-*Location*: `src/specialization/framework/persistent-worklist.ts`
-(`activeScopes`, `hasProcessableTransform`, `withActiveScope`);
-`src/specialization/framework/osr.ts` (`onChange` skip-when-pinned).
-*Principle*: P-06 (structural ordering) + P-07 (Gates live where the
-gated condition is tracked).
+every interpreter frame on the target scope. The pin state lives on
+`FunctionUnit.pinCount` — the same unit that owns the scope's hints and
+body — so there is no parallel pin-set data structure to keep in sync.
+While pinned, transforms for that scope park in the worklist; the
+worklist re-fires them after the pin count drops to zero and the
+surrounding `runPinned` / `withActiveScope` finally block calls
+`tick()`. **`StateDeltaStrategy.applyDelta` is never called while a
+frame of the target scope is on the stack.** This is stronger than "no
+mid-execution mutation" — it is per-scope, so a transform can install
+on function F while G is mid-execution, as long as F is not on the
+current stack.
+*Location*: `src/specialization/framework/function-unit.ts`
+(`pinCount`); `src/specialization/framework/persistent-worklist.ts`
+(`activateScope`, `deactivateScope`, `hasProcessableTransform`,
+`withActiveScope`); `src/specialization/framework/osr.ts` (`onChange`
+skip-when-pinned).
+*Principle*: P-07 (Gates live where the gated condition is tracked).
 
-### SPEC-08 — `StateDeltaStrategy<Delta>` is the unified install primitive
+### SPEC-08 — `StateDeltaStrategy<Delta>` is the install primitive
 
-Both engines install through the same seam. `Delta` is opaque to the
-framework: CSE uses `Delta = void` (`InPlaceASTStrategy`), SVML uses
-`Delta = { kind: 'whole' | 'patches' }` (`SVMLSwapStrategy`). The
-coordinator sequences `computeDelta` → `applyDelta` inside the pin-set
-gate.
+The OSR coordinator installs through this seam. `Delta` is opaque to
+the framework. Current instance: `SVMLSwapStrategy` with
+`Delta = { kind: 'whole', ir } | { kind: 'patches', patches }`. CSE
+does not install a strategy — it passes `coordinator: null` to
+`runPinned`, because its materialized form is the AST itself and
+transforms mutate it during `tick`. The coordinator sequences
+`computeDelta` → `applyDelta` inside the pin-gate.
 *Location*: `src/specialization/framework/osr.ts`.
-*Principle*: P-01 (Share the contract, vary the instantiation).
+*Principle*: P-01 (Share the contract, vary the instantiation),
+P-08 (Express "nothing to do" by omitting the participant, not by a
+flag).
 
-### SPEC-09 — `needsInstall = false` short-circuits the coordinator
-
-Strategies whose materialized form is updated at the transform call
-site (currently `InPlaceASTStrategy`: the AST mutation during `tick`
-IS the install) set `needsInstall = false`. The coordinator's
-`onChange` early-exits — no iteration, no stats increments, no delta
-calls. This is the explicit contract for "install already happened" vs.
-the default `needsInstall = true` path that drives `computeDelta` +
-`applyDelta`.
-*Location*: `src/specialization/framework/osr.ts` (`OSRCoordinator.onChange`).
-*Principle*: P-08 (Express "nothing to do" as data on the strategy,
-not as absence of plumbing on the caller).
-
-### SPEC-10 — Notifications carry scope sets, not diffs
+### SPEC-09 — Notifications carry scope sets, not diffs
 
 `PersistentWorklist.subscribe(cb: (changed: ReadonlySet<Scope>) =>
 void)` delivers a set of scope keys synchronously at the end of
-`tick()`. Subscribers re-read current state via `engine.units` /
-`engine.hintsFor`. The pin-set is the temporal gate that makes re-read
-safe. Do not add diff/version plumbing unless a consumer with a
+`tick()`. Subscribers re-read current state via `worklist.units` /
+`worklist.hintsFor`. The pin-count is the temporal gate that makes
+re-read safe. Do not add diff/version plumbing unless a consumer with a
 demonstrated need for it exists.
 *Location*: `src/specialization/framework/persistent-worklist.ts`
 (`subscribe`, `notify`).
 *Principle*: P-09 (Shape persistence APIs against actual consumers).
 
-### SPEC-11 — AST dispatch uses `kind` discriminants
+### SPEC-10 — AST dispatch uses `kind` discriminants
 
 Every AST dispatch site uses the `kind` discriminant field (or
 `instanceof` on the `StmtNS` / `ExprNS` class hierarchy).
@@ -146,7 +158,7 @@ sites. Positive examples in `src/specialization/framework/transform.ts`.
 *Principle*: P-10 (Use identifiers under your control; avoid runtime
 representation leaks).
 
-### SPEC-12 — Function-unit discovery via `StmtNS.Visitor<void>`
+### SPEC-11 — Function-unit discovery via `StmtNS.Visitor<void>`
 
 `buildFunctionUnits` walks the AST through a
 `StmtNS.Visitor<void>`. New statement kinds added to the visitor
@@ -157,7 +169,7 @@ method). Hand-rolled `instanceof` chains for AST traversal are out.
 (`ScopeDiscoveryVisitor`).
 *Principle*: P-11 (Let the type system carry the completeness check).
 
-### SPEC-13 — Analyze and compile are two passes
+### SPEC-12 — Analyze and compile are two passes
 
 Analysis runs to fixpoint before any compile pass begins. Single-pass
 interleaving (analyze some, compile that, analyze more) is out — it is
@@ -167,9 +179,9 @@ order is permanent: parse → resolve → specialize → compile → execute.
 `PySvmlEvaluator.ts` / `PyCseEvaluator.ts`.
 *Principle*: P-04 (Order matters).
 
-### SPEC-14 — Interpreters have zero hint reads on hot paths
+### SPEC-13 — Interpreters have zero hint reads on hot paths
 
-No interpreter (CSE, SVML, Sinter) queries `engine.hintsFor` during
+No interpreter (CSE, SVML, Sinter) queries `worklist.hintsFor` during
 execution. SVML bakes hints at compile time; CSE expresses
 specialization as AST-level transforms. Visualizers and debuggers
 consume `HintStore` externally.
@@ -178,48 +190,70 @@ compiler reads at compile time; interpreters do not.
 *Principle*: P-12 (Specialization flows through compile-time or
 transform, not runtime query).
 
-### SPEC-15 — `engine.run()` owns the `deactivateScope → tick` ordering
+### SPEC-14 — `runPinned` owns the `deactivateScope → tick` ordering
 
 The pin-release-then-tick sequence is not a caller responsibility.
-`engine.run(rootScope, fn)` internally calls
+`runPinned(worklist, coordinator, rootScope, fn)` internally calls
 `withActiveScope(rootScope, fn)`, whose `finally` block runs
-`deactivateScope` before `tick()`. Callers do not hand-roll the
-finally block.
-*Location*: `src/specialization/engine.ts` (`run`);
+`deactivateScope` before `tick()`. A thrown `fn` triggers
+`worklist.clearAllPins()` to reset pin counts (CSE does not pop envs
+during JS-stack unwind, so mid-execution throws leave pins dirty) and
+the `finally` block suppresses the post-run tick on throw — otherwise
+a subscriber could try to install against a unit whose interpreter
+state has unwound. Callers do not hand-roll the finally block.
+*Location*: `src/specialization/run-pinned.ts`;
 `src/specialization/framework/persistent-worklist.ts`
-(`withActiveScope`).
+(`withActiveScope`, `clearAllPins`).
 *Principle*: P-06 (Structural ordering).
 
-### SPEC-16 — New transforms land as `AnalysisModule` + `TransformRule`
+### SPEC-15 — New transforms land as `AnalysisModule` + `TransformRule`
 
 Memoization, inlining, and any future optimization land through the
 existing extension points: an `AnalysisModule<L>` for the analysis side
 (if one is needed) and a `TransformRule` for the rewrite. Purity
 checks, syntactic gates, etc., that have no lattice to accumulate stay
 as standalone walkers (see Decision 4 in the narrative below).
+Non-monotone transforms set `ScopeTransformRule.fireOnce = true` and
+get a framework-level latch; they do **not** smuggle re-fire protection
+into their `matches` predicate.
 *Location*: `src/specialization/framework/interfaces.ts`;
 existing transforms in `src/specialization/transforms/`.
 *Principle*: P-02 (Extension shape follows the extension point).
+
+### SPEC-16 — Memoization runtime lives under `src/runtime`
+
+The memo side-table + intrinsic helpers (`memoLookup`, `memoPut`,
+`MEMO_MISS`, `MEMO_INTRINSIC_NAMES`) are runtime concerns, not
+dataflow-analysis concerns — the directory name reflects the
+responsibility. Resolver, stdlib, and SVML builtins all import from
+this single module; the intrinsic names are destructured as
+`[MEMO_HAS_NAME, MEMO_GET_NAME, MEMO_PUT_NAME] = MEMO_INTRINSIC_NAMES`
+at every site so the list ordering is authoritative and
+name-to-opcode cannot drift.
+*Location*: `src/runtime/memo.ts`; consumers in `src/stdlib.ts`,
+`src/engines/svml/builtins.ts`, `src/resolver/resolver.ts`,
+`src/specialization/transforms/memoization.ts`.
+*Principle*: P-14 (Put runtime primitives under a runtime name).
 
 ---
 
 ## Architecture walkthrough
 
-Five layers. The facade contains the coordinator, which contains the
-worklist, which owns the units and hints. Dependency points downward;
-composition points upward.
+Four layers. No facade: the coordinator subscribes to the worklist; the
+worklist owns the units and hints; `runPinned` is the outer wrapper that
+evaluators call.
 
 ```mermaid
 flowchart TB
-    ENG["SpecializationEngine<br/>facade: converge / run / installStrategy"]
+    RP["runPinned(worklist, coord|null, scope, fn)<br/>pin ordering + clearAllPins on throw"]
     OSR["OSRCoordinator<br/>safepoint-gated subscriber"]
     SDS["StateDeltaStrategy&lt;Delta&gt;<br/>engine-specific install"]
-    WL["PersistentWorklist<br/>two-tier priority (analysis → transforms)<br/>pin-set, observation sink"]
-    FU["FunctionUnit<br/>per-scope body (getter) + hints + slots"]
-    HS["HintStore<br/>open-record per-node hints; registry keyed on AnalysisModule.name"]
+    WL["PersistentWorklist<br/>two-tier priority (analysis → transforms)<br/>implements ObservationSink<br/>analysesByName registry"]
+    FU["FunctionUnit<br/>per-scope body (getter) + hints + slots + pinCount"]
+    HS["HintStore<br/>open-record per-node hints; eq via registry"]
 
-    ENG --> OSR
-    ENG --> WL
+    RP --> WL
+    RP --> OSR
     OSR --> SDS
     OSR --> WL
     WL --> FU
@@ -229,63 +263,77 @@ flowchart TB
 ### `HintStore` (SPEC-02)
 
 Open-record map from `node.id` to `OptimizationHint`. Analyses read and
-write named fields (`hint.type`, `hint.constVal`, …). The constructor
-accepts a module list (`LatticeEquality[]`); defaults to the built-in
-two. Equality-on-write consults the registry keyed by module name;
-unregistered fields fall back to strict equality (conservative
-over-invalidation).
+write named fields (`hint.type`, `hint.constVal`, `hint.callCount`,
+`hint.memoized`, …). The constructor takes an `eq` callback;
+production callers pass
+`(a, b) => hintEquals(a, b, worklist.analysesByName)`, which dispatches
+each field's equality through the registered `AnalysisModule.latticeEquals`.
+Unregistered fields default to inequality (conservative
+over-invalidation). `HINT_EQ_NEVER` is the sentinel callback for test
+merge-collectors that never double-write a node.
 
-### `FunctionUnit` (SPEC-03)
+### `FunctionUnit` (SPEC-03, SPEC-07)
 
 Per-scope container: `funcAst` reference, `HintStore`, `SlotLookup`,
-`structuralVersion`. The unit is the scope's identity; `body` is a
-getter onto `funcAst`, never a cached field. Units are built by
-`buildFunctionUnits` via `ScopeDiscoveryVisitor` (SPEC-12).
+`structuralVersion`, `pinCount`. The unit is the scope's identity;
+`body` is a getter onto `funcAst`, never a cached field. `pinCount` is
+the single owner of pin-set state — the parallel `activeScopes` map
+and external `pinSet` argument both dissolved into this field. Units
+are built by `buildFunctionUnits` via `ScopeDiscoveryVisitor`
+(SPEC-11).
 
-### `PersistentWorklist` (SPEC-04, SPEC-05, SPEC-06, SPEC-07, SPEC-10)
+### `PersistentWorklist` (SPEC-04, SPEC-05, SPEC-06, SPEC-07, SPEC-09)
 
-The scheduler. Two-tier priority; pin-set; the `ObservationSink`
-surface interpreters call into. `subscribe(cb)` publishes scope-set
-notifications. The sink synchrony tripwire
-(`assertSyncObservationSink`) runs from the constructor.
+The scheduler. Two-tier priority; per-unit pin-count; directly
+implements the `ObservationSink` interface. `subscribe(cb)` publishes
+scope-set notifications. `addCallObserver` registers profile-style
+observers (currently `CallCountObserver` for memoization). The sink
+synchrony tripwire runs at the end of the constructor.
 
-Compaction helper `compactQueue` unifies the analysis and transform
-FIFO compaction with a single threshold (64). No two parallel
-ring-buffer implementations.
-
-### `OSRCoordinator` (SPEC-07, SPEC-09)
+### `OSRCoordinator` (SPEC-07, SPEC-08)
 
 Subscribes to the worklist. For each changed scope that is not pinned
-and passes `strategy.canInstall`, drives `computeDelta` → `applyDelta`.
-Short-circuits entirely when `strategy.needsInstall === false`.
+(or is pinned and the strategy opts in via `canInstallOnStack`) and
+passes `strategy.canInstall`, drives `computeDelta` → `applyDelta`.
+CSE's path does not construct a coordinator — the absence is the
+"nothing to install" signal (P-08).
 
-### `StateDeltaStrategy<Delta>` (SPEC-08, SPEC-09)
+### `StateDeltaStrategy<Delta>` (SPEC-08)
 
-Engine-specific install seam. Current instances:
+Engine-specific install seam. Current production instance:
 
-| Engine | Strategy | `Delta` | `needsInstall` |
+| Engine | Strategy | `Delta` | Coordinator? |
 |---|---|---|---|
-| CSE | `InPlaceASTStrategy` | `void` | `false` |
-| SVML | `SVMLSwapStrategy` | `{ kind: 'whole', ir } \| { kind: 'patches', patches }` | `true` (default) |
+| CSE | *none* | *n/a* | `null` — AST is the materialized form, transforms mutate during `tick` |
+| SVML | `SVMLSwapStrategy` | `{ kind: 'whole', ir } \| { kind: 'patches', patches }` | yes |
 
-`SVMLSwapStrategy` supports both granularities; operand-diff emission
-from `computeDelta` is pending (see open gaps).
-
-### `SpecializationEngine` (SPEC-01, SPEC-15)
-
-Evaluator-facing facade. Owns worklist + coordinator; exposes
-`converge()`, `units`, `hintsFor`, `observationSink`,
-`installStrategy`, `run`. Two-phase construction accommodates
-`SVMLSwapStrategy(compiler, interpreter)` — the strategy captures
-engine-specific objects that are themselves constructed from
-`engine.units`, so the engine is built first, then the strategy, then
-installed.
+`SVMLSwapStrategy` supports both granularities; automatic operand-diff
+emission from `computeDelta` is pending (see Open gaps — D1).
 
 ### `ObservationSink` (SPEC-05)
 
-Structural alias. Four methods: `observeWrite`, `observeCall`,
-`activateScope`, `deactivateScope`. Interpreters declare their
-dependency on this surface without importing the full scheduler API.
+Nominal interface in `framework/observation-sink.ts`. Four methods:
+`observeWrite`, `observeCall`, `activateScope`, `deactivateScope`.
+`PersistentWorklist implements ObservationSink`; interpreter and test
+typings import the interface and stay independent of worklist internals.
+
+### `runPinned` (SPEC-14)
+
+The free function every evaluator calls. Signature:
+
+```ts
+runPinned<T>(
+  worklist: PersistentWorklist,
+  coordinator: OSRCoordinator<unknown> | null,
+  rootScope: StmtNS.FileInput | StmtNS.FunctionDef,
+  fn: () => Promise<T> | T,
+): Promise<T>
+```
+
+Starts the coordinator (if any), pins `rootScope` via
+`worklist.withActiveScope`, runs `fn`, stops the coordinator, calls
+`worklist.clearAllPins()` on throw. Replaces the dissolved
+`SpecializationEngine.run`.
 
 ---
 
@@ -323,17 +371,19 @@ and is re-annotated on a later pass. Consumers may see inconsistent
 hints across an expression. Low severity because hints are
 monotonically refined and conservative fallbacks are safe.
 
-**Resolution.** The pin-set (SPEC-07) covers Classes 1–4 completely:
-while a scope is pinned, transforms targeting that scope's unit stay
-parked. They fire after `deactivateScope` reduces the pin count and
-the `engine.run` finally block calls `tick()` (SPEC-15). Class 5 is
-handled conservatively.
+**Resolution.** The pin-count (SPEC-07) covers Classes 1–4 completely:
+while a scope's pinCount > 0, transforms targeting that scope's unit
+stay parked. They fire after `deactivateScope` reduces the pin count
+and the `runPinned` / `withActiveScope` finally block calls `tick()`
+(SPEC-14). Class 5 is handled conservatively.
 
-**Class 6 — Non-monotone transforms — open.** A transform that
-introduces new nodes at lattice ⊥ (memoization wrapping) creates a
-temporary precision dip before re-analysis propagates upward. The
-current two-tier scheduler doesn't special-case this. Until
-memoization lands, shelved. See open gaps.
+**Class 6 — Non-monotone transforms.** A transform that introduces
+new nodes at lattice ⊥ (memoization wrapping) creates a temporary
+precision dip before re-analysis propagates upward. Handled by
+`fireOnce` (framework-level one-shot latch) plus `safeOnStack` (the
+transform asserts its rewrite is on-stack-safe; memoization is,
+because the interpreter copies `fd.body` at call time). See Open gaps
+— D2 for the missing half of the `safeOnStack` contract.
 
 ---
 
@@ -349,18 +399,20 @@ The install seam is shared (`StateDeltaStrategy<Delta>`); the install
 implementation differs per engine. That's the right cut. A past
 `Backend` interface tried to abstract over the *implementation* —
 dissolved because the leaks were larger than the shared surface.
-When tempted to unify two things, ask what's actually common; often
-the answer is "a contract with two instantiations," not "a class with
-two subclasses."
+The `SpecializationEngine` facade dissolved for the same reason: it
+abstracted over "what every evaluator does to drive specialization,"
+which turned out to be two lines (`new PersistentWorklist(...)`;
+`await runPinned(...)`), not a layer.
 
 ### P-02 — Extension shape follows the extension point
 
 A new analysis is an `AnalysisModule` + a named hint field. The module
 carries the name; the name doubles as the hint-record field key and
-the equality-registry key. No auxiliary `AnalysisKey<L>` sub-object
-— adding one would double the nouns for the same data. When designing
-an extension surface, make the extension artifact be the registry
-entry.
+the equality-registry key. The registry itself is built once in the
+worklist constructor from the analyses array — no auxiliary
+`AnalysisKey<L>` sub-object, no separate registration call. When
+designing an extension surface, make the extension artifact be the
+registry entry.
 
 ### P-03 — Don't cache what a getter can read
 
@@ -368,7 +420,9 @@ entry.
 kept in sync with `funcAst`. It's now a getter. The invariant "unit
 field matches AST field" evaporates when the unit field doesn't
 exist. Applies whenever "these two things must stay equal" is a
-candidate comment.
+candidate comment. Corollary: the same logic retired the external
+`pinSet` Map that used to alias `activeScopes` — `pinCount` on the
+unit is the single owner.
 
 ### P-04 — Order matters; fixpoint before mutation
 
@@ -380,50 +434,55 @@ reflects the same principle at finer grain.
 
 ### P-05 — Don't coin nouns ahead of implementers
 
-`ObservationSink` used to be a 75-line interface file with one
-implementer and a tripwire the compiler couldn't structurally enforce.
-Collapsed into `Pick<PersistentWorklist, …>`. If a second non-worklist
-implementer appears, re-introduce the interface then — not before.
-The question to ask any new interface is "what's the second
-implementer, and when does it land?"
+Most dissolutions in the changelog below came from this principle:
+`Backend`, `SpecializationEngine`, `InPlaceASTStrategy`,
+`AnalysisKey<L>`, `assertSyncObservationSink` (as a separate
+exported function). The question to ask any new interface is "what's
+the second implementer, and when does it land?" The counter-rule is
+P-13 below — some nouns get re-promoted when their absence blocks
+something concrete (`ObservationSink` went back to a nominal interface
+for test-mock ergonomics; `HintStore` stayed as a class because eq
+encapsulation earns its keep across 16 call sites).
 
 ### P-06 — Convert accidentally-correct orderings into structural ones
 
 Three orderings in this codebase were previously only textually
-enforced: `converge→execute`, `deactivate→tick`,
-observe-is-synchronous. Each was found through explicit
-async-lifecycle review. Remediation:
-`engine.run()` owns the finally (SPEC-15); the sink tripwire rejects
-`async` declarations (SPEC-06). When you see "this works because the
-statements happen to be in this order," ask whether a wrapper or a
-type-level check can make it structural.
+enforced: `converge→execute`, `deactivate→tick`, observe-is-synchronous.
+Each was found through explicit async-lifecycle review. Remediation:
+`runPinned` owns the finally (SPEC-14); the sink tripwire rejects
+`async` declarations and is pinned to the interface shape via
+`satisfies` (SPEC-06). When you see "this works because the statements
+happen to be in this order," ask whether a wrapper or a type-level
+check can make it structural.
 
 ### P-07 — Gates live where the gated condition is tracked
 
-The pin-set lives on `PersistentWorklist` because the worklist is
-what schedules transforms. Earlier drafts considered a separate
-`SafepointManager`; rejected because the pin data was already in the
-worklist and splitting it just created a synchronization problem.
-When a gate needs to reference state, put the gate next to the state.
+The pin-count lives on `FunctionUnit` because the unit owns the
+scope's other mutable state (hints, body). Earlier drafts had a
+separate `activeScopes` map on the worklist plus an external `pinSet`
+argument threaded through the evaluator — three parallel views of one
+fact. Collapsed. When a gate needs to reference state, put the gate
+next to the state.
 
-### P-08 — Express "nothing to do" as data on the strategy
+### P-08 — Express "nothing to do" by omitting the participant
 
-`needsInstall = false` on `InPlaceASTStrategy` is a data-level
-statement that short-circuits the coordinator. The earlier shape —
-"don't install a strategy, and the coordinator won't exist" — pushed
-engine-specific knowledge into the evaluator. When two paths differ
-only in "we need/don't need this step," prefer a flag on the
-participant over a branch in the caller.
+CSE's "no code install" is represented by `coordinator: null` at the
+`runPinned` call site, not by an `InPlaceASTStrategy` whose `applyDelta`
+is a no-op and whose `needsInstall = false` flag short-circuits the
+coordinator. The earlier shape had three degenerate nouns
+(`InPlaceASTStrategy` class, `needsInstall` flag, `OSRStats` for a
+coordinator that never installs) documenting the same single idea.
+When a component's instance is purely degenerate, prefer a nullable
+field over an always-no-op instance.
 
 ### P-09 — Shape persistence APIs against actual consumers
 
 `HintStore.version`, `changesSince`, `mergeInto`, and
 `hintStoreVersion` were built for a hypothetical incremental-pull
-consumer (LSP) that never materialized. Decision 5 settled the pull
-interface as "notification set + re-read," which doesn't need any of
-them. Stripped. Don't build change-log / version plumbing on
-speculation; wait for the consumer and shape the API around what they
-actually query.
+consumer (LSP) that never materialized. The pull interface settled as
+"notification set + re-read," which doesn't need any of them. Stripped.
+Don't build change-log / version plumbing on speculation; wait for the
+consumer and shape the API around what they actually query.
 
 ### P-10 — Use identifiers under your control
 
@@ -437,9 +496,10 @@ name the runtime happens to expose.
 `ScopeDiscoveryVisitor implements StmtNS.Visitor<void>` means any new
 `visitXStmt` method added to the visitor interface forces a compile
 error here until the scope-discovery decision for that form is made.
-The earlier `instanceof` chain silently dropped unknown forms. When
+Similarly, `SINK_METHODS satisfies readonly (keyof ObservationSink)[]`
+makes interface drift a compile error in the sync tripwire. When
 enumerating a closed set, ask whether the type system can enforce the
-enumeration rather than the enumeration being by code review.
+enumeration rather than relying on code review.
 
 ### P-12 — Specialization flows through compile-time or transform, not runtime query
 
@@ -451,6 +511,27 @@ they're expensive (per-step lookup). If you find yourself wanting to
 read a hint from the interpreter, first ask whether the same effect
 can be achieved by a transform that rewrites the operation into its
 specialized form.
+
+### P-13 — Re-promote dissolved nouns when the dissolution blocks something concrete
+
+`ObservationSink` started as an interface, collapsed to a
+`Pick<PersistentWorklist, …>` alias when it had one implementer, and
+got re-promoted to a nominal interface when test-mock ergonomics
+required subtyping a four-method surface instead of a full worklist.
+P-05 is the default; P-13 is the escape hatch — invoked when the
+dissolution forces consumers to import implementation details they
+don't actually depend on. The test: can you cite a concrete consumer
+and what they can't do today?
+
+### P-14 — Put runtime primitives under a runtime name
+
+The memo side-table and intrinsics live under `src/runtime/memo.ts`,
+not `src/specialization/memoization-analysis/runtime.ts`, because the
+concern is runtime behavior (cache storage + lookup protocol), not
+dataflow analysis. The prior location miscategorized the file and
+created the illusion that deleting the specialization framework would
+also delete the memo runtime. Directory names are documentation;
+keep them accurate.
 
 ---
 
@@ -469,11 +550,12 @@ The worklist is the single scheduling primitive for all work:
 | Analysis fact        | DFA transfer function       | Compute block OUT, propagate to successors                |
 | Runtime observation  | Interpreter (via sink)      | Write to HintStore, enqueue affected blocks               |
 | Transform            | Analysis crossing threshold | Mutate AST, bump `structuralVersion`, enqueue neighbours  |
+| Call count           | `CallCountObserver`         | Increment saturating counter on callee's `HintStore`      |
 
 Two-tier priority (SPEC-04). The worklist is a long-lived mailbox:
 `tick()` processes available items and returns when idle. `converge()`
 is an initial drain before execution begins. After-execution ticks are
-driven by the `withActiveScope` finally block (SPEC-15).
+driven by the `withActiveScope` finally block (SPEC-14).
 
 ### Decision 2: Non-coupled evaluators
 
@@ -486,72 +568,67 @@ Four evaluators in `src/conductor/`, each `BasicEvaluator`:
   the Sinter WebAssembly VM. No reactive loop.
 - `PyCseEvaluator` — tree-walking CSE machine.
 
-All four construct a `SpecializationEngine`; only `PySvmlJitEvaluator`
-calls `installStrategy`. Shared code is the specialization phase;
-engines diverge in compile + execute.
+All four construct a `PersistentWorklist` directly; only
+`PySvmlJitEvaluator` constructs an `OSRCoordinator`. The others pass
+`coordinator: null` to `runPinned`. Shared code is the specialization
+phase; engines diverge in compile + execute.
 
 ### Decision 3: Safepoint-gated mutation
 
 `StateDeltaStrategy.applyDelta` is never called while a frame of the
-target scope is on the stack. The pin-set is the gate (SPEC-07). This
-is a stronger statement than "no mid-execution mutation": it is
-per-scope rather than per-program, so a transform can install on
-function F while G is mid-execution, as long as F is not on the current
-stack.
+target scope is on the stack. The per-unit `pinCount` is the gate
+(SPEC-07). This is a stronger statement than "no mid-execution
+mutation": it is per-scope rather than per-program, so a transform can
+install on function F while G is mid-execution, as long as F is not on
+the current stack.
 
-Install mechanisms available:
+Install mechanisms:
 
 - **CSE**: AST is the materialized form; transforms mutate it during
-  `tick`; `InPlaceASTStrategy.applyDelta` is a no-op.
+  `tick`; no coordinator runs.
 - **SVML whole-function**: `SVMLProgram.withSpecializedFunction` +
   `interpreter.patchFunction(index, newIR)`.
 - **SVML operand-level**: `interpreter.applyOperandPatches(index,
-  patches)` mutates the function's typed arrays in place. Pin-set
-  re-check via `assertFunctionNotLive` as belt-and-suspenders.
+  patches)` mutates the function's typed arrays in place.
 
-### Decision 4: Memoization is an AnalysisModule + TransformRule
+### Decision 4: Memoization is AnalysisModule + TransformRule + CallObserver
 
-Memoization detection is not an external profiler signal (SPEC-16). It
+Memoization detection is not an external profiler signal (SPEC-15). It
 is:
 
-- A `MemoizationAnalysisModule` that reads runtime call-count hints
-  (via `observeCall` → worklist) and detects overlapping-subproblem
-  patterns above a configurable threshold.
-- A `MemoizationTransformRule` that wraps the flagged `FunctionDef`
-  with cache logic.
-
-Open: this transform is non-monotone (new nodes at ⊥), the canonical
-Class 6 case. Mitigation strategy is part of the memoization landing,
-not a prerequisite. Gap 5 describes what the infrastructure changes
-here already enabled to make that landing cheap.
+- A `CallCountObserver` (implementing the `CallObserver` interface)
+  that increments a saturating `callCount` field on the callee's
+  `HintStore` on every `observeCall` dispatch.
+- A `MemoizationTransformRule` (a `ScopeTransformRule` with
+  `fireOnce = true` and `safeOnStack = true`) that wraps the flagged
+  `FunctionDef` body in cache-check prelude + `return __memo_put(...)`.
+- Three runtime intrinsics (`__memo_has`, `__memo_get`, `__memo_put`)
+  backed by `src/runtime/memo.ts` (SPEC-16), registered in both the
+  CSE stdlib and SVML builtins tables.
 
 **Footnote — purity is a standalone syntactic check, not a DFA
 module.** The landing implements the purity gate as a one-shot walker
 (`memoization-analysis/purity.ts::isPureFunctionDef`) consulted by
 `MemoizationTransformRule.matches`. Rationale: purity here has no
 amortization benefit (asked at most once per function per tick) and
-no lattice to accumulate. Upgrading to a module stays straightforward
-if cross-function purity summaries later become useful.
+no lattice to accumulate.
 
-### Decision 5: Subscription + pin-set (not event log)
+### Decision 5: Subscription + pin-count (not event log)
 
 An earlier iteration chose "Option D: event log with batch delivery."
 The actual implementation is **Option B: subscriptions** with
 **scope-level granularity** and **Approach 5: deferred structural
-transforms** (SPEC-10). Notifications carry a `ReadonlySet<Scope>`,
-not a diff. Subscribers re-read current state.
-
-`ObservationSink` (SPEC-05) is not a separate interface file — it is a
-structural `Pick` alias over `PersistentWorklist`'s four push-side
-methods. Synchrony (SPEC-06) is enforced at worklist construction.
+transforms** (SPEC-09). Notifications carry a `ReadonlySet<Scope>`,
+not a diff. Subscribers re-read current state. Synchrony (SPEC-06) is
+enforced at worklist construction; pin ordering (SPEC-14) is enforced
+by `runPinned` + `withActiveScope`.
 
 ---
 
 # Evolving work — below this line is not spec
 
-Forward-looking. Experiments, open gaps, resolved changelog. This
-section is expected to shift; do not cite lines below this divider as
-contract.
+Forward-looking. Open gaps, resolved changelog. This section is
+expected to shift; do not cite lines below this divider as contract.
 
 ---
 
@@ -569,15 +646,15 @@ contract.
   operand-level patch (`{ kind: 'patches', patches: OperandPatch[] }`
   via `applyOperandPatches`). The seam is live; automatic operand-diff
   emission is a follow-up (currently emits `{ kind: 'whole' }`
-  unconditionally).
+  unconditionally) — see Open gaps D1.
 
 ### Tree-walking consumers (CSE)
 
-- **No code install.** CSE's materialized form is the AST.
-  `InPlaceASTStrategy` with `needsInstall = false` (SPEC-09) short-
-  circuits the coordinator.
-- **No interpreter hint reads** (SPEC-14). Visualizer consumers read
-  `engine.hintsFor(node)` externally.
+- **No code install.** CSE's materialized form is the AST. The
+  evaluator passes `coordinator: null` to `runPinned`, so the OSR loop
+  does not run at all.
+- **No interpreter hint reads** (SPEC-13). Visualizer consumers read
+  `worklist.hintsFor(node)` externally.
 
 ### Future consumers
 
@@ -589,72 +666,126 @@ contract.
 
 ---
 
-## Experiments worth running
-
-### Experiment 1: measure worklist convergence cost
-
-How many worklist iterations does a typical program take? Is
-re-analyzing the full program fast enough that incremental CFG mutation
-is unnecessary for programs under 1000 LOC? If batch re-analysis takes
-<10ms, Gap 4 stays deferred indefinitely.
-
-### Experiment 2: function-level dirty-bit false-positive rate
-
-When a transform fires inside function F, how often does F's compiled
-output actually change? If false-positive rate is low, coarse
-function-level invalidation suffices and we can skip operand-diff
-emission.
-
-### Experiment 3: OBSERVE opcode profiling quality
-
-The SVML observation sites currently record type tags for write + call
-sites. After execution, does the feedback loop produce useful hint
-refinements beyond the static pass? Requires end-to-end benchmark with
-shaped inputs.
-
-### Experiment 4: live annotation visualization in CSE stepper
-
-Wire the stepper UI to read `engine.hintsFor(node)` externally (the
-non-coupling path per SPEC-14) and display type/const info. Tests the
-pedagogical hypothesis ("students watch the optimizer think") before
-building more reactive infrastructure for it.
-
-### Experiment 5: operand-patch savings vs whole-function recompile
-
-Measure wall-clock cost of `patchFunction` (whole-function) vs
-`applyOperandPatches` on realistic specialization events. Determines
-whether automatic operand-diff emission in
-`SVMLSwapStrategy.computeDelta` is worth implementing.
-
----
-
 ## Open gaps
 
-- **Gap 4 — CFG mutation API.** `buildCFG` still produces a fresh CFG
-  per transform round. Only becomes a bottleneck if Experiment 1 shows
-  batch re-analysis is too slow. Mitigation: incremental `addEdge` /
-  `removeEdge` / `splitBlock` on a mutable CFG.
-- **Gap 5 — `buildFunctionUnits` rebuild for new scopes.** Groundwork
-  landed: `FunctionUnit.body` is a getter (SPEC-03); scope discovery
-  is visitor-based (SPEC-12). With those in place, registering new
-  scopes after memoization wraps a `FunctionDef` is additive: run the
-  same visitor over the new subtree, call `addScope(key, new
-  FunctionUnit(...))` per newly-found `FunctionDef`, enqueue analysis
-  + transforms. No cross-module contract renegotiation. Still
-  deferred: wiring the actual
-  `PersistentWorklist.registerScopeSubtree(root)` method, which
-  should ride with the memoization landing (Decision 4) rather than
-  sit unused.
-- **Class 6 — non-monotone transform handling.** See hazard catalogue.
-  Blocked on memoization landing. Mitigations on the table:
-  - Epoch the transform: finish all pending analysis, apply the
-    transform, re-seed affected blocks, notify once.
-  - Accept the dip and document that consumers only read at idle points.
-- **Operand-diff emission in `SVMLSwapStrategy.computeDelta`.** The seam
-  supports both `{ kind: 'whole' }` and `{ kind: 'patches' }`, but the
-  strategy emits `whole` unconditionally. Automatic diff emission
-  (detecting type-specialization `ADDG → ADDF` and similar) is gated
-  on Experiment 5.
+### D1 — `canInstallOnStack` is per-strategy; should be per-delta
+
+**Status:** open.
+
+`StateDeltaStrategy.canInstallOnStack?(scopeKey)` is a strategy-level
+opt-in. The real axis is per-*delta*: whole-function recompile is
+on-stack-safe (`CallFrame` holds a direct IR reference, old frame runs
+to completion while new calls dispatch patched slot); operand-patch is
+not (mutates live-read typed arrays). `SVMLSwapStrategy.canInstallOnStack`
+currently returns true for every `FunctionDef` — which is correct
+*only* while `computeDelta` always emits `{ kind: 'whole' }`. The
+moment operand-patch emission lands, this quiet assumption breaks.
+
+*Quiet noun that remains:* `canInstallOnStack` on `StateDeltaStrategy`
+(`osr.ts:90`) and on `SVMLSwapStrategy` (`svml-swap-strategy.ts:54-60`).
+The flag is load-bearing today (if removed, recursive workloads like
+fib never install a specialized version of themselves in a single
+execution — the outer frame stays pinned from entry to return) but
+lives at the wrong granularity.
+
+**Fix when it matters:** add `delta.onStackSafe: boolean` computed by
+`computeDelta`. Whole → true, operand-patch → false. Retire the
+strategy-level hook. Natural trigger: when operand-patch emission
+comes due.
+
+### D2 — `safeOnStack` without `reconcileLiveFrame` sibling
+
+**Status:** open.
+
+`ScopeTransformRule.safeOnStack?: boolean` declares "my rewrite is safe
+even while a frame of the target scope is live." Memoization sets it
+true and is safe by accident of its rewrite shape (the interpreter
+copies `fd.body` at call time, so mutating `fd.body` only affects
+future calls). The framework does not verify this — there is no
+`reconcileLiveFrame(unit, frame): void` sibling method on the rule
+that would let the framework call it to restore the live frame's
+invariants after an on-stack rewrite.
+
+*Quiet noun that remains:* `safeOnStack` on `ScopeTransformRule`
+(`interfaces.ts:67`). Currently documents an invariant the framework
+does not check. Low urgency while `MemoizationTransformRule` is the
+sole user.
+
+**Fix when it matters:** when a second `safeOnStack: true` transform
+appears, require `reconcileLiveFrame` as a sibling method and have the
+worklist call it during `applyTransformPass`.
+
+### D3 — Per-block dependency tracking (incremental layer gap S1)
+
+**Status:** open. Highest-impact gap; substantial scope.
+
+The reactive layer is incremental *in intent* only. Every runtime
+observation that flips a hint calls `rebuildAndReseed(scope)` — a full
+re-analysis of the scope from its entry block. A `generation` stamp on
+queue items discards stale work from prior rebuild rounds. This is
+correct but coarse: the scheduler doesn't know *which* block's
+transfer function actually read the mutated hint, so it can't dirty
+only the affected blocks.
+
+*Quiet nouns that remain:*
+- `rebuildAndReseed(scope)` in `persistent-worklist.ts` (four call
+  sites) — compensation for the missing per-block dep tracking.
+- `generation` on `ScopeWorkState` / queue items — stale-item
+  discrimination in a reseed-everything scheme.
+- `hasSafeOnStackScopeRule` cache + the conditional tick in
+  `observeCall` — compensation for the scheduler not knowing when to
+  flush.
+
+**Fix:** replace `rebuildAndReseed(scope)` with dirty-block re-enqueue.
+In `handleValueObservation`, when `hints.setById` returns true, build
+and consult `unit.nodeToBlock`, re-enqueue only the owning block + CFG
+successors. Retires all three quiet nouns above.
+
+### D4 — `buildFunctionUnits` rebuild for new scopes
+
+**Status:** groundwork done; wiring pending.
+
+Groundwork: `FunctionUnit.body` is a getter (SPEC-03); scope discovery
+is visitor-based (SPEC-11). With those in place, registering new
+scopes after memoization wraps a `FunctionDef` is additive: run the
+same visitor over the new subtree, call `addScope(key, new
+FunctionUnit(...))` per newly-found `FunctionDef`, enqueue analysis
+and transforms. Still deferred: wiring the actual
+`PersistentWorklist.registerScopeSubtree(root)` method, which should
+ride with a future transform that synthesizes new `FunctionDef` nodes.
+Memoization does not (it wraps the body, doesn't introduce a new
+`FunctionDef`), so the method stays unused until inlining or similar
+lands.
+
+### D5 — Operand-diff emission in `SVMLSwapStrategy.computeDelta`
+
+**Status:** open.
+
+The seam supports both `{ kind: 'whole' }` and `{ kind: 'patches' }`,
+but `computeDelta` emits `whole` unconditionally. Automatic diff
+emission (detecting type-specialization `ADDG → ADDF` and similar)
+is the follow-up. Blocked on D1 for on-stack safety — the two land
+together.
+
+### D6 — Non-monotone transform handling (Class 6)
+
+**Status:** partially closed.
+
+Memoization landed with `fireOnce` + `safeOnStack`, so the immediate
+Class-6 case (precision dip from wrapping) is handled by the one-shot
+latch. Still open: a second non-monotone transform (e.g. loop
+unrolling with bound specialization) would exercise paths the current
+machinery hasn't been tested on. Mitigations documented in hazard
+catalogue above remain available if needed.
+
+### D7 — CFG mutation API
+
+**Status:** open; only a bottleneck if D3 shows batch re-analysis is
+too slow.
+
+`buildCFG` still produces a fresh CFG per transform round. Incremental
+`addEdge` / `removeEdge` / `splitBlock` on a mutable CFG is the
+follow-up if profiling warrants.
 
 ---
 
@@ -669,36 +800,78 @@ whether automatic operand-diff emission in
   `SVMLSwapStrategy` drives both.
 - **Gap 3 — Persistent worklist.** Resolved by `PersistentWorklist`
   with external `enqueue` (via `ObservationSink`), `tick`,
-  `subscribe`, pin-set.
+  `subscribe`, per-unit `pinCount`.
+- **SpecializationEngine facade.** Dissolved. The one load-bearing
+  invariant (clear pins on throw) became the free function `runPinned`;
+  every other responsibility was already owned by the worklist. The
+  facade abstracted over two lines of code, which didn't justify a
+  layer.
+- **`InPlaceASTStrategy` + `needsInstall` + `OSRStats`.** Three
+  degenerate nouns for "CSE doesn't install." Deleted. CSE's
+  `PyCseEvaluator` passes `coordinator: null` to `runPinned`; the OSR
+  loop doesn't run at all.
+- **`hintEquals` hard-coded `switch (name)` over `type` / `constVal`
+  with `default: return false`.** Replaced by registry dispatch
+  through `AnalysisModule.latticeEquals`, keyed on the per-worklist
+  `analysesByName` Map (SPEC-02). `typeLatticeEquals` and
+  `constLatticeEquals` helpers inlined into each module's
+  `latticeEquals` and deleted from `hint.ts`. Open-record dispatch is
+  now data-driven; adding an extension field no longer requires a
+  `case` in a central switch.
+- **External `pinSet` Map argument.** Dissolved. The three parallel
+  views of pin state (`activeScopes` on worklist, `pinSet` parameter
+  threaded through evaluator, `context.runtime.pinSet` in CSE)
+  collapsed onto `FunctionUnit.pinCount` (SPEC-07).
+- **`ObservationSink` as `Pick<PersistentWorklist, …>`.** Re-promoted
+  to a nominal interface in `framework/observation-sink.ts` (SPEC-05,
+  P-13). Driven by test-mock ergonomics — test stubs now implement a
+  four-method surface instead of subtyping the full worklist.
+- **`assertSyncObservationSink` as exported helper.** Inlined into
+  the `PersistentWorklist` constructor with a `satisfies keyof
+  ObservationSink` check on the `SINK_METHODS` tuple so interface
+  drift is a compile error (SPEC-06, P-11).
+- **`SpecializationEngine.hintsFor`.** Moved to
+  `PersistentWorklist.hintsFor` (routes to the owning unit's
+  `HintStore` via a `nodeId → FunctionUnit` cache).
+- **`deactivateAndTick` private method.** Inlined into
+  `withActiveScope`'s finally — single caller, no API boundary earned.
+- **`src/specialization/memoization-analysis/runtime.ts` → `src/runtime/memo.ts`.**
+  Runtime primitives live under a runtime name (SPEC-16, P-14).
+- **`MEMO_INTRINSIC_NAMES` duplicated across 5 sites.** Deduplicated
+  to one source; consumers destructure
+  `[MEMO_HAS_NAME, MEMO_GET_NAME, MEMO_PUT_NAME] = MEMO_INTRINSIC_NAMES`
+  at use — name-to-opcode in SVML and name-to-builtin in stdlib cannot
+  drift.
+- **Barrel trim.** 9 unused re-exports deleted from
+  `src/specialization/index.ts` (`ExternalWorkItem`, `Subscriber`,
+  `SlotInfo`, `SlotLookup`, `buildSlotTable`, `ExprTransformRule`,
+  `StmtTransformRule`, `buildCFG`, `MutableEnv`). Tests that used
+  these import deep paths.
 - **Dead-infra review items.** Resolved by framework tightening
-  (`SpecializationEngine` facade, `StateDeltaStrategy` rename,
-  open-record hint store, `needsInstall` flag).
+  (`StateDeltaStrategy` rename, open-record hint store, dead strategy
+  triangle removal).
 - **Interpreter-hint coupling.** Resolved by removing CSE's per-step
-  `runtime.hintsFor` read; visualizer consumes `engine.hintsFor`
-  externally (SPEC-14).
+  `runtime.hintsFor` read; visualizer consumes `worklist.hintsFor`
+  externally (SPEC-13).
 - **`AnalysisKey<L>` as a separate type.** Folded into
   `AnalysisModule<L>`. The module's own `name` doubles as the
   hint-record field name and the equality-registry key;
-  `latticeEquals` replaces `key.equals`. `hintGet` / `hintSet`
-  helpers and `TYPE_ANALYSIS_KEY` / `CONST_ANALYSIS_KEY` constants
-  deleted. Analyses read named fields directly (SPEC-02).
-- **`ObservationSink` as a separate interface file.** Replaced with a
-  `Pick<PersistentWorklist, …>` alias exported from the worklist
-  module. The construction-time synchrony tripwire is preserved and
-  runs from the worklist constructor (SPEC-05, SPEC-06).
+  `latticeEquals` replaces `key.equals`. Analyses read named fields
+  directly (SPEC-02).
 - **`HintStore` speculative surface.** `version`, `changesSince`,
   `mergeInto`, `HintChangeRecord`, and
-  `PersistentWorklist.hintStoreVersion` were preparation for an
-  incremental subscriber that Decision 5 showed was unnecessary.
-  Stripped.
+  `PersistentWorklist.hintStoreVersion` stripped. Decision 5 showed
+  they weren't needed.
 - **`Scope` type alias duplicated across 7 files.** Inlined at all
   sites as `StmtNS.FileInput | StmtNS.FunctionDef`.
 - **`FunctionUnit.body` cached field.** Replaced by read-through
   getter (SPEC-03).
-- **`unitBody` free helper.** Folded into `FunctionUnit.body` getter.
+- **Hand-rolled AST walk in `buildFunctionUnits`.** Replaced by
+  `ScopeDiscoveryVisitor implements StmtNS.Visitor<void>` (SPEC-11).
 - **Dual ring-buffer compaction with drifting thresholds.** Unified as
   `compactQueue` helper with single threshold (64).
-- **`hint.ts` registry double-state.** Module-level `DEFAULT_REGISTRY`
-  Map eliminated; `buildRegistry` helper + lazy default.
-- **Hand-rolled AST walk in `buildFunctionUnits`.** Replaced by
-  `ScopeDiscoveryVisitor implements StmtNS.Visitor<void>` (SPEC-12).
+- **`HintStore` dissolution to raw `Map<number, OptimizationHint>` +
+  free `setHint`.** Rejected post-audit. 45 call sites across 16 files
+  would need the eq callback threaded; the class already encapsulates
+  it in one place. Anti-oscillation discipline: consumer-count
+  evidence said the dissolution was a burden shift, not a reduction.
