@@ -61,7 +61,12 @@ class PurityEffectVisitor implements ExprNS.Visitor<PureEffect> {
     if (info.isPrimitive) return this.annotate(e, IMPURE);
     if (info.envLevel !== 0) return this.annotate(e, IMPURE);
     const slotEffect = this.env.get(info.slot);
-    // An unassigned local (parameter) is pure by construction.
+    // Missing slot = bottom (PURE). Either a parameter at function
+    // entry (no Assign has widened this slot yet) or a local whose
+    // predecessor OUT has not yet propagated. The may-analysis join
+    // will widen the slot to IMPURE if any predecessor's RHS is
+    // impure; fixpoint convergence guarantees we eventually observe
+    // that widening.
     return this.annotate(e, slotEffect ?? PURE);
   }
 

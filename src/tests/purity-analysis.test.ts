@@ -93,6 +93,18 @@ describe("PurityEffectAnalysis + PurityScopePass parity", () => {
     ).toBe(true);
   });
 
+  test("impure: global declaration", () => {
+    expect(purityOf("def f(x):\n    global g\n    return x", "f")).toBe(false);
+  });
+
+  test("impure: bare SimpleExpr statement", () => {
+    expect(purityOf("def f(x):\n    x + 1\n    return x", "f")).toBe(false);
+  });
+
+  test("impure: assert statement", () => {
+    expect(purityOf("def f(x):\n    assert x > 0\n    return x", "f")).toBe(false);
+  });
+
   test("pure while loop with local counter", () => {
     expect(
       purityOf(
