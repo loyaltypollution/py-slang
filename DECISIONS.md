@@ -512,5 +512,140 @@ current test surface.
   lifetime and the observeScopeCall pull — per-session Db may become
   correct, and a cross-chunk call-count namespace would need design.
 
+---
+
+## Round 2 Phase D — Phase 8 deferred again (this time with a design spec)
+
+Budget said "two implementation attempts; if both fail, document and
+move on." On rereading round 1's spike notes I concluded path (1) alone
+is not implementable — the specification is incomplete. Rather than
+burn an attempt on an under-specified design, this section sets out
+what the actual design has to resolve *before* code is written.
+
+### Why path (1) alone does not suffice
+
+DECISIONS §Phase 8 describes path (1) as: "Before the leader invokes
+its body, do a quick CFG walk that pre-creates `typeBlockOut` cells
+for every block in the unit with `cell.value = bottom_env` and
+`cell.state = 'green'`."
+
+This fixes exactly one failure mode from the spike: when block B3 runs
+first and reads B2 (in state `'computing'`), the pass-1 SCC engine
+returned B2's *provisional* value from the stack frame — which was
+bottom — and the pure transfer over empty env inferred TOP. Pre-warm
+replaces that provisional read with a *cached green* bottom, so the
+join identity works and B2's transfer absorbs to INT.
+
+But consider what happens next:
+- B3 runs, reads B2 (green, bottom) → OK, transfers correctly.
+- B3's value is now non-bottom.
+- B3 returns. The runtime sees B3's value changed and... what? B2 was
+  prewarmed with no deps, so B2 is green-but-bottom with no
+  dependency on B3. Nothing triggers B2 to recompute. The fixpoint
+  never iterates.
+
+Pre-warm fixes the *initial condition* but doesn't drive *iteration*.
+Driving iteration across cells requires the pass-1 SCC engine: when a
+cyclic query's cell re-enters same-query frames that are already on
+the stack, register participants under the outermost-leader, and have
+the leader's outer loop re-run participants to fixpoint.
+
+So path (1) is necessary but not sufficient. The real shape is
+**SCC engine + pre-warm**, both, together:
+
+1. SCC engine from pass-1 of the spike: leader tracks registered
+   participants, iterates until no value changes.
+2. Pre-warm from path (1): before leader's first iteration, the
+   leader's body (or a runtime hook it opts into) walks the unit's
+   CFG and seeds all sibling block cells to bottom-green with no deps.
+3. During iteration: leader runs its transfer once. When it reads a
+   predecessor that was prewarmed, it sees bottom (correct). When the
+   transfer produces a new value, the runtime must invalidate the
+   prewarmed-but-unread siblings transitively, since they're part of
+   the same SCC.
+
+(3) is the step neither the spike nor path (1) explicitly specified.
+Without it, the SCC is inert after pre-warm. With it, the SCC engine
+has to distinguish "prewarmed-for-SCC" cells (invalidate within the
+SCC's iteration scope) from "prewarmed-for-isolation" cells (never
+invalidate — e.g. a cyclic but not-CFG-driven query). That
+distinction doesn't exist in today's runtime.
+
+### What the design needs to specify
+
+Before code is written again, the following must be pinned down:
+
+1. **Prewarm scope.** Who owns the prewarm list? The caller of the
+   cyclic query (analysis-side knowledge of CFG), or the runtime (via
+   a query-declaration hook like `prewarmArgs: (args) => Args[]`)?
+   Analysis-side is cleaner; runtime-side is more symmetric with the
+   existing `isCyclic` declaration.
+
+2. **SCC participation and scope.** How does the runtime know two
+   cells of the same cyclic query are in the same SCC? Pass-1's
+   stack-frame registration worked for cells that actually re-enter
+   each other through cross-cell reads, but prewarmed cells are read
+   without re-entering. Options:
+   - Leader explicitly declares its participants at prewarm time
+     (ties analysis to runtime semantics).
+   - Runtime treats every prewarmed same-query cell as a participant
+     of the leader's SCC (coarse; may over-iterate on lattices where
+     unrelated cells coexist — rare for CFG-driven analyses).
+   - Runtime scopes participation per `get` call chain (most precise,
+     most complex).
+
+3. **Fixpoint termination.** Pass-1's termination ran a full pass
+   across all participants without change. With prewarm, does
+   "across all participants" include prewarmed-but-never-read cells?
+   If yes, every pass re-reads every block (expensive). If no, dead
+   blocks in the CFG never iterate (fine — they'd never contribute
+   anyway).
+
+4. **Dependency recording.** Currently `db.get` records a dep on the
+   caller's stack top. Pre-warmed cells that are never read from
+   iteration record no edges. That's correct for dead blocks, but
+   for blocks reachable only through the back-edge, the cell never
+   gets read, hence never gets a dep on its predecessors — its
+   invalidation semantics are wrong if `runtimeWrite` later lands
+   on a node inside it.
+
+5. **Invalidation granularity.** The whole point of per-block cells
+   was: a `runtimeWrite` on one node invalidates one block's cell,
+   not the whole unit's Kildall. But SCC semantics say: any
+   participant's value change iterates the whole SCC. So
+   invalidating one block-cell of a cyclic SCC re-iterates *the
+   whole SCC*. Net gain over per-unit Kildall: only dead-code
+   blocks and acyclic tail blocks are spared. In a loop-heavy
+   program, this is nearly zero improvement.
+
+### Revised recommendation
+
+Per-block cyclic queries are architecturally pure but **operationally
+no faster than the shipped per-unit `typeBlockEnvs`** for loop-heavy
+code, because SCC iteration still drains the whole loop on any
+observation landing inside it. The win is only on straight-line code
+and pre-loop blocks — a narrow set.
+
+Shipping this is worth ~weeks of runtime work (SCC engine + prewarm
+hook + invalidation-scope rules + test coverage across all five
+questions above) for a narrow precision win. The shipped per-unit
+query already matches the legacy worklist drain coarseness.
+
+**Deferred again, with a concrete trigger.** Revisit when either:
+- A profiler shows per-unit Kildall re-runs dominate hot-path cost
+  (measurable; likely not the case for programs small enough to run
+  in-browser).
+- A new analysis lands whose lattice needs per-block granularity for
+  correctness, not performance (e.g. a path-sensitive analysis where
+  the per-unit join would over-widen).
+
+Until then, per-unit `typeBlockEnvs`/`constBlockEnvs` is the
+architecturally-stable choice, not a compromise.
+
+### Verification
+
+No code changes this phase. `yarn test`: still 36/36 / 2572.
+
+
 
 
