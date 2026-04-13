@@ -1,5 +1,6 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
+import { buildBlockOfNode } from "./block-of-node";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import type { AnalysisPass } from "./interfaces";
@@ -23,6 +24,7 @@ export interface FunctionUnit {
   readonly body: StmtNS.Stmt[];
   cfg: CFG;
   blockMap: Map<BlockId, BasicBlock>;
+  blockOfNode: Map<number, BasicBlock>;
   analysisOuts: Map<BlockId, MutableEnv<any> | null>[];
   generation: number;
   callCount: number;
@@ -60,6 +62,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       slotLookup: buildSlotTable(env, paramNames),
       cfg,
       blockMap,
+      blockOfNode: buildBlockOfNode(cfg),
       analysisOuts,
       generation: 0,
       callCount: 0,

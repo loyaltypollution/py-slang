@@ -10,6 +10,7 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
+import { buildBlockOfNode } from "./block-of-node";
 import { FactStore, type FactChange } from "./fact-store";
 import { buildFunctionUnits, makeOut, type FunctionUnit } from "./function-unit";
 import type { AnalysisPass } from "./interfaces";
@@ -294,6 +295,12 @@ export class Worklist {
    */
   private readonly _transformFiredUnits = new Set<FunctionUnit>();
 
+  /**
+   * Reverse map for `PassCtx.unitForBlock`. Built from `units` at construction
+   * and refreshed in `rebuildStructural` when a unit's CFG is replaced.
+   */
+  private readonly blockToUnit = new WeakMap<BasicBlock, FunctionUnit>();
+
   // Perf counters
   private _itemsProcessed = 0;
   private _analysisItemsProcessed = 0;
@@ -316,6 +323,7 @@ export class Worklist {
 
     this.units = buildFunctionUnits(ast, functionEnvironments, analyses);
     for (const [key, unit] of this.units) {
+      for (const block of unit.cfg.blocks) this.blockToUnit.set(block, unit);
       this.seedAnalysis(key, unit);
       this.enqueueTransform(key, unit.generation);
     }
@@ -444,6 +452,7 @@ export class Worklist {
     read: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.read(p, key),
     readAll: <K2, V2>(p: Pass<K2, V2>) => this.factStore.readAll(p),
     unitFor: (scope: StmtNS.FileInput | StmtNS.FunctionDef) => this.units.get(scope),
+    unitForBlock: (block: BasicBlock) => this.blockToUnit.get(block),
     factStore: this.factStore,
   };
 
@@ -819,7 +828,11 @@ export class Worklist {
     unit.generation++;
     unit.cfg = buildCFG(unit.body);
     unit.blockMap = new Map<BlockId, BasicBlock>();
-    for (const block of unit.cfg.blocks) unit.blockMap.set(block.id, block);
+    for (const block of unit.cfg.blocks) {
+      unit.blockMap.set(block.id, block);
+      this.blockToUnit.set(block, unit);
+    }
+    unit.blockOfNode = buildBlockOfNode(unit.cfg);
     unit.analysisOuts = this.analyses.map(() => makeOut(unit.cfg));
 
     this.seedAnalysis(key, unit);
