@@ -18,6 +18,7 @@ import {
   runtimeCallPass,
   runtimeWritePass,
 } from "../specialization";
+import { Db, astOf, runtimeCall, runtimeWrite } from "../specialization/runtime";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import pairmutator from "../stdlib/pairmutator";
@@ -32,6 +33,9 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
 
 abstract class PyCseEvaluatorBase extends BasicEvaluator {
   private context = new Context();
+  // Fresh Db per evaluateChunk — cells are scoped to one parse/run. Phase 3+
+  // queries read this instance.
+  protected db: Db = new Db();
   private readonly variant: number;
   private readonly groups: Group[];
   private readonly ensurePreludesLoaded: () => Promise<void>;
@@ -74,6 +78,8 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
 
       const script = chunk + "\n";
       const ast = parse(script);
+      this.db = new Db();
+      astOf.set(this.db, 0, ast);
       const { errors, environments } = analyzeWithEnvironments(
         ast,
         script,
@@ -96,13 +102,16 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
       // PR-5 fact-store push (parallel to observationSink). Per-callee
       // raw counters live in the closure for this evaluation.
       const callCounts = new Map<number, number>();
+      const db = this.db;
       this.context.runtime.observeNodeWrite = (nodeId, value) => {
         worklist.observe(runtimeWritePass, nodeId, value);
+        runtimeWrite.set(db, nodeId, value);
       };
       this.context.runtime.observeScopeCall = (scopeId) => {
         const next = (callCounts.get(scopeId) ?? 0) + 1;
         callCounts.set(scopeId, next);
         worklist.observe(runtimeCallPass, scopeId, next);
+        runtimeCall.set(db, scopeId, next);
       };
 
       try {
