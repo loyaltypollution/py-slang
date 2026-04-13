@@ -29,8 +29,7 @@ import { EvaluatorError } from "./errors";
  * `observationSink` calls. A registered `jitPass` reads
  * `[callCountPass, purityScopePass, structuralPass]` and recompiles +
  * patches the function whenever its compiled-IR digest actually
- * changes (side-effect idempotence rule). The legacy
- * `onScopeChanged` callback is kept live alongside; PR-6 demolishes it.
+ * changes (side-effect idempotence rule).
  */
 export class PySvmlJitEvaluator extends BasicEvaluator {
   async evaluateChunk(chunk: string): Promise<void> {
@@ -102,15 +101,6 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         },
       };
       worklist.register(jitPass);
-
-      // Legacy onScopeChanged kept live alongside (PR-5 constraint;
-      // PR-6 demolishes). May produce a redundant patch; tolerated.
-      worklist.onScopeChanged((scope, unit) => {
-        if (!(scope instanceof StmtNS.FunctionDef)) return;
-        const index = compiler.indexOf(scope);
-        if (index === undefined) return;
-        interpreter.patchFunction(index, compiler.compileFunction(unit));
-      });
 
       const returnValue = await interpreter.execute();
       this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));

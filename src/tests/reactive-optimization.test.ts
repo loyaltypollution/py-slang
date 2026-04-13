@@ -138,37 +138,6 @@ describe("ReactiveOptimization: dual versioning", () => {
     expect(rootUnit).toBeDefined();
     expect(rootUnit!.structuralVersion).toBeGreaterThan(0);
   });
-});
-
-// ── Subscription tests ──────────────────────────────────────────────────────
-
-describe("ReactiveOptimization: subscriptions", () => {
-  test("subscribe receives changed scope keys on converge", () => {
-    const { ast, environments } = parseAndResolve("x = 1 + 2");
-    const reactive = buildTestWorklist(ast, environments);
-
-    const notifications: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>[] = [];
-    reactive.subscribe(changed => notifications.push(changed));
-    reactive.converge();
-
-    expect(notifications.length).toBeGreaterThanOrEqual(1);
-    // Root scope should appear in at least one notification
-    const allChanged = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
-    for (const set of notifications) for (const key of set) allChanged.add(key);
-    expect(allChanged.has(ast)).toBe(true);
-  });
-
-  test("unsubscribe stops notifications", () => {
-    const { ast, environments } = parseAndResolve("x = 1");
-    const reactive = buildTestWorklist(ast, environments);
-
-    const count = { value: 0 };
-    const unsub = reactive.subscribe(() => count.value++);
-    unsub();
-    reactive.converge();
-
-    expect(count.value).toBe(0);
-  });
 
   test("tick() returns true when work was done", () => {
     const { ast, environments } = parseAndResolve("x = 1 + 2");

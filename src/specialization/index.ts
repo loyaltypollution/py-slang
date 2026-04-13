@@ -8,7 +8,7 @@ export { buildFunctionUnits } from "./framework/function-unit";
 // ── Persistent worklist ─────────────────────────────────────────────────────
 
 export { Worklist } from "./framework/worklist";
-export type { WorklistStats, ScopeChangeListener } from "./framework/worklist";
+export type { WorklistStats } from "./framework/worklist";
 export type { ObservationSink } from "./framework/observation-sink";
 export { NullObservationSink } from "./framework/observation-sink";
 

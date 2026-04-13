@@ -40,17 +40,12 @@ x = "hello"
     const mergeUnit = (u: { hints: HintStore } | undefined) => {
       if (u) for (const [id, hint] of u.hints) merged.setById(id, hint);
     };
-    for (const unit of reactive.units.values()) mergeUnit(unit);
-    const unsubscribe = reactive.subscribe(changed => {
-      for (const key of changed) mergeUnit(reactive.units.get(key));
-    });
 
-    try {
-      await interpreter.execute();
-      reactive.tick();
-    } finally {
-      unsubscribe();
-    }
+    await interpreter.execute();
+    reactive.tick();
+
+    // Re-merge after the run so any runtime-observation widening lands.
+    for (const unit of reactive.units.values()) mergeUnit(unit);
 
     const secondAssign = ast.statements[1] as StmtNS.Assign;
     const hint = merged.get(secondAssign.value);

@@ -1,12 +1,9 @@
 /**
- * End-to-end JIT wiring through `Worklist.onScopeChanged` — the dispatch
- * patcher previously known as the "OSR coordinator + state-delta strategy"
- * pair. The listener receives pre-resolved `(scope, unit)` pairs and is
- * responsible for recompiling + patching the interpreter's function table.
- *
- * This is dispatch patching, not OSR: `CallFrame.ir` is captured at CALL
- * time, so live frames drain on the old IR while future CALLs dispatch
- * through the patched slot.
+ * End-to-end JIT wiring through a registered `Pass<FunctionUnit, ?>`
+ * reading the canonical JIT-relevant facts. Recompile + patch happens
+ * inside `transfer`. Dispatch patching, not OSR: `CallFrame.ir` is
+ * captured at CALL time, so live frames drain on the old IR while
+ * future CALLs dispatch through the patched slot.
  */
 
 import { StmtNS } from "../ast-types";
@@ -15,6 +12,13 @@ import { analyzeWithEnvironments } from "../resolver";
 import { buildTestWorklist } from "./utils";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
+import {
+  callCountPass,
+  purityScopePass,
+  structuralPass,
+} from "../specialization";
+import type { FunctionUnit } from "../specialization/framework/function-unit";
+import type { Pass, PassCtx } from "../specialization/framework/pass";
 
 function buildUnit(code: string) {
   const script = code + "\n";
@@ -52,7 +56,7 @@ g()
     patchSpy.mockRestore();
   });
 
-  test("onScopeChanged routes transforms to per-function recompile + patch", async () => {
+  test("registered jitPass routes transforms to per-function recompile + patch", async () => {
     const code = `
 def g():
     return 1
@@ -64,12 +68,28 @@ g()
 
     const patchSpy = jest.spyOn(interpreter, "patchFunction");
 
-    reactive.onScopeChanged((scope, unit) => {
-      if (!(scope instanceof StmtNS.FunctionDef)) return;
-      const index = compiler.indexOf(scope);
-      if (index === undefined) return;
-      interpreter.patchFunction(index, compiler.compileFunction(unit));
-    });
+    const firedLattice = {
+      bottom: undefined as "fired" | undefined,
+      equals: (a: "fired" | undefined, b: "fired" | undefined) => a === b,
+      join: (a: "fired" | undefined, b: "fired" | undefined) => (a ?? b),
+    };
+    const jitPass: Pass<FunctionUnit, "fired" | undefined> = {
+      id: Symbol("test-jitPass"),
+      debugName: "test-jitPass",
+      lattice: firedLattice,
+      reads: [callCountPass, purityScopePass, structuralPass],
+      tier: "jit",
+      coarse: true,
+      transfer(_ctx: PassCtx, unit: FunctionUnit): "fired" | undefined {
+        const scope = unit.funcAst;
+        if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
+        const index = compiler.indexOf(scope);
+        if (index === undefined) return undefined;
+        interpreter.patchFunction(index, compiler.compileFunction(unit));
+        return "fired";
+      },
+    };
+    reactive.register(jitPass);
 
     await interpreter.execute();
     reactive.tick();

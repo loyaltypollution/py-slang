@@ -40,18 +40,12 @@ async function runWithReactive(code: string) {
   context.runtime.observationSink = reactive;
   context.runtime.rootScope = ast;
 
-  const unsubscribe = reactive.subscribe(changed => {
-    for (const key of changed) {
-      const unit = reactive.units.get(key);
-      if (unit) for (const [id, hint] of unit.hints) merged.setById(id, hint);
-    }
-  });
+  await evaluate("", ast, context, { variant: 4, groups: [] });
+  reactive.tick();
 
-  try {
-    await evaluate("", ast, context, { variant: 4, groups: [] });
-    reactive.tick();
-  } finally {
-    unsubscribe();
+  // Re-merge hints after the run picks up any runtime-observation widening.
+  for (const unit of reactive.units.values()) {
+    for (const [id, hint] of unit.hints) merged.setById(id, hint);
   }
 
   return { ast, reactive, merged };
@@ -99,18 +93,6 @@ x = "hello"
     expect(after?.type).toEqual(before?.type);
   });
 
-  test("subscribe is called with changed scope keys during converge", async () => {
-    const { ast, reactive } = setupReactive("if True:\n  x = 1 + 2\nelse:\n  x = 99");
-    const notified: ReadonlySet<unknown>[] = [];
-    reactive.subscribe(changed => notified.push(changed));
-
-    reactive.converge();
-
-    expect(notified.length).toBeGreaterThanOrEqual(1);
-    const allKeys = new Set<unknown>();
-    for (const set of notified) for (const k of set) allKeys.add(k);
-    expect(allKeys.has(ast)).toBe(true);
-  });
 });
 
 describe("OBSERVE loop: regression guard", () => {

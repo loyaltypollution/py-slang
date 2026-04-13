@@ -260,16 +260,6 @@ export interface WorklistStats {
  */
 type DirtyReason = "data" | "structural";
 
-// ── Subscribers ─────────────────────────────────────────────────────────────
-
-export type Subscriber = (changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>) => void;
-
-/** Listener for `onScopeChanged`. */
-export type ScopeChangeListener = (
-  scope: StmtNS.FileInput | StmtNS.FunctionDef,
-  unit: FunctionUnit,
-) => void;
-
 // ── Push-side interface ─────────────────────────────────────────────────────
 //
 // `ObservationSink` is the nominal synchronous surface interpreters call on
@@ -293,8 +283,6 @@ export class Worklist implements ObservationSink {
   readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
   private readonly analysisQueues: Queue<QueuedBlock>[];
   private readonly transformQueue = new Queue<QueuedTransform>();
-
-  private readonly subscribers = new Set<Subscriber>();
 
   /**
    * Pre-filtered subset of `analyses` that implement the runtime-observation
@@ -415,7 +403,7 @@ export class Worklist implements ObservationSink {
 
   /** Drain to fixpoint (initial pass). */
   converge(): void {
-    this.notify(this.drain());
+    this.drain();
   }
 
   /**
@@ -427,36 +415,7 @@ export class Worklist implements ObservationSink {
    * value is a drain-progress signal for those flows.
    */
   tick(limit?: number): boolean {
-    const changed = this.drain(limit);
-    this.notify(changed);
-    return changed.size > 0;
-  }
-
-  subscribe(cb: Subscriber): () => void {
-    this.subscribers.add(cb);
-    return () => this.subscribers.delete(cb);
-  }
-
-  /**
-   * Invoked once per scope whose AST was mutated during the last `tick()`.
-   * Returns an unsubscribe closure.
-   */
-  onScopeChanged(cb: ScopeChangeListener): () => void {
-    // Sugar over `subscribe`. The plan's "internal Pass<Scope, void>"
-    // framing lands fully in PR-4+ once data-producing passes are the
-    // ones writing to the fact store; for PR-2a the external signature
-    // and semantics are byte-identical with the legacy path so callers
-    // (PySvmlJitEvaluator, svml-jit-end-to-end.test) see no change. The
-    // scope-change `Pass<Scope,void>` equivalent is registered internally
-    // below as `scopeNotifyPass` so tests can observe the dispatch-graph
-    // routing when they exercise it.
-    const wrapped: Subscriber = changed => {
-      for (const key of changed) {
-        const unit = this.units.get(key);
-        if (unit) cb(key, unit);
-      }
-    };
-    return this.subscribe(wrapped);
+    return this.drain(limit).size > 0;
   }
 
   // ── Pass-graph dispatch (register / enqueue / drain) ──────────────────
@@ -1062,8 +1021,4 @@ export class Worklist implements ObservationSink {
     this.transformQueue.enqueue({ scopeKey, generation });
   }
 
-  private notify(changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>): void {
-    if (changed.size === 0) return;
-    for (const cb of this.subscribers) cb(changed);
-  }
 }
