@@ -480,7 +480,7 @@ export class Worklist {
     change: FactChange<unknown, unknown>,
   ): Iterable<unknown> {
     if (reader.affectedKeys !== undefined) {
-      return reader.affectedKeys(change.pass, change.key);
+      return reader.affectedKeys(this.passCtx, change.pass, change.key);
     }
     // coarse: re-run on all previously-written keys.
     return Array.from(this.factStore.readAll(reader).keys());

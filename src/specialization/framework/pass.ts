@@ -53,6 +53,7 @@ export interface Pass<K, V> {
   readonly coarse?: boolean;
   transfer(ctx: PassCtx, key: K): V | undefined;
   affectedKeys?(
+    ctx: PassCtx,
     triggerPass: Pass<any, any>,
     triggerKey: unknown,
   ): Iterable<K>;

@@ -102,7 +102,7 @@ export const purityScopePass: Pass<number, PurityPoint> = {
   reads: [structuralPass],
   tier: "analysis",
   coarse: false,
-  affectedKeys(triggerPass, triggerKey) {
+  affectedKeys(_ctx, triggerPass, triggerKey) {
     if (triggerPass === (structuralPass as Pass<any, any>)) {
       const fd = (triggerKey as FunctionUnit).funcAst;
       if (fd instanceof StmtNS.FunctionDef) return [fd.id];
@@ -142,7 +142,7 @@ export const callCountPass: Pass<number, number | undefined> = {
   lattice: callCountLattice,
   reads: [runtimeCallPass],
   tier: "analysis",
-  affectedKeys(triggerPass, triggerKey) {
+  affectedKeys(_ctx, triggerPass, triggerKey) {
     if (triggerPass === (runtimeCallPass as Pass<any, any>)) {
       return [triggerKey as number];
     }
@@ -176,7 +176,7 @@ function unitSweepRule(
     lattice: firedLattice,
     reads: [constAnalysisPass, structuralPass],
     tier: "transform",
-    affectedKeys(triggerPass, triggerKey) {
+    affectedKeys(_ctx, triggerPass, triggerKey) {
       if (triggerPass === (structuralPass as Pass<any, any>)) {
         return [triggerKey as FunctionUnit];
       }
