@@ -26,7 +26,7 @@ describe("Worklist sink synchrony tripwire", () => {
     const orig = Worklist.prototype.observeWrite;
     (Worklist.prototype as unknown as Record<string, unknown>).observeWrite = async function () {};
     try {
-      expect(() => new Worklist(ast, fenv, [], [])).toThrow(/observeWrite.*synchronous/);
+      expect(() => new Worklist(ast, fenv, [])).toThrow(/observeWrite.*synchronous/);
     } finally {
       Worklist.prototype.observeWrite = orig;
     }

@@ -20,7 +20,7 @@ import { buildCFG } from "./cfg";
 import { FactStore, type FactChange } from "./fact-store";
 import { buildFunctionUnits, makeOut, type FunctionUnit } from "./function-unit";
 import type { FieldEquals, HintStore, OptimizationHint } from "./hint";
-import type { AnalysisPass, ScopePass, TransformRule } from "./interfaces";
+import type { AnalysisPass } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
 import type { ObservationSink } from "./observation-sink";
 import type { Pass, PassCtx } from "./pass";
@@ -36,7 +36,6 @@ import {
   purityScopePass,
   typeAnalysisPass,
 } from "./migrated-passes";
-import { applyTransformPass } from "./transform";
 
 // ── Direction helpers ───────────────────────────────────────────────────────
 
@@ -351,16 +350,7 @@ export class Worklist implements ObservationSink {
     ast: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
     private readonly analyses: readonly AnalysisPass<any>[],
-    // Back-compat: every built-in transform is now a registered Pass via
-    // `migrated-passes.ts`; user-supplied legacy TransformRule instances
-    // are no longer driven. Param retained so existing call sites compile.
-    _legacyTransforms: readonly TransformRule[] = [],
-    // Back-compat: purity + callCount ScopePasses are migrated. Param
-    // retained for the same reason.
-    _legacyScopePasses: readonly ScopePass[] = [],
   ) {
-    void _legacyTransforms;
-    void _legacyScopePasses;
     this.analysisQueues = analyses.map(() => new Queue<QueuedBlock>());
     this.observers = analyses.filter(
       (m): m is ObservingAnalysis => m.observeWrite !== undefined,

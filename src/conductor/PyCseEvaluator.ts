@@ -89,13 +89,7 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         throw errors[errors.length - 1];
       }
 
-      const worklist = new Worklist(
-        ast,
-        environments,
-        [new TypeAnalysisPass(), new ConstAnalysisPass()],
-        [],
-        [],
-      );
+      const worklist = new Worklist(ast, environments, [new TypeAnalysisPass(), new ConstAnalysisPass()]);
       worklist.converge();
 
       this.context.runtime.rootScope = ast;

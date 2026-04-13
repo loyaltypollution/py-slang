@@ -26,7 +26,7 @@ function buildWorklist(src = "x = 1\n"): Worklist {
   const ast = parse(src);
   const resolver = new Resolver(src, ast);
   resolver.resolve(ast);
-  return new Worklist(ast, resolver.functionEnvironments, [], [], []);
+  return new Worklist(ast, resolver.functionEnvironments, []);
 }
 
 const intMax: Lattice<number> = {

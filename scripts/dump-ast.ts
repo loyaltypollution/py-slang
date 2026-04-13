@@ -293,13 +293,10 @@ if (errors.length > 0) {
   for (const e of errors) console.error(" ", String(e));
   process.exit(1);
 }
-const worklist = new Worklist(
-  ast,
-  environments,
-  [new TypeAnalysisPass(), new ConstAnalysisPass()],
-  [],
-  [],
-);
+const worklist = new Worklist(ast, environments, [
+  new TypeAnalysisPass(),
+  new ConstAnalysisPass(),
+]);
 worklist.converge();
 const units = worklist.units;
 

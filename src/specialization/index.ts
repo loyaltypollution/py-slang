@@ -21,7 +21,7 @@ export { structuralPass } from "./framework/structural-pass";
 
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
 
-export type { AnalysisPass, ScopePass, TransformRule } from "./framework/interfaces";
+export type { AnalysisPass } from "./framework/interfaces";
 export type { OptimizationHint } from "./framework/hint";
 export { HintStore } from "./framework/hint";
 

@@ -14,12 +14,10 @@ function setup(code: string) {
   const script = code + "\n";
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const worklist = new Worklist(
-    ast,
-    environments,
-    [new TypeAnalysisPass(), new ConstAnalysisPass()],
-    [],
-  );
+  const worklist = new Worklist(ast, environments, [
+    new TypeAnalysisPass(),
+    new ConstAnalysisPass(),
+  ]);
   return { ast, units: worklist.units, worklist };
 }
 

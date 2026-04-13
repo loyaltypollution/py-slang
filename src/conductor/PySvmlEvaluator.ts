@@ -19,13 +19,7 @@ export class PySvmlEvaluator extends BasicEvaluator {
       if (errors.length > 0) {
         throw errors[0];
       }
-      const worklist = new Worklist(
-        ast,
-        environments,
-        [new TypeAnalysisPass(), new ConstAnalysisPass()],
-        [],
-        [],
-      );
+      const worklist = new Worklist(ast, environments, [new TypeAnalysisPass(), new ConstAnalysisPass()]);
       worklist.converge();
       const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units);
       const program = compiler.compileProgram(ast);

@@ -40,16 +40,10 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
       if (errors.length > 0) throw errors[0];
 
-      const worklist = new Worklist(
-        ast,
-        environments,
-        [
-          new TypeAnalysisPass(),
-          new ConstAnalysisPass(),
-        ],
-        [],
-        [],
-      );
+      const worklist = new Worklist(ast, environments, [
+        new TypeAnalysisPass(),
+        new ConstAnalysisPass(),
+      ]);
       worklist.converge();
 
       const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units);
