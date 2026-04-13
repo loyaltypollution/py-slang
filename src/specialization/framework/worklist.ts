@@ -368,14 +368,23 @@ export class Worklist implements ObservationSink {
     ast: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
     private readonly analyses: readonly AnalysisPass<any>[],
-    private readonly transforms: readonly TransformRule[],
-    private readonly scopePasses: readonly ScopePass[] = [],
+    // Back-compat: every built-in transform is now a registered Pass via
+    // `migrated-passes.ts`; user-supplied legacy TransformRule instances
+    // are no longer driven. Param retained so existing call sites compile.
+    _legacyTransforms: readonly TransformRule[] = [],
+    // Back-compat: purity + callCount ScopePasses are migrated. Param
+    // retained for the same reason.
+    _legacyScopePasses: readonly ScopePass[] = [],
   ) {
+    void _legacyTransforms;
+    void _legacyScopePasses;
     this.analysisQueues = analyses.map(() => new Queue<QueuedBlock>());
     this.observers = analyses.filter(
       (m): m is ObservingAnalysis => m.observeWrite !== undefined,
     );
-    this.hasNonMonotoneRule = transforms.some(r => r.level === "scope" && r.fireOnce === true);
+    // Monotone-only post migration: callCountPass saturates, transforms are
+    // top-only lattices. The `hasNonMonotoneRule` gate is dead.
+    this.hasNonMonotoneRule = false;
 
     // Per-field equality: each AnalysisPass registers latticeEquals under its name.
     const fieldEq = new Map<string, FieldEquals>();
@@ -383,15 +392,8 @@ export class Worklist implements ObservationSink {
       fieldEq.set(a.name, (x, y) => a.latticeEquals(x, y));
     }
 
-    // Ordering-invariant guard: every field written by a ScopePass must NOT
-    // be read inside an AnalysisPass transfer (see `processTransform`
-    // ordering comment). Collected once at construction; used by
-    // `guardAnalysisHints` below.
-    const forbidden = new Set<string>();
-    for (const p of scopePasses) {
-      if (p.writesFields) for (const f of p.writesFields) forbidden.add(f);
-    }
-    this.forbiddenScopeFields = forbidden;
+    // No ScopePass instances post migration → empty guard set.
+    this.forbiddenScopeFields = new Set<string>();
 
     this.units = buildFunctionUnits(ast, functionEnvironments, analyses, fieldEq, this.factStore);
     for (const [key, unit] of this.units) {
@@ -943,23 +945,6 @@ export class Worklist implements ObservationSink {
     // it.
     const preTransformVersion = unit.structuralVersion;
 
-    // Scope-level passes run once per scope per generation, after the
-    // expression-level fixpoint has converged (lower-priority queue
-    // guarantees all analysis queues are empty at this point) and before
-    // transform rules read scope-level hints.
-    //
-    // **Ordering invariant:** hint fields written by a ScopePass must
-    // only be consumed by `ScopeTransformRule.matches` (same round) or by
-    // later ScopePasses (same round). They MUST NOT be read inside any
-    // `AnalysisPass.makeExprVisitor` transfer function — that analysis
-    // fires earlier in the queue priority order, on the prior generation,
-    // and would see stale scope-level facts. Fields that need to feed
-    // back into expression-level analyses belong on an `AnalysisPass`
-    // (which participates in the fixpoint), not a ScopePass.
-    for (const pass of this.scopePasses) {
-      pass.run(unit);
-    }
-
     // PR-6a: purity is no longer a legacy ScopePass. Drive it through the
     // pass-graph — prime structuralPass so `purityScopePass.transfer` can
     // resolve the unit via `ctx.readAll(structuralPass)`, then enqueue &
@@ -993,35 +978,17 @@ export class Worklist implements ObservationSink {
     this.drainPasses();
     const transformsFired = unit.structuralVersion !== preTransformVersion;
 
-    let anyChanged = transformsFired;
-    const extraInvalidate = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
-    for (const rule of this.transforms) {
-      if (rule.level === "scope") {
-        // One-shot rules: skip once they've fired successfully on this scope.
-        // `appliedTransforms` is the single source of truth — populated by
-        // `apply` (the rule itself calls `unit.appliedTransforms.add(this.name)`),
-        // read here as the re-fire guard.
-        if (rule.fireOnce && unit.appliedTransforms.has(rule.name)) continue;
-        if (rule.matches(unit) && rule.apply(unit)) {
-          anyChanged = true;
-        }
-        continue;
-      }
-      const res = applyTransformPass(unit.body, rule, unit.hints);
-      if (res.changed) anyChanged = true;
-      for (const s of res.invalidate) extraInvalidate.add(s);
-    }
-
-    if (anyChanged) {
+    if (transformsFired) {
       this._transformRounds++;
       unit.structuralVersion++;
       changed.add(item.scopeKey);
       this.markDirty(item.scopeKey, "structural");
     }
-    // Rule-requested invalidations (e.g. memoization mutated a child
-    // FunctionDef's body from the parent pass): publish to the same dirty
-    // channel as the originating scope's own mark. No dedicated code path —
-    // the child's CFG rebuild happens uniformly on the next drain iteration.
+    // Legacy node-level transforms produced an `extraInvalidate` set for
+    // child-unit invalidation; they're all migrated to Pass<K,V> now and
+    // any cross-unit mutation (e.g. memoization wrapping a child) bumps
+    // the child's structuralVersion directly inside the transfer.
+    const extraInvalidate = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     for (const scope of extraInvalidate) {
       if (scope === item.scopeKey) continue;
       const childUnit = this.units.get(scope);
