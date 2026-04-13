@@ -237,3 +237,101 @@ the new SVMLCompiler integration tests need.
 in the last green Phase 5b commit; the 9 deleted suites were either
 exercising deleted primitives directly or were redundant with the 13-suite
 `runtime/` test directory that pins the new architecture.
+
+## Phase 8 — SCC-aware cycle_fn spike, deferred
+
+**Outcome:** spike attempted, both passes (engine + per-block port) reverted.
+Final state: db.ts and block-envs.ts unchanged from pre-spike HEAD. 36/36
+suites green.
+
+### What was attempted
+
+**Pass 1 — SCC engine in `Db`.** Extended `Db.recompute` so that when a cell
+of an `isCyclic` query is re-entered while an ancestor cell of the SAME
+query is still computing, the new cell is marked a non-leader participant
+and registered with the outermost-on-stack cyclic same-query frame (the
+"leader"). Leader's outer loop runs `query.fn` once per iteration, then
+re-runs each registered participant via a stored single-iteration callback
+that pushes the participant's frame and re-invokes `query.fn`. Loop
+terminates when neither leader nor any participant value changes across a
+full pass; throws at 200-iter cap.
+
+The engine itself worked. Four new tests passed: cross-cell two-cell SCC,
+three-cell SCC, divergent SCC throws, non-participant green observer. 7/7
+cycle.test.ts cases green.
+
+**Pass 2 — Per-block `typeBlockOut`/`constBlockOut`.** Defined per-block
+queries keyed by `{unitId, blockId}`, each `isCyclic`. Body: read CFG,
+compute IN env from preds via `db.get(typeBlockOut, pred)` (which records
+deps and drives the SCC for back-edges), run block transfer, return OUT.
+`typeBlockEnvs`/`constBlockEnvs` became thin wrappers iterating `db.get`
+per block.
+
+### Where it got stuck
+
+`yarn test` after pass 2: 35/36 suites — `specialization-opcodes.test.ts`
+went 11/18 → all 11 loop tests failed. Root cause traced via instrumented
+trace on a `while`-loop program:
+
+The SCC algorithm, as specified, runs participants in **registration
+order** (essentially DFS post-order from the leader). For a forward DFA
+where `transfer(bottom_env)` can produce TOP (because the pure transfer
+visitor has no information and pessimistically widens), the first pass
+through the SCC computes:
+
+- Loop-body block B3 runs first (registered innermost). Reads loop-header
+  B2, which is in `'computing'` state → returns provisional value
+  `bottom` (empty env). Transfer of `s = s + i` over an empty env infers
+  TOP for s. B3.OUT = `[TOP, TOP]`.
+- B2 then joins entry-block-OUT (`[INT, INT]`) with B3.OUT (`[TOP, TOP]`)
+  → `[TOP, TOP]`.
+- All subsequent iterations re-run with TOP → stable at TOP.
+
+The standard Kildall worklist (which the per-unit `kildall.ts` implements)
+avoids this by initializing every block's OUT to `bottom` AND processing
+blocks in a deterministic order such that B2 sees B3=bottom (correctly
+absorbed by join's identity) BEFORE B3 ever runs against a B2 holding TOP.
+The resulting iteration converges to `[INT, INT]` for both blocks.
+
+In other words: the SCC runtime, as implemented, gives a sound but
+maximally-imprecise fixpoint; standard Kildall gives the precise least
+fixpoint. This is not a bug in the SCC engine — it's a structural
+mismatch between "DFS-driven recursive evaluation with provisional
+bottom" and "BFS/RPO-driven worklist with proper initialization for
+forward DFA." The transfer is monotone but its behavior on empty envs is
+discontinuous (gap from `bottom_env` to `top_lattice`).
+
+### What a next attempt would need
+
+Two viable paths:
+
+1. **Pre-initialize all blocks before SCC runs.** Before the leader
+   invokes its body, do a quick CFG walk that pre-creates `typeBlockOut`
+   cells for every block in the unit with `cell.value = bottom_env` and
+   `cell.state = 'green'`. Then the leader's body sees green-but-bottom
+   preds (correct join identity) instead of provisional-from-stack
+   bottom. This is essentially smuggling Kildall's initialization into
+   the runtime.
+
+2. **Reverse-postorder (or chaotic-iteration) participant ordering inside
+   the leader's loop.** Instead of registration order, store participants
+   keyed by CFG dominator/RPO position. Participant order would have to
+   be computed lazily as new participants appear (the leader doesn't
+   know the CFG in advance — it just runs `fn`). Less general than (1)
+   and pollutes the runtime with CFG-aware logic.
+
+Path (1) is cleanest but commits the runtime to an "SCC pre-warm" hook
+that pure cyclic queries (e.g. the saturating-cap test cases) don't
+need. A separate RFC should weigh whether per-block invalidation is
+worth that complexity.
+
+### Honest assessment
+
+Per-unit `typeBlockEnvs`/`constBlockEnvs` (running internal Kildall over
+the CFG) remains the correct shipped architecture. The lost capability
+— per-block cell invalidation when a single observation lands inside one
+block — is the same coarseness as the legacy worklist drain, so this is
+not a regression vs status quo. The SCC engine is implementable and
+testable in isolation (see the deleted four tests for the spec); the
+hard part is integrating it with Kildall-grade DFA precision. That
+integration deserves a deliberate design pass, not a time-boxed spike.
