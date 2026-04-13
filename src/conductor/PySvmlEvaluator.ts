@@ -6,7 +6,6 @@ import { analyzeWithEnvironments } from "../resolver";
 import {
   ConstAnalysisPass,
   ConstantFoldingRule,
-  DeadBranchEliminationRule,
   MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
@@ -27,7 +26,6 @@ export class PySvmlEvaluator extends BasicEvaluator {
         environments,
         [new TypeAnalysisPass(), new ConstAnalysisPass()],
         [
-          new DeadBranchEliminationRule(),
           new ConstantFoldingRule(),
           new MemoizationTransformRule(),
         ],

@@ -15,7 +15,6 @@ import { analyzeWithEnvironments } from "../resolver";
 import {
   ConstAnalysisPass,
   ConstantFoldingRule,
-  DeadBranchEliminationRule,
   MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
@@ -108,7 +107,7 @@ describe("ScopePass dispatch", () => {
       ast,
       environments,
       [new TypeAnalysisPass(), new ConstAnalysisPass()],
-      [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
+      [new ConstantFoldingRule(), new MemoizationTransformRule()],
       [pass],
     );
     worklist.converge();

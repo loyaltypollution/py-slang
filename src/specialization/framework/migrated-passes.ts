@@ -34,6 +34,7 @@ import {
   constLeq,
 } from "../const-analysis/lattice";
 import { computePurity } from "../purity-analysis/analysis";
+import { applyDeadBranchSweep } from "../transforms/dead-branch";
 import {
   type TypeLattice,
   BOTTOM as TYPE_BOTTOM,
@@ -252,21 +253,67 @@ const firedLattice: Lattice<Fired> = {
 };
 
 /**
- * Dead-branch elimination. Top-only `Pass<StmtNodeId, "fired">`.
+ * Dead-branch elimination (PR-6c end-to-end). Top-only
+ * `Pass<FunctionUnit, "fired">`. Transfer sweeps `unit.body` for `If`
+ * statements with a statically-known boolean condition and splices them
+ * out in place (see `applyDeadBranchSweep`).
  *
- * Side-effect idempotence: the rule's side effect is the AST splice. A
- * re-write of `"fired"` on a key that's already `"fired"` produces
- * `lattice.equals === true`, no `onChange`, no re-splice. Legacy dispatch
- * still drives the splice in PR-4; the Pass is registered for visibility.
+ * Idempotence (two-layer):
+ *  1. AST-level — the `StmtNS.If` match predicate returns false once the
+ *     `If` node has been spliced out of its containing block, so a second
+ *     sweep on an already-converged body mutates nothing.
+ *  2. Lattice-level — the top-only `"fired"` lattice: rewriting `"fired"`
+ *     on a key that already holds `"fired"` yields `lattice.equals ===
+ *     true`, suppressing `onChange` and preventing spurious downstream
+ *     wakes.
+ *
+ * Scheduling: `reads = [constAnalysisPass, structuralPass]`. Legacy const
+ * analysis writes land through the PR-3 adapter into `constAnalysisPass`'s
+ * fact cell and wake this pass through the dispatch graph (the adapter
+ * is how const facts reach the new driver before PR-6d migrates const).
+ * An initial-converge seed is primed from `worklist.processTransform`
+ * (mirroring the PR-6a purity seeding).
+ *
+ * Side effects: the transfer mutates `unit.body` and bumps
+ * `unit.structuralVersion` on fire; the worklist's `processTransform`
+ * reacts to the version delta by setting `anyChanged = true`, which in
+ * turn marks the scope `"structural"` dirty and rebuilds the CFG on the
+ * next drain iteration.
  */
-export const deadBranchRule: Pass<number, Fired> = {
+export const deadBranchRule: Pass<FunctionUnit, Fired> = {
   id: Symbol("deadBranchRule"),
   debugName: "deadBranchRule",
   lattice: firedLattice,
   reads: [constAnalysisPass, structuralPass],
   tier: "transform",
-  coarse: true,
-  transfer(_ctx: PassCtx, _key: number): Fired {
+  // Precise affectedKeys: any upstream write for unit U enqueues this
+  // pass for U. `structuralPass` is keyed by `FunctionUnit` directly;
+  // `constAnalysisPass` is node-keyed — for coarse routing we re-run on
+  // all previously-written keys in that case, which matches the legacy
+  // "every transform round re-sweeps every unit" semantics.
+  affectedKeys(triggerPass, triggerKey) {
+    if (triggerPass === (structuralPass as Pass<any, any>)) {
+      return [triggerKey as FunctionUnit];
+    }
+    // constAnalysisPass: node-keyed. Without a node-id → owning-unit
+    // map in ctx we fall back to coarse re-run via returning the empty
+    // iterable here and relying on the worklist's explicit seed in
+    // `processTransform` to re-drive the sweep each round. That seed is
+    // the canonical trigger this PR; this branch is reserved for PR-6d
+    // once const is migrated and can fan out to its owning unit.
+    return [];
+  },
+  transfer(_ctx: PassCtx, key: FunctionUnit): Fired {
+    const fired = applyDeadBranchSweep(key);
+    if (fired) {
+      // Side-channel structural bump: the sweep mutated `key.body`, so
+      // CFG must be rebuilt. The worklist's `processTransform` reads
+      // `unit.structuralVersion` before/after `drainPasses()` and sets
+      // `anyChanged = true` on delta, triggering the usual
+      // markDirty("structural") → rebuildStructural path.
+      key.structuralVersion++;
+      return "fired";
+    }
     return undefined;
   },
 };

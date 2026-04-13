@@ -962,7 +962,18 @@ export class Worklist implements ObservationSink {
       this.drainPasses();
     }
 
-    let anyChanged = false;
+    // PR-6c: dead-branch elimination is no longer a legacy StmtTransformRule.
+    // Drive it through the pass-graph. The transfer sweeps `unit.body`,
+    // splicing If-statements whose condition is a known boolean const,
+    // and bumps `unit.structuralVersion` iff it mutated. We capture the
+    // pre-drain version and detect a fire via the delta — no fact-store
+    // bookkeeping needed beyond the top-only `"fired"` lattice.
+    const preDeadBranchVersion = unit.structuralVersion;
+    this.enqueue(deadBranchRule, unit);
+    this.drainPasses();
+    const deadBranchFired = unit.structuralVersion !== preDeadBranchVersion;
+
+    let anyChanged = deadBranchFired;
     const extraInvalidate = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     for (const rule of this.transforms) {
       if (rule.level === "scope") {
