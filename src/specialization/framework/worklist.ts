@@ -515,6 +515,23 @@ export class Worklist implements ObservationSink {
   }
 
   /**
+   * Public runtime-observation API (PR-5). Writes `(pass, key) → value`
+   * directly into the fact store, then drains any consumers the write
+   * woke. Intended for `runtime`-tier source passes (`runtimeWritePass`,
+   * `runtimeCallPass`) whose values come from the interpreter, not from
+   * a `transfer`. Equality-gated like every other write — a same-value
+   * write is a no-op and wakes nothing.
+   *
+   * Drain is invoked synchronously so transform side-effects (e.g.
+   * memoization AST splice, JIT `patchFunction`) land before the next
+   * interpreter instruction. Re-entry is guarded by `drainPasses`.
+   */
+  observe<K, V>(pass: Pass<K, V>, key: K, value: V): void {
+    this.factStore.write(pass, key, value);
+    this.drainPasses();
+  }
+
+  /**
    * Enqueue a `(pass, key)` item for re-transfer. Deduped: a second
    * enqueue for the same pair before drain is a no-op.
    */

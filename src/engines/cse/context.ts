@@ -49,6 +49,13 @@ export class Context {
      * contract makes call-time pin accounting unnecessary.
      */
     observationSink: ObservationSink;
+    /**
+     * PR-5: optional fact-store push hooks. Wired by `PyCseEvaluator`
+     * alongside `observationSink`; `null` for standalone runs. Both
+     * paths stay live until PR-6 demolishes the legacy sink.
+     */
+    observeNodeWrite?: (nodeId: number, value: unknown) => void;
+    observeScopeCall?: (scopeId: number) => void;
     /** Root scope key for emission when no enclosing closure exists (global scope). */
     rootScope?: StmtNS.FileInput;
   };

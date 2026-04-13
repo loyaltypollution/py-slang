@@ -12,6 +12,13 @@ export type { WorklistStats, ScopeChangeListener } from "./framework/worklist";
 export type { ObservationSink } from "./framework/observation-sink";
 export { NullObservationSink } from "./framework/observation-sink";
 
+// ── Pass-graph framework (PR-5: runtime-tier exports for evaluator wiring) ─
+
+export type { Pass, PassCtx, Lattice } from "./framework/pass";
+export { runtimeWritePass, runtimeCallPass } from "./framework/runtime-passes";
+export { callCountPass, purityScopePass } from "./framework/migrated-passes";
+export { structuralPass } from "./framework/structural-pass";
+
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
 
 export type { AnalysisPass, ScopePass, TransformRule } from "./framework/interfaces";

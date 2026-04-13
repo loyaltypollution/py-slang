@@ -183,9 +183,27 @@ export const callCountPass: Pass<number, number | undefined> = {
   lattice: callCountLattice,
   reads: [runtimeCallPass],
   tier: "analysis",
-  coarse: true,
-  transfer(_ctx: PassCtx, _key: number): number | undefined {
-    return undefined;
+  // Precise affectedKeys: a runtimeCallPass write for scope-id S enqueues
+  // callCountPass for the same id. This also primes the pass on the very
+  // first observation (coarse:true would yield no keys before any write).
+  affectedKeys(triggerPass, triggerKey) {
+    if (triggerPass === (runtimeCallPass as Pass<any, any>)) {
+      return [triggerKey as number];
+    }
+    return [];
+  },
+  /**
+   * Saturating-bucket transfer (PR-5). Reads the raw count from
+   * `runtimeCallPass`, clamps to `[0, MEMOIZATION_THRESHOLD + 1]`. Once
+   * `CALL_COUNT_SAT` is written, every subsequent transfer produces the
+   * same value → `lattice.equals` suppresses `onChange` → `memoizationRule`
+   * and `jitPass` are not re-enqueued past saturation. This is the
+   * structural fix for the legacy "callCount++ triggers full recompile"
+   * bug — the global `hasNonMonotoneRule` gate becomes redundant.
+   */
+  transfer(ctx: PassCtx, key: number): number | undefined {
+    const raw = ctx.read(runtimeCallPass, key);
+    return Math.min(CALL_COUNT_SAT, raw);
   },
 };
 

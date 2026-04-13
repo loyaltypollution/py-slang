@@ -10,7 +10,6 @@
 // passes whose values are supplied externally. The fields exist so the
 // drain policy sorts passes that read them behind `"analysis"` tier.
 
-import type { StmtNS } from "../../ast-types";
 import type { Lattice, Pass, PassCtx } from "./pass";
 
 // ── runtimeWritePass: NodeId → ObservedValue (raw JS value) ─────────────
@@ -57,14 +56,14 @@ const countLattice: Lattice<number> = {
  * key is the callee scope AST node. `transfer` is a no-op — externally
  * written by the interpreter in PR-5.
  */
-export const runtimeCallPass: Pass<StmtNS.FileInput | StmtNS.FunctionDef, number> = {
+export const runtimeCallPass: Pass<number, number> = {
   id: Symbol("runtimeCallPass"),
   debugName: "runtimeCallPass",
   lattice: countLattice,
   reads: [],
   tier: "runtime",
   coarse: true,
-  transfer(_ctx: PassCtx, _key: StmtNS.FileInput | StmtNS.FunctionDef): number | undefined {
+  transfer(_ctx: PassCtx, _key: number): number | undefined {
     return undefined;
   },
 };

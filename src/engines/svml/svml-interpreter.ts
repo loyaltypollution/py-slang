@@ -66,6 +66,17 @@ export class SVMLInterpreter {
    */
   private observationSink: ObservationSink = NullObservationSink;
 
+  /**
+   * PR-5 fact-store observers — called alongside `observationSink` at
+   * STORE / CALL sites. `observeNodeWrite(nodeId, value)` feeds
+   * `runtimeWritePass`; `observeScopeCall(scopeId)` feeds
+   * `runtimeCallPass`. Defaults are no-ops; `PySvmlJitEvaluator` wires
+   * them to `worklist.observe(...)` calls. ObservationSink stays live
+   * alongside until PR-6.
+   */
+  private observeNodeWrite: (nodeId: number, value: unknown) => void = () => {};
+  private observeScopeCall: (scopeId: number) => void = () => {};
+
   constructor(
     program: SVMLProgram,
     options?: {
@@ -74,6 +85,8 @@ export class SVMLInterpreter {
       maxInstructions?: number;
       sendOutput?: (msg: string) => void;
       observationSink?: ObservationSink;
+      observeNodeWrite?: (nodeId: number, value: unknown) => void;
+      observeScopeCall?: (scopeId: number) => void;
     },
   ) {
     this.program = program;
@@ -87,6 +100,8 @@ export class SVMLInterpreter {
       if (options.maxCallDepth) this.maxCallDepth = options.maxCallDepth;
       if (options.maxInstructions) this.maxInstructionLimit = options.maxInstructions;
       if (options.observationSink) this.observationSink = options.observationSink;
+      if (options.observeNodeWrite) this.observeNodeWrite = options.observeNodeWrite;
+      if (options.observeScopeCall) this.observeScopeCall = options.observeScopeCall;
     }
   }
 
@@ -759,6 +774,8 @@ export class SVMLInterpreter {
     const site = ir.observationSites.get(pc);
     if (!site || site.kind !== "write") return;
     this.observationSink.observeWrite(ir.scopeKey, site.node, value);
+    // PR-5: parallel write into runtimeWritePass. Legacy stays live.
+    this.observeNodeWrite(site.node.id, value);
   }
 
   /**
@@ -773,6 +790,8 @@ export class SVMLInterpreter {
     const site: ObservationSite | undefined = this.currentFrame.ir.observationSites.get(pc);
     if (!site || site.kind !== "call") return;
     this.observationSink.observeCall(callerKey, calleeKey);
+    // PR-5: parallel write into runtimeCallPass keyed by callee scope id.
+    this.observeScopeCall(calleeKey.id);
   }
 
   // ========================================================================

@@ -21,6 +21,8 @@ import {
   Worklist,
   TypeAnalysisPass,
   NullObservationSink,
+  runtimeCallPass,
+  runtimeWritePass,
 } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
@@ -107,6 +109,17 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
 
       this.context.runtime.rootScope = ast;
       this.context.runtime.observationSink = worklist;
+      // PR-5 fact-store push (parallel to ObservationSink). Per-callee
+      // raw counters live in the closure for this evaluation.
+      const callCounts = new Map<number, number>();
+      this.context.runtime.observeNodeWrite = (nodeId, value) => {
+        worklist.observe(runtimeWritePass, nodeId, value);
+      };
+      this.context.runtime.observeScopeCall = (scopeId) => {
+        const next = (callCounts.get(scopeId) ?? 0) + 1;
+        callCounts.set(scopeId, next);
+        worklist.observe(runtimeCallPass, scopeId, next);
+      };
 
       try {
         await evaluate("", ast, this.context, {
@@ -116,6 +129,8 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         worklist.tick();
       } finally {
         this.context.runtime.observationSink = NullObservationSink;
+        this.context.runtime.observeNodeWrite = undefined;
+        this.context.runtime.observeScopeCall = undefined;
       }
     } catch (e) {
       if (e instanceof SyntaxError) {
