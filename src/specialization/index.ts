@@ -77,6 +77,5 @@ export {
   MEMOIZATION_THRESHOLD,
   CALL_COUNT_FIELD,
 } from "./memoization-analysis/call-count";
-export { PurityScopePass } from "./purity-analysis/analysis";
 export { PURE_FIELD } from "./purity-analysis/lattice";
 export { memoLookup, memoPut, clearMemoCache, memoCacheSnapshot, MEMO_MISS } from "../runtime/memo";

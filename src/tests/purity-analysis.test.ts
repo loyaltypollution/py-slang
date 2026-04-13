@@ -14,7 +14,6 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
   ConstAnalysisPass,
-  PurityScopePass,
   TypeAnalysisPass,
   Worklist,
   PURE_FIELD,
@@ -29,7 +28,7 @@ function purityOf(code: string, fnName: string): boolean | undefined {
     environments,
     [new TypeAnalysisPass(), new ConstAnalysisPass()],
     [],
-    [new PurityScopePass()],
+    [],
   );
   worklist.converge();
 

@@ -25,7 +25,7 @@
 // means a re-write produces no `onChange` event, so any side effects in
 // `transfer` would be suppressed on re-enqueue. Documented per-pass.
 
-import type { StmtNS } from "../../ast-types";
+import { StmtNS } from "../../ast-types";
 import {
   type ConstLattice,
   CONST_BOTTOM,
@@ -33,6 +33,7 @@ import {
   constJoin,
   constLeq,
 } from "../const-analysis/lattice";
+import { computePurity } from "../purity-analysis/analysis";
 import {
   type TypeLattice,
   BOTTOM as TYPE_BOTTOM,
@@ -135,14 +136,23 @@ const purityLattice: Lattice<PurityPoint> = {
 };
 
 /**
- * Migrated purity (scope-keyed). `K = Scope AST node` (FileInput or
- * FunctionDef). HintStore backs `pure` via this pass keyed by the
- * `FunctionDef.id` — `updateField(id, "pure", v)` routes here. The plan
- * calls for K = Scope but OptimizationHint.pure is keyed by node id in
- * the hint surface; we register both — the Scope-keyed semantics is a
- * PR-5 wiring once ScopePass.run is migrated to write into this pass
- * directly. For PR-4 the pass is declared at node-id granularity so the
- * HintStore route remains byte-identical.
+ * Migrated purity (scope-keyed, PR-6a end-to-end). Key is the owning
+ * `FunctionDef.id` (number) so that `HintStore.updateField(id, "pure", v)`
+ * routes to the same `(pass, key)` cell the transfer writes — consumers
+ * reading `hintsFor(fd).pure` see the value produced by this transfer
+ * with no adapter layer.
+ *
+ * Scheduling: `reads = [structuralPass]` — the single declared input.
+ * After a CFG rebuild the worklist's `handleFactChange` enqueues this
+ * pass for the unit's id via `affectedKeys`. The initial converge is
+ * primed from `processTransform` (see worklist.ts), matching the
+ * pre-PR-6a timing where `PurityScopePass.run` was invoked at the end
+ * of each scope's convergence round.
+ *
+ * Transfer: delegates to `computePurity(unit)` — the CFG-walking fixpoint
+ * lifted out of the deleted `PurityScopePass` class. Pure boolean output;
+ * the `"contested"` join sentinel is unreachable while this pass is the
+ * sole writer of its cell.
  */
 export const purityScopePass: Pass<number, PurityPoint> = {
   id: Symbol("purityScopePass"),
@@ -150,8 +160,32 @@ export const purityScopePass: Pass<number, PurityPoint> = {
   lattice: purityLattice,
   reads: [structuralPass],
   tier: "analysis",
-  coarse: true,
-  transfer(_ctx: PassCtx, _key: number): PurityPoint {
+  coarse: false,
+  // Map a structuralPass write for unit U to this pass's key = U.funcAst.id.
+  // Unknown trigger → no keys (prevents accidental fan-out from unrelated
+  // writes that might later share the `reads` list).
+  affectedKeys(triggerPass, triggerKey) {
+    if (triggerPass === (structuralPass as Pass<any, any>)) {
+      const unit = triggerKey as FunctionUnit;
+      const fd = unit.funcAst;
+      if (fd instanceof StmtNS.FunctionDef) return [fd.id];
+    }
+    return [];
+  },
+  transfer(ctx: PassCtx, key: number): PurityPoint {
+    // Find the unit whose FunctionDef.id matches `key`. The structuralPass
+    // readAll yields the registered units (one write per rebuildStructural
+    // call); initial-converge primes this pass directly with the unit's id
+    // (see worklist.processTransform) so the readAll set is populated by
+    // the time transfer fires post-rebuild.
+    const units = ctx.readAll(structuralPass);
+    for (const unit of units.keys()) {
+      const u = unit as FunctionUnit;
+      const fd = u.funcAst;
+      if (fd instanceof StmtNS.FunctionDef && fd.id === key) {
+        return computePurity(u);
+      }
+    }
     return undefined;
   },
 };

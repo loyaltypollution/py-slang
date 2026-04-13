@@ -16,7 +16,6 @@ import {
   DeadBranchEliminationRule,
   CallCountScopePass,
   MemoizationTransformRule,
-  PurityScopePass,
   Worklist,
   TypeAnalysisPass,
 } from "../specialization";
@@ -41,7 +40,7 @@ export function buildTestWorklist(
     functionEnvironments,
     [new TypeAnalysisPass(), new ConstAnalysisPass()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
-    [new CallCountScopePass(), new PurityScopePass()],
+    [new CallCountScopePass()],
   );
   return worklist;
 }

@@ -938,6 +938,18 @@ export class Worklist implements ObservationSink {
       pass.run(unit);
     }
 
+    // PR-6a: purity is no longer a legacy ScopePass. Drive it through the
+    // pass-graph — prime structuralPass so `purityScopePass.transfer` can
+    // resolve the unit via `ctx.readAll(structuralPass)`, then enqueue &
+    // drain. Idempotent under the lattice: same-version rewrites of
+    // structuralPass suppress the fact-store listener, so this does not
+    // spuriously wake other structuralPass readers on re-drain.
+    this.factStore.write(structuralPass, unit, unit.structuralVersion);
+    if (unit.funcAst instanceof StmtNS.FunctionDef) {
+      this.enqueue(purityScopePass, unit.funcAst.id);
+      this.drainPasses();
+    }
+
     let anyChanged = false;
     const extraInvalidate = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     for (const rule of this.transforms) {

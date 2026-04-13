@@ -10,7 +10,6 @@ import {
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   MemoizationTransformRule,
-  PurityScopePass,
   TypeAnalysisPass,
   Worklist,
   callCountPass,
@@ -59,7 +58,6 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         ],
         [
           new CallCountScopePass(),
-          new PurityScopePass()
         ],
       );
       worklist.converge();

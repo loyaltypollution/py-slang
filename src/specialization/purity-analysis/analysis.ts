@@ -1,12 +1,18 @@
 // src/specialization/purity-analysis/analysis.ts
 //
-// Intraprocedural purity analysis as a CFG-walking `ScopePass`.
+// Intraprocedural purity analysis as a CFG-walking helper. The legacy
+// `PurityScopePass` class (a `ScopePass` registered on the worklist) has
+// been demolished in PR-6a: its body now lives inside
+// `purityScopePass.transfer` (see `../framework/migrated-passes.ts`),
+// which calls `computePurity(unit)` below.
 //
-// Fires after the expression-level DFA fixpoint converges for the scope.
-// Walks `unit.cfg` directly: initialises every block's IN at ⊥
-// (`BOTTOM_FACT`), propagates per-statement transfer, joins at merges,
-// iterates to fixpoint on a FIFO worklist, then derives `hint.pure` from
-// the fact flowing out of the CFG exit block.
+// Fires once per `(unit, generation)` whenever `structuralPass` produces a
+// lattice-change write for the unit, and once at initial converge (seeded
+// by the worklist's legacy `processTransform` step). Walks `unit.cfg`
+// directly: initialises every block's IN at ⊥ (`BOTTOM_FACT`), propagates
+// per-statement transfer, joins at merges, iterates to fixpoint on a FIFO
+// worklist, then derives a boolean `pure` verdict from the fact flowing
+// out of the CFG exit block.
 //
 // Grammar note: this AST has no `Raise`, `Yield`, `Try`/`Except`, or
 // attribute-store. The only disqualifying effects the language can
@@ -15,17 +21,16 @@
 // `NonLocal`, and `FromImport`. All collapse into the fact's sticky
 // `impure` flag.
 //
-// Consumer: `MemoizationTransformRule.matches` reads `hint.pure`.
+// Consumer: `MemoizationTransformRule.matches` reads `hint.pure`, which
+// routes through the migrated `purityScopePass` fact cell.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import type { FunctionUnit } from "../framework/function-unit";
-import type { ScopePass } from "../framework/interfaces";
 import type { SlotInfo, SlotLookup } from "../framework/slot-table";
 import {
   BOTTOM_FACT,
   IMPURE_CALL,
-  PURE_FIELD,
   WHITELISTED,
   addMod,
   bumpCalls,
@@ -55,20 +60,19 @@ const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
   "__memo_put",
 ]);
 
-export class PurityScopePass implements ScopePass {
-  readonly name = "purity";
-  readonly writesFields = [PURE_FIELD] as const;
-
-  run(unit: FunctionUnit): void {
-    const fd = unit.funcAst;
-    if (!(fd instanceof StmtNS.FunctionDef)) return;
-    const self = fd.name.lexeme;
-
-    const exitFact = solveCfg(unit, self);
-    const pure = !exitFact.impure && exitFact.calls !== IMPURE_CALL;
-
-    unit.hints.updateField(fd.id, PURE_FIELD, pure);
-  }
+/**
+ * Compute a purity verdict for `unit`. Returns `undefined` for non-
+ * FunctionDef scopes (FileInput has no meaningful purity). Invoked from
+ * `purityScopePass.transfer` after the expression-level DFA fixpoint has
+ * converged for the scope — reads only the CFG + slot table, so its only
+ * declared framework read is `structuralPass`.
+ */
+export function computePurity(unit: FunctionUnit): boolean | undefined {
+  const fd = unit.funcAst;
+  if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
+  const self = fd.name.lexeme;
+  const exitFact = solveCfg(unit, self);
+  return !exitFact.impure && exitFact.calls !== IMPURE_CALL;
 }
 
 function solveCfg(unit: FunctionUnit, selfName: string): PurityFact {
