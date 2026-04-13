@@ -22,13 +22,13 @@ export async function runPinned<T>(
   rootScope: StmtNS.FileInput | StmtNS.FunctionDef,
   fn: () => Promise<T> | T,
 ): Promise<T> {
-  const stop = coordinator?.start();
+  coordinator?.start();
   try {
     return await worklist.withActiveScope(rootScope, fn);
   } catch (e) {
     worklist.clearAllPins();
     throw e;
   } finally {
-    stop?.();
+    coordinator?.stop();
   }
 }

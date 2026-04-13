@@ -25,10 +25,6 @@ import {
   MEMO_MISS,
   memoPut,
 } from "../specialization";
-
-function memoHas(id: string, args: readonly unknown[]): boolean {
-  return memoLookup(id, args) !== MEMO_MISS;
-}
 import { buildTestWorklist } from "./utils";
 
 function setup(code: string) {
@@ -142,7 +138,7 @@ describe("CallCountObserver + transform", () => {
 
     // Runtime slab with empty args: one entry keyed on "" after a put.
     memoPut("answer@L1", [], 42);
-    expect(memoHas("answer@L1", [])).toBe(true);
+    expect(memoLookup("answer@L1", [])).not.toBe(MEMO_MISS);
     const snap = memoCacheSnapshot().get("answer@L1")!;
     expect(Array.from(snap.keys())).toEqual([""]);
   });
@@ -208,8 +204,8 @@ describe("CallCountObserver + transform", () => {
     memoPut("id@L1", ["1"], "from-string");
     const snap = memoCacheSnapshot().get("id@L1")!;
     expect(snap.size).toBe(2);
-    expect(memoHas("id@L1", [1])).toBe(true);
-    expect(memoHas("id@L1", ["1"])).toBe(true);
+    expect(memoLookup("id@L1", [1])).not.toBe(MEMO_MISS);
+    expect(memoLookup("id@L1", ["1"])).not.toBe(MEMO_MISS);
   });
 
   test("impure function stays unwrapped even past threshold", () => {
