@@ -23,10 +23,12 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     private readonly factStore: FactStore,
     private readonly constEnv: { get(slot: number): ConstLattice | undefined },
     private readonly slotLookup: SlotLookup,
+    private readonly tap?: (id: number, val: ConstLattice) => void,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
-    writeConstFact(this.factStore, node.id, val);
+    if (this.tap) this.tap(node.id, val);
+    else writeConstFact(this.factStore, node.id, val);
     return val;
   }
 
@@ -239,8 +241,9 @@ export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
     factStore: FactStore,
     env: { get(slot: number): ConstLattice | undefined },
     slotLookup: SlotLookup,
+    tap?: (id: number, val: ConstLattice) => void,
   ): ExprNS.Visitor<ConstLattice> {
-    return new ConstAnalysisVisitor(factStore, env, slotLookup);
+    return new ConstAnalysisVisitor(factStore, env, slotLookup, tap);
   }
 
   observeWrite(factStore: FactStore, id: number, rawValue: unknown): void {

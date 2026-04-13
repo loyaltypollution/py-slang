@@ -31,6 +31,8 @@ export interface AnalysisPass<L> {
     factStore: FactStore,
     env: { get(slot: number): L | undefined },
     slotLookup: SlotLookup,
+    /** When supplied, visitor emits via tap; the legacy fact-store write is skipped. */
+    tap?: (id: number, val: L) => void,
   ): ExprNS.Visitor<L>;
 
   /**

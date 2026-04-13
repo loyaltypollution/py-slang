@@ -28,6 +28,7 @@ import {
   purityScopePass,
   typeAnalysisPass,
 } from "./migrated-passes";
+import { typeAnalysisDfa, constAnalysisDfa } from "./dfa-passes";
 
 // ── Direction helpers ───────────────────────────────────────────────────────
 
@@ -333,6 +334,8 @@ export class Worklist {
     this.register(runtimeCallPass);
     this.register(typeAnalysisPass);
     this.register(constAnalysisPass);
+    this.register(typeAnalysisDfa.blockKeyedPass);
+    this.register(constAnalysisDfa.blockKeyedPass);
     this.register(purityScopePass);
     this.register(callCountPass);
     this.register(deadBranchRule);
