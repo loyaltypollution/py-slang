@@ -2,10 +2,12 @@ import { assemble, disassemble } from "../engines/svml/svml-assembler";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
+import { seedDbFromAst } from "./utils";
 
 function compileAndAssemble(code: string): Uint8Array {
   const ast = parse(code);
-  const program = SVMLCompiler.fromProgram(ast).compileProgram(ast);
+  const { db, environments } = seedDbFromAst(ast);
+  const program = SVMLCompiler.fromProgram(ast, db, environments).compileProgram(ast);
   return assemble(program);
 }
 
@@ -37,7 +39,8 @@ describe("SVML assembler", () => {
   describe("disassemble round-trip", () => {
     test("function count is preserved", () => {
       const ast = parse("def f(x):\n    return x\nf(1)\n");
-      const program = SVMLCompiler.fromProgram(ast).compileProgram(ast);
+      const { db, environments } = seedDbFromAst(ast);
+      const program = SVMLCompiler.fromProgram(ast, db, environments).compileProgram(ast);
       expect(disassemble(assemble(program)).functions.length).toBe(program.functions.length);
     });
 

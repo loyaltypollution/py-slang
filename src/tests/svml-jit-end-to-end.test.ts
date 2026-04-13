@@ -9,7 +9,7 @@
 import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { buildTestWorklist } from "./utils";
+import { buildTestWorklist, seedDb } from "./utils";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import {
@@ -26,7 +26,7 @@ function buildUnit(code: string) {
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const reactive = buildTestWorklist(ast, environments);
   reactive.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, reactive.factStore);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, seedDb(ast, environments));
   const program = compiler.compileProgram(ast);
   return { ast, environments, reactive, compiler, program };
 }

@@ -10,7 +10,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import OpCodes from "../engines/svml/opcodes";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { buildTestWorklist } from "./utils";
+import { buildTestWorklist, seedDb } from "./utils";
 
 function build(code: string) {
   const script = code + "\n";
@@ -20,7 +20,7 @@ function build(code: string) {
   const engine = buildTestWorklist(ast, environments);
   engine.converge();
   const units = engine.units;
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, engine.factStore);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, seedDb(ast, environments));
   return { ast, environments, units, compiler };
 }
 

@@ -2,11 +2,8 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { ConstLattice } from "../../specialization/const-analysis/lattice";
 import type { TypeLattice } from "../../specialization/type-analysis/lattice";
-import type { FactStore } from "../../specialization/framework/fact-store";
-import { typeAnalysisPass, constAnalysisPass } from "../../specialization/framework/migrated-passes";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
-// Phase 5a: read type/const facts from the new query runtime. `factStore`
-// is still accepted for backward compat but no longer consulted.
+// Type/const facts are read exclusively through the query runtime.
 import { Db, typeOf, constOf } from "../../specialization/runtime";
 import { ScopeIndexMap } from "./scope-index-map";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
@@ -54,9 +51,8 @@ export class SVMLCompiler
   private currentEnvironment: Environment;
   private functionEnvironments: FunctionEnvironments;
   private isTailCall: boolean;
-  private factStore: FactStore | undefined;
-  // Phase 5a: query-runtime handle. Read for type/const facts.
-  private db: Db | undefined;
+  // Query-runtime handle. Source of truth for type/const facts.
+  private db: Db;
   private unitMap?: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
   private _scopeIndexMap?: ScopeIndexMap;
   /**
@@ -87,19 +83,13 @@ export class SVMLCompiler
     currentEnvironment: Environment,
     functionEnvironments: FunctionEnvironments,
     builder: SVMLIRBuilder,
-    factStore?: FactStore,
-    db?: Db,
+    db: Db,
   ) {
     this.builder = builder;
     this.currentEnvironment = currentEnvironment;
     this.functionEnvironments = functionEnvironments;
     this.isTailCall = false;
-    this.factStore = factStore;
     this.db = db;
-  }
-
-  setFactStore(factStore: FactStore): void {
-    this.factStore = factStore;
   }
 
   /** Scope → function index map, populated during compilation via fromProgramUnit(). */
@@ -107,19 +97,14 @@ export class SVMLCompiler
     return this._scopeIndexMap;
   }
 
-  // Phase 5a: query-runtime reads. `typeOf`/`constOf` return a lattice
-  // value (BOTTOM when unknown), never undefined — so callers that formerly
-  // relied on `?? BOTTOM` fallbacks no longer need them. Fall back to the
-  // legacy factStore only when no Db was supplied (preserves the
-  // fromProgram() entry-point which never plumbs a Db).
+  // Query-runtime reads. `typeOf`/`constOf` return a lattice value
+  // (BOTTOM when unknown), never undefined.
   private getType(node: ExprNS.Expr | StmtNS.Stmt): TypeLattice | undefined {
-    if (this.db !== undefined) return this.db.get(typeOf, node.id);
-    return this.factStore ? this.factStore.tryRead(typeAnalysisPass, node.id) : undefined;
+    return this.db.get(typeOf, node.id);
   }
 
   private getConst(node: ExprNS.Expr | StmtNS.Stmt): ConstLattice | undefined {
-    if (this.db !== undefined) return this.db.get(constOf, node.id);
-    return this.factStore ? this.factStore.tryRead(constAnalysisPass, node.id) : undefined;
+    return this.db.get(constOf, node.id);
   }
 
   /**
@@ -160,6 +145,7 @@ export class SVMLCompiler
    */
   static fromProgram(
     program: StmtNS.FileInput,
+    db: Db,
     functionEnvironments?: FunctionEnvironments,
   ): SVMLCompiler {
     if (!functionEnvironments) {
@@ -173,7 +159,7 @@ export class SVMLCompiler
     const functionIndices = SVMLCompiler.computeFunctionIndices(program);
     const builder = new SVMLIRBuilder(0, functionIndices.get(program)!);
     builder.setScopeKey(program);
-    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder);
+    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, db);
     compiler.functionIndices = functionIndices;
     return compiler;
   }
@@ -182,8 +168,7 @@ export class SVMLCompiler
     program: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
     unitMap: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
-    factStore?: FactStore,
-    db?: Db,
+    db: Db,
   ): SVMLCompiler {
     const mainEnv = functionEnvironments.get(program);
     if (!mainEnv) {
@@ -192,7 +177,7 @@ export class SVMLCompiler
     const functionIndices = SVMLCompiler.computeFunctionIndices(program);
     const builder = new SVMLIRBuilder(0, functionIndices.get(program)!);
     builder.setScopeKey(program);
-    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, factStore, db);
+    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, db);
     compiler.unitMap = unitMap;
     compiler.functionIndices = functionIndices;
 
@@ -232,7 +217,6 @@ export class SVMLCompiler
       nextEnvironment,
       this.functionEnvironments,
       builder,
-      this.factStore,
       this.db,
     );
     compiler.unitMap = this.unitMap;
@@ -313,7 +297,6 @@ export class SVMLCompiler
       nextEnvironment,
       this.functionEnvironments,
       builder,
-      this.factStore,
       this.db,
     );
     subCompiler.unitMap = this.unitMap;

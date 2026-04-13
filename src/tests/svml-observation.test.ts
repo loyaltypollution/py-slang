@@ -8,7 +8,7 @@ import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { typeAnalysisPass } from "../specialization/framework/migrated-passes";
-import { buildTestWorklist } from "./utils";
+import { buildTestWorklist, seedDb } from "./utils";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { STR_BIT } from "../specialization/type-analysis/lattice";
@@ -30,7 +30,7 @@ x = "hello"
     const { ast, environments, reactive } = build(code);
     reactive.converge();
 
-    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, reactive.factStore);
+    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, seedDb(ast, environments));
     const program = compiler.compileProgram(ast);
 
     const interpreter = new SVMLInterpreter(program, { observationSink: reactive });
@@ -68,7 +68,7 @@ f()
       },
     };
 
-    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, reactive.factStore);
+    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, seedDb(ast, environments));
     const program = compiler.compileProgram(ast);
     const interpreter = new SVMLInterpreter(program, { observationSink: sink });
 

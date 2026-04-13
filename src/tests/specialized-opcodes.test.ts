@@ -13,7 +13,7 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import { buildTestWorklist } from "./utils";
+import { buildTestWorklist, seedDb } from "./utils";
 
 /**
  * Compile and run with DFA type analysis enabled.
@@ -27,7 +27,7 @@ function compileAndRunSpecialized(code: string): unknown {
 
   const engine = buildTestWorklist(ast, environments);
   engine.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, engine.factStore);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, seedDb(ast, environments));
   const program = compiler.compileProgram(ast);
   const interpreter = new SVMLInterpreter(program);
   return SVMLInterpreter.toJSValue(interpreter.execute());

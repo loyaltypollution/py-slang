@@ -48,12 +48,18 @@ function collectIdsIn(stmt: unknown, out: Set<number>): void {
 }
 
 function findBlockByNodeId(cfg: CFG, nodeId: number): BasicBlock | undefined {
+  // Last-writer-wins: matches legacy `populateBlockOfNode`. Control-flow
+  // headers (If/While/For) reach their body stmts via `.body`/`.elseBlock`,
+  // but those stmts are owned by successor blocks whose `.stmts` also
+  // contain them. Iterating in CFG order with last-match keeps the node
+  // attribution at its innermost block.
+  let found: BasicBlock | undefined;
   for (const block of cfg.blocks) {
     const ids = new Set<number>();
     for (const stmt of block.stmts) collectIdsIn(stmt, ids);
-    if (ids.has(nodeId)) return block;
+    if (ids.has(nodeId)) found = block;
   }
-  return undefined;
+  return found;
 }
 
 function collectAllIds(cfg: CFG): number[] {

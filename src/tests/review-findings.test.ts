@@ -13,7 +13,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { INT_BIT, BOOL_BIT, BoolRef } from "../specialization";
 import { typeAnalysisPass } from "../specialization/framework/migrated-passes";
-import { buildTestWorklist } from "./utils";
+import { buildTestWorklist, seedDb } from "./utils";
 
 function compileAndRun(code: string): unknown {
   const script = code + "\n";
@@ -23,7 +23,7 @@ function compileAndRun(code: string): unknown {
   const engine = buildTestWorklist(ast, environments);
   engine.converge();
   const units = engine.units;
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, engine.factStore);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, seedDb(ast, environments));
   const program = compiler.compileProgram(ast);
   return SVMLInterpreter.toJSValue(new SVMLInterpreter(program).execute());
 }

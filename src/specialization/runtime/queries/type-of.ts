@@ -58,12 +58,19 @@ function collectIdsIn(stmt: unknown, out: Set<number>): void {
 }
 
 function findBlockByNodeId(cfg: CFG, nodeId: number): BasicBlock | undefined {
+  // Last-writer-wins: matches legacy `populateBlockOfNode` semantics. A
+  // control-flow header stmt (If/While/For) in block B reaches its body
+  // stmts via `.body`/`.elseBlock` — but those body stmts are owned by
+  // successor blocks, which also list them in `.stmts`. Iterating in CFG
+  // order and keeping the latest match attributes each node id to the
+  // block whose `.stmts` directly contains it.
+  let found: BasicBlock | undefined;
   for (const block of cfg.blocks) {
     const ids = new Set<number>();
     for (const stmt of block.stmts) collectIdsIn(stmt, ids);
-    if (ids.has(nodeId)) return block;
+    if (ids.has(nodeId)) found = block;
   }
-  return undefined;
+  return found;
 }
 
 // Pulls every reachable node id across the CFG so we can (a) preregister

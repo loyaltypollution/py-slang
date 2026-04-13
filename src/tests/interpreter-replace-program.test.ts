@@ -2,13 +2,14 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import { buildTestWorklist } from "./utils";
+import { buildTestWorklist, seedDb, seedDbFromAst } from "./utils";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function compileAndRun(code: string): unknown {
   const ast = parse(code);
-  const compiler = SVMLCompiler.fromProgram(ast);
+  const { db, environments } = seedDbFromAst(ast);
+  const compiler = SVMLCompiler.fromProgram(ast, db, environments);
   const program = compiler.compileProgram(ast);
   const interpreter = new SVMLInterpreter(program);
   return SVMLInterpreter.toJSValue(interpreter.execute());
@@ -20,7 +21,7 @@ function compileWithOptimization(code: string) {
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const engine = buildTestWorklist(ast, environments);
   engine.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, engine.factStore);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, seedDb(ast, environments));
   const program = compiler.compileProgram(ast);
   return { ast, environments, compiler, program };
 }
@@ -31,7 +32,7 @@ function compileWithReactive(code: string) {
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const reactive = buildTestWorklist(ast, environments);
   reactive.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, reactive.factStore);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, seedDb(ast, environments));
   const program = compiler.compileProgram(ast);
   return { ast, environments, reactive, compiler, program };
 }
@@ -176,7 +177,8 @@ total`,
     // Standard path
     const stdOutputs: string[] = [];
     const ast1 = parse(code);
-    const prog1 = SVMLCompiler.fromProgram(ast1).compileProgram(ast1);
+    const seeded1 = seedDbFromAst(ast1);
+    const prog1 = SVMLCompiler.fromProgram(ast1, seeded1.db, seeded1.environments).compileProgram(ast1);
     new SVMLInterpreter(prog1, { sendOutput: msg => stdOutputs.push(msg) }).execute();
 
     // Reactive path
@@ -208,7 +210,8 @@ f(1) + g(2)
 
   test("fromProgram does not create scopeIndexMap", () => {
     const ast = parse("1 + 2\n");
-    const compiler = SVMLCompiler.fromProgram(ast);
+    const { db, environments } = seedDbFromAst(ast);
+    const compiler = SVMLCompiler.fromProgram(ast, db, environments);
     expect(compiler.scopeIndexMap).toBeUndefined();
   });
 });

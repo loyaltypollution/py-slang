@@ -7,10 +7,12 @@ import {
   UnsupportedOperandTypeError,
   ZeroDivisionError,
 } from "../engines/svml/errors";
+import { seedDb, seedDbFromAst } from "./utils";
 
 function compileAndRun(code: string): unknown {
   const ast = parse(code);
-  const compiler = SVMLCompiler.fromProgram(ast);
+  const { db, environments } = seedDbFromAst(ast);
+  const compiler = SVMLCompiler.fromProgram(ast, db, environments);
   const program = compiler.compileProgram(ast);
   const interpreter = new SVMLInterpreter(program);
   const result = interpreter.execute();
@@ -21,7 +23,8 @@ function compileAndRun(code: string): unknown {
 function compileAndRunWithOutput(code: string): { result: unknown; outputs: string[] } {
   const outputs: string[] = [];
   const ast = parse(code);
-  const compiler = SVMLCompiler.fromProgram(ast);
+  const { db, environments } = seedDbFromAst(ast);
+  const compiler = SVMLCompiler.fromProgram(ast, db, environments);
   const program = compiler.compileProgram(ast);
   const interpreter = new SVMLInterpreter(program, {
     sendOutput: msg => outputs.push(msg),
@@ -747,7 +750,8 @@ def loop():
 loop()
 `;
       const ast = parse(code);
-      const program = SVMLCompiler.fromProgram(ast).compileProgram(ast);
+      const { db, environments } = seedDbFromAst(ast);
+      const program = SVMLCompiler.fromProgram(ast, db, environments).compileProgram(ast);
       const interpreter = new SVMLInterpreter(program, { maxInstructions: 50 });
       expect(() => interpreter.execute()).toThrow(/instruction limit/i);
     });
@@ -759,7 +763,8 @@ def loop():
 loop()
 `;
       const ast = parse(code);
-      const program = SVMLCompiler.fromProgram(ast).compileProgram(ast);
+      const { db, environments } = seedDbFromAst(ast);
+      const program = SVMLCompiler.fromProgram(ast, db, environments).compileProgram(ast);
       const interpreter = new SVMLInterpreter(program, { maxCallDepth: 5 });
       expect(() => interpreter.execute()).toThrow(/call depth/i);
     });
@@ -770,7 +775,8 @@ loop()
       const code = "def f(x):\n    return x + 1\nf(10)\n";
       const ast = parse(code);
       const { environments } = analyzeWithEnvironments(ast, code, 4);
-      const compiler = SVMLCompiler.fromProgram(ast, environments);
+      const db = seedDb(ast, environments);
+      const compiler = SVMLCompiler.fromProgram(ast, db, environments);
       const result = SVMLInterpreter.toJSValue(
         new SVMLInterpreter(compiler.compileProgram(ast)).execute(),
       );

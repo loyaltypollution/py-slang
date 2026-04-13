@@ -14,7 +14,7 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import OpCodes from "../engines/svml/opcodes";
-import { buildTestWorklist } from "./utils";
+import { buildTestWorklist, seedDb } from "./utils";
 import type { SVMLProgram } from "../engines/svml/types";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -26,18 +26,10 @@ function compileOptimized(code: string): SVMLProgram {
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
   engine.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, engine.factStore);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, seedDb(ast, environments));
   return compiler.compileProgram(ast);
 }
 
-function compileUnoptimized(code: string): SVMLProgram {
-  const script = code + "\n";
-  const ast = parse(script);
-  const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
-  if (errors.length > 0) throw errors[0];
-  const compiler = SVMLCompiler.fromProgram(ast, environments);
-  return compiler.compileProgram(ast);
-}
 
 /** Collect all opcodes across all functions in a program. */
 function allOpcodes(program: SVMLProgram): number[] {
@@ -81,14 +73,6 @@ s
     const program = compileOptimized(WHILE_ADD);
     expect(hasOpcode(program, OpCodes.LTF)).toBe(true);
     expect(hasOpcode(program, OpCodes.LTG)).toBe(false);
-  });
-
-  test("unoptimized while loop: uses generic ADDG and LTG", () => {
-    const program = compileUnoptimized(WHILE_ADD);
-    expect(hasOpcode(program, OpCodes.ADDG)).toBe(true);
-    expect(hasOpcode(program, OpCodes.LTG)).toBe(true);
-    expect(hasOpcode(program, OpCodes.ADDF)).toBe(false);
-    expect(hasOpcode(program, OpCodes.LTF)).toBe(false);
   });
 
   test("while with subtraction: SUBF, no SUBG", () => {

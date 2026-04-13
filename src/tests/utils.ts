@@ -15,6 +15,7 @@ import {
   Worklist,
   TypeAnalysisPass,
 } from "../specialization";
+import { Db, astOf, environmentsOf } from "../specialization/runtime";
 import { Group } from "../stdlib/utils";
 import { RecursivePartial, Result } from "../types";
 import { PyComplexNumber } from "../types";
@@ -27,6 +28,33 @@ import Stmt = StmtNS.Stmt;
  * `createReactiveOptimization` / `SpecializationEngine` production
  * factories — do not introduce new callers in production code.
  */
+/**
+ * Construct a throwaway `Db` seeded with the driver Inputs
+ * (`astOf`, `environmentsOf`) that the query-runtime analyses depend on.
+ * Tests that build an `SVMLCompiler` without a conductor-owned Db use this.
+ */
+export function seedDb(
+  ast: StmtNS.FileInput,
+  environments: FunctionEnvironments,
+): Db {
+  const db = new Db();
+  astOf.set(db, 0, ast);
+  environmentsOf.set(db, 0, environments);
+  return db;
+}
+
+/**
+ * Convenience for tests that only have an AST: runs the resolver
+ * and seeds a throwaway `Db`. Returns both so callers can pass
+ * `environments` into `SVMLCompiler.fromProgram` when needed.
+ */
+export function seedDbFromAst(
+  ast: StmtNS.FileInput,
+): { db: Db; environments: FunctionEnvironments } {
+  const environments = new Resolver("", ast).resolveEnvironments(ast);
+  return { db: seedDb(ast, environments), environments };
+}
+
 export function buildTestWorklist(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
@@ -315,7 +343,8 @@ export const generateSVMLTestCases = (testCases: SVMLTestCases) => {
         if (typeof expected === "function") {
           expect(() => {
             const ast = parse(source);
-            const program = SVMLCompiler.fromProgram(ast).compileProgram(ast);
+            const { db, environments } = seedDbFromAst(ast);
+            const program = SVMLCompiler.fromProgram(ast, db, environments).compileProgram(ast);
             new SVMLInterpreter(program).execute();
           }).toThrow(expected);
           return;
@@ -323,7 +352,8 @@ export const generateSVMLTestCases = (testCases: SVMLTestCases) => {
 
         const outputs: string[] = [];
         const ast = parse(source);
-        const program = SVMLCompiler.fromProgram(ast).compileProgram(ast);
+        const { db, environments } = seedDbFromAst(ast);
+        const program = SVMLCompiler.fromProgram(ast, db, environments).compileProgram(ast);
         const interpreter = new SVMLInterpreter(program, {
           sendOutput: msg => outputs.push(msg),
         });

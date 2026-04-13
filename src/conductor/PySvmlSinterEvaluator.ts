@@ -5,6 +5,7 @@ import { assemble } from "../engines/svml/svml-assembler";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
+import { Db, astOf, environmentsOf } from "../specialization/runtime";
 import { EvaluatorError } from "./errors";
 
 function sinterValueToNative(value: SinterValue): unknown {
@@ -33,7 +34,10 @@ export class PySvmlSinterEvaluator extends BasicEvaluator {
       if (errors.length > 0) {
         throw errors[0];
       }
-      const compiler = SVMLCompiler.fromProgram(ast, environments);
+      const db = new Db();
+      astOf.set(db, 0, ast);
+      environmentsOf.set(db, 0, environments);
+      const compiler = SVMLCompiler.fromProgram(ast, db, environments);
       const program = compiler.compileProgram(ast);
       const binary = assemble(program, SINTER_OPCODE_MAX);
 

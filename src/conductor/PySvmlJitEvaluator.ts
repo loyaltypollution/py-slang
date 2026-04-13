@@ -52,7 +52,6 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         ast,
         environments,
         units,
-        undefined,
         this.db,
       );
       const program = compiler.compileProgram(ast);
@@ -100,7 +99,13 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
   ): void {
     const reSource = ""; // source text irrelevant for re-resolution of synthesized AST
     const { environments: newEnvs } = analyzeWithEnvironments(ast, reSource, 4);
-    const newCompiler = SVMLCompiler.fromProgram(ast, newEnvs);
+    // Throwaway Db: the recompile runs on a lowered AST whose node ids no
+    // longer match analysis facts in `this.db`, so specialization hints
+    // fall back to BOTTOM (safe, generic opcodes) — exactly what we want.
+    const rebuildDb = new Db();
+    astOf.set(rebuildDb, 0, ast);
+    environmentsOf.set(rebuildDb, 0, newEnvs);
+    const newCompiler = SVMLCompiler.fromProgram(ast, rebuildDb, newEnvs);
     const newProgram = newCompiler.compileProgram(ast);
     for (let i = 0; i < newProgram.functions.length; i++) {
       interpreter.patchFunction(i, newProgram.functions[i]);
