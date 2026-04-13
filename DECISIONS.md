@@ -440,4 +440,77 @@ resolver pass per wrapped unit.
   symmetry with `optimizedAstOf`; consumers needing both fields should
   read `optimizedLoweredOf` directly (one cell hit instead of two).
 
+---
+
+## Round 2 Phase C — Db lifecycle + safepoint polling
+
+Closed without code changes. Both sub-questions resolve to "current shape
+is correct; document why."
+
+### (c) Db lifecycle: stays per-evaluateChunk
+
+Surveyed all evaluators under `src/conductor/`:
+- `PySvmlEvaluator`, `PySvmlJitEvaluator`, `PySvmlSinterEvaluator`,
+  `PyCseEvaluator`, `PyWasmEvaluator` each implement `evaluateChunk`
+  by parsing + resolving + compiling + running a *fresh* program end to
+  end. There is no persistent interpreter or heap state carried across
+  `evaluateChunk` invocations — chunks are independent programs.
+- No test in `src/tests/` drives two chunks through a single evaluator
+  instance; the conductor's `BasicEvaluator` base class does not share
+  execution state across calls.
+
+Implication: making the Db per-session would not unlock any cross-chunk
+memoize behavior, because the function `fib` defined in chunk 1 is
+unreachable from chunk 2 — there is no running interpreter to patch, no
+shared function table, no shared call-count namespace. The Db is just
+analysis scaffolding; its lifetime matches the program whose analysis
+facts it holds.
+
+Staying per-chunk keeps scope isolated, avoids a Db-retention leak on
+long-lived conductor sessions (each Db holds the full analysis cell
+store), and matches how the other evaluators treat their per-chunk
+state. Per-session Db is a design knob that stops being YAGNI the day
+the conductor grows a persistent-interpreter evaluator (e.g. a true
+REPL VM with sticky function table across chunks). No such evaluator
+exists today, and the test suite does not exercise that shape.
+
+### (b) Safepoint polling: already at the right site
+
+The JIT evaluator's pull already happens at `observeScopeCall` — one
+check per dynamic function invocation, not per bytecode instruction.
+That's the right coarseness:
+- Per-instruction polling would defeat the O(1)-per-call early-cutoff
+  guarantee, because even a lattice-equal `db.get(optimizedLoweredOf)`
+  does a cache-hit + dep-edge walk at every step.
+- Per-CALL polling is naturally rate-limited by program structure —
+  once a hot function is memoized, its new wrapped body short-circuits
+  further CALLs, so the polling rate drops on its own.
+
+CALL-site polling also lands recompiled dispatch *one call earlier*
+than RETURN-site polling: the Nth call itself runs through the freshly
+patched slot, instead of the Nth call using the old IR and the (N+1)th
+seeing the patch. The cost is identical (one pull per call either
+way), so CALL is strictly better.
+
+Not documented in code before this run. Adding a one-line note at the
+pull site to cement the rationale.
+
+### Verification
+
+No code changes. Existing tests stay green. `runtime/lowering.test.ts`
+"early cutoff" case pins the O(1)-past-saturation behavior at the
+query layer; `svml-jit-end-to-end.test.ts` pins `patchFunction` wiring.
+End-to-end "memoize installs at call 50 through `PySvmlJitEvaluator`"
+is *not* directly asserted — it's covered compositionally by the two
+gates above plus Phase B's env-threading fix. Adding a BasicEvaluator
+integration harness for this is deferred as overengineering for the
+current test surface.
+
+### Follow-up (not blocking)
+
+- If a persistent-interpreter evaluator is introduced, revisit Db
+  lifetime and the observeScopeCall pull — per-session Db may become
+  correct, and a cross-chunk call-count namespace would need design.
+
+
 

@@ -69,8 +69,11 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           callCounts.set(scopeId, next);
           runtimeCall.set(this.db, scopeId, next);
 
-          // Pull the current lowered unit. Cache + lattice-equals make
-          // this O(1) once the unit has saturated.
+          // Pull the current lowered unit. Polling at CALL (not at each
+          // instruction) keeps the early-cutoff O(1) property intact and
+          // naturally rate-limits itself once memoize installs — the
+          // wrapped body short-circuits further work on hot paths. See
+          // DECISIONS "Round 2 Phase C".
           const lowered = this.db.get(optimizedLoweredOf, 0);
           if (lowered !== undefined && lowered.ast !== this.lastCompiledAst) {
             this.lastCompiledAst = lowered.ast;
