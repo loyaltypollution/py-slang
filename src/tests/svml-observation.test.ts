@@ -1,6 +1,6 @@
 /**
  * Phase 5 regression: the SVML interpreter pushes runtime observations into
- * an attached `ObservationSink` at STORE / CALL sites. Parallel to
+ * an attached worklist sink at STORE / CALL sites. Parallel to
  * `observe-loop.test.ts` but through SVML rather than CSE.
  */
 
@@ -9,7 +9,6 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { HintStore } from "../specialization";
 import { buildTestWorklist } from "./utils";
-import type { ObservationSink } from "../specialization";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { STR_BIT } from "../specialization/type-analysis/lattice";
@@ -67,7 +66,7 @@ f()
     const fDef = ast.statements[0] as StmtNS.FunctionDef;
     const calls: Array<[unknown, unknown]> = [];
 
-    const sink: ObservationSink = {
+    const sink: Pick<typeof reactive, "observeWrite" | "observeCall"> = {
       observeWrite: (scopeKey, rhsNode, value) => {
         reactive.observeWrite(scopeKey, rhsNode, value);
       },

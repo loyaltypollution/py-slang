@@ -9,8 +9,6 @@ export { buildFunctionUnits } from "./framework/function-unit";
 
 export { Worklist } from "./framework/worklist";
 export type { WorklistStats } from "./framework/worklist";
-export type { ObservationSink } from "./framework/observation-sink";
-export { NullObservationSink } from "./framework/observation-sink";
 
 // ── Pass-graph framework (PR-5: runtime-tier exports for evaluator wiring) ─
 

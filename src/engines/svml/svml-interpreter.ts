@@ -15,7 +15,28 @@ import {
   SVMLProgram,
   SVMLType,
 } from "./types";
-import { type ObservationSink, NullObservationSink } from "../../specialization";
+import type { ExprNS, StmtNS } from "../../ast-types";
+
+/**
+ * Structural sink surface the interpreter calls at STORE / CALL sites.
+ * `Worklist` implements this shape; standalone runs use `NULL_SINK`.
+ */
+type RuntimeObservationSink = {
+  observeWrite(
+    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
+    rhsNode: ExprNS.Expr,
+    rawValue: unknown,
+  ): void;
+  observeCall(
+    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
+    calleeKey: StmtNS.FileInput | StmtNS.FunctionDef,
+  ): void;
+};
+
+const NULL_SINK: RuntimeObservationSink = Object.freeze({
+  observeWrite(): void {},
+  observeCall(): void {},
+});
 
 const __DEBUG__ =
   typeof (globalThis as Record<string, unknown>).__DEBUG__ !== "undefined" &&
@@ -60,19 +81,19 @@ export class SVMLInterpreter {
 
   /**
    * Push-side hook invoked at STORE / CALL sites. Defaults to
-   * `NullObservationSink` for standalone bytecode execution;
+   * `NULL_SINK` for standalone bytecode execution;
    * `PySvmlJitEvaluator` wires in the reactive worklist. All callbacks are
    * best-effort and must not throw.
    */
-  private observationSink: ObservationSink = NullObservationSink;
+  private observationSink: RuntimeObservationSink = NULL_SINK;
 
   /**
    * PR-5 fact-store observers — called alongside `observationSink` at
    * STORE / CALL sites. `observeNodeWrite(nodeId, value)` feeds
    * `runtimeWritePass`; `observeScopeCall(scopeId)` feeds
    * `runtimeCallPass`. Defaults are no-ops; `PySvmlJitEvaluator` wires
-   * them to `worklist.observe(...)` calls. ObservationSink stays live
-   * alongside until PR-6.
+   * them to `worklist.observe(...)` calls. The legacy observationSink
+   * callback pair stays live alongside until PR-B inlines it.
    */
   private observeNodeWrite: (nodeId: number, value: unknown) => void = () => {};
   private observeScopeCall: (scopeId: number) => void = () => {};
@@ -84,7 +105,7 @@ export class SVMLInterpreter {
       maxCallDepth?: number;
       maxInstructions?: number;
       sendOutput?: (msg: string) => void;
-      observationSink?: ObservationSink;
+      observationSink?: RuntimeObservationSink;
       observeNodeWrite?: (nodeId: number, value: unknown) => void;
       observeScopeCall?: (scopeId: number) => void;
     },
@@ -765,7 +786,7 @@ export class SVMLInterpreter {
    * Look up the observation site at `pc` in the current frame's IR. If it's
    * a "write" site, push the RHS node + stored value into the sink. No-op
    * when the pc has no recorded site; sink is always non-null
-   * (`NullObservationSink` by default).
+   * (no-op sink by default).
    */
   private dispatchWriteSite(pc: number, value: SVMLBoxType): void {
     if (!this.currentFrame) return;
