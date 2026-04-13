@@ -16,6 +16,7 @@ import {
 } from "../specialization";
 import type { FunctionUnit } from "../specialization/framework/function-unit";
 import type { Pass, PassCtx } from "../specialization/framework/pass";
+import { Db, astOf, environmentsOf } from "../specialization/runtime";
 import { EvaluatorError } from "./errors";
 
 /**
@@ -45,7 +46,12 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       ]);
       worklist.converge();
 
-      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units, worklist.factStore);
+      // Phase 5a: populate the query-runtime Inputs the SVMLCompiler's
+      // typeOf/constOf reads depend on. Worklist remains for JitPass.
+      const db = new Db();
+      astOf.set(db, 0, ast);
+      environmentsOf.set(db, 0, environments);
+      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units, worklist.factStore, db);
       const program = compiler.compileProgram(ast);
 
       // Per-callee raw count map for runtimeCallPass.

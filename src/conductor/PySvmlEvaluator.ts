@@ -8,6 +8,7 @@ import {
   Worklist,
   TypeAnalysisPass,
 } from "../specialization";
+import { Db, astOf, environmentsOf } from "../specialization/runtime";
 import { EvaluatorError } from "./errors";
 
 export class PySvmlEvaluator extends BasicEvaluator {
@@ -21,7 +22,12 @@ export class PySvmlEvaluator extends BasicEvaluator {
       }
       const worklist = new Worklist(ast, environments, [new TypeAnalysisPass(), new ConstAnalysisPass()]);
       worklist.converge();
-      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units, worklist.factStore);
+      // Phase 5a: populate the query-runtime Inputs the SVMLCompiler's
+      // typeOf/constOf reads depend on. Worklist remains for legacy consumers.
+      const db = new Db();
+      astOf.set(db, 0, ast);
+      environmentsOf.set(db, 0, environments);
+      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units, worklist.factStore, db);
       const program = compiler.compileProgram(ast);
       const interpreter = new SVMLInterpreter(program, {
         sendOutput: this.conductor.sendOutput,

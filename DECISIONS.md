@@ -56,6 +56,31 @@ Implementation reuses pure transfer functions from
 legacy `Pass<K,V>`/`Worklist` machinery. A small standalone Kildall
 iterator lives at `src/specialization/runtime/queries/kildall.ts`.
 
+## Phase 5 — staged consumer migration (5a: svml-compiler reads only)
+
+Recon found ~27 read sites across 4 files. Full migration in one commit is high-risk:
+- `PySvmlJitEvaluator` registers a custom `JitPass` with `reads`/`register`
+  for speculative-recompile triggers. Replacing this requires a polling tick
+  on `optimizedAstOf` and a recompile orchestration layer not yet designed.
+- The three evaluators construct `new Worklist(...)` and call `worklist.converge()`.
+  Removing this stops driving the legacy fact store, breaking any consumer not
+  yet migrated (including the JitPass above).
+
+**Phase 5a (this commit):** migrate `svml-compiler.ts` only. Replace
+`factStore.tryRead(typeAnalysisPass|constAnalysisPass, nodeId)` with
+`typeOf.get(db, nodeId)` / `constOf.get(db, nodeId)`. Compiler accepts a
+`Db` parameter alongside the legacy `factStore`; for now both are
+plumbed through, compiler reads the Db. All three evaluators still
+construct the Worklist and pass `factStore` for consumers that still
+need it (none after this change, but verify test suite).
+
+**Phase 5b (deferred to morning review):** evaluator-level migration —
+remove Worklist/factStore construction once nothing reads it. Requires
+JitPass replacement, which is non-trivial.
+
+This staging keeps Phase 5a's commit reversible if test failures
+appear; Phase 5b is the real architectural cut.
+
 ## Phase 2 — Db lifecycle
 
 `Db` lives as `protected db: Db` on `PyCseEvaluatorBase`, re-instantiated per `evaluateChunk`. No module-level singleton. Phase 3+ queries reach it via the evaluator class.
