@@ -130,6 +130,32 @@ describe("ScopePass dispatch", () => {
     expect(fdRuns[fdRuns.length - 1].observed).toBeGreaterThanOrEqual(2);
   });
 
+  test("callObservations buffer survives rebuildAndReseed", () => {
+    // observeCall both appends to callObservations AND triggers a
+    // rebuildAndReseed on the callee. The buffer must be monotone across
+    // rebuilds — if rebuildAndReseed zeroed it, count-based passes would
+    // regress to 0 on every call. Verify by observing N calls and
+    // checking the buffer length is N.
+    const { ast, environments } = parseAndResolve("def f():\n  return 1\nf()");
+    const fd = ast.statements[0] as StmtNS.FunctionDef;
+    const worklist = new Worklist(
+      ast,
+      environments,
+      [new TypeAnalysisPass()],
+      [],
+    );
+    worklist.converge();
+    const unit = worklist.units.get(fd)!;
+    expect(unit.callObservations.length).toBe(0);
+
+    for (let i = 0; i < 5; i++) worklist.observeCall(ast, fd);
+    expect(unit.callObservations.length).toBe(5);
+    // Force another rebuild via observeCall once more and confirm
+    // monotonicity holds through that rebuild too.
+    worklist.observeCall(ast, fd);
+    expect(unit.callObservations.length).toBe(6);
+  });
+
   test("AnalysisPass does not declare onCallObservation", () => {
     // Structural assertion: AnalysisPass interface must not have grown an
     // onCallObservation hook — observation dispatch goes through ScopePass.

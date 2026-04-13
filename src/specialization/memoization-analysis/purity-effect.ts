@@ -10,7 +10,7 @@
 // FunctionDef's hint.
 
 import { ExprNS } from "../../ast-types";
-import type { HintStore, OptimizationHint } from "../framework/hint";
+import type { HintStore } from "../framework/hint";
 import type { AnalysisPass } from "../framework/interfaces";
 import type { SlotLookup } from "../framework/slot-table";
 
@@ -158,8 +158,8 @@ export class PurityEffectAnalysis implements AnalysisPass<PureEffect> {
     return new PurityEffectVisitor(hints, env, slotLookup);
   }
 
-  mergeIntoHint(hint: OptimizationHint, value: PureEffect): OptimizationHint {
-    const prev = hint[PURE_EFFECT_FIELD] as PureEffect | undefined;
-    return { ...hint, [PURE_EFFECT_FIELD]: prev ? joinEffect(prev, value) : value };
-  }
+  // No `observeValue` / `mergeIntoHint`: purity is a static property of
+  // the AST, not something observable from runtime values. The framework
+  // filters out passes missing either hook, so declaring one without the
+  // other would be dead code.
 }

@@ -12,10 +12,11 @@
 // never a memoization callee).
 
 import { ExprNS, StmtNS } from "../../ast-types";
+import type { Token } from "../../tokenizer";
 import type { FunctionUnit } from "../framework/function-unit";
 import type { OptimizationHint } from "../framework/hint";
 import type { ScopePass } from "../framework/interfaces";
-import { PURE, PURE_EFFECT_FIELD, type PureEffect } from "./purity-effect";
+import { PURE, PURE_EFFECT_FIELD } from "./purity-effect";
 
 /** Hint field written by this pass. */
 export const PURE_FIELD = "pure";
@@ -27,9 +28,7 @@ export class PurityScopePass implements ScopePass {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return;
     const self = fd.name.lexeme;
-    const locals = collectLocals(fd);
-
-    const pure = stmtsArePure(fd.body, self, locals, unit);
+    const pure = stmtsArePure(fd.body, self, unit);
 
     const prev = unit.hints.get(fd) ?? {};
     if (prev[PURE_FIELD] === pure) return;
@@ -38,86 +37,45 @@ export class PurityScopePass implements ScopePass {
   }
 }
 
-/**
- * Collect every name bound inside `fd`'s body: parameters, `fd.varDecls`
- * (populated by the parser for some scopes), and the LHS of every
- * Assign/AnnAssign/For target reachable through non-class blocks. The
- * resolver declares these via `environment.declareName`, but that
- * information isn't mirrored back onto the AST, so we recover it here
- * with a single structural walk. Nested FunctionDef bodies are skipped
- * (they're their own scope).
- */
-function collectLocals(fd: StmtNS.FunctionDef): Set<string> {
-  const locals = new Set<string>(fd.parameters.map(p => p.lexeme));
-  for (const tok of fd.varDecls) locals.add(tok.lexeme);
-  collectAssignedNames(fd.body, locals);
-  return locals;
-}
-
-function collectAssignedNames(stmts: StmtNS.Stmt[], out: Set<string>): void {
+function stmtsArePure(stmts: StmtNS.Stmt[], self: string, unit: FunctionUnit): boolean {
   for (const s of stmts) {
-    if (s instanceof StmtNS.Assign || s instanceof StmtNS.AnnAssign) {
-      if (s.target instanceof ExprNS.Variable) out.add(s.target.name.lexeme);
-    } else if (s instanceof StmtNS.For) {
-      out.add(s.target.lexeme);
-      collectAssignedNames(s.body, out);
-    } else if (s instanceof StmtNS.If) {
-      collectAssignedNames(s.body, out);
-      if (s.elseBlock) collectAssignedNames(s.elseBlock, out);
-    } else if (s instanceof StmtNS.While) {
-      collectAssignedNames(s.body, out);
-    }
-    // FunctionDef: own scope, skip.
-  }
-}
-
-function stmtsArePure(
-  stmts: StmtNS.Stmt[],
-  self: string,
-  locals: Set<string>,
-  unit: FunctionUnit,
-): boolean {
-  for (const s of stmts) {
-    if (!stmtIsPure(s, self, locals, unit)) return false;
+    if (!stmtIsPure(s, self, unit)) return false;
   }
   return true;
 }
 
-function stmtIsPure(
-  stmt: StmtNS.Stmt,
-  self: string,
-  locals: Set<string>,
-  unit: FunctionUnit,
-): boolean {
+/** A name binds to a slot that is frame-local (envLevel === 0, not primitive). */
+function isLocalName(unit: FunctionUnit, token: Token): boolean {
+  const info = unit.slotLookup(token);
+  return !info.isPrimitive && info.envLevel === 0;
+}
+
+function stmtIsPure(stmt: StmtNS.Stmt, self: string, unit: FunctionUnit): boolean {
   if (stmt instanceof StmtNS.Pass) return true;
   if (stmt instanceof StmtNS.Break) return true;
   if (stmt instanceof StmtNS.Continue) return true;
   if (stmt instanceof StmtNS.Return) {
-    return stmt.value === null || exprIsPureWithSelf(stmt.value, self, locals, unit);
+    return stmt.value === null || exprIsPureWithSelf(stmt.value, self, unit);
   }
   if (stmt instanceof StmtNS.Assign || stmt instanceof StmtNS.AnnAssign) {
-    // Target must be a bare local Variable; subscript assignment is impure.
+    // Target must be a frame-local bare Variable; subscript / non-local
+    // targets are impure.
     if (!(stmt.target instanceof ExprNS.Variable)) return false;
-    if (!locals.has(stmt.target.name.lexeme)) return false;
-    return exprIsPureWithSelf(stmt.value, self, locals, unit);
+    if (!isLocalName(unit, stmt.target.name)) return false;
+    return exprIsPureWithSelf(stmt.value, self, unit);
   }
   if (stmt instanceof StmtNS.If) {
-    if (!exprIsPureWithSelf(stmt.condition, self, locals, unit)) return false;
-    if (!stmtsArePure(stmt.body, self, locals, unit)) return false;
-    if (stmt.elseBlock && !stmtsArePure(stmt.elseBlock, self, locals, unit)) return false;
+    if (!exprIsPureWithSelf(stmt.condition, self, unit)) return false;
+    if (!stmtsArePure(stmt.body, self, unit)) return false;
+    if (stmt.elseBlock && !stmtsArePure(stmt.elseBlock, self, unit)) return false;
     return true;
   }
   if (stmt instanceof StmtNS.While) {
-    return (
-      exprIsPureWithSelf(stmt.condition, self, locals, unit) &&
-      stmtsArePure(stmt.body, self, locals, unit)
-    );
+    return exprIsPureWithSelf(stmt.condition, self, unit) && stmtsArePure(stmt.body, self, unit);
   }
   if (stmt instanceof StmtNS.For) {
-    return (
-      exprIsPureWithSelf(stmt.iter, self, locals, unit) &&
-      stmtsArePure(stmt.body, self, locals, unit)
-    );
+    if (!isLocalName(unit, stmt.target)) return false;
+    return exprIsPureWithSelf(stmt.iter, self, unit) && stmtsArePure(stmt.body, self, unit);
   }
   // FunctionDef (nested), Global, NonLocal, FromImport, SimpleExpr,
   // Assert, FileInput — unsupported in a pure function body.
@@ -126,27 +84,18 @@ function stmtIsPure(
 
 /**
  * Read the expression-level `pureEffect` mark produced by
- * PurityEffectAnalysis, with a scope-level exemption: a Call to `self` is
- * treated as pure iff all its arguments are pure (self-recursion).
+ * PurityEffectAnalysis, with a scope-level exemption: a Call to `self`
+ * with pure arguments is treated as pure (self-recursion).
  */
-function exprIsPureWithSelf(
-  expr: ExprNS.Expr,
-  self: string,
-  locals: Set<string>,
-  unit: FunctionUnit,
-): boolean {
-  if (expr instanceof ExprNS.Call) {
-    if (!(expr.callee instanceof ExprNS.Variable)) return false;
-    if (expr.callee.name.lexeme !== self) return false;
-    for (const a of expr.args) {
-      if (!exprIsPureWithSelf(a, self, locals, unit)) return false;
-    }
-    return true;
+function exprIsPureWithSelf(expr: ExprNS.Expr, self: string, unit: FunctionUnit): boolean {
+  if (
+    expr instanceof ExprNS.Call &&
+    expr.callee instanceof ExprNS.Variable &&
+    expr.callee.name.lexeme === self
+  ) {
+    return expr.args.every(a => exprIsPureWithSelf(a, self, unit));
   }
-  const hint = unit.hints.get(expr);
-  const effect = hint?.[PURE_EFFECT_FIELD] as PureEffect | undefined;
   // Missing mark = impure (safe default). Happens only when
-  // PurityEffectAnalysis is not registered alongside this ScopePass —
-  // callers must wire both for a functioning purity gate.
-  return effect === PURE;
+  // PurityEffectAnalysis is not registered alongside this ScopePass.
+  return unit.hints.get(expr)?.[PURE_EFFECT_FIELD] === PURE;
 }

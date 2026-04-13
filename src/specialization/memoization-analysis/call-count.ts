@@ -35,8 +35,7 @@ export class CallCountScopePass implements ScopePass {
     const saturated = Math.min(observed, MEMOIZATION_THRESHOLD + 1);
 
     const prev = unit.hints.get(fd) ?? {};
-    const prevCount =
-      typeof prev[CALL_COUNT_FIELD] === "number" ? (prev[CALL_COUNT_FIELD] as number) : 0;
+    const prevCount = (prev[CALL_COUNT_FIELD] as number | undefined) ?? 0;
     if (saturated === prevCount) return;
 
     const nextHint: OptimizationHint = { ...prev, [CALL_COUNT_FIELD]: saturated };
