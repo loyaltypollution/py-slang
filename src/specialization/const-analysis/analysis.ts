@@ -1,8 +1,9 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { FactStore } from "../framework/fact-store";
-import { constAnalysisPass } from "../framework/migrated-passes";
+import type { Lattice, Pass, PassCtx } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
+import { structuralPass } from "../framework/structural-pass";
 import type { AnalysisPass } from "../framework/interfaces";
 import type { SlotLookup } from "../framework/slot-table";
 import {
@@ -17,6 +18,30 @@ import {
 
 export { constJoin, constLeq, constMeet };
 
+// ── Pass<K,V> handle ────────────────────────────────────────────────────────
+// Fact-store channel: values are written directly by `ConstAnalysisVisitor`.
+const constLattice: Lattice<ConstLattice> = {
+  bottom: CONST_BOTTOM,
+  equals: (a, b) =>
+    a === b ||
+    (a.tag !== "const"
+      ? a.tag === b.tag
+      : b.tag === "const" && a.value === b.value),
+  join: constJoin,
+};
+
+export const constAnalysisPass: Pass<number, ConstLattice> = {
+  id: Symbol("constAnalysisPass"),
+  debugName: "constAnalysisPass",
+  lattice: constLattice,
+  reads: [runtimeWritePass, structuralPass],
+  tier: "analysis",
+  coarse: true,
+  transfer(_ctx: PassCtx, _key: number): ConstLattice | undefined {
+    return undefined;
+  },
+};
+
 // ── Expression-level visitor ──────────────────────────────────────────────────
 
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
@@ -24,15 +49,13 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     private readonly factStore: FactStore,
     private readonly constEnv: { get(slot: number): ConstLattice | undefined },
     private readonly slotLookup: SlotLookup,
-    private readonly tap?: (id: number, val: ConstLattice) => void,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
     const observed = this.factStore.tryRead(runtimeWritePass, node.id);
     const lifted = observed !== undefined ? liftConst(observed) : undefined;
     const widened = lifted !== undefined ? constJoin(val, lifted) : val;
-    if (this.tap) this.tap(node.id, widened);
-    else this.factStore.write(constAnalysisPass, node.id, widened);
+    this.factStore.write(constAnalysisPass, node.id, widened);
     return widened;
   }
 
@@ -245,9 +268,8 @@ export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
     factStore: FactStore,
     env: { get(slot: number): ConstLattice | undefined },
     slotLookup: SlotLookup,
-    tap?: (id: number, val: ConstLattice) => void,
   ): ExprNS.Visitor<ConstLattice> {
-    return new ConstAnalysisVisitor(factStore, env, slotLookup, tap);
+    return new ConstAnalysisVisitor(factStore, env, slotLookup);
   }
 
 }

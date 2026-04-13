@@ -26,7 +26,7 @@ function buildWorklist(src = "x = 1\n"): Worklist {
   const ast = parse(src);
   const resolver = new Resolver(src, ast);
   resolver.resolve(ast);
-  return new Worklist(ast, resolver.functionEnvironments, []);
+  return new Worklist(ast, resolver.functionEnvironments);
 }
 
 const intMax: Lattice<number> = {
@@ -54,7 +54,7 @@ function makePass<K, V>(opts: {
   name: string;
   lattice: Lattice<V>;
   reads?: ReadonlyArray<Pass<any, any>>;
-  tier?: "runtime" | "analysis" | "transform" | "jit";
+  tier?: "runtime" | "analysis" | "transform";
   coarse?: boolean;
   transfer?: (key: K) => V | undefined;
   affectedKeys?: (p: Pass<any, any>, k: unknown) => Iterable<K>;

@@ -14,7 +14,8 @@ export type { WorklistStats } from "./framework/worklist";
 
 export type { Pass, PassCtx, Lattice } from "./framework/pass";
 export { runtimeWritePass, runtimeCallPass } from "./framework/runtime-passes";
-export { callCountPass, purityScopePass } from "./framework/migrated-passes";
+export { callCountPass } from "./memoization-analysis/call-count";
+export { purityScopePass } from "./purity-analysis/analysis";
 export { structuralPass } from "./framework/structural-pass";
 
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
@@ -65,8 +66,7 @@ export { CONST_BOTTOM, CONST_TOP, constOf } from "./const-analysis/lattice";
 
 // ── Concrete transforms ──────────────────────────────────────────────────────
 
-export { applyMemoizationWrap } from "./transforms/memoization";
-export { memoizationRule } from "./framework/migrated-passes";
+export { applyMemoizationWrap, memoizationRule } from "./transforms/memoization";
 export { MEMOIZATION_THRESHOLD } from "./memoization-analysis/call-count";
 export { PURE_FIELD } from "./purity-analysis/lattice";
 export { memoLookup, memoPut, clearMemoCache, memoCacheSnapshot, MEMO_MISS } from "../runtime/memo";

@@ -1,6 +1,6 @@
 import { ErrorType } from "@sourceacademy/conductor/common";
 import { BasicEvaluator, IRunnerPlugin } from "@sourceacademy/conductor/runner";
-import { Context, NULL_SINK } from "../engines/cse/context";
+import { Context } from "../engines/cse/context";
 import { evaluate } from "../engines/cse/interpreter";
 import {
   createErrorStream,
@@ -88,13 +88,11 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         throw errors[errors.length - 1];
       }
 
-      const worklist = new Worklist(ast, environments, [new TypeAnalysisPass(), new ConstAnalysisPass()]);
+      const worklist = new Worklist(ast, environments);
       worklist.converge();
 
       this.context.runtime.rootScope = ast;
-      this.context.runtime.observationSink = worklist;
-      // PR-5 fact-store push (parallel to observationSink). Per-callee
-      // raw counters live in the closure for this evaluation.
+      // Per-callee raw counters live in the closure for this evaluation.
       const callCounts = new Map<number, number>();
       this.context.runtime.observeNodeWrite = (nodeId, value) => {
         worklist.observe(runtimeWritePass, nodeId, value);
@@ -112,7 +110,6 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         });
         worklist.tick();
       } finally {
-        this.context.runtime.observationSink = NULL_SINK;
         this.context.runtime.observeNodeWrite = undefined;
         this.context.runtime.observeScopeCall = undefined;
       }

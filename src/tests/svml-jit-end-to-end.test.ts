@@ -39,7 +39,7 @@ def g():
 g()
 `;
     const { ast, reactive, compiler, program } = buildUnit(code);
-    const interpreter = new SVMLInterpreter(program, { observationSink: reactive });
+    const interpreter = new SVMLInterpreter(program);
     const gDef = ast.statements[0] as StmtNS.FunctionDef;
     const gUnit = reactive.units.get(gDef);
     expect(gUnit).toBeDefined();
@@ -63,7 +63,7 @@ def g():
 g()
 `;
     const { ast, reactive, compiler, program } = buildUnit(code);
-    const interpreter = new SVMLInterpreter(program, { observationSink: reactive });
+    const interpreter = new SVMLInterpreter(program);
     const gDef = ast.statements[0] as StmtNS.FunctionDef;
 
     const patchSpy = jest.spyOn(interpreter, "patchFunction");
@@ -78,7 +78,7 @@ g()
       debugName: "test-jitPass",
       lattice: firedLattice,
       reads: [callCountPass, purityScopePass, structuralPass],
-      tier: "jit",
+      tier: "transform",
       coarse: true,
       transfer(_ctx: PassCtx, unit: FunctionUnit): "fired" | undefined {
         const scope = unit.funcAst;

@@ -1,21 +1,20 @@
 # py-slang compilation & execution flow
 
-This document traces a Python source string from ingestion through to execution,
-covering the available execution backends and the specialization framework they
-share. Each phase includes a mermaid diagram of just that phase; a consolidated
-end-to-end diagram sits at the end.
+Traces a Python source string from ingestion to execution across the
+available evaluators and the specialization framework they share. Each
+phase has its own mermaid diagram; a consolidated diagram sits at the
+end.
 
-The goal is to make the interfaces between layers legible so the pipeline can
-be dry-tested and reasoned about in isolation. For a hands-on view of what
-specialization produces, run:
+For the contract/stability view, see `docs/optimization-roadmap.md`.
+
+For a hands-on view of what specialization produces:
 
 ```
 npx tsx scripts/dump-ast.ts <file.py> -o out.dot
 ```
 
 `dump-ast` writes a DOT graph of the AST before and after the static
-optimization pipeline, and prints a per-unit summary of hint counts, concrete
-types, and constants to stderr.
+optimization pipeline, plus per-unit summaries of pass outputs.
 
 ---
 
@@ -24,11 +23,10 @@ types, and constants to stderr.
 Entry points:
 
 - `parse(source: string)` (`src/parser/parser-adapter.ts`) — wraps a
-  Nearley-generated grammar (`src/parser/python-grammar.ts`) driven by a
-  hand-written lexer (`src/parser/lexer.ts`) via `token-bridge.ts`.
-- Produces a `StmtNS.FileInput` (root of the AST), using the class-based node
-  hierarchy in `src/ast-types.ts`. Every node has a stable `id` that downstream
-  stages key on.
+  Nearley-generated grammar (`src/parser/python-grammar.ts`) driven by
+  a hand-written lexer (`src/parser/lexer.ts`) via `token-bridge.ts`.
+- Produces a `StmtNS.FileInput` (AST root), using the class-based node
+  hierarchy in `src/ast-types.ts`. Every node has a stable `id`.
 
 ```mermaid
 flowchart LR
@@ -41,23 +39,21 @@ flowchart LR
     SRC --> LEX --> BRIDGE --> NEARLEY --> ADAPT --> AST
 ```
 
-Failure mode: syntax errors surface as thrown `SyntaxError` / `LexerError`
-instances from `parse`. Callers (the evaluators) catch and route them through
-the conductor error channel.
+Failure mode: syntax errors surface as thrown `SyntaxError` /
+`LexerError` from `parse`. Evaluators route them through the conductor.
 
 ---
 
 ## Phase 2 — Resolver: AST → environments
 
-`analyzeWithEnvironments(ast, source, variant, groups?)` in `src/resolver`
-walks the AST and returns:
+`analyzeWithEnvironments(ast, source, variant, groups?)`
+(`src/resolver`) walks the AST and returns:
 
-- `errors`: scope / binding / variant-rule violations (stdlib groups gate which
-  names are visible per variant).
-- `environments`: a `FunctionEnvironments` map keyed by `FileInput | FunctionDef`
-  describing each scope's declarations, free variables, and nesting. This is
-  the input both the specialization framework and the SVML compiler need to
-  reason about slots and closures.
+- `errors`: scope / binding / variant-rule violations. Stdlib groups
+  gate name visibility per variant.
+- `environments`: `FunctionEnvironments` keyed by
+  `FileInput | FunctionDef`. Input to both the specialization
+  framework and the SVML compiler.
 
 ```mermaid
 flowchart LR
@@ -72,210 +68,188 @@ flowchart LR
     RESOLVE --> ERR
 ```
 
-Evaluators stop and surface errors before proceeding to specialization or
-execution.
-
 ---
 
 ## Phase 3 — Specialization framework
 
-Shared by all backends. Located under `src/specialization/`. There is no
-facade: evaluators construct `Worklist` directly, call `converge()` once
-statically, then run the interpreter with the worklist wired in as an
-`ObservationSink`. Engines that materialize the AST into some external
-form (SVML IR) additionally register a scope-change listener via
-`worklist.onScopeChanged` so mid-run transforms can be patched into that
-form.
+Lives in `src/specialization/`. Single dispatch graph built around
+three primitives:
 
-**Naming note.** This is *not* on-stack replacement. No live frame is
-rebuilt; no state mapping exists. The mechanism is **dispatch patching**:
-`SVMLInterpreter.CallFrame` captures IR by reference at CALL time, so
-patching the program's function-table slot affects only subsequent CALLs —
-live frames drain on the old IR. The literature calls this "lazy
-replacement" (V8) or nmethod trampoline swap (HotSpot).
-
-Typical shape (SVML JIT — the richest path):
+- **`Pass<K, V>`** (`framework/pass.ts`) — one shape for every
+  scheduled computation. Fields: `id`, `debugName`, `lattice: Lattice<V>`,
+  `reads: Pass[]`, `tier`, optional `coarse`, `affectedKeys(ctx, triggerPass, triggerKey)`,
+  `transfer(ctx, key): V | undefined`, optional `prune`.
+  There is no separate `AnalysisPass` / `ScopePass` / `TransformRule` /
+  `ScopeTransformRule` — granularity is encoded in `K`.
+- **`FactStore`** (`framework/fact-store.ts`) — two-level map
+  keyed by `(pass, key)`. `write` is equality-gated via
+  `pass.lattice.equals`; an equal write is a no-op and fires no
+  listener. This is the sole mechanism that suppresses redundant
+  downstream work.
+- **`Worklist`** (`framework/worklist.ts`) — scheduler. Constructor
+  takes `(ast, environments, analyses)`; framework-wired passes
+  (`structuralPass`, `runtimeWritePass`, `runtimeCallPass`,
+  `callCountPass`, `purityScopePass`, `memoizationRule`,
+  `deadBranchRule`, `constantFoldingRule`) self-register.
+  Public surface: `converge()`, `tick()`, `register(pass)`,
+  `observe(pass, key, value)`, `units`, `factStore`.
 
 ```ts
-const worklist = new Worklist(
-  ast, environments,
-  [new TypeAnalysisPass(), new ConstAnalysisPass()],
-  [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
-  [new CallCountScopePass(), new PurityScopePass()],
+// Typical evaluator shape (SVML JIT — richest path):
+const worklist = new Worklist(ast, environments, [
+  new TypeAnalysisPass(),
+  new ConstAnalysisPass(),
+]);
+worklist.converge();                                    // static fixpoint
+
+const compiler = SVMLCompiler.fromProgramUnit(
+  ast, environments, worklist.units, worklist.factStore,
 );
-worklist.converge(); // initial static pass
-
-const compiler    = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units);
 const program     = compiler.compileProgram(ast);
-const interpreter = new SVMLInterpreter(program, { observationSink: worklist });
-
-worklist.onScopeChanged((scope, unit) => {
-  if (!(scope instanceof StmtNS.FunctionDef)) return;
-  const index = compiler.indexOf(scope);
-  if (index === undefined) return;
-  interpreter.patchFunction(index, compiler.compileFunction(unit));
+const interpreter = new SVMLInterpreter(program, {
+  sendOutput:       conductor.sendOutput,
+  observeNodeWrite: (nodeId, v)  => worklist.observe(runtimeWritePass, nodeId, v),
+  observeScopeCall: (scopeId)    => worklist.observe(runtimeCallPass, scopeId, bumpedCount),
 });
 
+worklist.register(jitPass);   // recompile + patchFunction on digest change
 await interpreter.execute();
-worklist.tick(); // drain any work queued during the run
 ```
 
-CSE does not register a listener — its materialized form *is* the AST, so
-the transforms that mutate it are the install. See Phase 4b.
+CSE is identical minus the compile step and minus `jitPass`: its
+materialized form *is* the AST, so a transform's in-place mutation is
+the install.
 
-The framework composes:
+### How dispatch works
 
-- **FunctionUnits** (`framework/function-unit.ts`): per-scope container owning
-  the scope's body reference, a `HintStore`, a slot lookup, a `generation`
-  counter bumped on rebuild, a `structuralVersion` bumped when transforms
-  mutate the body, and a `callObservations` buffer consumed by
-  `CallCountScopePass`.
-- **Worklist** (`framework/worklist.ts`): priority-scheduled fixpoint driver.
-  Tier 1 is analysis over CFG blocks (earlier analyses process first). Tier 2
-  is transforms, which run only after local analysis fixpoint. The worklist
-  directly implements `ObservationSink` — interpreters call `observeWrite` /
-  `observeCall` on it during execution. `onScopeChanged(cb)` / `subscribe(cb)`
-  publish scope-set notifications to engine-side dispatch patchers.
-- **ObservationSink** (`framework/observation-sink.ts`): nominal interface
-  giving the two push-side methods (`observeWrite`, `observeCall`) their own
-  name, so test mocks and interpreter typing don't have to structurally
-  subtype the whole worklist. `Worklist implements ObservationSink`.
-- **HintStore** (`framework/hint.ts`): `Map<nodeId, OptimizationHint>` with an
-  injected `eq` callback. The worklist passes a closure over its private
-  `hintFieldsEqual`, which walks each field of the hint record and dispatches
-  to the registered `AnalysisPass.latticeEquals` via `analysesByName`.
-- **Analyses** (`type-analysis/`, `const-analysis/`, `purity-analysis/`):
-  dataflow modules producing lattice values at named hint fields.
-- **Transforms** (`transforms/`): `DeadBranchEliminationRule`,
-  `ConstantFoldingRule`, `MemoizationTransformRule`. Mutate the AST; the
-  worklist bumps `structuralVersion` and `generation` and reseeds analysis
-  for the affected unit.
-- **ScopePasses** (`memoization-analysis/call-count.ts`,
-  `purity-analysis/scope-pass.ts`): run once per scope per generation, after
-  the expression-level fixpoint converges and before scope-level transforms
-  read their output. Passed to the `Worklist` constructor.
-- **`Worklist.onScopeChanged(cb)`**: pre-unpacked convenience over
-  `subscribe`. Receives each changed scope with its `FunctionUnit`.
-  Listeners install unconditionally: a scope only enters the `changed` set
-  if a transform actually mutated it.
+1. A pass's `transfer(ctx, key)` produces a `V`. Returning `undefined`
+   means "no write for this key" — distinct from writing
+   `lattice.bottom` (explicit reset).
+2. `FactStore.write(pass, key, value)` compares against the stored
+   value under `pass.lattice.equals`. Unchanged → no event.
+3. On a change, every pass whose `reads` contains the writer is
+   candidate work. `p.affectedKeys(ctx, writer, writtenKey)` names the
+   precise subset of `p`'s keyspace to re-enqueue. Passes with no
+   precise mapping set `coarse: true` to opt into "re-run every
+   previously written key".
+4. `tier` gives a drain-order tiebreaker: `runtime` < `analysis` <
+   `transform` < `jit`. Analysis always drains before any transform
+   that reads its output.
+5. Side effects in `transfer` (`patchFunction`, AST mutation) must be
+   idempotent under `lattice.equals`: if the returned value equals the
+   stored one, the side effect must be a no-op. That is how the
+   framework prevents re-fire — no `fireOnce` flag, no
+   `appliedTransforms` set, no bookkeeping.
 
 ```mermaid
 flowchart TB
     RESOLVE["environments + AST"]
-    BUILD["new Worklist<br/>(analyses, transforms, scopePasses)"]
-    PW["Worklist<br/>(analysis tier → transform tier)<br/>implements ObservationSink"]
-    ANA["Analyses<br/>TypeAnalysisPass · ConstAnalysisPass"]
-    SP["ScopePasses<br/>CallCountScopePass · PurityScopePass"]
-    XF["Transforms<br/>DeadBranchElimination · ConstantFolding · MemoizationTransformRule"]
-    HS[("HintStore per unit<br/>nodeId → OptimizationHint<br/>eq via worklist.hintFieldsEqual")]
-    PATCH["onScopeChanged listener<br/>(engine-specific install)"]
+    WL["Worklist<br/>register(pass) · observe(pass,k,v) · converge/tick"]
+    FS[("FactStore<br/>Map&lt;(Pass, K), V&gt;<br/>equality-gated writes")]
+    ANA["Analyses (tier: analysis)<br/>TypeAnalysisPass · ConstAnalysisPass"]
+    SRC_RT["Runtime sources (tier: runtime)<br/>runtimeWritePass · runtimeCallPass<br/>structuralPass"]
+    DERIVED["Derived passes (tier: analysis)<br/>callCountPass · purityScopePass"]
+    XF["Transforms (tier: transform)<br/>deadBranchRule · constantFoldingRule · memoizationRule"]
+    JIT["jitPass (tier: jit)<br/>compileFunction + patchFunction<br/>writes digest; idempotent by equality"]
 
-    RESOLVE --> BUILD --> PW
-    PW -->|analysis pass| ANA -->|hint.set| HS
-    PW -->|transform pass| SP --> XF -->|mutate AST + reseed| PW
-    HS -->|generation bump| PW
-    PW -->|changed ScopeKeys| PATCH
+    RESOLVE --> WL
+    WL <--> FS
+    ANA --> FS
+    SRC_RT --> FS
+    DERIVED --> FS
+    XF --> FS
+    JIT --> FS
+    FS -- "fact change" --> WL
 
-    EXT["external work<br/>observeWrite / observeCall"]
-    EXT --> PW
+    EXT["interpreter callbacks<br/>observeNodeWrite / observeScopeCall"]
+    EXT --> WL
 ```
 
-### Specialization lifecycle (reactive loop)
+### LBD — the on-stack-safety contract
 
-Runtime observations drive specialization via two hooks and one scheduler
-flag. The critical invariant: **non-monotone rules (those that can't use a
-lattice fact to block their own re-fire) declare `fireOnce = true`; the
-scheduler records `(scope, rule)` after the first success so `matches` is
-skipped forever after.** Mechanics:
+Interpreters must late-bind callee bodies at CALL time: CSE reads
+`closure.node.body` fresh every call; SVML re-resolves the
+function-table slot at CALL and captures the IR into `CallFrame.ir`.
+Under LBD, any body-local ABI-preserving AST or IR rewrite is safe at
+any time — in-flight frames drain on the pre-rewrite body; later
+CALLs dispatch to the new form. The framework therefore tracks no
+pin counts, no active-scope set, no `safeOnStack` flag.
 
-1. Interpreter calls `worklist.observeCall(callerKey, calleeKey)` on call
-   entry. The worklist:
-   - Pushes `{callerKey, calleeKey}` onto the callee unit's
-     `callObservations`.
-   - `rebuildAndReseed(calleeKey)` — bumps `generation`, rebuilds the CFG,
-     reseeds analysis queues, re-enqueues a transform round.
-   - If any transform is `fireOnce` (the `hasNonMonotoneRule` flag, cached
-     at construction), calls `this.tick()` to drain mid-execution. For
-     purely monotone configurations this tick is redundant and skipped.
-2. Interpreter calls `worklist.observeWrite(scope, rhsNode, rawValue)` on
-   assignment — each observing analysis turns the runtime value into a
-   lattice point and merges it into the node's hint. A hint change reseeds
-   that scope.
-3. During drain, `processTransform(unit)` runs scope passes first
-   (`CallCountScopePass` folds the observation buffer into a saturating
-   `callCount` hint; `PurityScopePass` summarizes body-level purity), then
-   transform rules. `MemoizationTransformRule.matches` gates on
-   `callCount ≥ MEMOIZATION_THRESHOLD (10)` and `pure === true`;
-   `apply` mutates `fd.body` in place (prepends `if __memo_has(id, *args):
-   return __memo_get(id, *args)` and rewrites `return E` →
-   `return __memo_put(id, *args, E)`). The scheduler records
-   `(scope, rule)` in `firedOneShotRules` so it never re-fires.
-4. Any scope mutated during drain appears in the `changed` set passed to
-   subscribers. Listeners registered via `onScopeChanged` recompile and
-   install. For SVML: `interpreter.patchFunction(index, newIR)` — a direct
-   reassignment of the function-table slot, which new CALLs read fresh
-   while live frames continue on the IR captured in their `CallFrame.ir`
-   field. For CSE: no listener, because the materialized form *is* the AST
-   the transform just mutated; the next call-frame reads the new body
-   directly.
-5. After `interpreter.execute()` returns, the evaluator calls
-   `worklist.tick()` once to drain any work queued during the run.
+### Runtime observations → transforms (fib trace)
 
-### Public surface (from `src/specialization/index.ts`)
+For `def fib(n): …; fib(20)`:
 
-- `Worklist`, `ObservationSink`, `WorklistStats`, `ScopeChangeListener`.
+1. Interpreter CALLs `fib`. Its callback fires
+   `worklist.observe(runtimeCallPass, scopeId, nextCount)`.
+2. `runtimeCallPass` writes `nextCount`. `callCountPass.affectedKeys`
+   on that trigger returns `[scopeId]`; its `transfer` writes
+   `min(sat, nextCount)` back into the store.
+3. `callCountPass`'s change cascades (via `memoizationRule.reads =
+   [callCountPass, purityScopePass, structuralPass]`) to
+   `memoizationRule`. On call 10, `count ≥ MEMOIZATION_THRESHOLD` and
+   `purityScopePass` says `true` → `transfer` invokes
+   `applyMemoizationWrap(unit)`, which splices the cache prelude into
+   `fd.body` (idempotent via `isAlreadyWrapped`) and returns `"fired"`.
+4. The fact change on `memoizationRule` propagates to `jitPass`
+   (registered by the SVML JIT evaluator). Its `transfer` recompiles
+   the unit, digests the IR, and calls `patchFunction` only if the
+   digest differs from the stored value.
+5. Next CALL to fib dispatches the memoized IR. Intrinsics
+   `__memo_has/get/put` route through `runtime/memo.ts`.
+
+CSE: identical up through step 3. No `jitPass`; the AST mutation *is*
+the install. Next CALL re-reads `closure.node.body`, sees the
+prelude, routes `__memo_*` as ordinary builtin calls.
+
+### Public surface (`src/specialization/index.ts`)
+
+- `Worklist`, `WorklistStats`.
 - `FunctionUnit`, `buildFunctionUnits`.
-- `HintStore`, `OptimizationHint`.
-- `AnalysisPass`, `ScopePass`, `TransformRule`, `ScopeTransformRule`.
-- Analyses/lattices (`TypeAnalysisPass`, `ConstAnalysisPass`, lattice
-  constructors). Purity is a `ScopePass` (`PurityScopePass`), not an
-  `AnalysisPass` — see `docs/specialization-cleanup-plan.md` §E.
-- Transforms (`ConstantFoldingRule`, `DeadBranchEliminationRule`,
-  `MemoizationTransformRule`) and scope passes (`CallCountScopePass`,
-  `PurityScopePass`).
-- Memoization runtime intrinsics (`memoLookup`, `memoPut`, `MEMO_MISS`,
-  `MEMO_INTRINSIC_NAMES`) — re-exported from `src/runtime/memo.ts`.
-
-Unit ownership matters: `worklist.hintsFor(node)` routes a lookup to the owning
-unit's store — there is no single merged store. The SVML compiler reads hints
-through per-unit nested compilers at compile time. The CSE interpreter does
-not read hints at all on the hot path — visualizer consumers read them
-externally via `worklist.hintsFor(node)`.
+- `Pass`, `PassCtx`, `Lattice`, `AnalysisPass` (type alias).
+- Source passes: `runtimeWritePass`, `runtimeCallPass`, `structuralPass`.
+- Derived passes: `callCountPass`, `purityScopePass`, `memoizationRule`.
+- Analyses: `TypeAnalysisPass`, `ConstAnalysisPass` + lattice helpers.
+- Transform helper: `applyMemoizationWrap` (the in-place AST rewrite;
+  the pass object is `memoizationRule`).
+- Memo runtime: `memoLookup`, `memoPut`, `MEMO_MISS`,
+  `MEMO_INTRINSIC_NAMES` (re-exported from `src/runtime/memo.ts`).
 
 ---
 
 ## Phase 4a — SVML evaluators
 
-Three SVML evaluators live in `src/conductor/`:
-
 | Evaluator | File | Role |
 |---|---|---|
-| `PySvmlEvaluator` | `PySvmlEvaluator.ts` | One-shot: converge, compile, run. No runtime recompilation. |
-| `PySvmlJitEvaluator` | `PySvmlJitEvaluator.ts` | Reactive JIT: runtime observations feed the worklist; a scope-change listener recompiles + patches the function table when transforms fire. |
+| `PySvmlEvaluator` | `PySvmlEvaluator.ts` | One-shot: converge, compile, run. No runtime feedback. |
+| `PySvmlJitEvaluator` | `PySvmlJitEvaluator.ts` | Reactive JIT: runtime callbacks push facts; `jitPass` recompiles + patches on digest change. |
 | `PySvmlSinterEvaluator` | `PySvmlSinterEvaluator.ts` | Compiles to SVML bytecode and executes on the Sinter WebAssembly VM. No reactive loop. |
 
-The JIT path is the one illustrated below; the non-JIT path is identical up
-through `worklist.converge()` + compile + execute, minus the `onScopeChanged`
-listener. Flow:
+JIT flow:
 
-1. `parse(script)` → AST.
-2. `analyzeWithEnvironments(...)` → environments.
-3. `worklist = new Worklist(ast, environments, analyses, transforms, scopePasses); worklist.converge()`.
-4. `compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units)`
-   — root compiler with nested per-unit compilers keyed by scope.
-5. `program = compiler.compileProgram(ast)`. At emission time, `getHint(node)`
-   reads from the owning unit's `HintStore` to choose specialized opcodes
-   (e.g. `ADDF`/`NOTB` vs generic `ADDG`/`NOTG`) and to elide observation-site
-   metadata for already-concrete expressions.
-6. `interpreter = new SVMLInterpreter(program, { sendOutput, observationSink: worklist })`.
-7. `worklist.onScopeChanged((scope, unit) => { ... interpreter.patchFunction(...) })`
-   — registers the dispatch patcher. For each FunctionDef that the worklist
-   mutates (e.g. memoization prelude spliced in), the closure looks up the
-   compiler's stable index and hot-swaps the function-table slot.
-8. `await interpreter.execute()` runs the program. Observations flow back
-   into the worklist and may trigger mid-run `tick()`s (for `fireOnce`
-   rules like memoization). After return, `worklist.tick()` drains any
-   remaining work.
+1. `parse` → `analyzeWithEnvironments` → errors guard.
+2. `worklist = new Worklist(ast, environments, [Type, Const])` +
+   `worklist.converge()`.
+3. `SVMLCompiler.fromProgramUnit(ast, environments, worklist.units,
+   worklist.factStore)` — compiler reads facts directly from the
+   store (no per-unit hint record).
+4. `program = compiler.compileProgram(ast)`. At emit time, facts
+   drive specialized-opcode selection (`ADDF` / `NOTB` vs
+   `ADDG` / `NOTG`) and call-site observation-metadata elision.
+5. `interpreter = new SVMLInterpreter(program, { sendOutput,
+   observeNodeWrite, observeScopeCall })`. Callbacks close over a
+   local `callCounts: Map<scopeId, number>` and call
+   `worklist.observe(...)`.
+6. `jitPass: Pass<FunctionUnit, number>` is defined inline and
+   registered: `reads: [callCountPass, purityScopePass, structuralPass]`;
+   lattice values are SVMLIR digests; `affectedKeys` fans out to every
+   unit to prime first-round dispatch. Transfer recompiles the unit,
+   digests the new IR, and calls `patchFunction(index, ir)` only
+   when the digest differs from the stored value.
+7. `await interpreter.execute()`. Runtime observations flow back
+   through the callbacks; `callCountPass` / `memoizationRule` /
+   `jitPass` cascade mid-run, and `patchFunction` swaps the
+   function-table slot. Live frames continue on the IR captured in
+   `CallFrame.ir` (LBD).
 
 ```mermaid
 flowchart LR
@@ -283,68 +257,58 @@ flowchart LR
     ENV["environments"]
     WL["new Worklist<br/>+ converge()"]
     UNITS["worklist.units"]
+    FS[("FactStore")]
     COMP["SVMLCompiler.fromProgramUnit"]
-    EMIT["compileProgram<br/>→ SVMLProgram<br/>getHint picks specialized opcodes"]
-    INT["new SVMLInterpreter<br/>(observationSink = worklist)"]
-    LISTEN["worklist.onScopeChanged(...)<br/>→ interpreter.patchFunction"]
-    RUN["interpreter.execute()<br/>then worklist.tick()"]
+    EMIT["compileProgram<br/>specialized opcodes"]
+    INT["new SVMLInterpreter<br/>observeNodeWrite / observeScopeCall"]
+    JITP["worklist.register(jitPass)<br/>reads: callCount · purity · structural<br/>transfer: compile + digest + patchFunction"]
+    RUN["interpreter.execute()"]
     OUT["JS value → conductor.sendResult"]
 
     AST --> WL
     ENV --> WL
-    WL --> UNITS --> COMP --> EMIT --> INT --> LISTEN --> RUN --> OUT
+    WL --> UNITS --> COMP --> EMIT --> INT --> JITP --> RUN --> OUT
+    WL <--> FS
+    FS -. "facts" .-> COMP
     AST --> COMP
     ENV --> COMP
+    INT -- "observe*" --> WL
 ```
-
-Runtime feedback: the interpreter emits `observeWrite` / `observeCall`
-through its `observationSink` (the worklist), which enqueues analysis
-refinements and, on `observeCall`, rebuilds + reseeds the callee unit and
-(if any rule is `fireOnce`) ticks immediately. Scope-level facts — e.g.
-saturating call counts and scope-summary purity that drive memoization —
-are produced by `ScopePass` implementations (`CallCountScopePass`,
-`PurityScopePass`) passed to the `Worklist` constructor. Scope passes run
-once per scope per generation, after the expression-level lattice fixpoint
-has converged. When a refinement triggers a transform that actually
-mutates a scope, the `onScopeChanged` listener fires and recompiles +
-patches the function-table slot.
 
 ---
 
-## Phase 4b — CSE evaluator (reactive, no code install)
+## Phase 4b — CSE evaluator
 
-File: `src/conductor/PyCseEvaluator.ts`. The CSE (control-stash-environment)
-machine in `src/engines/cse/interpreter.ts` is a stepper over control and
-stash stacks. Flow:
+File: `src/conductor/PyCseEvaluator.ts`. The CSE
+(control-stash-environment) machine in `src/engines/cse/interpreter.ts`
+is a stepper. Flow:
 
-1. `parse` + `analyzeWithEnvironments` as before.
-2. `worklist = new Worklist(ast, environments, analyses, transforms, scopePasses); worklist.converge()`.
+1. `parse` + `analyzeWithEnvironments`.
+2. `worklist = new Worklist(ast, environments, [Type, Const])` +
+   `converge()`.
 3. `context.runtime.rootScope = ast`.
-4. `context.runtime.observationSink = worklist` — the CSE interpreter emits
-   observations through this during execution.
-5. `await evaluate(...)`, then `worklist.tick()`. No `onScopeChanged`
-   listener is registered: CSE's materialized form is the AST, which
-   transforms mutate directly during mid-run ticks, so there is no separate
-   install step. `observationSink` is cleared in `finally` so subsequent
-   chunks get a clean runtime.
-6. Inside `evaluate`:
-   - The interpreter **does not read hints on the hot path.** The single hint
-     read that used to exist (per-step visualization metadata) was removed;
-     visualizer consumers read `worklist.hintsFor(node)` externally.
-   - After writes / calls, the interpreter calls
-     `observationSink.observeWrite(...)` / `.observeCall(...)`, feeding the
-     worklist.
+4. `context.runtime.observeNodeWrite` / `observeScopeCall` wired as
+   plain closures over a local `callCounts` map; each closure calls
+   `worklist.observe(runtimeWritePass | runtimeCallPass, …)`.
+5. `await evaluate(...)`, then `worklist.tick()` to drain residual
+   work. No `jitPass`; the AST mutation performed by
+   `memoizationRule`'s transfer is the install. Callbacks cleared in
+   `finally`.
+6. Inside `evaluate`: the interpreter reads no facts on the hot path.
+   It pushes observations on each APPLICATION instruction and each
+   relevant assign. The next CALL re-reads `closure.node.body`, which
+   now includes any injected prelude.
 
 ```mermaid
 flowchart TB
     AST["FileInput AST"]
     ENV["environments"]
     WL["new Worklist<br/>+ converge()"]
-    WIRE["context.runtime.rootScope = ast<br/>context.runtime.observationSink = worklist"]
-    EXEC["evaluate(ast, context)<br/>control/stash stepper<br/>(engines/cse/interpreter.ts)"]
-    OBS["observeWrite / observeCall"]
-    TICK["worklist.tick()<br/>(post-run drain)"]
-    FIN["finally: observationSink = undefined"]
+    WIRE["context.runtime.rootScope = ast<br/>observeNodeWrite / observeScopeCall"]
+    EXEC["evaluate(ast, context)<br/>control/stash stepper"]
+    OBS["worklist.observe(runtime*Pass, ...)"]
+    TICK["worklist.tick()"]
+    FIN["finally: callbacks cleared"]
 
     AST --> WL
     ENV --> WL
@@ -353,11 +317,6 @@ flowchart TB
     EXEC --> TICK --> FIN
 ```
 
-Failure modes worth noting:
-
-- If `evaluate` throws, `observationSink` is still cleared in `finally` so the
-  next chunk starts clean. There is no post-run `tick()` on the error path.
-
 ---
 
 ## Consolidated diagram
@@ -365,38 +324,38 @@ Failure modes worth noting:
 ```mermaid
 flowchart TB
     SRC["Python source"]
-    PARSE["parse<br/>(parser-adapter)"]
+    PARSE["parse"]
     RESOLVE["analyzeWithEnvironments"]
     SRC --> PARSE --> RESOLVE
 
-    subgraph SPEC["Specialization framework (src/specialization)"]
+    subgraph SPEC["Specialization framework"]
       direction TB
-      WL["Worklist<br/>analysis · scopePasses · transforms · subscribers<br/>implements ObservationSink"]
-      UNIT["FunctionUnit<br/>{body, HintStore, slotLookup, generation, structuralVersion, callObservations}"]
-      HS["HintStore<br/>nodeId → OptimizationHint<br/>eq via analysesByName registry"]
-      OSC["onScopeChanged listener<br/>(engine-registered closure)"]
-      WL --> UNIT
-      UNIT --> HS
-      WL --> OSC
+      WL["Worklist<br/>register · observe · converge/tick"]
+      FS["FactStore<br/>(pass, key) → V<br/>equality-gated writes"]
+      UNITS["FunctionUnit<br/>body getter + slot table"]
+      WL <--> FS
+      WL --> UNITS
     end
     RESOLVE --> WL
 
     subgraph SVML["SVML JIT backend"]
       direction TB
-      COMP["SVMLCompiler.fromProgramUnit<br/>compileProgram"]
+      COMP["SVMLCompiler.fromProgramUnit<br/>(reads FactStore)"]
       INT["SVMLInterpreter.execute<br/>patchFunction (dispatch patch)"]
+      JITP["jitPass<br/>recompile + digest + patch"]
       COMP --> INT
+      JITP -- "patchFunction" --> INT
     end
-    UNIT -. "getHint at emit time" .-> COMP
-    OSC -. "compileFunction → patchFunction" .-> INT
-    INT -- "observeWrite / observeCall" --> WL
+    FS -. "facts at compile time" .-> COMP
+    INT -- "observeNodeWrite / observeScopeCall" --> WL
+    FS -- "fact change" --> JITP
 
     subgraph CSE["CSE backend"]
       direction TB
       EXEC["evaluate<br/>(control/stash stepper)"]
     end
-    WL -. "(no listener — AST is the materialized form)" .-> EXEC
-    EXEC -- "observeWrite / observeCall" --> WL
+    WL -. "AST mutation is the install" .-> EXEC
+    EXEC -- "observeNodeWrite / observeScopeCall" --> WL
 
     classDef engine fill:#fff3cd,stroke:#b58900,color:#000;
     classDef backend fill:#e0f7fa,stroke:#0097a7,color:#000;
@@ -412,16 +371,17 @@ flowchart TB
 |---|---|---|
 | Parse | `src/parser/parser-adapter.ts` | `parse` |
 | Resolve | `src/resolver/index.ts` | `analyzeWithEnvironments`, `FunctionEnvironments` |
-| Worklist | `src/specialization/framework/worklist.ts` | `Worklist`, `converge`, `tick`, `observeWrite`, `observeCall`, `subscribe`, `onScopeChanged`, `hintsFor` |
-| Observation surface | `src/specialization/framework/observation-sink.ts` | `ObservationSink` (interface; `Worklist implements`) |
+| Worklist | `src/specialization/framework/worklist.ts` | `Worklist`, `converge`, `tick`, `register`, `observe`, `units`, `factStore` |
+| Pass shape | `src/specialization/framework/pass.ts` | `Pass<K,V>`, `PassCtx`, `Lattice<V>` |
+| Fact store | `src/specialization/framework/fact-store.ts` | `FactStore.read/write/readAll/onChange` |
 | Units | `src/specialization/framework/function-unit.ts` | `FunctionUnit`, `buildFunctionUnits` |
-| Hints | `src/specialization/framework/hint.ts` | `HintStore`, `OptimizationHint` |
-| Memoization rule | `src/specialization/transforms/memoization.ts` | `MemoizationTransformRule` (`fireOnce = true`) |
-| Scope passes | `src/specialization/memoization-analysis/call-count.ts`, `src/specialization/purity-analysis/scope-pass.ts` | `CallCountScopePass`, `PurityScopePass` |
-| SVML compile | `src/engines/svml/svml-compiler.ts` | `SVMLCompiler.fromProgramUnit`, `compileProgram`, `getHint`, `indexOf`, `compileFunction` |
+| Runtime sources | `src/specialization/framework/runtime-passes.ts` | `runtimeWritePass`, `runtimeCallPass` |
+| Structural source | `src/specialization/framework/structural-pass.ts` | `structuralPass` |
+| Derived passes | `src/specialization/framework/migrated-passes.ts` | `callCountPass`, `purityScopePass`, `memoizationRule`, `deadBranchRule`, `constantFoldingRule` |
+| Memoization rewrite | `src/specialization/transforms/memoization.ts` | `applyMemoizationWrap`, `isAlreadyWrapped` |
+| SVML compile | `src/engines/svml/svml-compiler.ts` | `SVMLCompiler.fromProgramUnit`, `compileProgram`, `compileFunction`, `indexOf` |
 | SVML run | `src/engines/svml/svml-interpreter.ts` | `SVMLInterpreter.execute`, `patchFunction`, `toJSValue` |
-| SVML dispatch patch | `src/conductor/PySvmlJitEvaluator.ts` | inline `worklist.onScopeChanged(...)` closure |
-| CSE run | `src/engines/cse/interpreter.ts` | `evaluate` (writes to `runtime.observationSink`; does not read hints) |
+| JIT pass registration | `src/conductor/PySvmlJitEvaluator.ts` | inline `jitPass` literal + `worklist.register(jitPass)` |
+| CSE run | `src/engines/cse/interpreter.ts` | `evaluate` (calls `context.runtime.observe*`) |
 | Memo runtime | `src/runtime/memo.ts` | `memoLookup`, `memoPut`, `MEMO_MISS`, `MEMO_INTRINSIC_NAMES` |
-| SVML evaluators | `src/conductor/PySvmlEvaluator.ts`, `PySvmlJitEvaluator.ts`, `PySvmlSinterEvaluator.ts` | `evaluateChunk` |
-| CSE evaluator | `src/conductor/PyCseEvaluator.ts` | `PyCseEvaluator*.evaluateChunk` |
+| Evaluators | `src/conductor/Py*Evaluator.ts` | `evaluateChunk` |

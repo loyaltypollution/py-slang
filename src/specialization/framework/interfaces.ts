@@ -8,8 +8,8 @@ import type { SlotLookup } from "./slot-table";
  * within a `FunctionUnit`.
  *
  * Scope-level passes (purity, call-count) and transforms (dead-branch,
- * constant-folding, memoization) are `Pass<K, V>` instances in
- * `migrated-passes.ts`.
+ * constant-folding, memoization) are `Pass<K, V>` instances colocated
+ * with their analysis/transform modules.
  */
 export interface AnalysisPass<L> {
   readonly name: string;
@@ -31,8 +31,5 @@ export interface AnalysisPass<L> {
     factStore: FactStore,
     env: { get(slot: number): L | undefined },
     slotLookup: SlotLookup,
-    /** Per-node tap for `nodeFactView.get`'s replay. When supplied, the
-     *  visitor emits here and skips fact-store writes. */
-    tap?: (id: number, val: L) => void,
   ): ExprNS.Visitor<L>;
 }

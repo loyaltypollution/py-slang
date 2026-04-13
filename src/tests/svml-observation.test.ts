@@ -7,7 +7,8 @@
 import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { typeAnalysisPass } from "../specialization/framework/migrated-passes";
+import { typeAnalysisPass } from "../specialization/type-analysis/analysis";
+import { runtimeCallPass, runtimeWritePass } from "../specialization/framework/runtime-passes";
 import { buildTestWorklist } from "./utils";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
@@ -33,7 +34,9 @@ x = "hello"
     const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, reactive.factStore);
     const program = compiler.compileProgram(ast);
 
-    const interpreter = new SVMLInterpreter(program, { observationSink: reactive });
+    const interpreter = new SVMLInterpreter(program, {
+      observeNodeWrite: (nodeId, value) => reactive.observe(runtimeWritePass, nodeId, value),
+    });
 
     await interpreter.execute();
     reactive.tick();
@@ -56,28 +59,25 @@ f()
     reactive.converge();
 
     const fDef = ast.statements[0] as StmtNS.FunctionDef;
-    const calls: Array<[unknown, unknown]> = [];
-
-    const sink: Pick<typeof reactive, "observeWrite" | "observeCall"> = {
-      observeWrite: (scopeKey, rhsNode, value) => {
-        reactive.observeWrite(scopeKey, rhsNode, value);
-      },
-      observeCall: (scopeKey, calleeKey) => {
-        calls.push([scopeKey, calleeKey]);
-        reactive.observeCall(scopeKey, calleeKey);
-      },
-    };
+    const calls: number[] = [];
+    const callCounts = new Map<number, number>();
 
     const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, reactive.factStore);
     const program = compiler.compileProgram(ast);
-    const interpreter = new SVMLInterpreter(program, { observationSink: sink });
+    const interpreter = new SVMLInterpreter(program, {
+      observeScopeCall: (scopeId) => {
+        calls.push(scopeId);
+        const next = (callCounts.get(scopeId) ?? 0) + 1;
+        callCounts.set(scopeId, next);
+        reactive.observe(runtimeCallPass, scopeId, next);
+      },
+    });
 
     await interpreter.execute();
     reactive.tick();
 
-    // One user-level call to f happened; observeCall should have fired with
-    // (ast, fDef).
-    const matching = calls.find(([caller, callee]) => caller === ast && callee === fDef);
-    expect(matching).toBeDefined();
+    // One user-level call to f happened; observeScopeCall should have fired
+    // with fDef.id.
+    expect(calls).toContain(fDef.id);
   });
 });

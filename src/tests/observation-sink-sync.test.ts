@@ -23,12 +23,12 @@ function buildMinimalArgs() {
 describe("Worklist sink synchrony tripwire", () => {
   test("constructor throws when a sink method is declared async", () => {
     const { ast, fenv } = buildMinimalArgs();
-    const orig = Worklist.prototype.observeWrite;
-    (Worklist.prototype as unknown as Record<string, unknown>).observeWrite = async function () {};
+    const orig = Worklist.prototype.observe;
+    (Worklist.prototype as unknown as Record<string, unknown>).observe = async function () {};
     try {
-      expect(() => new Worklist(ast, fenv, [])).toThrow(/observeWrite.*synchronous/);
+      expect(() => new Worklist(ast, fenv)).toThrow(/observe.*synchronous/);
     } finally {
-      Worklist.prototype.observeWrite = orig;
+      Worklist.prototype.observe = orig;
     }
   });
 });

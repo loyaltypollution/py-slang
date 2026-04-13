@@ -2,8 +2,6 @@ import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
-import type { AnalysisPass } from "./interfaces";
-import type { MutableEnv } from "./mutable-env";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
@@ -23,10 +21,9 @@ export interface FunctionUnit {
   readonly body: StmtNS.Stmt[];
   cfg: CFG;
   blockMap: Map<BlockId, BasicBlock>;
-  /** NodeId → containing BasicBlock. Populated at CFG build; used by
-   *  `nodeFactView` to locate the block owning a node for replay. */
+  /** NodeId → containing BasicBlock. Populated at CFG build; used by the
+   *  DFA factory's affectedKeys to map runtime node triggers to blocks. */
   blockOfNode: Map<number, BasicBlock>;
-  analysisOuts: Map<BlockId, MutableEnv<any> | null>[];
   generation: number;
   callCount: number;
 }
@@ -42,7 +39,6 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   constructor(
     private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
     private readonly functionEnvironments: FunctionEnvironments,
-    private readonly analyses: readonly AnalysisPass<any>[],
   ) {}
 
   register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
@@ -55,20 +51,13 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     const body: StmtNS.Stmt[] =
       funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
     const cfg = buildCFG(body);
-    const blockMap = new Map<BlockId, BasicBlock>();
-    for (const block of cfg.blocks) blockMap.set(block.id, block);
-    const blockOfNode = new Map<number, BasicBlock>();
-    for (const block of cfg.blocks) {
-      for (const stmt of block.stmts) populateBlockOfNode(stmt, block, blockOfNode);
-    }
-    const analysisOuts = this.analyses.map(() => makeOut(cfg));
+    const { blockMap, blockOfNode } = indexCFG(cfg);
     const unit: FunctionUnit = {
       funcAst,
       slotLookup: buildSlotTable(env, paramNames),
       cfg,
       blockMap,
       blockOfNode,
-      analysisOuts,
       generation: 0,
       callCount: 0,
       get body(): StmtNS.Stmt[] {
@@ -116,7 +105,21 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
  * and we recurse into arrays and plain-object children. Tokens have no `.id`
  * and are ignored. One-shot at CFG-build time.
  */
-function populateBlockOfNode(
+/** Build `blockMap` (id → block) and `blockOfNode` (nodeId → containing block). */
+export function indexCFG(cfg: CFG): {
+  blockMap: Map<BlockId, BasicBlock>;
+  blockOfNode: Map<number, BasicBlock>;
+} {
+  const blockMap = new Map<BlockId, BasicBlock>();
+  const blockOfNode = new Map<number, BasicBlock>();
+  for (const block of cfg.blocks) {
+    blockMap.set(block.id, block);
+    for (const stmt of block.stmts) populateBlockOfNode(stmt, block, blockOfNode);
+  }
+  return { blockMap, blockOfNode };
+}
+
+export function populateBlockOfNode(
   node: unknown,
   block: BasicBlock,
   out: Map<number, BasicBlock>,
@@ -138,20 +141,12 @@ function populateBlockOfNode(
   }
 }
 
-/** Fresh OUT map: every block mapped to `null` (never processed). */
-export function makeOut<L>(cfg: CFG): Map<BlockId, MutableEnv<L> | null> {
-  const out = new Map<BlockId, MutableEnv<L> | null>();
-  for (const block of cfg.blocks) out.set(block.id, null);
-  return out;
-}
-
 export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
-  analyses: readonly AnalysisPass<any>[],
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
-  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, analyses);
+  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments);
   visitor.register(ast);
   return units;
 }

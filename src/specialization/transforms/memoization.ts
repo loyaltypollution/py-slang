@@ -25,6 +25,11 @@
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "../framework/function-unit";
+import type { Pass, PassCtx } from "../framework/pass";
+import { structuralPass } from "../framework/structural-pass";
+import { firedLattice, type Fired } from "../framework/transform-rule";
+import { callCountPass, MEMOIZATION_THRESHOLD } from "../memoization-analysis/call-count";
+import { purityScopePass } from "../purity-analysis/analysis";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokens";
 
@@ -127,3 +132,37 @@ function rewriteReturns(
     // FunctionDef (nested), Assign, Pass, etc. — do not descend.
   }
 }
+
+// ── Pass<K,V> rule ──────────────────────────────────────────────────────────
+// Gated on callCount threshold and pure===true. Both reads are keyed by
+// FunctionDef.id; affectedKeys fan-out maps back to the owning unit via
+// the structural-pass units view. Structural-triggered fan-out is direct.
+export const memoizationRule: Pass<FunctionUnit, Fired> = {
+  id: Symbol("memoizationRule"),
+  debugName: "memoizationRule",
+  lattice: firedLattice,
+  reads: [callCountPass, purityScopePass, structuralPass],
+  tier: "transform",
+  affectedKeys(ctx, triggerPass, triggerKey) {
+    if (triggerPass === (structuralPass as Pass<any, any>)) {
+      return [triggerKey as FunctionUnit];
+    }
+    const fdId = triggerKey as number;
+    for (const unit of ctx.readAll(structuralPass).keys()) {
+      const u = unit as FunctionUnit;
+      if (u.funcAst instanceof StmtNS.FunctionDef && u.funcAst.id === fdId) {
+        return [u];
+      }
+    }
+    return [];
+  },
+  transfer(ctx: PassCtx, key: FunctionUnit): Fired {
+    const fd = key.funcAst;
+    if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
+    const count = ctx.read(callCountPass, fd.id);
+    if (count === undefined || count < MEMOIZATION_THRESHOLD) return undefined;
+    if (ctx.read(purityScopePass, fd.id) !== true) return undefined;
+    if (!applyMemoizationWrap(key)) return undefined;
+    return "fired";
+  },
+};

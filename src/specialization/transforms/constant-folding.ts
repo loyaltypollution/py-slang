@@ -1,10 +1,8 @@
 // src/specialization/transforms/constant-folding.ts
 //
-// Constant folding (PR-6d). The legacy `ConstantFoldingRule` class (an
-// `ExprTransformRule` in `worklist.transforms`) has been demolished this
-// PR: its match+apply logic now lives inside `constantFoldingRule.transfer`
-// (see `../framework/migrated-passes.ts`), which calls
-// `applyConstantFoldingSweep(unit)` below.
+// Constant folding. `constantFoldingRule` (below) is a unit-keyed
+// `Pass<FunctionUnit, Fired>` whose transfer calls
+// `applyConstantFoldingSweep`.
 //
 // Fires whenever `constAnalysisPass` or `structuralPass` produce a
 // lattice-change for the unit, plus an explicit initial-converge seed
@@ -19,10 +17,11 @@
 // wakes spuriously.
 
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { FactStore } from "../framework/fact-store";
+import { constAnalysisPass } from "../const-analysis/analysis";
 import type { ConstLattice } from "../const-analysis/lattice";
+import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
-import { constAnalysisPass } from "../framework/migrated-passes";
+import { unitSweepRule } from "../framework/transform-rule";
 
 /** Does this expression have a statically-known constant value that we can fold? */
 function matchesExpr(expr: ExprNS.Expr, factStore: FactStore): boolean {
@@ -219,3 +218,9 @@ export function applyConstantFoldingSweep(unit: FunctionUnit, factStore: FactSto
   v.sweep(unit.body);
   return v.changed;
 }
+
+export const constantFoldingRule = unitSweepRule(
+  "constantFoldingRule",
+  [constAnalysisPass],
+  applyConstantFoldingSweep,
+);

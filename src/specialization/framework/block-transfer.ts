@@ -9,10 +9,6 @@ import type { SlotLookup } from "./slot-table";
  * Statement-level transfer. Updates `env` in place. Control-flow stmts
  * (If/While/For) appear as headers in their own block; only the
  * condition/iter is evaluated here — bodies live in successor blocks.
- *
- * Returns true if the visitor's tap (if any) signaled the requested node
- * was reached during this stmt, so the caller can stop early when running
- * a `projectNode` replay.
  */
 export function transferStmt<L>(
   stmt: StmtNS.Stmt,
@@ -79,10 +75,9 @@ export function transferBlock<L>(
   module: AnalysisPass<L>,
   factStore: FactStore,
   slotLookup: SlotLookup,
-  tap?: (id: number, val: L) => void,
 ): MutableEnv<L> {
   const env = inEnv.snapshot();
-  const visitor = module.makeExprVisitor(factStore, env, slotLookup, tap);
+  const visitor = module.makeExprVisitor(factStore, env, slotLookup);
   const stmts = block.stmts;
   if (module.direction === "backward") {
     for (let i = stmts.length - 1; i >= 0; i--) {

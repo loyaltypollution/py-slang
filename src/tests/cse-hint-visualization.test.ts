@@ -15,7 +15,8 @@ import { generateCSEMachineStateStream } from "../engines/cse/interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import type { FactStore } from "../specialization/framework/fact-store";
-import { constAnalysisPass, typeAnalysisPass } from "../specialization/framework/migrated-passes";
+import { constAnalysisPass } from "../specialization/const-analysis/analysis";
+import { typeAnalysisPass } from "../specialization/type-analysis/analysis";
 import { buildTestWorklist } from "./utils";
 
 function parseOptimizeAndMerge(code: string): {

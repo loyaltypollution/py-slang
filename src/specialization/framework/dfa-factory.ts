@@ -3,7 +3,6 @@ import type { FunctionUnit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
 import type { Lattice, Pass, PassCtx } from "./pass";
 import { structuralPass } from "./structural-pass";
-import { makeView, type View } from "./view";
 
 /**
  * Packages a Kildall-style block DFA into the framework. Produces:
@@ -12,15 +11,11 @@ import { makeView, type View } from "./view";
  *     block's OUT env. Lattice-equals gates downstream wakes; on a closed
  *     gate, every per-node value derivable from this block is unchanged
  *     (monotone determinism), so no separate per-node pass is needed.
- *   - `nodeFactView: View<NodeId, L>` — pure projection. On `get`, locates
- *     the block containing the node, reconstitutes the IN env from
- *     predecessors, and replays the configured `projectNode` to extract
- *     the value at that program point. No fact-store cells of its own.
  *
- * `transferBlock` and `projectNode` MUST be pure: no `factStore.write`,
- * no mutation of `unit`. Side-effect writes from inside these functions
- * bypass the lattice-equals gate and reopen the spurious-wake bug class
- * the framework exists to prevent.
+ * `transferBlock` MUST be pure: no `factStore.write`, no mutation of
+ * `unit`. Side-effect writes from inside this function bypass the
+ * lattice-equals gate and reopen the spurious-wake bug class the
+ * framework exists to prevent.
  */
 
 export type DfaDirection = "forward" | "backward";
@@ -28,7 +23,6 @@ export type DfaDirection = "forward" | "backward";
 export interface DfaConfig<L> {
   readonly debugName: string;
   readonly direction: DfaDirection;
-  readonly bottom: L;
   readonly top: L;
   readonly leq: (a: L, b: L) => boolean;
   readonly join: (a: L, b: L) => L;
@@ -43,20 +37,11 @@ export interface DfaConfig<L> {
   ) => MutableEnv<L>;
   /** Seed the entry (forward) / exit (backward) block's IN env. */
   readonly seedEnv: (unit: FunctionUnit) => MutableEnv<L>;
-  /** Pure: replay the transfer up to `nodeId` in `block`, return its lattice value. */
-  readonly projectNode: (
-    ctx: PassCtx,
-    unit: FunctionUnit,
-    nodeId: number,
-    inEnv: MutableEnv<L>,
-    block: BasicBlock,
-  ) => L | undefined;
   readonly reads: ReadonlyArray<Pass<any, any>>;
 }
 
 export interface DfaPasses<L> {
   readonly blockKeyedPass: Pass<BasicBlock, MutableEnv<L>>;
-  readonly nodeFactView: View<number, L>;
 }
 
 function predecessors(block: BasicBlock, direction: DfaDirection): BasicBlock[] {
@@ -95,11 +80,18 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
     return env ?? config.seedEnv(unit);
   }
 
-  const blockKeyedPass: Pass<BasicBlock, MutableEnv<L>> = {
+  // Forward-reference pattern: `reads` must include the pass itself so
+  // block-OUT changes wake CFG-successors through the dispatch graph. The
+  // array is built first, populated with the self-reference after the pass
+  // object exists, then frozen. ReadonlyArray contract preserved.
+  const readsArr: Pass<any, any>[] = [...config.reads, structuralPass];
+  // eslint-disable-next-line prefer-const
+  let blockKeyedPass: Pass<BasicBlock, MutableEnv<L>>;
+  blockKeyedPass = {
     id: blockPassId,
     debugName: `${config.debugName}:blocks`,
     lattice: envLattice,
-    reads: [...config.reads, structuralPass],
+    reads: readsArr,
     tier: "analysis",
     coarse: false,
     transfer(ctx: PassCtx, block: BasicBlock): MutableEnv<L> | undefined {
@@ -120,37 +112,29 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
         const seed = config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
         return [seed];
       }
-      // Other reads (runtimeWritePass, etc.): coarse — re-run all blocks of
-      // the affected unit. Tightening is a per-pass follow-on.
-      const allBlocks: BasicBlock[] = [];
-      for (const u of ctx.readAll(structuralPass).keys()) {
-        for (const b of (u as FunctionUnit).cfg.blocks) allBlocks.push(b);
+      // Other reads (runtimeWritePass, etc.): precise mapping. triggerKey is
+      // a NodeId; resolve via the structural `unitForNode` lookup — does not
+      // depend on any pass having produced facts yet, so `observe()` calls
+      // made before `converge()` still fan out correctly.
+      if (typeof triggerKey === "number") {
+        const unit = ctx.unitForNode(triggerKey);
+        const block = unit?.blockOfNode.get(triggerKey);
+        if (block !== undefined) return [block];
       }
-      return allBlocks;
+      return [];
     },
-    prune(_ctx, _unit, previousKeys) {
-      // On structural change, all old BasicBlock identities are stale.
-      return Array.from(previousKeys);
+    prune(ctx, _unit, previousKeys) {
+      // BlockId is a per-CFG counter from 0, so ids collide across units —
+      // filtering by id would evict live sibling-unit cells. rebuildStructural
+      // swaps unit.blockMap before the structuralPass write, so at prune time
+      // orphaned (stale) blocks are exactly those no unit owns by identity.
+      return Array.from(previousKeys).filter(k => ctx.unitForBlock(k) === undefined);
     },
   };
 
-  const nodeFactView: View<number, L> = makeView(
-    `${config.debugName}:nodes`,
-    (ctx, nodeId) => {
-      // Walk every unit's blockOfNode until we find the one that owns nodeId.
-      // Cheap: each unit's blockOfNode is a hash lookup; the outer loop
-      // terminates at the first hit. If this becomes hot, cache nodeId→unit.
-      for (const unit of ctx.readAll(structuralPass).keys()) {
-        const u = unit as FunctionUnit;
-        const block = u.blockOfNode.get(nodeId);
-        if (block === undefined) continue;
-        const inEnv = inEnvFor(ctx, block, u);
-        const v = config.projectNode(ctx, u, nodeId, inEnv, block);
-        return v ?? config.bottom;
-      }
-      return config.bottom;
-    },
-  );
+  // Self-wake: block OUT changes propagate to CFG-successors (handled in affectedKeys).
+  readsArr.push(blockKeyedPass);
+  Object.freeze(readsArr);
 
-  return { blockKeyedPass, nodeFactView };
+  return { blockKeyedPass };
 }

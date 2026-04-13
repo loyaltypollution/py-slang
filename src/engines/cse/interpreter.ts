@@ -840,8 +840,6 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       if (instr.srcNode instanceof StmtNS.Assign) {
         const scopeKey = currentScopeKey(context);
         if (scopeKey) {
-          context.runtime.observationSink.observeWrite(scopeKey, instr.srcNode.value, value);
-          // PR-5: parallel push into runtimeWritePass.
           context.runtime.observeNodeWrite?.(instr.srcNode.value.id, value);
         }
       }
@@ -1109,8 +1107,6 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       const calleeKey = closure.node as StmtNS.FileInput | StmtNS.FunctionDef;
       const callerKey = currentScopeKey(context);
       if (callerKey) {
-        context.runtime.observationSink.observeCall(callerKey, calleeKey);
-        // PR-5: parallel push into runtimeCallPass.
         context.runtime.observeScopeCall?.(calleeKey.id);
       }
 

@@ -49,7 +49,7 @@ export interface Pass<K, V> {
   readonly lattice: Lattice<V>;
   readonly reads: ReadonlyArray<Pass<any, any>>;
   /** Drain-order tier tiebreaker. See worklist drain policy. */
-  readonly tier?: "runtime" | "analysis" | "transform" | "jit";
+  readonly tier?: "runtime" | "analysis" | "transform";
   readonly coarse?: boolean;
   transfer(ctx: PassCtx, key: K): V | undefined;
   affectedKeys?(
@@ -77,6 +77,9 @@ export interface PassCtx {
   readAll<K2, V2>(p: Pass<K2, V2>): ReadonlyMap<K2, V2>;
   unitFor(scope: StmtNS.FileInput | StmtNS.FunctionDef): FunctionUnit | undefined;
   unitForBlock(block: import("./cfg").BasicBlock): FunctionUnit | undefined;
+  /** Resolve the `FunctionUnit` containing a node by its numeric id. Pure
+   *  structural lookup — does not depend on fact-store state. */
+  unitForNode(nodeId: number): FunctionUnit | undefined;
   /** Direct fact-store handle for accessor-mediated reads/writes from transforms. */
   readonly factStore: FactStore;
 }

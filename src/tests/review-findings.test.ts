@@ -12,7 +12,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { INT_BIT, BOOL_BIT, BoolRef } from "../specialization";
-import { typeAnalysisPass } from "../specialization/framework/migrated-passes";
+import { typeAnalysisPass } from "../specialization/type-analysis/analysis";
 import { buildTestWorklist } from "./utils";
 
 function compileAndRun(code: string): unknown {

@@ -56,7 +56,7 @@ describe("PR-5 jitPass + callCountPass saturation", () => {
         join: (a, b) => Math.max(a, b),
       },
       reads: [callCountPass],
-      tier: "jit",
+      tier: "transform",
       coarse: true,
       transfer(ctx: PassCtx, key: number): number | undefined {
         transferRuns++;
@@ -102,7 +102,7 @@ describe("PR-5 jitPass + callCountPass saturation", () => {
         join: (a, b) => Math.max(a, b),
       },
       reads: [callCountPass],
-      tier: "jit",
+      tier: "transform",
       coarse: true,
       affectedKeys(_ctx, _triggerPass, _triggerKey) {
         return [unit];

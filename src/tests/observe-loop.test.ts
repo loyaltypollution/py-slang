@@ -12,7 +12,8 @@ import { analyzeWithEnvironments } from "../resolver";
 import { buildTestWorklist } from "./utils";
 import { Context } from "../engines/cse/context";
 import { evaluate } from "../engines/cse/interpreter";
-import { typeAnalysisPass } from "../specialization/framework/migrated-passes";
+import { typeAnalysisPass } from "../specialization/type-analysis/analysis";
+import { runtimeWritePass } from "../specialization/framework/runtime-passes";
 import { STR_BIT, INT_BIT } from "../specialization/type-analysis/lattice";
 
 function setupReactive(code: string) {
@@ -31,7 +32,8 @@ async function runWithReactive(code: string) {
   const reactive = buildTestWorklist(ast, environments);
   reactive.converge();
 
-  context.runtime.observationSink = reactive;
+  context.runtime.observeNodeWrite = (nodeId, value) =>
+    reactive.observe(runtimeWritePass, nodeId, value);
   context.runtime.rootScope = ast;
 
   await evaluate("", ast, context, { variant: 4, groups: [] });
@@ -73,7 +75,7 @@ x = "hello"
     const assign = ast.statements[0] as StmtNS.Assign;
     const before = reactive.factStore.tryRead(typeAnalysisPass,assign.value.id);
 
-    reactive.observeWrite(ast, assign.value, 1);
+    reactive.observe(runtimeWritePass, assign.value.id, 1);
     const after = reactive.factStore.tryRead(typeAnalysisPass,assign.value.id);
 
     expect(after).toEqual(before);
@@ -88,7 +90,7 @@ describe("OBSERVE loop: regression guard", () => {
 
     const assign = ast.statements[0] as StmtNS.Assign;
     const before = reactive.factStore.tryRead(typeAnalysisPass,assign.value.id);
-    reactive.observeWrite(ast, assign.value, 42);
+    reactive.observe(runtimeWritePass, assign.value.id, 42);
     const after = reactive.factStore.tryRead(typeAnalysisPass,assign.value.id);
 
     expect(after).toEqual(before);

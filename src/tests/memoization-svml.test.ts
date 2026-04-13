@@ -31,7 +31,7 @@ function run(code: string) {
   reactive.converge();
   const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, reactive.factStore);
   const program = compiler.compileProgram(ast);
-  const interpreter = new SVMLInterpreter(program, { observationSink: reactive });
+  const interpreter = new SVMLInterpreter(program);
   return { ast, reactive, interpreter };
 }
 

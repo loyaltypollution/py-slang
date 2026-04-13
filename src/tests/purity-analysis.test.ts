@@ -17,13 +17,13 @@ import {
   TypeAnalysisPass,
   Worklist,
 } from "../specialization";
-import { purityScopePass } from "../specialization/framework/migrated-passes";
+import { purityScopePass } from "../specialization/purity-analysis/analysis";
 
 function purityOf(code: string, fnName: string): boolean | undefined {
   const script = code + "\n";
   const ast = parse(script) as StmtNS.FileInput;
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const worklist = new Worklist(ast, environments, [new TypeAnalysisPass(), new ConstAnalysisPass()]);
+  const worklist = new Worklist(ast, environments);
   worklist.converge();
 
   for (const stmt of ast.statements) {

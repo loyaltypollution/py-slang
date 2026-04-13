@@ -2,29 +2,6 @@ import { ConductorError } from "@sourceacademy/conductor/common";
 import { StmtNS } from "../../ast-types";
 import { ModuleContext, NativeStorage } from "../../types";
 
-/**
- * Structural sink surface interpreters call at STORE / CALL sites. `Worklist`
- * implements this shape; standalone runs use `NULL_SINK`.
- */
-type RuntimeObservationSink = {
-  observeWrite(
-    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
-    rhsNode: import("../../ast-types").ExprNS.Expr,
-    rawValue: unknown,
-  ): void;
-  observeCall(
-    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
-    calleeKey: StmtNS.FileInput | StmtNS.FunctionDef,
-  ): void;
-};
-
-const NULL_SINK: RuntimeObservationSink = Object.freeze({
-  observeWrite(): void {},
-  observeCall(): void {},
-});
-
-export { NULL_SINK };
-export type { RuntimeObservationSink };
 import { Control } from "./control";
 import { Environment } from "./environment";
 import { CseError } from "./error";
@@ -66,16 +43,9 @@ export class Context {
     breakpointSteps: number[];
     changepointSteps: number[];
     /**
-     * Push-side for runtime observations. Always set — defaults to
-     * `NULL_SINK` for standalone execution; JIT-capable evaluators
-     * swap in the `Worklist` for the duration of a run. The LBD interpreter
-     * contract makes call-time pin accounting unnecessary.
-     */
-    observationSink: RuntimeObservationSink;
-    /**
-     * PR-5: optional fact-store push hooks. Wired by `PyCseEvaluator`
-     * alongside `observationSink`; `null` for standalone runs. Both
-     * paths stay live until PR-6 demolishes the legacy sink.
+     * Fact-store push hooks for the reactive optimizer. Wired by
+     * `PyCseEvaluator` for JIT-capable evaluators; `undefined` for
+     * standalone runs.
      */
     observeNodeWrite?: (nodeId: number, value: unknown) => void;
     observeScopeCall?: (scopeId: number) => void;
@@ -134,7 +104,6 @@ export class Context {
     envStepsTotal: 0,
     breakpointSteps: [],
     changepointSteps: [],
-    observationSink: NULL_SINK,
   });
 
   createEmptyStreams = (): { initialised: false } => ({

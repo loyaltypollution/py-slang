@@ -1,10 +1,8 @@
 // src/specialization/purity-analysis/analysis.ts
 //
-// Intraprocedural purity analysis as a CFG-walking helper. The legacy
-// `PurityScopePass` class (a `ScopePass` registered on the worklist) has
-// been demolished in PR-6a: its body now lives inside
-// `purityScopePass.transfer` (see `../framework/migrated-passes.ts`),
-// which calls `computePurity(unit)` below.
+// Intraprocedural purity analysis as a CFG-walking helper.
+// `purityScopePass` (below) is the `Pass<K,V>` handle whose transfer calls
+// `computePurity(unit)`.
 //
 // Fires once per `(unit, generation)` whenever `structuralPass` produces a
 // lattice-change write for the unit, and once at initial converge (seeded
@@ -27,7 +25,9 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import type { FunctionUnit } from "../framework/function-unit";
+import type { Lattice, Pass, PassCtx } from "../framework/pass";
 import type { SlotInfo, SlotLookup } from "../framework/slot-table";
+import { structuralPass } from "../framework/structural-pass";
 import {
   BOTTOM_FACT,
   IMPURE_CALL,
@@ -67,6 +67,53 @@ const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
  * converged for the scope — reads only the CFG + slot table, so its only
  * declared framework read is `structuralPass`.
  */
+// ── Pass<K,V> handle ────────────────────────────────────────────────────────
+// 3-point lattice: ⊥ = undefined, true, false, ⊤ = "contested". The
+// "contested" sentinel is reachable only from the Pass-layer join; while
+// `purityScopePass` is the sole writer, transfer returns boolean.
+export type PurityPoint = boolean | "contested" | undefined;
+
+const purityLattice: Lattice<PurityPoint> = {
+  bottom: undefined,
+  equals: (a, b) => a === b,
+  join: (a, b) => {
+    if (a === undefined) return b;
+    if (b === undefined) return a;
+    if (a === "contested" || b === "contested") return "contested";
+    if (a === b) return a;
+    return "contested";
+  },
+};
+
+// Key is the owning FunctionDef.id. Initial converge is primed from
+// worklist.processTransform.
+export const purityScopePass: Pass<number, PurityPoint> = {
+  id: Symbol("purityScopePass"),
+  debugName: "purityScopePass",
+  lattice: purityLattice,
+  reads: [structuralPass],
+  tier: "analysis",
+  coarse: false,
+  affectedKeys(_ctx, triggerPass, triggerKey) {
+    if (triggerPass === (structuralPass as Pass<any, any>)) {
+      const fd = (triggerKey as FunctionUnit).funcAst;
+      if (fd instanceof StmtNS.FunctionDef) return [fd.id];
+    }
+    return [];
+  },
+  transfer(ctx: PassCtx, key: number): PurityPoint {
+    const units = ctx.readAll(structuralPass);
+    for (const unit of units.keys()) {
+      const u = unit as FunctionUnit;
+      const fd = u.funcAst;
+      if (fd instanceof StmtNS.FunctionDef && fd.id === key) {
+        return computePurity(u);
+      }
+    }
+    return undefined;
+  },
+};
+
 export function computePurity(unit: FunctionUnit): boolean | undefined {
   const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return undefined;

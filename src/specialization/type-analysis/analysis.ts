@@ -1,8 +1,9 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { FactStore } from "../framework/fact-store";
-import { typeAnalysisPass } from "../framework/migrated-passes";
+import type { Lattice, Pass, PassCtx } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
+import { structuralPass } from "../framework/structural-pass";
 import type { AnalysisPass } from "../framework/interfaces";
 import type { SlotLookup } from "../framework/slot-table";
 import {
@@ -32,6 +33,34 @@ import {
 } from "./lattice";
 import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
 
+// ── Pass<K,V> handle ────────────────────────────────────────────────────────
+// Fact-store channel: values are written directly by `TypeAnalysisVisitor`;
+// this pass exists as a `Pass<K,V>` so downstream readers can subscribe via
+// the normal pass-graph mechanism.
+
+const typeLattice: Lattice<TypeLattice> = {
+  bottom: BOTTOM,
+  equals: (a, b) =>
+    a === b ||
+    (a.kinds === b.kinds &&
+      a.intRef === b.intRef &&
+      a.boolRef === b.boolRef &&
+      a.floatRef === b.floatRef),
+  join,
+};
+
+export const typeAnalysisPass: Pass<number, TypeLattice> = {
+  id: Symbol("typeAnalysisPass"),
+  debugName: "typeAnalysisPass",
+  lattice: typeLattice,
+  reads: [runtimeWritePass, structuralPass],
+  tier: "analysis",
+  coarse: true,
+  transfer(_ctx: PassCtx, _key: number): TypeLattice | undefined {
+    return undefined;
+  },
+};
+
 /**
  * Maps Python binary operator token types to the string expected by transfer functions.
  */
@@ -58,13 +87,6 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     private readonly factStore: FactStore,
     private readonly slotTypes: { get(slot: number): TypeLattice | undefined },
     private readonly slotLookup: SlotLookup,
-    /**
-     * Per-node tap. When supplied (e.g. by `nodeFactView.get`'s replay), the
-     * visitor emits to the tap and skips the fact-store write — the View
-     * gates publication itself. When absent (legacy driver), `annotate`
-     * publishes to the fact store as before.
-     */
-    private readonly tap?: (id: number, val: TypeLattice) => void,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
@@ -72,8 +94,7 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     const widened = observed !== undefined
       ? join(val, liftType(observed) ?? BOTTOM)
       : val;
-    if (this.tap) this.tap(node.id, widened);
-    else this.factStore.write(typeAnalysisPass, node.id, widened);
+    this.factStore.write(typeAnalysisPass, node.id, widened);
     return widened;
   }
 
@@ -276,9 +297,8 @@ export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
     factStore: FactStore,
     env: { get(slot: number): TypeLattice | undefined },
     slotLookup: SlotLookup,
-    tap?: (id: number, val: TypeLattice) => void,
   ): ExprNS.Visitor<TypeLattice> {
-    return new TypeAnalysisVisitor(factStore, env, slotLookup, tap);
+    return new TypeAnalysisVisitor(factStore, env, slotLookup);
   }
 
 }

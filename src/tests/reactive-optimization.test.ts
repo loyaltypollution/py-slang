@@ -13,7 +13,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import { buildTestWorklist } from "./utils";
 import type { FunctionUnit } from "../specialization/framework/function-unit";
 import type { FactStore } from "../specialization/framework/fact-store";
-import { constAnalysisPass } from "../specialization/framework/migrated-passes";
+import { constAnalysisPass } from "../specialization/const-analysis/analysis";
 
 function parseAndResolve(code: string) {
   const script = code + "\n";

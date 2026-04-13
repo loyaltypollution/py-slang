@@ -31,11 +31,7 @@ export function buildTestWorklist(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
 ): Worklist {
-  const worklist = new Worklist(ast, functionEnvironments, [
-    new TypeAnalysisPass(),
-    new ConstAnalysisPass(),
-  ]);
-  return worklist;
+  return new Worklist(ast, functionEnvironments);
 }
 
 /**

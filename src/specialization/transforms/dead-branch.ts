@@ -1,10 +1,7 @@
 // src/specialization/transforms/dead-branch.ts
 //
-// Dead branch elimination (PR-6c). The legacy `DeadBranchEliminationRule`
-// class (a `StmtTransformRule` in `worklist.transforms`) has been
-// demolished this PR: its match+apply logic now lives inside
-// `deadBranchRule.transfer` (see `../framework/migrated-passes.ts`), which
-// calls `applyDeadBranchSweep(unit)` below.
+// Dead branch elimination. `deadBranchRule` (below) is a unit-keyed
+// `Pass<FunctionUnit, Fired>` whose transfer calls `applyDeadBranchSweep`.
 //
 // Fires whenever `constAnalysisPass` or `structuralPass` produce a
 // lattice-change for the unit, plus an explicit initial-converge seed
@@ -17,10 +14,11 @@
 // no downstream consumer wakes spuriously.
 
 import { StmtNS } from "../../ast-types";
-import type { FactStore } from "../framework/fact-store";
+import { constAnalysisPass } from "../const-analysis/analysis";
 import type { ConstLattice } from "../const-analysis/lattice";
+import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
-import { constAnalysisPass } from "../framework/migrated-passes";
+import { unitSweepRule } from "../framework/transform-rule";
 
 /** Does this `if`-stmt have a statically-known boolean condition? */
 function matchesIf(stmt: StmtNS.Stmt, factStore: FactStore): stmt is StmtNS.If {
@@ -105,3 +103,9 @@ export function applyDeadBranchSweep(unit: FunctionUnit, factStore: FactStore): 
   v.sweep(unit.body);
   return v.changed;
 }
+
+export const deadBranchRule = unitSweepRule(
+  "deadBranchRule",
+  [constAnalysisPass],
+  applyDeadBranchSweep,
+);

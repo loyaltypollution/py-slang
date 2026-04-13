@@ -24,10 +24,17 @@ import {
   MEMO_MISS,
   memoPut,
 } from "../specialization";
-import { callCountPass } from "../specialization/framework/migrated-passes";
+import { callCountPass } from "../specialization/memoization-analysis/call-count";
+import { runtimeCallPass } from "../specialization/framework/runtime-passes";
 import type { FunctionUnit } from "../specialization/framework/function-unit";
 import type { Worklist } from "../specialization";
 import { buildTestWorklist } from "./utils";
+
+// Test-only helper: simulate N runtime calls to `fd` by writing the saturating
+// counter into runtimeCallPass.
+function observeCallsTo(reactive: Worklist, fd: StmtNS.FunctionDef, n: number): void {
+  for (let i = 1; i <= n; i++) reactive.observe(runtimeCallPass, fd.id, i);
+}
 
 function memoFired(reactive: Worklist, unit: FunctionUnit): boolean {
   return reactive.factStore.read(memoizationRule, unit) === "fired";
@@ -58,7 +65,7 @@ describe("CallCountScopePass + transform", () => {
 
     expect(reactive.factStore.tryRead(callCountPass, fd.id)).toBeUndefined();
 
-    for (let i = 0; i < 3; i++) reactive.observeCall(ast, fd);
+    observeCallsTo(reactive, fd, 3);
     expect(reactive.factStore.tryRead(callCountPass, fd.id)).toBe(3);
   });
 
@@ -67,7 +74,7 @@ describe("CallCountScopePass + transform", () => {
     reactive.converge();
     const fd = findFunctionDef(ast, "f");
 
-    for (let i = 0; i < MEMOIZATION_THRESHOLD - 1; i++) reactive.observeCall(ast, fd);
+    observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD - 1);
     reactive.tick();
 
     expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(false);
@@ -81,7 +88,7 @@ describe("CallCountScopePass + transform", () => {
     reactive.converge();
     const fd = findFunctionDef(ast, "f");
 
-    for (let i = 0; i < MEMOIZATION_THRESHOLD; i++) reactive.observeCall(ast, fd);
+    observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
     reactive.tick();
 
     // Transform marker recorded on the unit.
@@ -108,11 +115,11 @@ describe("CallCountScopePass + transform", () => {
     reactive.converge();
     const fd = findFunctionDef(ast, "f");
 
-    for (let i = 0; i < MEMOIZATION_THRESHOLD; i++) reactive.observeCall(ast, fd);
+    observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
     reactive.tick();
     const bodyLenAfterFirst = fd.body.length;
 
-    for (let i = 0; i < MEMOIZATION_THRESHOLD; i++) reactive.observeCall(ast, fd);
+    observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
     reactive.tick();
 
     expect(fd.body.length).toBe(bodyLenAfterFirst);
@@ -135,7 +142,7 @@ describe("CallCountScopePass + transform", () => {
     reactive.converge();
     const fd = findFunctionDef(ast, "answer");
 
-    for (let i = 0; i < MEMOIZATION_THRESHOLD; i++) reactive.observeCall(ast, fd);
+    observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
     reactive.tick();
 
     expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(true);
@@ -160,7 +167,7 @@ describe("CallCountScopePass + transform", () => {
     reactive.converge();
     const fd = findFunctionDef(ast, "f");
 
-    for (let i = 0; i < MEMOIZATION_THRESHOLD; i++) reactive.observeCall(ast, fd);
+    observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
     reactive.tick();
 
     // Collect all Return nodes in the wrapped body (skipping the prelude's
@@ -195,7 +202,7 @@ describe("CallCountScopePass + transform", () => {
     reactive.converge();
     const fd = findFunctionDef(ast, "g");
 
-    for (let i = 0; i < MEMOIZATION_THRESHOLD * 2; i++) reactive.observeCall(ast, fd);
+    observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD * 2);
     reactive.tick();
 
     expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(false);
@@ -220,7 +227,7 @@ describe("CallCountScopePass + transform", () => {
     reactive.converge();
     const fd = findFunctionDef(ast, "f");
 
-    for (let i = 0; i < MEMOIZATION_THRESHOLD * 2; i++) reactive.observeCall(ast, fd);
+    observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD * 2);
     reactive.tick();
 
     expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(false);

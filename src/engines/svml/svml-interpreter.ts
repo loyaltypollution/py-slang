@@ -15,28 +15,7 @@ import {
   SVMLProgram,
   SVMLType,
 } from "./types";
-import type { ExprNS, StmtNS } from "../../ast-types";
-
-/**
- * Structural sink surface the interpreter calls at STORE / CALL sites.
- * `Worklist` implements this shape; standalone runs use `NULL_SINK`.
- */
-type RuntimeObservationSink = {
-  observeWrite(
-    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
-    rhsNode: ExprNS.Expr,
-    rawValue: unknown,
-  ): void;
-  observeCall(
-    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
-    calleeKey: StmtNS.FileInput | StmtNS.FunctionDef,
-  ): void;
-};
-
-const NULL_SINK: RuntimeObservationSink = Object.freeze({
-  observeWrite(): void {},
-  observeCall(): void {},
-});
+import type { StmtNS } from "../../ast-types";
 
 const __DEBUG__ =
   typeof (globalThis as Record<string, unknown>).__DEBUG__ !== "undefined" &&
@@ -80,20 +59,10 @@ export class SVMLInterpreter {
   private maxInstructionLimit: number = 1000000;
 
   /**
-   * Push-side hook invoked at STORE / CALL sites. Defaults to
-   * `NULL_SINK` for standalone bytecode execution;
-   * `PySvmlJitEvaluator` wires in the reactive worklist. All callbacks are
-   * best-effort and must not throw.
-   */
-  private observationSink: RuntimeObservationSink = NULL_SINK;
-
-  /**
-   * PR-5 fact-store observers — called alongside `observationSink` at
-   * STORE / CALL sites. `observeNodeWrite(nodeId, value)` feeds
-   * `runtimeWritePass`; `observeScopeCall(scopeId)` feeds
-   * `runtimeCallPass`. Defaults are no-ops; `PySvmlJitEvaluator` wires
-   * them to `worklist.observe(...)` calls. The legacy observationSink
-   * callback pair stays live alongside until PR-B inlines it.
+   * Fact-store observers invoked at STORE / CALL sites. `observeNodeWrite`
+   * feeds `runtimeWritePass`; `observeScopeCall` feeds `runtimeCallPass`.
+   * Defaults are no-ops for standalone bytecode execution;
+   * `PySvmlJitEvaluator` wires them to `worklist.observe(...)` calls.
    */
   private observeNodeWrite: (nodeId: number, value: unknown) => void = () => {};
   private observeScopeCall: (scopeId: number) => void = () => {};
@@ -105,7 +74,6 @@ export class SVMLInterpreter {
       maxCallDepth?: number;
       maxInstructions?: number;
       sendOutput?: (msg: string) => void;
-      observationSink?: RuntimeObservationSink;
       observeNodeWrite?: (nodeId: number, value: unknown) => void;
       observeScopeCall?: (scopeId: number) => void;
     },
@@ -120,7 +88,6 @@ export class SVMLInterpreter {
       if (options.maxStackSize) this.maxStackSize = options.maxStackSize;
       if (options.maxCallDepth) this.maxCallDepth = options.maxCallDepth;
       if (options.maxInstructions) this.maxInstructionLimit = options.maxInstructions;
-      if (options.observationSink) this.observationSink = options.observationSink;
       if (options.observeNodeWrite) this.observeNodeWrite = options.observeNodeWrite;
       if (options.observeScopeCall) this.observeScopeCall = options.observeScopeCall;
     }
@@ -794,8 +761,6 @@ export class SVMLInterpreter {
     if (ir.scopeKey === undefined) return;
     const site = ir.observationSites.get(pc);
     if (!site || site.kind !== "write") return;
-    this.observationSink.observeWrite(ir.scopeKey, site.node, value);
-    // PR-5: parallel write into runtimeWritePass. Legacy stays live.
     this.observeNodeWrite(site.node.id, value);
   }
 
@@ -810,8 +775,6 @@ export class SVMLInterpreter {
     if (callerKey === undefined || calleeKey === undefined) return;
     const site: ObservationSite | undefined = this.currentFrame.ir.observationSites.get(pc);
     if (!site || site.kind !== "call") return;
-    this.observationSink.observeCall(callerKey, calleeKey);
-    // PR-5: parallel write into runtimeCallPass keyed by callee scope id.
     this.observeScopeCall(calleeKey.id);
   }
 

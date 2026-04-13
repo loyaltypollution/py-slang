@@ -57,7 +57,7 @@ const config = [
       file: `dist/${EVALUATOR}.cjs`,
       format: "cjs",
       exports: "default",
-      sourcemap: true,
+      sourcemap: false,
     },
     plugins: plugins(),
   },

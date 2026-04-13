@@ -33,8 +33,7 @@ export class FactStore {
 
   read<K, V>(pass: Pass<K, V>, key: K): V {
     const inner = this.cells.get(pass as Pass<unknown, unknown>);
-    if (inner === undefined) return pass.lattice.bottom;
-    if (!inner.has(key)) return pass.lattice.bottom;
+    if (inner === undefined || !inner.has(key)) return pass.lattice.bottom;
     return inner.get(key) as V;
   }
 
