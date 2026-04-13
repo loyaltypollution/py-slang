@@ -1,9 +1,12 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import type { FactStore } from "../framework/fact-store";
+import type { BasicBlock } from "../framework/cfg";
+import { FactStore } from "../framework/fact-store";
 import { typeAnalysisPass } from "../framework/migrated-passes";
 import { runtimeWritePass } from "../framework/runtime-passes";
 import type { AnalysisPass } from "../framework/interfaces";
+import { transferBlock } from "../framework/block-transfer";
+import type { MutableEnv } from "../framework/mutable-env";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type TypeLattice,
@@ -281,6 +284,36 @@ export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
     return new TypeAnalysisVisitor(factStore, env, slotLookup, tap);
   }
 
+}
+
+/**
+ * Pure block transfer for the runtime Query world (Phase 3b).
+ *
+ * Unlike the legacy path — which reads `runtimeWritePass` from a shared
+ * `FactStore` and writes facts back into it — this helper takes observations
+ * as an explicit `ReadonlyMap<NodeId, unknown>` and discards the visitor's
+ * per-node tap output. The query runtime records dep edges by pulling
+ * `runtimeWrite` entries for reachable NodeIds before invoking this.
+ *
+ * Implemented by constructing an ephemeral FactStore pre-seeded with the
+ * observations under `runtimeWritePass`, then delegating to `transferBlock`
+ * with a no-op tap so no `typeAnalysisPass` writes leak into the store.
+ * Additive — does not alter behavior of existing exports.
+ */
+export function transferBlockPureType(
+  block: BasicBlock,
+  inEnv: MutableEnv<TypeLattice>,
+  slotLookup: SlotLookup,
+  observations: ReadonlyMap<number, unknown>,
+): MutableEnv<TypeLattice> {
+  const factStore = new FactStore();
+  for (const [id, val] of observations) {
+    factStore.write(runtimeWritePass, id, val);
+  }
+  const pass = new TypeAnalysisPass();
+  return transferBlock(block, inEnv, pass, factStore, slotLookup, () => {
+    // tap swallows per-node facts; the query returns exit env only
+  });
 }
 
 // CSE stack values are tagged objects with `.type` discriminator.

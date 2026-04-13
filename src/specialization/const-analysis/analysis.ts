@@ -1,9 +1,12 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import type { FactStore } from "../framework/fact-store";
+import type { BasicBlock } from "../framework/cfg";
+import { FactStore } from "../framework/fact-store";
 import { constAnalysisPass } from "../framework/migrated-passes";
 import { runtimeWritePass } from "../framework/runtime-passes";
 import type { AnalysisPass } from "../framework/interfaces";
+import { transferBlock } from "../framework/block-transfer";
+import type { MutableEnv } from "../framework/mutable-env";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
@@ -250,6 +253,27 @@ export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
     return new ConstAnalysisVisitor(factStore, env, slotLookup, tap);
   }
 
+}
+
+/**
+ * Pure block transfer for the runtime Query world (Phase 3b). See the
+ * matching helper in type-analysis/analysis.ts for the full rationale.
+ * Additive — does not alter behavior of existing exports.
+ */
+export function transferBlockPureConst(
+  block: BasicBlock,
+  inEnv: MutableEnv<ConstLattice>,
+  slotLookup: SlotLookup,
+  observations: ReadonlyMap<number, unknown>,
+): MutableEnv<ConstLattice> {
+  const factStore = new FactStore();
+  for (const [id, val] of observations) {
+    factStore.write(runtimeWritePass, id, val);
+  }
+  const pass = new ConstAnalysisPass();
+  return transferBlock(block, inEnv, pass, factStore, slotLookup, () => {
+    // tap swallows per-node facts; the query returns exit env only
+  });
 }
 
 function liftConst(rawValue: unknown): ConstLattice | undefined {

@@ -8,3 +8,5 @@ export { InputHandle, defineInput } from "./input";
 export { Db } from "./db";
 export * from "./inputs";
 export { cfgOf } from "./queries/cfg";
+export { typeBlockEnvs, constBlockEnvs } from "./queries/block-envs";
+export { kildall } from "./queries/kildall";

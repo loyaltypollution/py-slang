@@ -1,4 +1,5 @@
 import { StmtNS } from "../../ast-types";
+import type { FunctionEnvironments } from "../../resolver";
 import type { Lattice } from "./lattice";
 import { defineInput, InputHandle } from "./input";
 
@@ -35,3 +36,16 @@ export const runtimeWrite: InputHandle<number, unknown> =
 
 export const runtimeCall: InputHandle<number, number> =
   defineInput("runtimeCall", callCountLattice, String);
+
+// Resolver output: maps each scope AST to its `Environment`. Required by
+// analyses that need slot-table lookups. Identity-equals lattice — the
+// resolver produces a fresh map per parse; no structural sharing with
+// prior runs.
+const environmentsLattice: Lattice<FunctionEnvironments | undefined> = {
+  bottom: undefined,
+  equals: (a, b) => a === b,
+  join: (_a, b) => b,
+};
+
+export const environmentsOf: InputHandle<number, FunctionEnvironments | undefined> =
+  defineInput("environmentsOf", environmentsLattice, String);
