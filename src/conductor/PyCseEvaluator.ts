@@ -11,13 +11,6 @@ import {
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import {
-  ConstAnalysisPass,
-  Worklist,
-  TypeAnalysisPass,
-  runtimeCallPass,
-  runtimeWritePass,
-} from "../specialization";
 import { Db, astOf, runtimeCall, runtimeWrite } from "../specialization/runtime";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
@@ -94,23 +87,17 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         throw errors[errors.length - 1];
       }
 
-      const worklist = new Worklist(ast, environments, [new TypeAnalysisPass(), new ConstAnalysisPass()]);
-      worklist.converge();
-
       this.context.runtime.rootScope = ast;
-      this.context.runtime.observationSink = worklist;
-      // PR-5 fact-store push (parallel to observationSink). Per-callee
-      // raw counters live in the closure for this evaluation.
+      // Observations flow only through the query-runtime Inputs now; the
+      // legacy Worklist observeWrite pathway was dissolved in 5b-ii.
       const callCounts = new Map<number, number>();
       const db = this.db;
       this.context.runtime.observeNodeWrite = (nodeId, value) => {
-        worklist.observe(runtimeWritePass, nodeId, value);
         runtimeWrite.set(db, nodeId, value);
       };
       this.context.runtime.observeScopeCall = (scopeId) => {
         const next = (callCounts.get(scopeId) ?? 0) + 1;
         callCounts.set(scopeId, next);
-        worklist.observe(runtimeCallPass, scopeId, next);
         runtimeCall.set(db, scopeId, next);
       };
 
@@ -119,7 +106,6 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
           variant: this.variant,
           groups: this.groups,
         });
-        worklist.tick();
       } finally {
         this.context.runtime.observationSink = NULL_SINK;
         this.context.runtime.observeNodeWrite = undefined;

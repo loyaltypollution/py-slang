@@ -3,11 +3,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import {
-  ConstAnalysisPass,
-  Worklist,
-  TypeAnalysisPass,
-} from "../specialization";
+import { buildFunctionUnits } from "../specialization";
 import { Db, astOf, environmentsOf } from "../specialization/runtime";
 import { EvaluatorError } from "./errors";
 
@@ -20,14 +16,14 @@ export class PySvmlEvaluator extends BasicEvaluator {
       if (errors.length > 0) {
         throw errors[0];
       }
-      const worklist = new Worklist(ast, environments, [new TypeAnalysisPass(), new ConstAnalysisPass()]);
-      worklist.converge();
-      // Phase 5a: populate the query-runtime Inputs the SVMLCompiler's
-      // typeOf/constOf reads depend on. Worklist remains for legacy consumers.
+      // Populate the query-runtime Inputs the SVMLCompiler's typeOf/constOf
+      // reads depend on. unitMap is built inline (pure structural helper)
+      // since the Worklist no longer exists to own it.
       const db = new Db();
       astOf.set(db, 0, ast);
       environmentsOf.set(db, 0, environments);
-      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units, worklist.factStore, db);
+      const units = buildFunctionUnits(ast, environments, []);
+      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, undefined, db);
       const program = compiler.compileProgram(ast);
       const interpreter = new SVMLInterpreter(program, {
         sendOutput: this.conductor.sendOutput,

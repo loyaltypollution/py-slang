@@ -4,13 +4,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import {
-  ConstAnalysisPass,
-  TypeAnalysisPass,
-  Worklist,
-  runtimeCallPass,
-  runtimeWritePass,
-} from "../specialization";
+import { buildFunctionUnits } from "../specialization";
 import {
   Db,
   astOf,
@@ -51,18 +45,14 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       astOf.set(this.db, 0, ast);
       environmentsOf.set(this.db, 0, environments);
 
-      // Worklist still drives legacy fact-store consumers (5b-ii removes).
-      const worklist = new Worklist(ast, environments, [
-        new TypeAnalysisPass(),
-        new ConstAnalysisPass(),
-      ]);
-      worklist.converge();
+      // unitMap is a pure structural helper; no Worklist needed.
+      const units = buildFunctionUnits(ast, environments, []);
 
       const compiler = SVMLCompiler.fromProgramUnit(
         ast,
         environments,
-        worklist.units,
-        worklist.factStore,
+        units,
+        undefined,
         this.db,
       );
       const program = compiler.compileProgram(ast);
@@ -71,14 +61,9 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
 
       const interpreter = new SVMLInterpreter(program, {
         sendOutput: this.conductor.sendOutput,
-        observationSink: worklist,
-        observeNodeWrite: (nodeId, value) => {
-          worklist.observe(runtimeWritePass, nodeId, value);
-        },
         observeScopeCall: (scopeId) => {
           const next = (callCounts.get(scopeId) ?? 0) + 1;
           callCounts.set(scopeId, next);
-          worklist.observe(runtimeCallPass, scopeId, next);
           runtimeCall.set(this.db, scopeId, next);
 
           // Pull the current lowered AST. Cache + lattice-equals make
