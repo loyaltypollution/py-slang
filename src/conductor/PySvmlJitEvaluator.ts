@@ -11,6 +11,7 @@ import {
   environmentsOf,
   optimizedAstOf,
   runtimeCall,
+  runtimeWrite,
 } from "../specialization/runtime";
 import { EvaluatorError } from "./errors";
 
@@ -60,6 +61,9 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
 
       const interpreter = new SVMLInterpreter(program, {
         sendOutput: this.conductor.sendOutput,
+        observeNodeWrite: (nodeId, value) => {
+          runtimeWrite.set(this.db, nodeId, value);
+        },
         observeScopeCall: (scopeId) => {
           const next = (callCounts.get(scopeId) ?? 0) + 1;
           callCounts.set(scopeId, next);
@@ -97,8 +101,8 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
     ast: StmtNS.FileInput,
     interpreter: SVMLInterpreter,
   ): void {
-    const reSource = ""; // source text irrelevant for re-resolution of synthesized AST
-    const { environments: newEnvs } = analyzeWithEnvironments(ast, reSource, 4);
+    // Source text irrelevant for re-resolution of synthesized AST.
+    const { environments: newEnvs } = analyzeWithEnvironments(ast, "", 4);
     // Throwaway Db: the recompile runs on a lowered AST whose node ids no
     // longer match analysis facts in `this.db`, so specialization hints
     // fall back to BOTTOM (safe, generic opcodes) — exactly what we want.

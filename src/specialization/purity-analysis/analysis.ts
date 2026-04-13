@@ -1,28 +1,13 @@
-// src/specialization/purity-analysis/analysis.ts
-//
-// Intraprocedural purity analysis as a CFG-walking helper. The legacy
-// `PurityScopePass` class (a `ScopePass` registered on the worklist) has
-// been demolished in PR-6a: its body now lives inside
-// `purityScopePass.transfer` (see `../framework/migrated-passes.ts`),
-// which calls `computePurity(unit)` below.
-//
-// Fires once per `(unit, generation)` whenever `structuralPass` produces a
-// lattice-change write for the unit, and once at initial converge (seeded
-// by the worklist's legacy `processTransform` step). Walks `unit.cfg`
-// directly: initialises every block's IN at ⊥ (`BOTTOM_FACT`), propagates
-// per-statement transfer, joins at merges, iterates to fixpoint on a FIFO
-// worklist, then derives a boolean `pure` verdict from the fact flowing
-// out of the CFG exit block.
+// Intraprocedural purity analysis. Called from `purityOf` in
+// `runtime/queries/scope.ts` via `computePurityFromParts`; walks a
+// function's CFG with a FIFO worklist over the PurityFact lattice and
+// derives a pure/impure verdict from the fact at the exit block.
 //
 // Grammar note: this AST has no `Raise`, `Yield`, `Try`/`Except`, or
-// attribute-store. The only disqualifying effects the language can
-// express are subscript-store, `assert`, nonlocal/global access,
-// `lambda`, `List` literal, nested `FunctionDef`, `Starred`, `Global`,
-// `NonLocal`, and `FromImport`. All collapse into the fact's sticky
-// `impure` flag.
-//
-// Consumer: `MemoizationTransformRule.matches` reads `hint.pure`, which
-// routes through the migrated `purityScopePass` fact cell.
+// attribute-store. The only disqualifying effects are subscript-store,
+// `assert`, nonlocal/global access, `lambda`, `List` literal, nested
+// `FunctionDef`, `Starred`, `Global`, `NonLocal`, and `FromImport` —
+// all collapse into the fact's sticky `impure` flag.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock, CFG } from "../framework/cfg";

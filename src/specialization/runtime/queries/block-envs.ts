@@ -7,9 +7,8 @@
 // (unit, analysis), returning `ReadonlyMap<BlockId, Env>`. Per-node queries
 // (Phase 3c+) project from this map.
 
-import type { BlockId, CFG } from "../../framework/cfg";
+import type { BlockId } from "../../framework/cfg";
 import { MutableEnv } from "../../framework/mutable-env";
-import { buildSlotTable, type SlotLookup } from "../../framework/slot-table";
 import {
   type ConstLattice,
   constJoin,
@@ -22,12 +21,15 @@ import {
   leq as typeLeq,
 } from "../../type-analysis/lattice";
 import { transferBlockWithObservations as transferBlockWithObservationsType } from "../../type-analysis/analysis";
-import type { Db } from "../db";
-import { astOf, environmentsOf, runtimeWrite } from "../inputs";
 import type { Lattice } from "../lattice";
 import { defineQuery, type QueryHandle } from "../query";
 import { cfgOf } from "./cfg";
 import { kildall } from "./kildall";
+import {
+  collectAllIds,
+  gatherObservations,
+  slotLookupForUnit,
+} from "./node-projection";
 
 // ── Env-level lattice helper ─────────────────────────────────────────────
 
@@ -81,71 +83,6 @@ function mapLattice<L>(
   };
 }
 
-// ── Query-body scaffolding ───────────────────────────────────────────────
-
-// Walk every AST node reachable from block statements and collect numeric
-// `.id` fields. Mirrors the reflection approach used by
-// `function-unit.populateBlockOfNode`. Used to pre-register dep edges on
-// `runtimeWrite` inputs so an observation on any reachable node
-// invalidates the DFA.
-function collectNodeIds(cfg: CFG): number[] {
-  const ids = new Set<number>();
-  const seen = new WeakSet<object>();
-  const walk = (node: unknown): void => {
-    if (node === null || typeof node !== "object") return;
-    if (seen.has(node as object)) return;
-    seen.add(node as object);
-    const obj = node as Record<string, unknown>;
-    const id = obj.id;
-    if (typeof id === "number") ids.add(id);
-    for (const key of Object.keys(obj)) {
-      const child = obj[key];
-      if (Array.isArray(child)) for (const item of child) walk(item);
-      else if (typeof child === "object" && child !== null) walk(child);
-    }
-  };
-  for (const block of cfg.blocks) for (const stmt of block.stmts) walk(stmt);
-  return [...ids].sort((a, b) => a - b);
-}
-
-function slotLookupForUnit(db: Db, unitId: number): SlotLookup {
-  const ast = astOf.get(db, unitId);
-  if (ast === undefined) {
-    throw new Error(`block-envs(${unitId}): no AST set`);
-  }
-  const envs = environmentsOf.get(db, unitId);
-  if (envs === undefined) {
-    throw new Error(
-      `block-envs(${unitId}): no FunctionEnvironments set — call environmentsOf.set(db, ${unitId}, resolver.functionEnvironments)`,
-    );
-  }
-  const scopeEnv = envs.get(ast);
-  if (scopeEnv === undefined) {
-    throw new Error(
-      `block-envs(${unitId}): FunctionEnvironments has no entry for the top-level FileInput`,
-    );
-  }
-  // Top-level FileInput scope has no parameters.
-  return buildSlotTable(scopeEnv, []);
-}
-
-function gatherObservations(
-  db: Db,
-  nodeIds: readonly number[],
-): ReadonlyMap<number, unknown> {
-  const out = new Map<number, unknown>();
-  for (const id of nodeIds) {
-    // Every read registers a dep edge on `runtimeWrite@id`; that's how a
-    // runtime observation invalidates this query. `undefined` (lattice
-    // bottom) means "no observation" and is dropped from the observations
-    // map so the legacy `tryRead` path sees "absent" rather than "widened
-    // to undefined."
-    const obs = runtimeWrite.get(db, id);
-    if (obs !== undefined) out.set(id, obs);
-  }
-  return out;
-}
-
 // ── typeBlockEnvs ────────────────────────────────────────────────────────
 
 const typeEnvLattice = envLattice<TypeLattice>(typeLeq, typeJoin);
@@ -163,9 +100,8 @@ export const typeBlockEnvs: QueryHandle<
     if (cfg === undefined) {
       throw new Error(`typeBlockEnvs(${unitId}): cfg undefined`);
     }
-    const slotLookup = slotLookupForUnit(db, unitId);
-    const nodeIds = collectNodeIds(cfg);
-    const observations = gatherObservations(db, nodeIds);
+    const slotLookup = slotLookupForUnit(db, unitId, "typeBlockEnvs");
+    const observations = gatherObservations(db, collectAllIds(cfg));
     const initial = new MutableEnv<TypeLattice>();
     return kildall<TypeLattice>(
       cfg,
@@ -193,9 +129,8 @@ export const constBlockEnvs: QueryHandle<
     if (cfg === undefined) {
       throw new Error(`constBlockEnvs(${unitId}): cfg undefined`);
     }
-    const slotLookup = slotLookupForUnit(db, unitId);
-    const nodeIds = collectNodeIds(cfg);
-    const observations = gatherObservations(db, nodeIds);
+    const slotLookup = slotLookupForUnit(db, unitId, "constBlockEnvs");
+    const observations = gatherObservations(db, collectAllIds(cfg));
     const initial = new MutableEnv<ConstLattice>();
     return kildall<ConstLattice>(
       cfg,
