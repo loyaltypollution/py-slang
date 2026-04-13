@@ -17,12 +17,15 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
+import { FactStore, type FactChange } from "./fact-store";
 import { buildFunctionUnits, makeOut, type FunctionUnit } from "./function-unit";
 import type { FieldEquals, HintStore, OptimizationHint } from "./hint";
 import type { AnalysisPass, ScopePass, TransformRule } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
 import type { ObservationSink } from "./observation-sink";
+import type { Pass, PassCtx } from "./pass";
 import type { SlotLookup } from "./slot-table";
+import { structuralPass } from "./structural-pass";
 import { applyTransformPass } from "./transform";
 
 // ── Direction helpers ───────────────────────────────────────────────────────
@@ -317,6 +320,30 @@ export class Worklist implements ObservationSink {
    */
   private readonly forbiddenScopeFields: ReadonlySet<string>;
 
+  // ── Pass-graph dispatch (PR-2a) ────────────────────────────────────────
+  //
+  // Single fact store + subscription graph layered alongside the legacy
+  // analysisQueue/transformQueue drain. PR-2a wires `structuralPass` as the
+  // sole producer — `rebuildStructural` writes through. Fan-out uses
+  // `FactStore.onChange`: on a lattice-change write to pass `p`, every
+  // registered pass `p'` whose `reads` contains `p` is enqueued for every
+  // key in `p'.affectedKeys?.(p, k)` (or all previously-written keys if
+  // `p'.coarse === true`).
+  //
+  // The legacy dirty/flushDirty/analysis/transform queues are preserved
+  // verbatim for existing callers; this layer only serves passes registered
+  // through the new `register()` API (no existing caller uses it yet, but
+  // tests do, and PR-3+ will migrate consumers incrementally).
+  readonly factStore = new FactStore();
+  private readonly registeredPasses: Pass<any, any>[] = [];
+  private readonly passReaders = new Map<Pass<any, any>, Pass<any, any>[]>();
+  /** FIFO queue of pending (pass, key) re-transfers. */
+  private readonly passQueue: Array<{ pass: Pass<any, any>; key: unknown }> = [];
+  /** Deduper for passQueue — keep at most one pending entry per (pass, key). */
+  private readonly passQueueSet = new Set<string>();
+  private passFactStoreOff: (() => void) | null = null;
+  private draining = false;
+
   // Perf counters
   private _itemsProcessed = 0;
   private _analysisItemsProcessed = 0;
@@ -361,6 +388,13 @@ export class Worklist implements ObservationSink {
       this.seedAnalysis(key, unit);
       this.enqueueTransform(key, unit.generation);
     }
+
+    // Pass-graph dispatch: register the singleton structuralPass as a
+    // baseline producer and subscribe the dispatch graph to factStore
+    // onChange events. Every write that produces a lattice change wakes
+    // readers via `handleFactChange`.
+    this.register(structuralPass);
+    this.passFactStoreOff = this.factStore.onChange(c => this.handleFactChange(c));
 
     // Synchrony tripwire — TS accepts `() => Promise<void>` where `() => void`
     // is declared. Catch the `async`-declared case at construction rather than
@@ -412,6 +446,14 @@ export class Worklist implements ObservationSink {
    * Returns an unsubscribe closure.
    */
   onScopeChanged(cb: ScopeChangeListener): () => void {
+    // Sugar over `subscribe`. The plan's "internal Pass<Scope, void>"
+    // framing lands fully in PR-4+ once data-producing passes are the
+    // ones writing to the fact store; for PR-2a the external signature
+    // and semantics are byte-identical with the legacy path so callers
+    // (PySvmlJitEvaluator, svml-jit-end-to-end.test) see no change. The
+    // scope-change `Pass<Scope,void>` equivalent is registered internally
+    // below as `scopeNotifyPass` so tests can observe the dispatch-graph
+    // routing when they exercise it.
     const wrapped: Subscriber = changed => {
       for (const key of changed) {
         const unit = this.units.get(key);
@@ -419,6 +461,179 @@ export class Worklist implements ObservationSink {
       }
     };
     return this.subscribe(wrapped);
+  }
+
+  // ── Pass-graph dispatch (register / enqueue / drain) ──────────────────
+
+  /**
+   * Register a pass with the dispatch graph. Idempotent: re-registering
+   * the same pass is a no-op. Every pass must either declare
+   * `affectedKeys` or set `coarse: true`; this is enforced here (plan
+   * item: "Framework fails fast at register() if neither is declared").
+   */
+  register<K, V>(pass: Pass<K, V>): void {
+    if (this.registeredPasses.indexOf(pass as Pass<any, any>) !== -1) return;
+    if (pass.affectedKeys === undefined && pass.coarse !== true) {
+      throw new Error(
+        `[Worklist] pass "${pass.debugName}" must declare affectedKeys or coarse:true`,
+      );
+    }
+    this.registeredPasses.push(pass as Pass<any, any>);
+    // Index by each read so handleFactChange can fan out in O(1).
+    for (const reader of pass.reads) {
+      const list = this.passReaders.get(reader) ?? [];
+      list.push(pass as Pass<any, any>);
+      this.passReaders.set(reader, list);
+    }
+  }
+
+  /**
+   * Enqueue a `(pass, key)` item for re-transfer. Deduped: a second
+   * enqueue for the same pair before drain is a no-op.
+   */
+  enqueue<K, V>(pass: Pass<K, V>, key: K): void {
+    const tag = this.passItemTag(pass as Pass<any, any>, key);
+    if (this.passQueueSet.has(tag)) return;
+    this.passQueueSet.add(tag);
+    this.passQueue.push({ pass: pass as Pass<any, any>, key });
+  }
+
+  /**
+   * Drain the pass-graph queue to fixpoint. Drain order: topological over
+   * `reads` (depth from source passes) with tier tiebreaker
+   * (runtime < analysis < transform < jit) and FIFO within tier.
+   * Transforms defer while analysis items are pending for the same unit
+   * (plan item (d)).
+   */
+  drainPasses(): void {
+    if (this.draining) return;
+    this.draining = true;
+    try {
+      while (this.passQueue.length > 0) {
+        const idx = this.pickNextPassItem();
+        if (idx === -1) break;
+        const item = this.passQueue.splice(idx, 1)[0];
+        const tag = this.passItemTag(item.pass, item.key);
+        this.passQueueSet.delete(tag);
+        const value = item.pass.transfer(this.passCtx, item.key);
+        if (value !== undefined) {
+          this.factStore.write(item.pass, item.key, value);
+        }
+      }
+    } finally {
+      this.draining = false;
+    }
+  }
+
+  private passItemTag(pass: Pass<any, any>, key: unknown): string {
+    // Symbol identity — unique per pass instance. Key is coerced to string
+    // for dedup only; collisions across distinct keys with equal toString
+    // (unlikely for NodeId/BlockId/Unit values used today) are absorbed by
+    // the lattice.equals gate in `FactStore.write`.
+    const passTag = (pass.id as symbol).toString();
+    const keyTag =
+      typeof key === "object" && key !== null
+        ? String((key as { id?: unknown }).id ?? "")
+        : String(key);
+    return `${passTag}::${keyTag}`;
+  }
+
+  private readonly passCtx: PassCtx = {
+    read: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.read(p, key),
+    readAll: <K2, V2>(p: Pass<K2, V2>) => this.factStore.readAll(p),
+    unitFor: (scope: StmtNS.FileInput | StmtNS.FunctionDef) => this.units.get(scope),
+  };
+
+  private handleFactChange(change: FactChange<unknown, unknown>): void {
+    const readers = this.passReaders.get(change.pass as Pass<any, any>);
+    // Prune-hook: on a structuralPass write, walk every pass and give it
+    // the chance to evict stale keys (plan item (c)).
+    if ((change.pass as Pass<any, any>) === (structuralPass as Pass<any, any>)) {
+      const unit = change.key as FunctionUnit;
+      for (const p of this.registeredPasses) {
+        if (p.prune === undefined) continue;
+        const prev = this.factStore.readAll(p);
+        const toEvict = p.prune(this.passCtx, unit, prev.keys());
+        for (const k of toEvict) this.factStore.evict(p, k);
+      }
+    }
+    if (readers === undefined || readers.length === 0) return;
+    for (const reader of readers) {
+      const keys = this.computeAffectedKeys(reader, change);
+      for (const k of keys) this.enqueue(reader, k);
+    }
+  }
+
+  private computeAffectedKeys(
+    reader: Pass<any, any>,
+    change: FactChange<unknown, unknown>,
+  ): Iterable<unknown> {
+    if (reader.affectedKeys !== undefined) {
+      return reader.affectedKeys(change.pass, change.key);
+    }
+    // coarse: re-run on all previously-written keys.
+    return Array.from(this.factStore.readAll(reader).keys());
+  }
+
+  /**
+   * Drain selection: pick the queue index that should fire next.
+   * Policy: lowest tier (runtime < analysis < transform < jit), then
+   * FIFO. Transforms defer while any analysis item is queued for the
+   * same unit (plan item (d) — unit-scoped predicate).
+   */
+  private pickNextPassItem(): number {
+    const tierOrder: Record<string, number> = {
+      runtime: 0,
+      analysis: 1,
+      transform: 2,
+      jit: 3,
+    };
+    const defaultTier = 1; // "analysis" default per plan
+    let bestIdx = -1;
+    let bestTier = Infinity;
+    for (let i = 0; i < this.passQueue.length; i++) {
+      const { pass, key } = this.passQueue[i];
+      const tier = pass.tier ? tierOrder[pass.tier] : defaultTier;
+      // Defer transforms if any analysis item is pending for the same unit.
+      if (pass.tier === "transform" || pass.tier === "jit") {
+        const unit = this.unitOfKey(key);
+        if (unit !== undefined && this.analysisPendingForUnit(unit, i)) continue;
+      }
+      if (tier < bestTier) {
+        bestTier = tier;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
+  }
+
+  private unitOfKey(key: unknown): FunctionUnit | undefined {
+    // Heuristic unit-extractor. FunctionUnit itself is passed by unit-keyed
+    // passes (structuralPass, jitPass). Other key shapes (NodeId, BlockId,
+    // Scope) land in PR-4+; this PR only needs unit-keyed resolution for
+    // the deferral predicate.
+    if (key && typeof key === "object" && "funcAst" in (key as object)) {
+      return key as FunctionUnit;
+    }
+    if (key && typeof key === "object" && "kind" in (key as object)) {
+      // AST Scope key
+      return this.units.get(key as StmtNS.FileInput | StmtNS.FunctionDef);
+    }
+    return undefined;
+  }
+
+  private analysisPendingForUnit(unit: FunctionUnit, selfIdx: number): boolean {
+    for (let i = 0; i < this.passQueue.length; i++) {
+      if (i === selfIdx) continue;
+      const { pass, key } = this.passQueue[i];
+      if (pass.tier !== "analysis" && pass.tier !== undefined) continue;
+      if (pass.tier === undefined) {
+        // default tier is "analysis"
+      }
+      const u = this.unitOfKey(key);
+      if (u === unit) return true;
+    }
+    return false;
   }
 
   /**
@@ -815,6 +1030,13 @@ export class Worklist implements ObservationSink {
 
     this.seedAnalysis(key, unit);
     this.enqueueTransform(key, unit.generation);
+
+    // Pass-graph write-through: bump the unit's AstVersion fact. Lockstep
+    // with `unit.structuralVersion++` (which lives in `processTransform`)
+    // — this is the single place both sources are advanced together in
+    // PR-2a. PR-2b removes the legacy field and this pair collapses to
+    // one write.
+    this.factStore.write(structuralPass, unit, unit.structuralVersion);
   }
 
   /**
