@@ -10,3 +10,5 @@ export * from "./inputs";
 export { cfgOf } from "./queries/cfg";
 export { typeBlockEnvs, constBlockEnvs } from "./queries/block-envs";
 export { kildall } from "./queries/kildall";
+export { typeOf } from "./queries/type-of";
+export { constOf } from "./queries/const-of";

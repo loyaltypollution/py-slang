@@ -316,6 +316,32 @@ export function transferBlockPureType(
   });
 }
 
+/**
+ * Replay a block's transfer with a tap that captures per-node facts. Used by
+ * runtime `typeOf` to project lattice values at node granularity. Mirrors
+ * `transferBlockPureType` but returns the tapped (nodeId → value) map
+ * instead of the exit env. Additive.
+ */
+export function nodeTypeFactsForBlock(
+  block: BasicBlock,
+  inEnv: MutableEnv<TypeLattice>,
+  slotLookup: SlotLookup,
+  observations: ReadonlyMap<number, unknown>,
+): ReadonlyMap<number, TypeLattice> {
+  const factStore = new FactStore();
+  for (const [id, val] of observations) {
+    factStore.write(runtimeWritePass, id, val);
+  }
+  const pass = new TypeAnalysisPass();
+  const out = new Map<number, TypeLattice>();
+  transferBlock(block, inEnv, pass, factStore, slotLookup, (id, val) => {
+    // Later writes in the same block supersede earlier ones for the same id;
+    // this matches the visitor's last-write-wins annotate semantics.
+    out.set(id, val);
+  });
+  return out;
+}
+
 // CSE stack values are tagged objects with `.type` discriminator.
 // Duck-type on the tag to avoid an engine → framework import.
 function liftType(rawValue: unknown): TypeLattice | undefined {

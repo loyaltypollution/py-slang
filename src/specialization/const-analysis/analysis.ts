@@ -276,6 +276,25 @@ export function transferBlockPureConst(
   });
 }
 
+/** Const-lattice analogue of `nodeTypeFactsForBlock`. Additive. */
+export function nodeConstFactsForBlock(
+  block: BasicBlock,
+  inEnv: MutableEnv<ConstLattice>,
+  slotLookup: SlotLookup,
+  observations: ReadonlyMap<number, unknown>,
+): ReadonlyMap<number, ConstLattice> {
+  const factStore = new FactStore();
+  for (const [id, val] of observations) {
+    factStore.write(runtimeWritePass, id, val);
+  }
+  const pass = new ConstAnalysisPass();
+  const out = new Map<number, ConstLattice>();
+  transferBlock(block, inEnv, pass, factStore, slotLookup, (id, val) => {
+    out.set(id, val);
+  });
+  return out;
+}
+
 function liftConst(rawValue: unknown): ConstLattice | undefined {
   if (
     typeof rawValue === "number" ||
