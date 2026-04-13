@@ -1,0 +1,259 @@
+// src/specialization/framework/migrated-passes.ts
+//
+// Singleton `Pass<K, V>` factories for the analyses and transforms
+// migrated in PR-4. Each pass conforms to the `Pass<K, V>` shape declared
+// in `./pass.ts` and ships alongside the legacy `AnalysisPass` /
+// `ScopePass` / `TransformRule` implementations that currently drive
+// production (see PR-4 "also-driven-by-legacy" note).
+//
+// Wiring rules for PR-4:
+//   - Node-keyed analysis passes (`typeAnalysisPass`, `constAnalysisPass`)
+//     *back* the corresponding `OptimizationHint` field in `HintStore` —
+//     hint-passes.ts no longer allocates a separate cell for `type` or
+//     `constVal`; every `hints.updateField(id, "type", v)` routes to the
+//     migrated pass's fact cell.
+//   - Scope-keyed passes (`purityScopePass`, `callCountPass`) likewise
+//     back `pure` / `callCount`, keyed by the `FunctionDef.id` of the
+//     owning scope (identical to what the legacy `ScopePass.run` wrote).
+//   - Transforms (`deadBranchRule`, `constantFoldingRule`,
+//     `memoizationRule`) are top-only `Pass<K, "fired">`. Their `transfer`
+//     is a no-op in PR-4 — legacy dispatch applies them; the Pass is
+//     registered so the graph has visibility and PR-5+ can migrate.
+//
+// Side-effect idempotence rule (plan review resolution 3): each transform
+// writes `"fired"` exactly once per (rule, key) pair — top-only lattice
+// means a re-write produces no `onChange` event, so any side effects in
+// `transfer` would be suppressed on re-enqueue. Documented per-pass.
+
+import type { StmtNS } from "../../ast-types";
+import {
+  type ConstLattice,
+  CONST_BOTTOM,
+  CONST_TOP,
+  constJoin,
+  constLeq,
+} from "../const-analysis/lattice";
+import {
+  type TypeLattice,
+  BOTTOM as TYPE_BOTTOM,
+  TOP as TYPE_TOP,
+  join as typeJoin,
+  leq as typeLeq,
+} from "../type-analysis/lattice";
+import type { FunctionUnit } from "./function-unit";
+import type { Lattice, Pass, PassCtx } from "./pass";
+import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
+import { structuralPass } from "./structural-pass";
+
+// ── Type lattice helpers ────────────────────────────────────────────────
+
+const typeEquals = (a: TypeLattice, b: TypeLattice): boolean =>
+  a === b ||
+  (a.kinds === b.kinds &&
+    a.intRef === b.intRef &&
+    a.boolRef === b.boolRef &&
+    a.floatRef === b.floatRef);
+
+const typeLattice: Lattice<TypeLattice> = {
+  bottom: TYPE_BOTTOM,
+  equals: typeEquals,
+  join: typeJoin,
+};
+
+/**
+ * Migrated type analysis (node-keyed). Written through by
+ * `HintStore.updateField(id, "type", v)` — see `hint-passes.ts`. `reads`
+ * declare the source passes that a future dispatch-driven transfer would
+ * consult; PR-4 keeps `transfer` a no-op because legacy DFA drives values.
+ */
+export const typeAnalysisPass: Pass<number, TypeLattice> = {
+  id: Symbol("typeAnalysisPass"),
+  debugName: "typeAnalysisPass",
+  lattice: typeLattice,
+  reads: [runtimeWritePass, structuralPass],
+  tier: "analysis",
+  coarse: true,
+  transfer(_ctx: PassCtx, _key: number): TypeLattice | undefined {
+    return undefined;
+  },
+};
+
+// ── Const lattice helpers ───────────────────────────────────────────────
+
+const constEqualsPassShape = (a: ConstLattice, b: ConstLattice): boolean =>
+  a === b ||
+  (a.tag !== "const"
+    ? a.tag === b.tag
+    : b.tag === "const" && a.value === b.value);
+
+const constLattice: Lattice<ConstLattice> = {
+  bottom: CONST_BOTTOM,
+  equals: constEqualsPassShape,
+  join: constJoin,
+};
+// Keep unused import suppressors alive for future PR-5 transfer bodies.
+void constLeq;
+void typeLeq;
+void CONST_TOP;
+void TYPE_TOP;
+
+export const constAnalysisPass: Pass<number, ConstLattice> = {
+  id: Symbol("constAnalysisPass"),
+  debugName: "constAnalysisPass",
+  lattice: constLattice,
+  reads: [runtimeWritePass, structuralPass],
+  tier: "analysis",
+  coarse: true,
+  transfer(_ctx: PassCtx, _key: number): ConstLattice | undefined {
+    return undefined;
+  },
+};
+
+// ── Purity: 3-point flat bool lattice ───────────────────────────────────
+//
+// Plan-specified domain: `⊥ = unanalyzed (undefined) | true | false | ⊤
+// = contested`. `equals` is `===`; `join(⊥, x) = x`, `join(⊤, x) = ⊤`,
+// `join(true, false) = ⊤`. Legacy `PurityScopePass.run` only ever writes
+// boolean values via `HintStore.updateField(id, "pure", v)`, so the
+// `"contested"` sentinel is reachable only from the Pass-layer join —
+// distinguishable from `true`/`false` but identical to `boolean`-typed
+// `OptimizationHint.pure` at the hint surface (tests read booleans, the
+// sentinel never escapes).
+
+export type PurityPoint = boolean | "contested" | undefined;
+
+const purityLattice: Lattice<PurityPoint> = {
+  bottom: undefined,
+  equals: (a, b) => a === b,
+  join: (a, b) => {
+    if (a === undefined) return b;
+    if (b === undefined) return a;
+    if (a === "contested" || b === "contested") return "contested";
+    if (a === b) return a;
+    return "contested";
+  },
+};
+
+/**
+ * Migrated purity (scope-keyed). `K = Scope AST node` (FileInput or
+ * FunctionDef). HintStore backs `pure` via this pass keyed by the
+ * `FunctionDef.id` — `updateField(id, "pure", v)` routes here. The plan
+ * calls for K = Scope but OptimizationHint.pure is keyed by node id in
+ * the hint surface; we register both — the Scope-keyed semantics is a
+ * PR-5 wiring once ScopePass.run is migrated to write into this pass
+ * directly. For PR-4 the pass is declared at node-id granularity so the
+ * HintStore route remains byte-identical.
+ */
+export const purityScopePass: Pass<number, PurityPoint> = {
+  id: Symbol("purityScopePass"),
+  debugName: "purityScopePass",
+  lattice: purityLattice,
+  reads: [structuralPass],
+  tier: "analysis",
+  coarse: true,
+  transfer(_ctx: PassCtx, _key: number): PurityPoint {
+    return undefined;
+  },
+};
+
+// ── callCount: saturating bucket ────────────────────────────────────────
+
+const CALL_COUNT_SAT = 11; // MEMOIZATION_THRESHOLD + 1
+
+const callCountLattice: Lattice<number | undefined> = {
+  bottom: undefined,
+  equals: (a, b) => a === b,
+  join: (a, b) => {
+    if (a === undefined) return b;
+    if (b === undefined) return a;
+    return Math.min(CALL_COUNT_SAT, Math.max(a, b));
+  },
+};
+
+/**
+ * Migrated call count (scope-keyed). Saturating bucket: once SAT is
+ * written, every further write produces `lattice.equals === true` and no
+ * consumer wakes — this is the mechanism that dissolves the legacy
+ * `hasNonMonotoneRule` flag once PR-5 wires `runtimeCallPass`. For PR-4,
+ * keyed by node id to stay byte-identical with the HintStore route.
+ */
+export const callCountPass: Pass<number, number | undefined> = {
+  id: Symbol("callCountPass"),
+  debugName: "callCountPass",
+  lattice: callCountLattice,
+  reads: [runtimeCallPass],
+  tier: "analysis",
+  coarse: true,
+  transfer(_ctx: PassCtx, _key: number): number | undefined {
+    return undefined;
+  },
+};
+
+// ── Transforms: top-only `"fired"` lattice ──────────────────────────────
+
+type Fired = "fired" | undefined;
+
+const firedLattice: Lattice<Fired> = {
+  bottom: undefined,
+  equals: (a, b) => a === b,
+  join: (a, b) => (a ?? b),
+};
+
+/**
+ * Dead-branch elimination. Top-only `Pass<StmtNodeId, "fired">`.
+ *
+ * Side-effect idempotence: the rule's side effect is the AST splice. A
+ * re-write of `"fired"` on a key that's already `"fired"` produces
+ * `lattice.equals === true`, no `onChange`, no re-splice. Legacy dispatch
+ * still drives the splice in PR-4; the Pass is registered for visibility.
+ */
+export const deadBranchRule: Pass<number, Fired> = {
+  id: Symbol("deadBranchRule"),
+  debugName: "deadBranchRule",
+  lattice: firedLattice,
+  reads: [constAnalysisPass, structuralPass],
+  tier: "transform",
+  coarse: true,
+  transfer(_ctx: PassCtx, _key: number): Fired {
+    return undefined;
+  },
+};
+
+/**
+ * Constant folding. Top-only `Pass<ExprNodeId, "fired">`. Side-effect
+ * idempotence per plan resolution 3: re-write of `"fired"` is equal → no
+ * re-fire.
+ */
+export const constantFoldingRule: Pass<number, Fired> = {
+  id: Symbol("constantFoldingRule"),
+  debugName: "constantFoldingRule",
+  lattice: firedLattice,
+  reads: [constAnalysisPass, structuralPass],
+  tier: "transform",
+  coarse: true,
+  transfer(_ctx: PassCtx, _key: number): Fired {
+    return undefined;
+  },
+};
+
+/**
+ * Memoization. Top-only `Pass<FunctionUnit, "fired">`. Side-effect
+ * idempotence per plan resolution 3: the body-rewrite is one-shot; the
+ * lattice's equality gate supersedes the legacy `appliedTransforms` set
+ * (PR-6 deletes the set).
+ */
+export const memoizationRule: Pass<FunctionUnit, Fired> = {
+  id: Symbol("memoizationRule"),
+  debugName: "memoizationRule",
+  lattice: firedLattice,
+  reads: [callCountPass, purityScopePass],
+  tier: "transform",
+  coarse: true,
+  transfer(_ctx: PassCtx, _key: FunctionUnit): Fired {
+    return undefined;
+  },
+};
+
+// Reserve the Scope-alias symbol so PR-5 can tighten `purityScopePass`
+// and `callCountPass` to scope-keyed without changing the export surface.
+export type Scope = StmtNS.FileInput | StmtNS.FunctionDef;

@@ -26,6 +26,16 @@ import type { ObservationSink } from "./observation-sink";
 import type { Pass, PassCtx } from "./pass";
 import type { SlotLookup } from "./slot-table";
 import { structuralPass } from "./structural-pass";
+import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
+import {
+  callCountPass,
+  constAnalysisPass,
+  constantFoldingRule,
+  deadBranchRule,
+  memoizationRule,
+  purityScopePass,
+  typeAnalysisPass,
+} from "./migrated-passes";
 import { applyTransformPass } from "./transform";
 
 // ── Direction helpers ───────────────────────────────────────────────────────
@@ -394,6 +404,23 @@ export class Worklist implements ObservationSink {
     // onChange events. Every write that produces a lattice change wakes
     // readers via `handleFactChange`.
     this.register(structuralPass);
+    // PR-4: register migrated source / analysis / transform passes so the
+    // dispatch graph has visibility. `transfer` bodies are no-ops in this
+    // PR — legacy dispatch still drives production analyses and
+    // transforms, while the migrated passes back the `OptimizationHint`
+    // fields via `HintStore` (so writes through `updateField` land in the
+    // migrated passes' fact cells). PR-5 wires the interpreter to write
+    // into `runtimeWritePass` / `runtimeCallPass`, at which point the
+    // `transfer` bodies become live.
+    this.register(runtimeWritePass);
+    this.register(runtimeCallPass);
+    this.register(typeAnalysisPass);
+    this.register(constAnalysisPass);
+    this.register(purityScopePass);
+    this.register(callCountPass);
+    this.register(deadBranchRule);
+    this.register(constantFoldingRule);
+    this.register(memoizationRule);
     this.passFactStoreOff = this.factStore.onChange(c => this.handleFactChange(c));
 
     // Synchrony tripwire — TS accepts `() => Promise<void>` where `() => void`
