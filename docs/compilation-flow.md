@@ -101,10 +101,11 @@ Typical shape (SVML JIT — the richest path):
 ```ts
 const worklist = new Worklist(
   ast, environments,
-  [new TypeAnalysisPass(), new ConstAnalysisPass()],
+  [new TypeAnalysisPass(), new ConstAnalysisPass(), new PurityEffectAnalysis()],
   [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
 );
-worklist.addProfileObserver(new CallCountObserver());
+worklist.addScopePass(new CallCountScopePass());
+worklist.addScopePass(new PurityScopePass());
 worklist.converge(); // initial static pass
 
 const compiler    = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units);
@@ -145,7 +146,7 @@ The framework composes:
 - **HintStore** (`framework/hint.ts`): `Map<nodeId, OptimizationHint>` with an
   injected `eq` callback. Production callers pass `(a, b) => hintEquals(a, b,
   worklist.analysesByName)`, which dispatches each field's lattice equality
-  through the registered `AnalysisModule.latticeEquals`. Test merge-collectors
+  through the registered `AnalysisPass.latticeEquals`. Test merge-collectors
   pass `HINT_EQ_NEVER` since they never double-write a node.
 - **Analyses** (`type-analysis/`, `const-analysis/`): dataflow modules producing
   lattice values at named hint fields.
@@ -225,11 +226,12 @@ mitigates them) lives in `optimization-roadmap.md` under "Why the pin-set exists
 - `Worklist`, `ObservationSink`, `WorklistStats`, `ScopeChangeListener`.
 - `FunctionUnit`, `buildFunctionUnits`.
 - `HintStore`, `OptimizationHint`, `hintEquals`, `HINT_EQ_NEVER`.
-- `AnalysisModule`, `TransformRule`, `ProfileObserver`.
-- Analyses/lattices (`TypeAnalysisPass`, `ConstAnalysisPass`, lattice
-  constructors).
+- `AnalysisPass`, `ScopePass`, `TransformRule`.
+- Analyses/lattices (`TypeAnalysisPass`, `ConstAnalysisPass`,
+  `PurityEffectAnalysis`, lattice constructors).
 - Transforms (`ConstantFoldingRule`, `DeadBranchEliminationRule`,
-  `MemoizationTransformRule`) and `CallCountObserver`.
+  `MemoizationTransformRule`) and scope passes (`CallCountScopePass`,
+  `PurityScopePass`).
 - Memoization runtime intrinsics (`memoLookup`, `memoPut`, `MEMO_MISS`,
   `MEMO_INTRINSIC_NAMES`) — re-exported from `src/runtime/memo.ts`.
 
@@ -295,8 +297,11 @@ flowchart LR
 
 Runtime feedback: the interpreter emits `observeWrite`/`observeCall` through
 its `observationSink` (the worklist), which enqueues analysis refinements.
-Profile-style facts — e.g. saturating call counts that drive memoization —
-are produced by `CallCountObserver` registered via `worklist.addProfileObserver`.
+Scope-level facts — e.g. saturating call counts and scope-summary purity
+that drive memoization — are produced by `ScopePass` implementations
+(`CallCountScopePass`, `PurityScopePass`) registered via
+`worklist.addScopePass`. Scope passes run once per scope per generation,
+after the expression-level lattice fixpoint has converged.
 When a refinement triggers a transform that actually mutates a scope, the
 `onScopeChanged` listener fires and recompiles + patches the function-table
 slot for that scope.
@@ -409,7 +414,7 @@ flowchart TB
 |---|---|---|
 | Parse | `src/parser/parser-adapter.ts` | `parse` |
 | Resolve | `src/resolver/index.ts` | `analyzeWithEnvironments`, `FunctionEnvironments` |
-| Worklist | `src/specialization/framework/worklist.ts` | `Worklist`, `observeWrite`, `observeCall`, `activateScope`, `deactivateScope`, `withActiveScope`, `subscribe`, `onScopeChanged`, `addProfileObserver`, `clearAllPins` |
+| Worklist | `src/specialization/framework/worklist.ts` | `Worklist`, `observeWrite`, `observeCall`, `activateScope`, `deactivateScope`, `withActiveScope`, `subscribe`, `onScopeChanged`, `addScopePass`, `clearAllPins` |
 | Observation surface | `src/specialization/framework/observation-sink.ts` | `ObservationSink` (interface; `Worklist implements`) |
 | Units | `src/specialization/framework/function-unit.ts` | `FunctionUnit`, `buildFunctionUnits` |
 | Hints | `src/specialization/framework/hint.ts` | `HintStore`, `OptimizationHint`, `hintEquals`, `HINT_EQ_NEVER` |

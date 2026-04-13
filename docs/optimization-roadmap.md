@@ -59,7 +59,7 @@ P-05 (Don't coin nouns ahead of implementers).
 
 ### SPEC-02 — HintStore is an open record
 
-`OptimizationHint` is an open record keyed on `AnalysisModule.name`. A
+`OptimizationHint` is an open record keyed on `AnalysisPass.name`. A
 new analysis slots in by adding an optional field to the hint record and
 shipping a module whose `name` matches. Equality is delegated to the
 module's `latticeEquals`, dispatched through a per-worklist registry
@@ -244,10 +244,10 @@ listener via `onScopeChanged`.
 (`withActiveScope`, `clearAllPins`).
 *Principle*: P-06 (Structural ordering).
 
-### SPEC-15 — New transforms land as `AnalysisModule` + `TransformRule`
+### SPEC-15 — New transforms land as `AnalysisPass` + `TransformRule`
 
 Memoization, inlining, and any future optimization land through the
-existing extension points: an `AnalysisModule<L>` for the analysis side
+existing extension points: an `AnalysisPass<L>` for the analysis side
 (if one is needed) and a `TransformRule` for the rewrite. Purity
 checks, syntactic gates, etc., that have no lattice to accumulate stay
 as standalone walkers (see Decision 4 in the narrative below).
@@ -305,7 +305,7 @@ write named fields (`hint.type`, `hint.constVal`, `hint.callCount`,
 `hint.memoized`, …). The constructor takes an `eq` callback;
 production callers pass
 `(a, b) => hintEquals(a, b, worklist.analysesByName)`, which dispatches
-each field's equality through the registered `AnalysisModule.latticeEquals`.
+each field's equality through the registered `AnalysisPass.latticeEquals`.
 Unregistered fields default to inequality (conservative
 over-invalidation). `HINT_EQ_NEVER` is the sentinel callback for test
 merge-collectors that never double-write a node.
@@ -324,9 +324,11 @@ are built by `buildFunctionUnits` via `ScopeDiscoveryVisitor`
 
 The scheduler. Two-tier priority; per-unit pin-count; directly
 implements the `ObservationSink` interface. `subscribe(cb)` publishes
-scope-set notifications. `addProfileObserver` registers profile-style
-observers (currently `CallCountObserver` for memoization). The sink
-synchrony tripwire runs at the end of the constructor.
+scope-set notifications. `addScopePass` registers scope-level passes
+(e.g. `CallCountScopePass`, `PurityScopePass` for memoization) that
+fold per-scope state into hints after the expression-level fixpoint
+converges. The sink synchrony tripwire runs at the end of the
+constructor.
 
 ### `OSRCoordinator` (SPEC-07, SPEC-08)
 
@@ -444,7 +446,7 @@ which turned out to be two lines (`new Worklist(...)`;
 
 ### P-02 — Extension shape follows the extension point
 
-A new analysis is an `AnalysisModule` + a named hint field. The module
+A new analysis is an `AnalysisPass` + a named hint field. The module
 carries the name; the name doubles as the hint-record field key and
 the equality-registry key. The registry itself is built once in the
 worklist constructor from the analyses array — no auxiliary
@@ -588,7 +590,7 @@ The worklist is the single scheduling primitive for all work:
 | Analysis fact        | DFA transfer function       | Compute block OUT, propagate to successors                |
 | Runtime observation  | Interpreter (via sink)      | Write to HintStore, enqueue affected blocks               |
 | Transform            | Analysis crossing threshold | Mutate AST, bump `structuralVersion`, enqueue neighbours  |
-| Call count           | `CallCountObserver`         | Increment saturating counter on callee's `HintStore`      |
+| Call count           | `CallCountScopePass`         | Increment saturating counter on callee's `HintStore`      |
 
 Two-tier priority (SPEC-04). The worklist is a long-lived mailbox:
 `tick()` processes available items and returns when idle. `converge()`
@@ -629,27 +631,26 @@ Install mechanisms:
 - **SVML operand-level**: `interpreter.applyOperandPatches(index,
   patches)` mutates the function's typed arrays in place.
 
-### Decision 4: Memoization is AnalysisModule + TransformRule + ProfileObserver
+### Decision 4: Memoization is AnalysisPass + ScopePass + TransformRule
 
 Memoization detection is not an external profiler signal (SPEC-15). It
 is:
 
-- A `CallCountObserver` (implementing the `ProfileObserver` interface)
-  that increments a saturating `callCount` field on the callee's
-  `HintStore` on every `observeCall` dispatch.
+- A `CallCountScopePass` (implementing the `ScopePass` interface) that
+  folds the per-scope `callObservations` buffer into a saturating
+  `callCount` hint on the callee `FunctionDef`. Runs once per scope
+  per generation from the transform phase, after the expression-level
+  fixpoint has converged.
+- A `PurityEffectAnalysis` (`AnalysisPass<PureEffect>`) paired with a
+  `PurityScopePass` (`ScopePass`) that fold per-expression purity
+  marks into a scope-level `pure` hint on the callee `FunctionDef`.
 - A `MemoizationTransformRule` (a `ScopeTransformRule` with
-  `fireOnce = true` and `safeOnStack = true`) that wraps the flagged
-  `FunctionDef` body in cache-check prelude + `return __memo_put(...)`.
+  `fireOnce = true` and `safeOnStack = true`) that reads `callCount`
+  and `pure` from the hint and wraps the flagged `FunctionDef` body in
+  cache-check prelude + `return __memo_put(...)`.
 - Three runtime intrinsics (`__memo_has`, `__memo_get`, `__memo_put`)
   backed by `src/runtime/memo.ts` (SPEC-16), registered in both the
   CSE stdlib and SVML builtins tables.
-
-**Footnote — purity is a standalone syntactic check, not a DFA
-module.** The landing implements the purity gate as a one-shot walker
-(`memoization-analysis/purity.ts::isPureFunctionDef`) consulted by
-`MemoizationTransformRule.matches`. Rationale: purity here has no
-amortization benefit (asked at most once per function per tick) and
-no lattice to accumulate.
 
 ### Decision 5: Subscription + pin-count (not event log)
 
@@ -850,7 +851,7 @@ follow-up if profiling warrants.
   loop doesn't run at all.
 - **`hintEquals` hard-coded `switch (name)` over `type` / `constVal`
   with `default: return false`.** Replaced by registry dispatch
-  through `AnalysisModule.latticeEquals`, keyed on the per-worklist
+  through `AnalysisPass.latticeEquals`, keyed on the per-worklist
   `analysesByName` Map (SPEC-02). `typeLatticeEquals` and
   `constLatticeEquals` helpers inlined into each module's
   `latticeEquals` and deleted from `hint.ts`. Open-record dispatch is
@@ -892,7 +893,7 @@ follow-up if profiling warrants.
   `runtime.hintsFor` read; visualizer consumes `worklist.hintsFor`
   externally (SPEC-13).
 - **`AnalysisKey<L>` as a separate type.** Folded into
-  `AnalysisModule<L>`. The module's own `name` doubles as the
+  `AnalysisPass<L>`. The module's own `name` doubles as the
   hint-record field name and the equality-registry key;
   `latticeEquals` replaces `key.equals`. Analyses read named fields
   directly (SPEC-02).
