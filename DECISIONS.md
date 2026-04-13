@@ -56,6 +56,22 @@ Implementation reuses pure transfer functions from
 legacy `Pass<K,V>`/`Worklist` machinery. A small standalone Kildall
 iterator lives at `src/specialization/runtime/queries/kildall.ts`.
 
+## Phase 5b-i — JitPass replaced by synchronous pull (whole-unit recompile)
+
+Picked option A (whole-unit recompile + patch every function slot) over
+option B (AST diff to find the changed FunctionDef). Rationale: matches
+`optimizedAstOf`'s unit-granular cache; B adds structural-diff complexity
+without a measured win.
+
+Secondary cost: `recompileAndPatch` re-runs `analyzeWithEnvironments` on
+the lowered AST because `wrapMemoize` in `pure-rewrites.ts` synthesizes
+fresh `FunctionDef` nodes that the original identity-keyed
+`functionEnvironments` map does not contain. If JIT compile time
+regresses materially on `svml-jit-end-to-end`, either (1) make
+`wrapMemoize` mutate body/preserve the outer FunctionDef identity, or
+(2) teach the environment resolver to seed synthesized nodes. Flagged
+for review; not load-bearing today.
+
 ## End-of-run summary (HEAD = e3fb6e1)
 
 | Phase | Status | Commit | Notes |

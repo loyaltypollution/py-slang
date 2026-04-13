@@ -8,31 +8,34 @@ import {
   ConstAnalysisPass,
   TypeAnalysisPass,
   Worklist,
-  callCountPass,
-  purityScopePass,
   runtimeCallPass,
   runtimeWritePass,
-  structuralPass,
 } from "../specialization";
-import type { FunctionUnit } from "../specialization/framework/function-unit";
-import type { Pass, PassCtx } from "../specialization/framework/pass";
-import { Db, astOf, environmentsOf } from "../specialization/runtime";
+import {
+  Db,
+  astOf,
+  environmentsOf,
+  optimizedAstOf,
+  runtimeCall,
+} from "../specialization/runtime";
 import { EvaluatorError } from "./errors";
 
 /**
- * SVML evaluator with JIT specialization. After static convergence and
- * compile, runtime observations drive further transforms; each mutated
- * FunctionDef is recompiled and patched into the function table.
+ * SVML evaluator with JIT specialization. Recompile is driven by a
+ * synchronous pull on `optimizedAstOf` at every observed CALL: when the
+ * lowering chain produces a new AST reference, the unit is recompiled
+ * and every function slot is patched. AST identity *is* the recompile
+ * digest — `optimizedAstOf`'s lattice equals on `===`, so a green
+ * recomputation snaps the cell without producing a new reference.
  *
- * PR-5 wiring: the interpreter's STORE / CALL sites push into the
- * worklist's fact store via `worklist.observe(runtimeWritePass, …)` and
- * `worklist.observe(runtimeCallPass, …)` alongside the legacy
- * `observationSink` calls. A registered `jitPass` reads
- * `[callCountPass, purityScopePass, structuralPass]` and recompiles +
- * patches the function whenever its compiled-IR digest actually
- * changes (side-effect idempotence rule).
+ * Whole-unit recompile (option A): the query cache is unit-granular, so
+ * we mirror that here. Per-function diff/patch is a future optimization
+ * (5b follow-up if the JIT end-to-end test regresses materially).
  */
 export class PySvmlJitEvaluator extends BasicEvaluator {
+  private db: Db = new Db();
+  private lastCompiledAst: StmtNS.FileInput | undefined = undefined;
+
   async evaluateChunk(chunk: string): Promise<void> {
     try {
       const script = chunk + "\n";
@@ -40,21 +43,30 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
       if (errors.length > 0) throw errors[0];
 
+      // Per-chunk Db; lastCompiledAst tracks reference-identity of the
+      // most recently compiled lowered AST so the synchronous pull below
+      // can detect "did anything change".
+      this.db = new Db();
+      this.lastCompiledAst = ast;
+      astOf.set(this.db, 0, ast);
+      environmentsOf.set(this.db, 0, environments);
+
+      // Worklist still drives legacy fact-store consumers (5b-ii removes).
       const worklist = new Worklist(ast, environments, [
         new TypeAnalysisPass(),
         new ConstAnalysisPass(),
       ]);
       worklist.converge();
 
-      // Phase 5a: populate the query-runtime Inputs the SVMLCompiler's
-      // typeOf/constOf reads depend on. Worklist remains for JitPass.
-      const db = new Db();
-      astOf.set(db, 0, ast);
-      environmentsOf.set(db, 0, environments);
-      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units, worklist.factStore, db);
+      const compiler = SVMLCompiler.fromProgramUnit(
+        ast,
+        environments,
+        worklist.units,
+        worklist.factStore,
+        this.db,
+      );
       const program = compiler.compileProgram(ast);
 
-      // Per-callee raw count map for runtimeCallPass.
       const callCounts = new Map<number, number>();
 
       const interpreter = new SVMLInterpreter(program, {
@@ -67,46 +79,17 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           const next = (callCounts.get(scopeId) ?? 0) + 1;
           callCounts.set(scopeId, next);
           worklist.observe(runtimeCallPass, scopeId, next);
+          runtimeCall.set(this.db, scopeId, next);
+
+          // Pull the current lowered AST. Cache + lattice-equals make
+          // this O(1) once the unit has saturated.
+          const newAst = this.db.get(optimizedAstOf, 0);
+          if (newAst !== undefined && newAst !== this.lastCompiledAst) {
+            this.lastCompiledAst = newAst;
+            this.recompileAndPatch(newAst, interpreter);
+          }
         },
       });
-
-      // ── jitPass: recompile + patch on lattice-change of compile-relevant
-      // facts. Side-effect idempotence: patchFunction only fires when the
-      // produced digest differs from the previously-stored one. Both
-      // `transfer` and the digest computation are `coarse: true` over the
-      // unit keyspace.
-      const jitPass: Pass<FunctionUnit, number> = {
-        id: Symbol("jitPass"),
-        debugName: "jitPass",
-        lattice: {
-          bottom: 0,
-          equals: (a, b) => a === b,
-          join: (a, b) => Math.max(a, b),
-        },
-        reads: [callCountPass, purityScopePass, structuralPass],
-        tier: "jit",
-        coarse: true,
-        // affectedKeys: any change in a read pass invalidates *every*
-        // FunctionDef unit. Without this the coarse fallback (re-run on
-        // previously-written keys) would never wake jitPass before its
-        // first own write, breaking the priming order.
-        affectedKeys(_triggerPass, _triggerKey) {
-          return Array.from(worklist.units.values());
-        },
-        transfer(_ctx: PassCtx, unit: FunctionUnit): number | undefined {
-          const scope = unit.funcAst;
-          if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
-          const index = compiler.indexOf(scope);
-          if (index === undefined) return undefined;
-          const newCode = compiler.compileFunction(unit);
-          const digest = digestSVMLIR(newCode);
-          const prev = _ctx.read(jitPass, unit);
-          if (digest === prev) return undefined; // equal → no write, no patch
-          interpreter.patchFunction(index, newCode);
-          return digest;
-        },
-      };
-      worklist.register(jitPass);
 
       const returnValue = await interpreter.execute();
       this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
@@ -114,30 +97,28 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       this.conductor.sendError(new EvaluatorError(e));
     }
   }
-}
 
-/**
- * Cheap structural digest for an SVMLIR. Combines opcode count with a
- * rolling XOR/multiply over opcodes and operand arrays. Not
- * cryptographic — collisions are tolerated only insofar as they
- * suppress one redundant patch; correctness comes from `patchFunction`
- * being idempotent. Hot-path cost: O(opcodes.length).
- */
-function digestSVMLIR(ir: import("../engines/svml/types").SVMLIR): number {
-  let h = ir.count | 0;
-  const ops = ir.opcodes;
-  for (let i = 0; i < ops.length; i++) {
-    h = (h * 31 + ops[i]) | 0;
+  /**
+   * Whole-unit recompile + patch every function slot. Re-resolves the
+   * lowered AST because lowering passes (notably memoization) synthesize
+   * fresh FunctionDef nodes that the original `functionEnvironments`
+   * map — keyed by node identity — does not contain.
+   *
+   * `patchFunction` is safe to call mid-execution: it only rewrites the
+   * function-table slot. Live `CallFrame.ir` references captured at CALL
+   * time drain on the old IR; future CALLs dispatch through the patched
+   * slot.
+   */
+  private recompileAndPatch(
+    ast: StmtNS.FileInput,
+    interpreter: SVMLInterpreter,
+  ): void {
+    const reSource = ""; // source text irrelevant for re-resolution of synthesized AST
+    const { environments: newEnvs } = analyzeWithEnvironments(ast, reSource, 4);
+    const newCompiler = SVMLCompiler.fromProgram(ast, newEnvs);
+    const newProgram = newCompiler.compileProgram(ast);
+    for (let i = 0; i < newProgram.functions.length; i++) {
+      interpreter.patchFunction(i, newProgram.functions[i]);
+    }
   }
-  const a2 = ir.arg2s;
-  for (let i = 0; i < a2.length; i++) {
-    h = (h * 17 + a2[i]) | 0;
-  }
-  // arg1s is Float64; fold via DataView trick avoided — sum suffices for
-  // change detection given opcodes already discriminate structure.
-  const a1 = ir.arg1s;
-  for (let i = 0; i < a1.length; i++) {
-    h = (h * 13 + (a1[i] | 0)) | 0;
-  }
-  return h;
 }
