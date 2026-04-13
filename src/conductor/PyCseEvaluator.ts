@@ -101,9 +101,8 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
           new ConstantFoldingRule(),
           new MemoizationTransformRule(),
         ],
+        [new CallCountScopePass(), new PurityScopePass()],
       );
-      worklist.addScopePass(new CallCountScopePass());
-      worklist.addScopePass(new PurityScopePass());
       worklist.converge();
 
       this.context.runtime.rootScope = ast;

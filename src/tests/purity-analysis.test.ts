@@ -29,8 +29,8 @@ function purityOf(code: string, fnName: string): boolean | undefined {
     environments,
     [new TypeAnalysisPass(), new ConstAnalysisPass(), new PurityEffectAnalysis()],
     [],
+    [new PurityScopePass()],
   );
-  worklist.addScopePass(new PurityScopePass());
   worklist.converge();
 
   for (const stmt of ast.statements) {

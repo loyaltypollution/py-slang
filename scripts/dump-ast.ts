@@ -304,9 +304,8 @@ const worklist = new Worklist(
   environments,
   [new TypeAnalysisPass(), new ConstAnalysisPass(), new PurityEffectAnalysis()],
   [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
+  [new CallCountScopePass(), new PurityScopePass()],
 );
-worklist.addScopePass(new CallCountScopePass());
-worklist.addScopePass(new PurityScopePass());
 worklist.converge();
 const units = worklist.units;
 

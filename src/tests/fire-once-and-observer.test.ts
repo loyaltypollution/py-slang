@@ -109,8 +109,8 @@ describe("ScopePass dispatch", () => {
       environments,
       [new TypeAnalysisPass(), new ConstAnalysisPass()],
       [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
+      [pass],
     );
-    worklist.addScopePass(pass);
     worklist.converge();
 
     worklist.observeCall(ast, fd);

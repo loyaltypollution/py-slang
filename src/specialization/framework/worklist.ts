@@ -284,14 +284,6 @@ export class Worklist implements ObservationSink {
    */
   private readonly observers: readonly ObservingAnalysis[];
 
-  /**
-   * Scope-level, one-shot passes. Populated via `addScopePass`. Each pass
-   * runs once per scope per generation, after the expression-level
-   * analysis fixpoint has converged (see `rebuildAndReseed`). Used for
-   * per-scope facts (call counts, purity summaries) that don't belong in
-   * a Kildall transfer function.
-   */
-  private readonly scopePasses: ScopePass[] = [];
 
   /**
    * Records scope-rule (scope × rule) pairs whose `fireOnce` flag is set
@@ -325,6 +317,7 @@ export class Worklist implements ObservationSink {
     functionEnvironments: FunctionEnvironments,
     private readonly analyses: readonly AnalysisPass<any>[],
     private readonly transforms: readonly TransformRule[],
+    private readonly scopePasses: readonly ScopePass[] = [],
   ) {
     this.analysisQueues = analyses.map(() => new Queue<QueuedBlock>());
     this.observers = analyses.filter(
@@ -403,15 +396,6 @@ export class Worklist implements ObservationSink {
       }
     };
     return this.subscribe(wrapped);
-  }
-
-  /**
-   * Register a scope-level pass. Runs once per scope per generation after
-   * the expression-level fixpoint has converged, in registration order.
-   * See `ScopePass` for the invariants.
-   */
-  addScopePass(pass: ScopePass): void {
-    this.scopePasses.push(pass);
   }
 
   /**
