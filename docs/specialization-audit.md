@@ -135,6 +135,8 @@ Eight patches, four gaps. Closing S1 alone retires three of them.
 
 Counter-case: if the set of analyses is closed forever (four and no more), deletion + canonical switch is simpler. The memoization additions and the roadmap's extensibility claim don't read as closed.
 
+**Retraction (2026-04-13).** The *answer* above was right in spirit — the registry should drive field equality, and `AnalysisPass.latticeEquals` is the correct dispatch target. The *reasoning* was wrong: `join` / `leq` / `top` are **per-slot** operations inside a single analysis, whereas hint equality is **per-field** across analyses. They are not symmetric, so "every other lattice op dispatches through the module" is not a load-bearing argument for exporting a standalone `hintEquals` helper. Hint equality is the only per-field cross-cutting op in the codebase; it gets one inlined walker (`Worklist.hintFieldsEqual`) and no exported symbol. See the `HintEqualsDispatcher` / `hintEquals` / `HINT_EQ_NEVER` entry in `optimization-roadmap.md`'s Removed concepts.
+
 **Q3 — Close `OptimizationHint` to exhaustive dispatch, or document the openness?**
 **Downstream of Q1, not independent.** If Q1 = wire, keep the open index signature — dispatch is data-driven, any field works, honesty preserved. If Q1 = delete/canonicalize, `OptimizationHint` **must** close (drop the index signature, enumerate fields, let TS exhaustiveness-check the switch). Leaving the index signature open alongside a closed switch is the worst cell of the matrix — it invites the extension the switch silently rejects.
 

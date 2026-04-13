@@ -144,10 +144,11 @@ The framework composes:
   interpreter typing don't have to structurally subtype the whole worklist.
   `Worklist implements ObservationSink`.
 - **HintStore** (`framework/hint.ts`): `Map<nodeId, OptimizationHint>` with an
-  injected `eq` callback. Production callers pass `(a, b) => hintEquals(a, b,
-  worklist.analysesByName)`, which dispatches each field's lattice equality
-  through the registered `AnalysisPass.latticeEquals`. Test merge-collectors
-  pass `HINT_EQ_NEVER` since they never double-write a node.
+  injected `eq` callback. The worklist passes a closure over its private
+  `hintFieldsEqual`, which walks each field of the hint record and dispatches
+  to the registered `AnalysisPass.latticeEquals` via `analysesByName`. Test
+  merge-collectors that never double-write a node pass `() => false`
+  directly.
 - **Analyses** (`type-analysis/`, `const-analysis/`): dataflow modules producing
   lattice values at named hint fields.
 - **Transforms** (`transforms/`): `DeadBranchEliminationRule`,
@@ -172,7 +173,7 @@ flowchart TB
     PW["Worklist<br/>(analysis tier → transform tier)<br/>implements ObservationSink"]
     ANA["Analyses<br/>TypeAnalysisPass · ConstAnalysisPass"]
     XF["Transforms<br/>DeadBranchElimination · ConstantFolding · MemoizationTransformRule"]
-    HS[("HintStore per unit<br/>nodeId → OptimizationHint<br/>eq via analysesByName registry")]
+    HS[("HintStore per unit<br/>nodeId → OptimizationHint<br/>eq via worklist.hintFieldsEqual")]
     PATCH["onScopeChanged listener<br/>(engine-specific install)"]
 
     RESOLVE --> BUILD --> PW
@@ -225,7 +226,7 @@ mitigates them) lives in `optimization-roadmap.md` under "Why the pin-set exists
 
 - `Worklist`, `ObservationSink`, `WorklistStats`, `ScopeChangeListener`.
 - `FunctionUnit`, `buildFunctionUnits`.
-- `HintStore`, `OptimizationHint`, `hintEquals`, `HINT_EQ_NEVER`.
+- `HintStore`, `OptimizationHint`.
 - `AnalysisPass`, `ScopePass`, `TransformRule`.
 - Analyses/lattices (`TypeAnalysisPass`, `ConstAnalysisPass`,
   `PurityEffectAnalysis`, lattice constructors).
@@ -417,7 +418,7 @@ flowchart TB
 | Worklist | `src/specialization/framework/worklist.ts` | `Worklist`, `observeWrite`, `observeCall`, `activateScope`, `deactivateScope`, `withActiveScope`, `subscribe`, `onScopeChanged`, `addScopePass`, `clearAllPins` |
 | Observation surface | `src/specialization/framework/observation-sink.ts` | `ObservationSink` (interface; `Worklist implements`) |
 | Units | `src/specialization/framework/function-unit.ts` | `FunctionUnit`, `buildFunctionUnits` |
-| Hints | `src/specialization/framework/hint.ts` | `HintStore`, `OptimizationHint`, `hintEquals`, `HINT_EQ_NEVER` |
+| Hints | `src/specialization/framework/hint.ts` | `HintStore`, `OptimizationHint` |
 | SVML compile | `src/engines/svml/svml-compiler.ts` | `SVMLCompiler.fromProgramUnit`, `compileProgram`, `getHint`, `indexOf`, `compileFunction` |
 | SVML run | `src/engines/svml/svml-interpreter.ts` | `SVMLInterpreter.execute`, `patchFunction`, `toJSValue` |
 | SVML dispatch patch | `src/conductor/PySvmlJitEvaluator.ts` | inline `worklist.onScopeChanged(...)` closure |

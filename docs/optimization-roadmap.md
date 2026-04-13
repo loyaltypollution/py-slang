@@ -61,14 +61,23 @@ P-05 (Don't coin nouns ahead of implementers).
 
 `OptimizationHint` is an open record keyed on `AnalysisPass.name`. A
 new analysis slots in by adding an optional field to the hint record and
-shipping a module whose `name` matches. Equality is delegated to the
-module's `latticeEquals`, dispatched through a per-worklist registry
-(`analysesByName`) constructed from the analyses passed to the worklist
-constructor. No separate key sub-object, no `hintGet` / `hintSet`
-helpers.
-*Location*: `src/specialization/framework/hint.ts` (`hintEquals`
-registry dispatch), `src/specialization/framework/worklist.ts`
-(`analysesByName`).
+shipping a module whose `name` matches. Field equality is delegated to
+the module's `latticeEquals`, walked by a private worklist method
+(`hintFieldsEqual`) that dispatches through the per-worklist
+`analysesByName` registry constructed from the analyses passed to the
+worklist constructor. No separate key sub-object, no `hintGet` /
+`hintSet` helpers, no exported equality helper — the walker has one
+caller and lives with it.
+
+Two algebras coexist in the record: *lattice* fields (`type`,
+`constVal` — written by `AnalysisPass` during DFA, `join`-combined)
+and *profile* fields (`callCount` — written by `ScopePass` /
+`ProfileObserver` from runtime data, saturating semiring
+increments, `===`-compared). The framework treats both as opaque
+keyed values; the distinction is a property of the writing module.
+*Location*: `src/specialization/framework/hint.ts` (record shape),
+`src/specialization/framework/worklist.ts`
+(`analysesByName`, `hintFieldsEqual`).
 *Principle*: P-02 (Extension shape follows the extension point).
 
 ### SPEC-03 — `FunctionUnit.body` is a read-through getter
@@ -302,13 +311,15 @@ flowchart TB
 
 Open-record map from `node.id` to `OptimizationHint`. Analyses read and
 write named fields (`hint.type`, `hint.constVal`, `hint.callCount`,
-`hint.memoized`, …). The constructor takes an `eq` callback;
-production callers pass
-`(a, b) => hintEquals(a, b, worklist.analysesByName)`, which dispatches
-each field's equality through the registered `AnalysisPass.latticeEquals`.
-Unregistered fields default to inequality (conservative
-over-invalidation). `HINT_EQ_NEVER` is the sentinel callback for test
-merge-collectors that never double-write a node.
+…). The constructor takes an `eq` callback; the worklist passes a
+closure over its private `hintFieldsEqual`, which walks the union of
+field names and dispatches each to the registered
+`AnalysisPass.latticeEquals`. Unregistered fields default to
+inequality (conservative over-invalidation). Test merge-collectors
+that never double-write a node pass `() => false` directly.
+
+"Did transform X fire on this scope?" lives on the unit, not the
+hint — see `FunctionUnit.appliedTransforms`.
 
 ### `FunctionUnit` (SPEC-03, SPEC-07)
 
@@ -857,6 +868,25 @@ follow-up if profiling warrants.
   `latticeEquals` and deleted from `hint.ts`. Open-record dispatch is
   now data-driven; adding an extension field no longer requires a
   `case` in a central switch.
+- **`HintEqualsDispatcher` / exported `hintEquals` / `HINT_EQ_NEVER`.**
+  Deleted. The registry-dispatched walker is now the worklist's
+  private `hintFieldsEqual` method. The audit's Q1 symmetry argument
+  for keeping it as an exported helper alongside `join`/`leq`/`top`
+  *does not hold*: those ops are per-slot inside one analysis; hint
+  equality is per-field across analyses — the only such cross-cutting
+  op in the codebase, and so the only one that needs a walker. Single
+  caller (the HintStore `eq` closure) + one-line `() => false` for
+  test merge-collectors that never double-write means an exported
+  type + sentinel earned no weight. Note: this is NOT a reversion to
+  the earlier `switch (name)` — the walker remains data-driven over
+  `analysesByName`; it just isn't exported.
+- **`OptimizationHint.memoized` field.** Deleted. Nothing branched on
+  it (the re-fire guard is the scheduler's `fireOnce` bookkeeping);
+  only tests read it. Replaced by `FunctionUnit.appliedTransforms:
+  Set<string>`, populated by each transform's own
+  `apply` (`unit.appliedTransforms.add(this.name)`). Future transforms
+  opt in by the same one-liner. Keeps `OptimizationHint` scoped to
+  analysis-owned algebras (lattice + profile).
 - **External `pinSet` Map argument.** Dissolved. The three parallel
   views of pin state (`activeScopes` on worklist, `pinSet` parameter
   threaded through evaluator, `context.runtime.pinSet` in CSE)

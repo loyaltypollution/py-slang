@@ -75,8 +75,10 @@ export type TransformRule = StmtTransformRule | ExprTransformRule | ScopeTransfo
  * hint-record field under which the analysis stores its lattice value. A
  * new analysis adds a pass (and an optional field on `OptimizationHint`)
  * and the framework picks it up. `latticeEquals` is declared directly on
- * each concrete pass — consumers that need equality route through
- * `hintEquals` rather than calling pass-level equality.
+ * each concrete pass — consumers that need hint-level equality route
+ * through the worklist's private `hintFieldsEqual` (which dispatches
+ * here via the `analysesByName` registry) rather than calling
+ * pass-level equality directly.
  *
  * An `AnalysisPass<L>` runs as a Kildall fixpoint over basic blocks within
  * a `FunctionUnit`. For scope-level one-shot folds (call counts, purity
