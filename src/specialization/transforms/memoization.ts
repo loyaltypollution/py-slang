@@ -32,7 +32,7 @@ import {
   MEMOIZATION_THRESHOLD,
   MEMOIZED_FIELD,
 } from "../memoization-analysis/call-count";
-import { isPureFunctionDef } from "../memoization-analysis/purity";
+import { PURE_FIELD } from "../memoization-analysis/purity-summary";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokens";
 
@@ -58,7 +58,7 @@ export class MemoizationTransformRule implements ScopeTransformRule {
     const count =
       typeof hint[CALL_COUNT_FIELD] === "number" ? (hint[CALL_COUNT_FIELD] as number) : 0;
     if (count < MEMOIZATION_THRESHOLD) return false;
-    return isPureFunctionDef(fd);
+    return hint[PURE_FIELD] === true;
   }
 
   apply(unit: FunctionUnit): boolean {

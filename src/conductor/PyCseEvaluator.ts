@@ -17,6 +17,8 @@ import {
   DeadBranchEliminationRule,
   CallCountScopePass,
   MemoizationTransformRule,
+  PurityEffectAnalysis,
+  PurityScopePass,
   Worklist,
   TypeAnalysisPass,
 } from "../specialization";
@@ -93,7 +95,7 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
       const worklist = new Worklist(
         ast,
         environments,
-        [new TypeAnalysisPass(), new ConstAnalysisPass()],
+        [new TypeAnalysisPass(), new ConstAnalysisPass(), new PurityEffectAnalysis()],
         [
           new DeadBranchEliminationRule(),
           new ConstantFoldingRule(),
@@ -101,6 +103,7 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         ],
       );
       worklist.addScopePass(new CallCountScopePass());
+      worklist.addScopePass(new PurityScopePass());
       worklist.converge();
 
       this.context.runtime.rootScope = ast;

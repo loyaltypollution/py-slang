@@ -645,11 +645,16 @@ export class Worklist implements ObservationSink {
     // Scope-level passes run once per scope per generation, after the
     // expression-level fixpoint has converged (lower-priority queue
     // guarantees all analysis queues are empty at this point) and before
-    // transform rules read scope-level hints. A pass that writes to
-    // `unit.hints` may invalidate downstream lattice facts; the
-    // `hintStore.set` equality check suppresses no-op writes, and a
-    // genuine change triggers the transform round's own
-    // `rebuildAndReseed` below.
+    // transform rules read scope-level hints.
+    //
+    // **Ordering invariant:** hint fields written by a ScopePass must
+    // only be consumed by `ScopeTransformRule.matches` (same round) or by
+    // later ScopePasses (same round). They MUST NOT be read inside any
+    // `AnalysisPass.makeExprVisitor` transfer function — that analysis
+    // fires earlier in the queue priority order, on the prior generation,
+    // and would see stale scope-level facts. Fields that need to feed
+    // back into expression-level analyses belong on an `AnalysisPass`
+    // (which participates in the fixpoint), not a ScopePass.
     for (const pass of this.scopePasses) {
       pass.run(unit);
     }

@@ -10,6 +10,8 @@ import {
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   MemoizationTransformRule,
+  PurityEffectAnalysis,
+  PurityScopePass,
   TypeAnalysisPass,
   Worklist,
 } from "../specialization";
@@ -32,7 +34,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const worklist = new Worklist(
         ast,
         environments,
-        [new TypeAnalysisPass(), new ConstAnalysisPass()],
+        [new TypeAnalysisPass(), new ConstAnalysisPass(), new PurityEffectAnalysis()],
         [
           new DeadBranchEliminationRule(),
           new ConstantFoldingRule(),
@@ -40,6 +42,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         ],
       );
       worklist.addScopePass(new CallCountScopePass());
+      worklist.addScopePass(new PurityScopePass());
       worklist.converge();
 
       const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units);

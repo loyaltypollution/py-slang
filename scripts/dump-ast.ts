@@ -22,6 +22,8 @@ import {
   HintStore,
   CallCountScopePass,
   MemoizationTransformRule,
+  PurityEffectAnalysis,
+  PurityScopePass,
   Worklist,
   TypeAnalysisPass,
   type OptimizationHint,
@@ -300,10 +302,11 @@ if (errors.length > 0) {
 const worklist = new Worklist(
   ast,
   environments,
-  [new TypeAnalysisPass(), new ConstAnalysisPass()],
+  [new TypeAnalysisPass(), new ConstAnalysisPass(), new PurityEffectAnalysis()],
   [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
 );
 worklist.addScopePass(new CallCountScopePass());
+worklist.addScopePass(new PurityScopePass());
 worklist.converge();
 const units = worklist.units;
 

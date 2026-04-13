@@ -70,4 +70,10 @@ export {
   CALL_COUNT_FIELD,
   MEMOIZED_FIELD,
 } from "./memoization-analysis/call-count";
+export {
+  PurityEffectAnalysis,
+  PURE_EFFECT_FIELD,
+  type PureEffect,
+} from "./memoization-analysis/purity-effect";
+export { PurityScopePass, PURE_FIELD } from "./memoization-analysis/purity-summary";
 export { memoLookup, memoPut, clearMemoCache, memoCacheSnapshot, MEMO_MISS } from "../runtime/memo";
