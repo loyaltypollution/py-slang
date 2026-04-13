@@ -112,7 +112,7 @@ describe("CallCountObserver + transform", () => {
 
     expect(fd.body.length).toBe(bodyLenAfterFirst);
     // Only one memo prelude on the front, not two.
-    const firstCall = ((fd.body[0] as StmtNS.If).condition) as ExprNS.Call;
+    const firstCall = (fd.body[0] as StmtNS.If).condition as ExprNS.Call;
     expect((firstCall.callee as ExprNS.Variable).name.lexeme).toBe("__memo_has");
     const inner = fd.body[1];
     // The second statement must not itself be another memo prelude.

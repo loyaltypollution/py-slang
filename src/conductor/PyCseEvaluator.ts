@@ -17,8 +17,7 @@ import {
   DeadBranchEliminationRule,
   CallCountObserver,
   MemoizationTransformRule,
-  PersistentWorklist,
-  runPinned,
+  Worklist,
   TypeAnalysisModule,
 } from "../specialization";
 import linkedList from "../stdlib/linked-list";
@@ -78,7 +77,10 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
       const script = chunk + "\n";
       const ast = parse(script);
       const { errors, environments } = analyzeWithEnvironments(
-        ast, script, this.variant, this.groups,
+        ast,
+        script,
+        this.variant,
+        this.groups,
       );
 
       if (errors.length > 0) {
@@ -88,28 +90,28 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         throw errors[errors.length - 1];
       }
 
-      const worklist = new PersistentWorklist(
+      const worklist = new Worklist(
         ast,
         environments,
         [new TypeAnalysisModule(), new ConstAnalysisModule()],
-        [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
+        [
+          new DeadBranchEliminationRule(),
+          new ConstantFoldingRule(),
+          new MemoizationTransformRule(),
+        ],
       );
-      worklist.addCallObserver(new CallCountObserver());
+      worklist.addProfileObserver(new CallCountObserver());
       worklist.converge();
 
       this.context.runtime.rootScope = ast;
-      // observationSink wires the runtime's push/popEnvironment into the
-      // worklist's activateScope/deactivateScope, which mutate
-      // FunctionUnit.pinCount — the single owner of pin-set state.
       this.context.runtime.observationSink = worklist;
 
       try {
-        await runPinned(worklist, null, ast, () =>
-          evaluate("", ast, this.context, {
-            variant: this.variant,
-            groups: this.groups,
-          }),
-        );
+        await evaluate("", ast, this.context, {
+          variant: this.variant,
+          groups: this.groups,
+        });
+        worklist.tick();
       } finally {
         this.context.runtime.observationSink = undefined;
       }

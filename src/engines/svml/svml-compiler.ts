@@ -13,7 +13,6 @@ import OpCodes from "./opcodes";
 import { SVMLIR, SVMLProgram } from "./types";
 import { traverseAST } from "../../validator/traverse";
 
-
 /** Signed 32-bit integer bounds used to decide LGCI vs LGCF64 encoding. */
 const I32_MIN = -2_147_483_648;
 const I32_MAX = 2_147_483_647;
@@ -64,7 +63,10 @@ export class SVMLCompiler
    * that lets `compileFunction()` produce a patched IR whose `NEWC` operands
    * still match sibling functions.
    */
-  private functionIndices!: Map<StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda, number>;
+  private functionIndices!: Map<
+    StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda,
+    number
+  >;
 
   private tokenAnnotations = new WeakMap<Token, CompilerAnnotation>();
   private envSlotCounters = new WeakMap<Environment, number>();
@@ -216,7 +218,12 @@ export class SVMLCompiler
     const childUnit = this.unitMap?.get(node as StmtNS.FunctionDef);
     const childHints = childUnit?.hints ?? this.hints;
 
-    const compiler = new SVMLCompiler(nextEnvironment, this.functionEnvironments, builder, childHints);
+    const compiler = new SVMLCompiler(
+      nextEnvironment,
+      this.functionEnvironments,
+      builder,
+      childHints,
+    );
     compiler.unitMap = this.unitMap;
     compiler._scopeIndexMap = this._scopeIndexMap;
     compiler.functionIndices = this.functionIndices;
@@ -268,7 +275,9 @@ export class SVMLCompiler
   compileFunction(unit: FunctionUnit): SVMLIR {
     const funcAst = unit.funcAst;
     if (!(funcAst instanceof StmtNS.FunctionDef)) {
-      throw new Error("compileFunction only supports FunctionDef units; use compileProgram for FileInput");
+      throw new Error(
+        "compileFunction only supports FunctionDef units; use compileProgram for FileInput",
+      );
     }
     const nextEnvironment = this.functionEnvironments.get(funcAst);
     if (!nextEnvironment) {

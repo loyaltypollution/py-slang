@@ -67,7 +67,6 @@ export function buildCFG(body: StmtNS.Stmt[]): CFG {
       // If a previous statement killed control flow, remaining stmts are dead code.
       // We don't create blocks for them.
       switch (stmt.kind) {
-
         case "If": {
           const ifStmt = stmt as StmtNS.If;
           // The condition is evaluated in the current block.

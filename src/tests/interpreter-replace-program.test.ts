@@ -84,9 +84,7 @@ def f():
 f()
 `;
     const { program } = compileWithOptimization(code);
-    const resultBefore = SVMLInterpreter.toJSValue(
-      new SVMLInterpreter(program).execute(),
-    );
+    const resultBefore = SVMLInterpreter.toJSValue(new SVMLInterpreter(program).execute());
     expect(resultBefore).toBe(1);
 
     // Compile a variant and splice its function IR into the original program
@@ -103,9 +101,7 @@ f()
     const fIdx = program.entryPoint === 0 ? 1 : 0;
     const patched = program.withSpecializedFunction(fIdx, program2.functions[fIdx]);
 
-    const resultAfter = SVMLInterpreter.toJSValue(
-      new SVMLInterpreter(patched).execute(),
-    );
+    const resultAfter = SVMLInterpreter.toJSValue(new SVMLInterpreter(patched).execute());
     expect(resultAfter).toBe(2);
   });
 });
@@ -167,9 +163,7 @@ total`,
 
     // Reactive path
     const { program } = compileWithReactive(code);
-    const reactiveResult = SVMLInterpreter.toJSValue(
-      new SVMLInterpreter(program).execute(),
-    );
+    const reactiveResult = SVMLInterpreter.toJSValue(new SVMLInterpreter(program).execute());
     expect(reactiveResult).toBe(expected);
 
     // Both should agree

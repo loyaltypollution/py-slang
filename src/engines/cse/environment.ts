@@ -160,32 +160,11 @@ export const getPreludeEnvironment = (context: Context): Environment | null => {
   return envs.length > 1 ? envs[envs.length - 2] : null;
 };
 
-/**
- * Pin-set integration. Only environments whose closure is a `FunctionDef`
- * correspond to a `FunctionUnit` in the specialization framework —
- * lambdas, block envs, and the global/prelude envs are not DFA scopes and
- * have no worklist entry to pin. Anchoring pin-set mutation to
- * push/pop piggybacks on a protocol the engine must already maintain for
- * scope resolution, so early `return`, exception unwind, future
- * try/except, and generators inherit the pin invariant for free.
- */
-const scopeKeyForEnv = (environment: Environment): StmtNS.FunctionDef | null => {
-  const node = environment.closure?.node;
-  return node instanceof StmtNS.FunctionDef ? node : null;
-};
-
 export const popEnvironment = (context: Context) => {
-  const env = context.runtime.environments.shift();
-  if (env) {
-    const scope = scopeKeyForEnv(env);
-    if (scope) context.runtime.observationSink?.deactivateScope(scope);
-  }
-  return env;
+  return context.runtime.environments.shift();
 };
 
 export const pushEnvironment = (context: Context, environment: Environment) => {
   context.runtime.environments.unshift(environment);
   context.runtime.environmentTree.insert(environment);
-  const scope = scopeKeyForEnv(environment);
-  if (scope) context.runtime.observationSink?.activateScope(scope);
 };

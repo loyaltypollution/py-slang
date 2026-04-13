@@ -80,7 +80,11 @@ function exprIsPure(expr: ExprNS.Expr, self: string, locals: Set<string>): boole
   // between calls, which would turn a cache hit into a stale read.
   if (expr instanceof ExprNS.Variable) return locals.has(expr.name.lexeme);
   if (expr instanceof ExprNS.Grouping) return exprIsPure(expr.expression, self, locals);
-  if (expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare || expr instanceof ExprNS.BoolOp) {
+  if (
+    expr instanceof ExprNS.Binary ||
+    expr instanceof ExprNS.Compare ||
+    expr instanceof ExprNS.BoolOp
+  ) {
     return exprIsPure(expr.left, self, locals) && exprIsPure(expr.right, self, locals);
   }
   if (expr instanceof ExprNS.Unary) return exprIsPure(expr.right, self, locals);

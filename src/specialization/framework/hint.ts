@@ -75,9 +75,7 @@ export const HINT_EQ_NEVER: (a: OptimizationHint, b: OptimizationHint) => boolea
 export class HintStore {
   private readonly map = new Map<number, OptimizationHint>();
 
-  constructor(
-    private readonly eq: (a: OptimizationHint, b: OptimizationHint) => boolean,
-  ) {}
+  constructor(private readonly eq: (a: OptimizationHint, b: OptimizationHint) => boolean) {}
 
   get(node: ExprNS.Expr | StmtNS.Stmt): OptimizationHint | undefined {
     return this.map.get(node.id);

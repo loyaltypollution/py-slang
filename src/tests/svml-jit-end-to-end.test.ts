@@ -1,22 +1,20 @@
 /**
- * Phase 6: end-to-end JIT through `PySvmlJitEvaluator`'s wiring.
+ * End-to-end JIT wiring through `Worklist.onScopeChanged` — the dispatch
+ * patcher previously known as the "OSR coordinator + state-delta strategy"
+ * pair. The listener receives pre-resolved `(scope, unit)` pairs and is
+ * responsible for recompiling + patching the interpreter's function table.
  *
- * Covers:
- *  (a) SVMLSwapStrategy / OSRCoordinator mechanical contract:
- *      `install(scopeKey, ir)` delegates to `interpreter.patchFunction` with
- *      the compiler's stable index, exercising the full OSR glue end-to-end.
- *  (b) patchFunction safety: swapping a function whose frame is live on the
- *      call stack throws, defending the safepoint contract.
+ * This is dispatch patching, not OSR: `CallFrame.ir` is captured at CALL
+ * time, so live frames drain on the old IR while future CALLs dispatch
+ * through the patched slot.
  */
 
 import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { OSRCoordinator } from "../specialization";
 import { buildTestWorklist } from "./utils";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import { SVMLSwapStrategy } from "../conductor/svml-swap-strategy";
 
 function buildUnit(code: string) {
   const script = code + "\n";
@@ -30,7 +28,7 @@ function buildUnit(code: string) {
 }
 
 describe("SVML JIT end-to-end wiring", () => {
-  test("SVMLSwapStrategy.applyDelta patches the function at the compiler's stable index", () => {
+  test("patchFunction targets the compiler's stable index for the changed scope", () => {
     const code = `
 def g():
     return 42
@@ -42,24 +40,19 @@ g()
     const gUnit = reactive.units.get(gDef);
     expect(gUnit).toBeDefined();
 
-    const strategy = new SVMLSwapStrategy(compiler, interpreter);
     const patchSpy = jest.spyOn(interpreter, "patchFunction");
 
-    const delta = strategy.computeDelta(gUnit!);
-    expect(delta.kind).toBe("whole");
-    strategy.applyDelta(gDef, delta);
-
+    // Direct-path: what the `onScopeChanged` callback in PySvmlJitEvaluator does.
     const expectedIndex = compiler.indexOf(gDef)!;
+    const newIR = compiler.compileFunction(gUnit!);
+    interpreter.patchFunction(expectedIndex, newIR);
+
     expect(patchSpy).toHaveBeenCalledTimes(1);
-    expect(patchSpy).toHaveBeenCalledWith(
-      expectedIndex,
-      (delta as { kind: "whole"; ir: unknown }).ir,
-      /* allowOnStack */ true,
-    );
+    expect(patchSpy).toHaveBeenCalledWith(expectedIndex, newIR);
     patchSpy.mockRestore();
   });
 
-  test("OSRCoordinator wires SVMLSwapStrategy into the reactive worklist", async () => {
+  test("onScopeChanged routes transforms to per-function recompile + patch", async () => {
     const code = `
 def g():
     return 1
@@ -69,81 +62,27 @@ g()
     const interpreter = new SVMLInterpreter(program, { observationSink: reactive });
     const gDef = ast.statements[0] as StmtNS.FunctionDef;
 
-    const strategy = new SVMLSwapStrategy(compiler, interpreter);
-    const installSpy = jest.spyOn(strategy, "applyDelta");
+    const patchSpy = jest.spyOn(interpreter, "patchFunction");
 
-    const coord = new OSRCoordinator(reactive, strategy);
-    const stop = coord.start();
-    try {
-      await reactive.withActiveScope(ast, () => interpreter.execute());
-    } finally {
-      stop();
-    }
-    // Execution succeeded; strategy was wired. Install may or may not have
-    // fired depending on whether runtime observations refined any hints
-    // beyond the static fixpoint — the invariant we enforce is that any call
-    // that *did* fire routed through the strategy, not that one must fire.
-    for (const call of installSpy.mock.calls) {
-      const [scopeKey] = call;
-      // Only FunctionDefs produce installable IR; FileInput is filtered by
-      // `canInstall` and never reaches applyDelta.
-      if (scopeKey === ast) continue;
-      expect(scopeKey).toBe(gDef);
-    }
-    installSpy.mockRestore();
-  });
-
-  test("patchFunction throws if the target index is on the live call stack", () => {
-    // Build a program where g is called from the entry point; mid-execution,
-    // attempt to patchFunction on g's index from inside an observationSink
-    // hook. The interpreter must refuse the swap.
-    const code = `
-def g():
-    return 1
-g()
-`;
-    const { ast, reactive, compiler, program } = buildUnit(code);
-    const gDef = ast.statements[0] as StmtNS.FunctionDef;
-    const gIndex = compiler.indexOf(gDef)!;
-    const gUnit = reactive.units.get(gDef)!;
-
-    // Pre-compile a fresh IR to splice in.
-    const freshIR = compiler.compileFunction(gUnit);
-
-    let caught: unknown = null;
-    let tried = false;
-
-    const interpreter = new SVMLInterpreter(program, {
-      observationSink: {
-        observeWrite: (k, n, v) => reactive.observeWrite(k, n, v),
-        observeCall: (c, ce) => reactive.observeCall(c, ce),
-        activateScope: k => {
-          reactive.activateScope(k);
-          // When g activates, we're mid-call: g's frame is current. Attempt
-          // to patch its index — must throw.
-          if (k === gDef && !tried) {
-            tried = true;
-            try {
-              interpreter.patchFunction(gIndex, freshIR);
-            } catch (e) {
-              caught = e;
-            }
-          }
-        },
-        deactivateScope: k => reactive.deactivateScope(k),
-      },
+    reactive.onScopeChanged((scope, unit) => {
+      if (!(scope instanceof StmtNS.FunctionDef)) return;
+      const index = compiler.indexOf(scope);
+      if (index === undefined) return;
+      interpreter.patchFunction(index, compiler.compileFunction(unit));
     });
 
-    // Execute; swallow any propagation since the caught error above is what
-    // we're asserting on.
-    try {
-      interpreter.execute();
-    } catch {
-      /* irrelevant — we captured the patch error inside the sink */
-    }
+    await interpreter.execute();
+    reactive.tick();
 
-    expect(tried).toBe(true);
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toMatch(/currently executing/);
+    // Execution succeeded; listener was wired. Patching may or may not have
+    // fired depending on whether runtime observations refined any hints
+    // beyond the static fixpoint — the invariant is that any call that did
+    // fire targeted a FunctionDef index (FileInput is filtered by the
+    // callback and never reaches patchFunction).
+    for (const call of patchSpy.mock.calls) {
+      const [index] = call;
+      expect(index).toBe(compiler.indexOf(gDef));
+    }
+    patchSpy.mockRestore();
   });
 });

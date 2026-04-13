@@ -2411,9 +2411,10 @@ function wrap(raw: unknown): Value {
 
 function memoIdFrom(args: Value[]): { id: string; rest: Value[] } {
   const first = args[0];
-  const id = typeof first === "object" && first && (first as StringValue).type === "string"
-    ? (first as StringValue).value
-    : String(unwrap(first));
+  const id =
+    typeof first === "object" && first && (first as StringValue).type === "string"
+      ? (first as StringValue).value
+      : String(unwrap(first));
   return { id, rest: args.slice(1) };
 }
 

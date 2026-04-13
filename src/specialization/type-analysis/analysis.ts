@@ -1,34 +1,34 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
+import { type HintStore, type OptimizationHint } from "../framework/hint";
+import type { AnalysisModule } from "../framework/interfaces";
+import type { SlotLookup } from "../framework/slot-table";
 import {
   type TypeLattice,
   BOOL_BIT,
-  BoolRef,
-  STR_BIT,
   boolean as booleanValue,
+  BoolRef,
+  BOTTOM,
   closureValue,
   complexValue,
   falseValue,
   floatValue,
   join,
-  meet,
   leq,
+  meet,
   negativeFloat,
   negativeInteger,
   nullValue,
   positiveFloat,
   positiveInteger,
+  STR_BIT,
   stringValue,
   TOP,
-  BOTTOM,
   trueValue,
   zeroFloat,
   zeroInteger,
 } from "./lattice";
 import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
-import type { AnalysisModule } from "../framework/interfaces";
-import { type HintStore, type OptimizationHint } from "../framework/hint";
-import type { SlotLookup } from "../framework/slot-table";
 
 /**
  * Maps Python binary operator token types to the string expected by transfer functions.
@@ -51,12 +51,6 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
   [TokenType.NOTEQUAL, "!="],
 ]);
 
-/**
- * Implements ExprNS.Visitor<TypeLattice>, replacing the hand-threaded switch-dispatch
- * in the legacy ASTSpecializationVisitor. TypeScript enforces exhaustiveness: every
- * expression node type must have a corresponding visitXxx method. Missing a node type
- * is a compile error, unlike the switch on expr.kind which is unchecked.
- */
 export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
     private readonly hints: HintStore,
@@ -292,7 +286,11 @@ export class TypeAnalysisModule implements AnalysisModule<TypeLattice> {
           ? rawToNumberLattice(Number(tagged.value))
           : undefined;
       case "bool":
-        return tagged.value === true ? trueValue() : tagged.value === false ? falseValue() : undefined;
+        return tagged.value === true
+          ? trueValue()
+          : tagged.value === false
+            ? falseValue()
+            : undefined;
       case "string":
         return stringValue();
       case "none":

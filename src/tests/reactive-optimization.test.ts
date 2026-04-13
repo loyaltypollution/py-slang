@@ -2,7 +2,7 @@
  * Tests for the reactive optimization architecture:
  * - Differential correctness: buildTestWorklist().converge() produces
  *   the same hints and AST structure as the one-shot optimize() path.
- * - PersistentWorklist priority ordering.
+ * - Worklist priority ordering.
  * - Structural versioning.
  * - Subscription notifications.
  */
@@ -59,12 +59,13 @@ function collectHints(hints: HintStore, stmts: StmtNS.Stmt[]): Map<string, unkno
     for (const key of Object.keys(stmt)) {
       if (key === "startToken" || key === "endToken") continue;
       const val = stmt[key];
-      if (Array.isArray(val)) val.forEach((v: any) => {
-        if (v && typeof v === "object") {
-          if (v instanceof StmtNS.Stmt) visitStmt(v);
-          else visitExpr(v);
-        }
-      });
+      if (Array.isArray(val))
+        val.forEach((v: any) => {
+          if (v && typeof v === "object") {
+            if (v instanceof StmtNS.Stmt) visitStmt(v);
+            else visitExpr(v);
+          }
+        });
       else if (val && typeof val === "object" && typeof val.id === "number") visitExpr(val);
     }
   }
@@ -137,7 +138,6 @@ describe("ReactiveOptimization: dual versioning", () => {
     expect(rootUnit).toBeDefined();
     expect(rootUnit!.structuralVersion).toBeGreaterThan(0);
   });
-
 });
 
 // ── Subscription tests ──────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ describe("ReactiveOptimization: subscriptions", () => {
 // differential + counter-based tests above would not catch if folding/
 // dead-branch elimination stopped firing on a specific shape.
 
-describe("PersistentWorklist: post-optimization AST", () => {
+describe("Worklist: post-optimization AST", () => {
   function optimise(code: string): StmtNS.Stmt[] {
     const { ast, environments } = parseAndResolve(code);
     const reactive = buildTestWorklist(ast, environments);
@@ -261,7 +261,7 @@ describe("PersistentWorklist: post-optimization AST", () => {
   });
 });
 
-describe("PersistentWorklist: post-optimization hints", () => {
+describe("Worklist: post-optimization hints", () => {
   function analyse(code: string): { hints: HintStore; body: StmtNS.Stmt[] } {
     const { ast, environments } = parseAndResolve(code);
     const reactive = buildTestWorklist(ast, environments);

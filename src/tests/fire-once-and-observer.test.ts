@@ -4,7 +4,7 @@
  *      scheduler must NOT re-invoke `matches` on the same scope, even when
  *      the scope is re-ticked by a fresh observation. Guards both the new
  *      scheduler plumbing and the `MEMOIZED_FIELD` latch removal.
- *   2. `CallObserver` dispatch: `addCallObserver` observers fire on
+ *   2. `ProfileObserver` dispatch: `addProfileObserver` observers fire on
  *      `observeCall`, independently of any `AnalysisModule` path.
  */
 
@@ -16,9 +16,9 @@ import {
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   MemoizationTransformRule,
-  PersistentWorklist,
+  Worklist,
   TypeAnalysisModule,
-  type CallObserver,
+  type ProfileObserver,
   type FunctionUnit,
 } from "../specialization";
 import type { ScopeTransformRule } from "../specialization/framework/interfaces";
@@ -35,7 +35,7 @@ describe("ScopeTransformRule fireOnce scheduling", () => {
     // Program with a callable function so we can force re-ticks via multiple
     // observeCall dispatches on the same FunctionDef.
     const { ast, environments } = parseAndResolve("def f():\n  return 1\nf()\nf()");
-    const fd = (ast.statements[0] as StmtNS.FunctionDef);
+    const fd = ast.statements[0] as StmtNS.FunctionDef;
 
     // A one-shot rule that always matches and always applies. Instrumented
     // with a call-count on both matches and apply.
@@ -56,12 +56,7 @@ describe("ScopeTransformRule fireOnce scheduling", () => {
       },
     };
 
-    const worklist = new PersistentWorklist(
-      ast,
-      environments,
-      [new TypeAnalysisModule()],
-      [rule],
-    );
+    const worklist = new Worklist(ast, environments, [new TypeAnalysisModule()], [rule]);
     worklist.converge();
     const afterConvergeApply = applyCalls;
 
@@ -95,8 +90,8 @@ describe("ScopeTransformRule fireOnce scheduling", () => {
   });
 });
 
-describe("CallObserver dispatch", () => {
-  test("addCallObserver receives onCallObservation for every observeCall", () => {
+describe("ProfileObserver dispatch", () => {
+  test("addProfileObserver receives onCallObservation for every observeCall", () => {
     const { ast, environments } = parseAndResolve("def f():\n  return 1\nf()\nf()");
     const fd = ast.statements[0] as StmtNS.FunctionDef;
 
@@ -104,19 +99,19 @@ describe("CallObserver dispatch", () => {
       caller: StmtNS.FileInput | StmtNS.FunctionDef;
       callee: StmtNS.FileInput | StmtNS.FunctionDef;
     }> = [];
-    const observer: CallObserver = {
+    const observer: ProfileObserver = {
       onCallObservation(caller, callee) {
         calls.push({ caller, callee });
       },
     };
 
-    const worklist = new PersistentWorklist(
+    const worklist = new Worklist(
       ast,
       environments,
       [new TypeAnalysisModule(), new ConstAnalysisModule()],
       [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
     );
-    worklist.addCallObserver(observer);
+    worklist.addProfileObserver(observer);
     worklist.converge();
 
     worklist.observeCall(ast, fd);

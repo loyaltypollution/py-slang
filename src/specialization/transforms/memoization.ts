@@ -43,12 +43,6 @@ const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 export class MemoizationTransformRule implements ScopeTransformRule {
   readonly name = "memoization";
   readonly level = "scope" as const;
-  // Mutation only affects future calls: the interpreter copies `fd.body` at
-  // call time, so prepending the cache-check prelude and rewriting `return E`
-  // to `return __memo_put(id, *args, E)` doesn't disturb on-stack frames.
-  // Without this, fib never memoizes during a single execution (it stays
-  // pinned all the way to the outermost return).
-  readonly safeOnStack = true;
   // Non-monotone rule: without one-shot scheduling, `matches` would re-fire
   // after a successful apply (there is no lattice fact that `apply`
   // "raises" to block its own predicate). The scheduler's `fireOnce`
@@ -61,7 +55,8 @@ export class MemoizationTransformRule implements ScopeTransformRule {
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
     const hint = unit.hints.get(fd);
     if (!hint) return false;
-    const count = typeof hint[CALL_COUNT_FIELD] === "number" ? (hint[CALL_COUNT_FIELD] as number) : 0;
+    const count =
+      typeof hint[CALL_COUNT_FIELD] === "number" ? (hint[CALL_COUNT_FIELD] as number) : 0;
     if (count < MEMOIZATION_THRESHOLD) return false;
     return isPureFunctionDef(fd);
   }

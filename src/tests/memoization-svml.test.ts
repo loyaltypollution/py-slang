@@ -18,10 +18,7 @@
 import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import {
-  clearMemoCache,
-  memoCacheSnapshot,
-} from "../specialization";
+import { clearMemoCache, memoCacheSnapshot } from "../specialization";
 import { buildTestWorklist } from "./utils";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
@@ -46,7 +43,8 @@ describe("SVML memoization wiring", () => {
     // compiler must resolve it to a primitive, and the interpreter must
     // dispatch to the runtime helper.
     const { ast, reactive, interpreter } = run(`__memo_put("k@L1", 5, 42)`);
-    await reactive.withActiveScope(ast, () => interpreter.execute());
+    await interpreter.execute();
+    reactive.tick();
 
     const bucket = memoCacheSnapshot().get("k@L1");
     expect(bucket).toBeDefined();
@@ -60,7 +58,8 @@ x = __memo_has("k@L1", 5)
 __memo_put("k@L1", 5, 99)
 y = __memo_has("k@L1", 5)
 `);
-    await reactive.withActiveScope(ast, () => interpreter.execute());
+    await interpreter.execute();
+    reactive.tick();
 
     // We cannot easily read SVML locals, but the runtime side-table proves
     // the put reached the shared cache. The has() call above, if it had
@@ -76,7 +75,8 @@ y = __memo_has("k@L1", 5)
 __memo_put("k@L1", 1, 7)
 __memo_put("k@L1", 2, __memo_get("k@L1", 1))
 `);
-    await reactive.withActiveScope(ast, () => interpreter.execute());
+    await interpreter.execute();
+    reactive.tick();
 
     const bucket = memoCacheSnapshot().get("k@L1")!;
     expect(bucket.get("number:1")).toBe(7);

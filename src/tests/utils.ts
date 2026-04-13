@@ -16,7 +16,7 @@ import {
   DeadBranchEliminationRule,
   CallCountObserver,
   MemoizationTransformRule,
-  PersistentWorklist,
+  Worklist,
   TypeAnalysisModule,
 } from "../specialization";
 import { Group } from "../stdlib/utils";
@@ -26,7 +26,7 @@ import { makeValidatorsForChapter } from "../validator";
 import Stmt = StmtNS.Stmt;
 
 /**
- * Test-only helper. Builds a `PersistentWorklist` preloaded with the
+ * Test-only helper. Builds a `Worklist` preloaded with the
  * standard analyses and transforms. Replaces the deleted
  * `createReactiveOptimization` / `SpecializationEngine` production
  * factories — do not introduce new callers in production code.
@@ -34,14 +34,14 @@ import Stmt = StmtNS.Stmt;
 export function buildTestWorklist(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
-): PersistentWorklist {
-  const worklist = new PersistentWorklist(
+): Worklist {
+  const worklist = new Worklist(
     ast,
     functionEnvironments,
     [new TypeAnalysisModule(), new ConstAnalysisModule()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
   );
-  worklist.addCallObserver(new CallCountObserver());
+  worklist.addProfileObserver(new CallCountObserver());
   return worklist;
 }
 

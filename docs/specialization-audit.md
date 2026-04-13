@@ -8,6 +8,22 @@ This memo supersedes the prior round's diagnosis. Scope narrower, prescriptions 
 
 ---
 
+> **Update (2026-04-13).** The 1b "lazy replacement / not OSR" diagnosis
+> below has been executed: `OSRCoordinator`, `StateDeltaStrategy`,
+> `SVMLSwapStrategy`, `SVMLDelta`, `OperandPatch`,
+> `SVMLInterpreter.applyOperandPatches`, the `allowOnStack` arg on
+> `patchFunction`, and `runPinned` were all deleted. The install seam is
+> now a direct `Worklist.onScopeChanged((scope, unit) => ...)` callback,
+> documented as **dispatch patching** (not OSR). The pin-set gate at
+> `processTransform` is the single load-bearing pin layer; the prior
+> "three-layer" model was dead-code redundant once the scheduler stopped
+> notifying for pinned-and-unsafe scopes. S3 resolved by deletion;
+> `safeOnStack` (S4) remains the one-bit trust flag, unchanged. Entries
+> below that prescribe deletion (table row 1, survives row 3–4) read as
+> now-executed; retained for historical trace.
+
+---
+
 ## 1. What the literature already named
 
 ### 1a. Reactive/incremental monotone dataflow
@@ -50,11 +66,11 @@ This memo supersedes the prior round's diagnosis. Scope narrower, prescriptions 
 
 ### 1d. Ghost interface — one-step-short dissolution
 
-`ObservationSink = Pick<PersistentWorklist, "observeWrite" | "observeCall" | "activateScope" | "deactivateScope">`. Production callers always receive a real `PersistentWorklist`; the alias exists only so test mocks can present an object literal with four methods. This is the residue of the SPEC-05 dissolution that collapsed a 75-line interface file into a Pick — one step short of deleting the alias entirely.
+`ObservationSink = Pick<Worklist, "observeWrite" | "observeCall" | "activateScope" | "deactivateScope">`. Production callers always receive a real `Worklist`; the alias exists only so test mocks can present an object literal with four methods. This is the residue of the SPEC-05 dissolution that collapsed a 75-line interface file into a Pick — one step short of deleting the alias entirely.
 
 ### 1e. Scope-identity diffusion — owner dissolved, state externalized
 
-`SpecializationEngine` was deleted in commit `efe8951`; its one invariant (`pinSet.clear()` on throw) became the free function `runPinned`. The pin-set became an external `Map<Scope, number>` shared by reference between the CSE evaluator, the SVML-JIT evaluator, and `PersistentWorklist.activeScopes`. `FunctionUnit` already owns a `Map<Scope, FunctionUnit>` as the unit registry and already holds mutable state (`hints`, body splicing, `structuralVersion`). The pin-count is the single remaining piece of per-scope state that isn't on the unit. Putting it there collapses three nouns (`pinSet`, `activeScopes`, and the parameter aliasing) into one field.
+`SpecializationEngine` was deleted in commit `efe8951`; its one invariant (`pinSet.clear()` on throw) became the free function `runPinned`. The pin-set became an external `Map<Scope, number>` shared by reference between the CSE evaluator, the SVML-JIT evaluator, and `Worklist.activeScopes`. `FunctionUnit` already owns a `Map<Scope, FunctionUnit>` as the unit registry and already holds mutable state (`hints`, body splicing, `structuralVersion`). The pin-count is the single remaining piece of per-scope state that isn't on the unit. Putting it there collapses three nouns (`pinSet`, `activeScopes`, and the parameter aliasing) into one field.
 
 ---
 
@@ -78,7 +94,7 @@ Eight patches, four gaps. Closing S1 alone retires three of them.
 ## 3. Survives / delete / relocate
 
 ### Survives (earns keep)
-- `PersistentWorklist` itself (Kildall + attempted incremental layer).
+- `Worklist` itself (Kildall + attempted incremental layer).
 - `withActiveScope` — SPEC-15 structural owner of pin/tick/throw ordering.
 - `OSRCoordinator` — real event-dispatch noun (kept distinct from data ownership).
 - `StateDeltaStrategy` interface — SVMLSwapStrategy is real.

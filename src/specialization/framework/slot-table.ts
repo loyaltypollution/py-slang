@@ -16,10 +16,7 @@ export type SlotLookup = (token: Token) => SlotInfo;
  * Non-local variables are resolved via the environment chain at lookup time
  * (the DFA treats them as TOP; the compiler handles them independently).
  */
-export function buildSlotTable(
-  env: Environment,
-  paramNames: string[],
-): SlotLookup {
+export function buildSlotTable(env: Environment, paramNames: string[]): SlotLookup {
   const slots = new Map<string, SlotInfo>();
 
   // Parameters: slots 0..n-1

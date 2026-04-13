@@ -80,9 +80,7 @@ describe("CSE hint visualization: hints in merged store", () => {
 
 describe("CSE hint visualization: nested function scopes", () => {
   test("hints are available for nodes inside function bodies", () => {
-    const { ast, merged } = parseOptimizeAndMerge(
-      "def f():\n    return 1 + 2\nf()",
-    );
+    const { ast, merged } = parseOptimizeAndMerge("def f():\n    return 1 + 2\nf()");
 
     const funcDef = ast.statements[0] as StmtNS.FunctionDef;
     const returnStmt = funcDef.body[0] as StmtNS.Return;
@@ -94,9 +92,7 @@ describe("CSE hint visualization: nested function scopes", () => {
   });
 
   test("merged hints include both root and function scope entries", () => {
-    const { ast, merged } = parseOptimizeAndMerge(
-      "x = 10\ndef g():\n    return x + 5\ng()",
-    );
+    const { ast, merged } = parseOptimizeAndMerge("x = 10\ndef g():\n    return x + 5\ng()");
     expect([...merged].length).toBeGreaterThan(0);
 
     const assignStmt = ast.statements[0] as StmtNS.Assign;
@@ -118,8 +114,14 @@ describe("CSE hint visualization: external lookup during stepping", () => {
     const { context, merged } = parseOptimizeAndMerge("x = 1 + 2");
 
     const gen = generateCSEMachineStateStream(
-      "", context, context.control, context.stash,
-      -1, 1000, 4, false,
+      "",
+      context,
+      context.control,
+      context.stash,
+      -1,
+      1000,
+      4,
+      false,
     );
 
     let sawHint = false;
@@ -141,8 +143,14 @@ describe("CSE hint visualization: external lookup during stepping", () => {
     const { context, merged } = parseOptimizeAndMerge("x = 42");
 
     const gen = generateCSEMachineStateStream(
-      "", context, context.control, context.stash,
-      -1, 1000, 4, false,
+      "",
+      context,
+      context.control,
+      context.stash,
+      -1,
+      1000,
+      4,
+      false,
     );
 
     const hits: Array<{ type?: unknown; constVal?: unknown }> = [];
@@ -171,8 +179,14 @@ describe("CSE hint visualization: no hints", () => {
     const context = new Context(ast);
 
     const gen = generateCSEMachineStateStream(
-      "", context, context.control, context.stash,
-      -1, 1000, 4, false,
+      "",
+      context,
+      context.control,
+      context.stash,
+      -1,
+      1000,
+      4,
+      false,
     );
 
     let stepCount = 0;

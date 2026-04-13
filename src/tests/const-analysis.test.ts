@@ -3,7 +3,7 @@
  *
  * End-to-end const-analysis behaviour (e.g. `x = 3 + 4 → const(7)`,
  * variable propagation, while-loop convergence) is covered in
- * `reactive-optimization.test.ts` via PersistentWorklist.
+ * `reactive-optimization.test.ts` via Worklist.
  */
 
 import {

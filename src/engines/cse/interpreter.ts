@@ -1100,11 +1100,6 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         control.push(instrCreator.endOfFunctionBodyInstr(instr.srcNode));
       }
 
-      // Pinning is now env-anchored: pushEnvironment increments the
-      // runtime pin-set for FunctionDef closures, popEnvironment
-      // decrements. Early return / exception unwind inherit correctness
-      // because the env stack is balanced by scope-resolution semantics
-      // independently of this observation path.
       const sink = context.runtime.observationSink;
       if (sink) {
         const calleeKey = closure.node as StmtNS.FileInput | StmtNS.FunctionDef;

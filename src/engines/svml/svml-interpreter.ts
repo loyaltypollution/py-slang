@@ -14,7 +14,6 @@ import {
   SVMLIterator,
   SVMLProgram,
   SVMLType,
-  OperandPatch,
 } from "./types";
 import type { ObservationSink } from "../../specialization";
 
@@ -102,72 +101,13 @@ export class SVMLInterpreter {
   }
 
   /**
-   * Swap a single function's IR in place. Used by the OSR coordinator for
-   * per-function hot-swap after recompile.
-   *
-   * The live-frame walk below is SECOND-LINE DEFENSE for the pin-set
-   * contract: the worklist parks transforms for scopes with a live frame
-   * (see `activateScope`/`deactivateScope` pinning), so by the time the
-   * coordinator calls `patchFunction`, no frame of `index` should be on
-   * the stack. If this loop ever throws, the pin-set contract is broken —
-   * surface as a crash rather than silently patching under a running
-   * frame.
-   *
-   * Correctness depends on `this.program` being read fresh inside the
-   * dispatch loop and nowhere cached. CallFrames hold direct IR references
-   * (not `program.functions[i]` indirections), so live frames are insulated
-   * from the reassignment below. Do not introduce any method that closes
-   * over `this.program` at construction time.
+   * Swap function `index`'s IR. Caller must hold the direct-IR-ref
+   * invariant: no `CallFrame.ir` outlives this reassignment, because frames
+   * capture IR at CALL time. Expected caller: the closure registered via
+   * `worklist.onScopeChanged`.
    */
-  patchFunction(index: number, ir: SVMLIR, allowOnStack = false): void {
-    // The IR-reference invariant documented above makes whole-function swaps
-    // safe-on-stack: live frames keep executing the old IR they captured,
-    // new dispatches see the new slot. `allowOnStack=true` is the caller's
-    // explicit acknowledgement that the pin-set has been relaxed for this
-    // strategy (see `StateDeltaStrategy.canInstallOnStack`). Default stays
-    // strict so existing call sites and tests retain their contract.
-    if (!allowOnStack) this.assertFunctionNotLive(index);
+  patchFunction(index: number, ir: SVMLIR): void {
     this.program = this.program.withSpecializedFunction(index, ir);
-  }
-
-  /**
-   * Apply a minimal set of operand-level patches to an already-loaded
-   * function's IR in place. Cheaper than `patchFunction` when the delta is a
-   * handful of opcode/operand edits (e.g. specializing `ADDG` → `ADDF` after
-   * type analysis converges). Callers must ensure the patches preserve
-   * `observationSites` validity at the affected PCs — if a patch changes the
-   * opcode class in a way that invalidates an existing observation site,
-   * emit a whole-function delta instead.
-   *
-   * Same pin-set safepoint contract as `patchFunction`: the live-frame walk
-   * is second-line defense.
-   */
-  applyOperandPatches(index: number, patches: readonly OperandPatch[]): void {
-    this.assertFunctionNotLive(index);
-    const ir = this.program.functions[index];
-    if (!ir) {
-      throw new Error(`Cannot patch function at index ${index}: no such function`);
-    }
-    for (const patch of patches) {
-      if (patch.pc < 0 || patch.pc >= ir.count) {
-        throw new Error(
-          `Cannot patch function at index ${index}: pc ${patch.pc} out of bounds (count: ${ir.count})`,
-        );
-      }
-      if (patch.opcode !== undefined) ir.opcodes[patch.pc] = patch.opcode;
-      if (patch.arg1 !== undefined) ir.arg1s[patch.pc] = patch.arg1;
-      if (patch.arg2 !== undefined) ir.arg2s[patch.pc] = patch.arg2;
-    }
-  }
-
-  private assertFunctionNotLive(index: number): void {
-    for (let f: CallFrame | null = this.currentFrame; f !== null; f = f.callerFrame) {
-      if (f.closure.functionIndex === index) {
-        throw new Error(
-          `Cannot patch function at index ${index}: it is currently executing`,
-        );
-      }
-    }
   }
 
   /**
@@ -202,10 +142,6 @@ export class SVMLInterpreter {
     this.halted = false;
     this.instructionCount = 0;
 
-    // NOTE: the root scope's activate/deactivate is owned by the *caller*
-    // (e.g. `reactive.withActiveScope(ast, () => interpreter.execute())`), not
-    // the interpreter. The interpreter only activates/deactivates scopes for
-    // nested frames it creates/pops via CALL/RETURN.
     return this.run();
   }
 
@@ -216,18 +152,6 @@ export class SVMLInterpreter {
     try {
       return this.runInner();
     } finally {
-      // If runInner threw, every nested CALL's activateScope has no matching
-      // deactivate. Walk the live frame chain and release each one so the
-      // reactive worklist doesn't keep those scopes pinned forever. The root
-      // scope is owned by the caller (e.g. withActiveScope) and skipped.
-      const sink = this.observationSink;
-      if (sink) {
-        for (let f: CallFrame | null = this.currentFrame; f !== null; f = f.callerFrame) {
-          if (f.callerFrame === null) break;
-          const key = f.ir.scopeKey;
-          if (key !== undefined) sink.deactivateScope(key);
-        }
-      }
       // Clear execution state so replaceProgram() can be called between runs,
       // even if runInner threw.
       this.currentFrame = null;
@@ -843,8 +767,7 @@ export class SVMLInterpreter {
     const callerKey = this.currentFrame.ir.scopeKey;
     const calleeKey = calleeIR.scopeKey;
     if (callerKey === undefined || calleeKey === undefined) return;
-    const site: ObservationSite | undefined =
-      this.currentFrame.ir.observationSites.get(pc);
+    const site: ObservationSite | undefined = this.currentFrame.ir.observationSites.get(pc);
     if (!site || site.kind !== "call") return;
     sink.observeCall(callerKey, calleeKey);
   }
@@ -971,25 +894,15 @@ export class SVMLInterpreter {
         `[CALL] Created new env with ${funcDef.envSize} slots, parent exists: ${closure.parentEnv !== null}`,
       );
 
-    // Observation: fire observeCall (caller still current) and activateScope
-    // for the callee before the transfer. Fire in that order so the sink can
-    // see "from -> to" edges before pinning the callee.
+    // Observation: fire observeCall (caller still current) before the transfer.
     this.dispatchCallSite(pc, funcDef);
 
     if (isTailCall) {
-      // Tail call: outgoing frame logically "returns" and is replaced.
-      const outgoingScope = this.currentFrame.ir.scopeKey;
-      if (this.observationSink && outgoingScope !== undefined) {
-        this.observationSink.deactivateScope(outgoingScope);
-      }
       this.currentFrame.closure = closure;
       this.currentFrame.ir = funcDef;
       this.currentFrame.pc = 0;
       this.currentFrame.env = newEnv;
       this.currentFrame.stack = [];
-      if (this.observationSink && funcDef.scopeKey !== undefined) {
-        this.observationSink.activateScope(funcDef.scopeKey);
-      }
     } else {
       const newFrame: CallFrame = {
         closure,
@@ -1001,9 +914,6 @@ export class SVMLInterpreter {
       };
       this.currentFrame = newFrame;
       this.callDepth++;
-      if (this.observationSink && funcDef.scopeKey !== undefined) {
-        this.observationSink.activateScope(funcDef.scopeKey);
-      }
     }
   }
 
@@ -1043,18 +953,11 @@ export class SVMLInterpreter {
       debug(`[RETG] Returning value: ${JSON.stringify(SVMLInterpreter.toJSValue(returnValue))}`);
 
     const callerFrame = this.currentFrame.callerFrame;
-    const poppedScope = this.currentFrame.ir.scopeKey;
 
     if (!callerFrame) {
-      // Root frame: caller (e.g. withActiveScope) owns its activate/deactivate.
       this.halted = true;
       this.push(returnValue);
       return;
-    }
-
-    // Deactivate the callee scope we are about to pop.
-    if (this.observationSink && poppedScope !== undefined) {
-      this.observationSink.deactivateScope(poppedScope);
     }
 
     this.currentFrame = callerFrame;

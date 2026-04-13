@@ -22,7 +22,7 @@ import {
   HintStore,
   CallCountObserver,
   MemoizationTransformRule,
-  PersistentWorklist,
+  Worklist,
   TypeAnalysisModule,
   type OptimizationHint,
   INT_BIT,
@@ -297,13 +297,13 @@ if (errors.length > 0) {
   for (const e of errors) console.error(" ", String(e));
   process.exit(1);
 }
-const worklist = new PersistentWorklist(
+const worklist = new Worklist(
   ast,
   environments,
   [new TypeAnalysisModule(), new ConstAnalysisModule()],
   [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
 );
-worklist.addCallObserver(new CallCountObserver());
+worklist.addProfileObserver(new CallCountObserver());
 worklist.converge();
 const units = worklist.units;
 

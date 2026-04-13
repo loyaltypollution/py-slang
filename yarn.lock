@@ -388,6 +388,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@datastructures-js/queue@npm:^4.3.0":
+  version: 4.3.0
+  resolution: "@datastructures-js/queue@npm:4.3.0"
+  checksum: 10c0/d47ae4f901d52bd1f5420a6ae0280b63d6ac8a98ea0ab33db4becf79f16dda13ed772cc8c5c1d59a355031bc806c0fd7b76f220dd44677f1159deb2631d53ecc
+  languageName: node
+  linkType: hard
+
 "@esbuild/aix-ppc64@npm:0.27.7":
   version: 0.27.7
   resolution: "@esbuild/aix-ppc64@npm:0.27.7"
@@ -4759,6 +4766,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "py-slang@workspace:."
   dependencies:
+    "@datastructures-js/queue": "npm:^4.3.0"
     "@inquirer/prompts": "npm:^8.3.2"
     "@rollup/plugin-commonjs": "npm:^28.0.3"
     "@rollup/plugin-json": "npm:^6.1.0"

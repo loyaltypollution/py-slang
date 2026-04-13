@@ -1,6 +1,10 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
+import type { BasicBlock, BlockId, CFG } from "./cfg";
+import { buildCFG } from "./cfg";
 import { HintStore, type OptimizationHint } from "./hint";
+import type { AnalysisModule } from "./interfaces";
+import type { MutableEnv } from "./mutable-env";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
@@ -8,25 +12,30 @@ type HintEq = (a: OptimizationHint, b: OptimizationHint) => boolean;
 
 /**
  * Per-scope optimization unit. Aggregates scope-keyed state: the AST node
- * identity (immutable), and the mutable runtime state the framework
- * maintains alongside it.
+ * identity (immutable), the mutable runtime state the framework maintains
+ * alongside it, and the scheduler's per-scope DFA working memory (CFG,
+ * block index, per-analysis OUT maps, generation counter).
+ *
+ * The scheduler-owned fields (`cfg`, `blockMap`, `analysisOuts`,
+ * `generation`) are replaced wholesale on every body-level invalidation —
+ * see `Worklist.rebuildAndReseed`. Collapsing them onto the unit removes
+ * a parallel `scopes` map that used to mirror `units` 1:1.
  *
  * Mutability split:
  *   - Immutable identity / wiring: `funcAst`, `slotLookup`. Set at
  *     construction, never rewritten.
- *   - Mutable state:
+ *   - Mutable runtime state:
  *     - `hints` — readonly reference but `HintStore.set` mutates contents.
  *     - `body` — readonly reference (read-through getter onto the AST's
  *       statement array); array contents are spliced in place by
  *       non-monotone transforms (memoization, dead-branch elimination).
  *     - `structuralVersion` — bumped by every successful transform.
- *     - `pinCount` — multiset count of live call frames currently
- *       executing this scope. Previously a parallel `activeScopes` Map
- *       on PersistentWorklist plus an aliased `context.runtime.pinSet`
- *       in CSE; collapsed onto the unit so the unit is the single owner
- *       of its scope-level mutable state. Mutated through
- *       `PersistentWorklist.activateScope` / `deactivateScope`, which is
- *       also the ObservationSink entry point interpreters use.
+ *   - Mutable scheduler state (owned by `Worklist`):
+ *     - `cfg`, `blockMap` — rebuilt on every body invalidation.
+ *     - `analysisOuts[i]` — per-analysis OUT environment per block.
+ *       `null` means "never processed"; unreachable blocks stay `null`.
+ *     - `generation` — bumped on every reseed; stale queue items that
+ *       mention an older generation are dropped.
  */
 export interface FunctionUnit {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
@@ -34,7 +43,10 @@ export interface FunctionUnit {
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
   structuralVersion: number;
-  pinCount: number;
+  cfg: CFG;
+  blockMap: Map<BlockId, BasicBlock>;
+  analysisOuts: Map<BlockId, MutableEnv<any> | null>[];
+  generation: number;
 }
 
 /**
@@ -52,6 +64,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
     private readonly functionEnvironments: FunctionEnvironments,
     private readonly hintEq: HintEq,
+    private readonly analyses: readonly AnalysisModule<any>[],
   ) {}
 
   register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
@@ -61,12 +74,21 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     }
     const paramNames =
       funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
+    const body: StmtNS.Stmt[] =
+      funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
+    const cfg = buildCFG(body);
+    const blockMap = new Map<BlockId, BasicBlock>();
+    for (const block of cfg.blocks) blockMap.set(block.id, block);
+    const analysisOuts = this.analyses.map(() => makeOut(cfg));
     const unit: FunctionUnit = {
       funcAst,
       hints: new HintStore(this.hintEq),
       slotLookup: buildSlotTable(env, paramNames),
       structuralVersion: 0,
-      pinCount: 0,
+      cfg,
+      blockMap,
+      analysisOuts,
+      generation: 0,
       get body(): StmtNS.Stmt[] {
         return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
       },
@@ -106,13 +128,25 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
+/**
+ * Fresh per-analysis OUT map for a CFG: every block mapped to `null`
+ * (never processed). The scheduler overwrites entries as it transfers
+ * blocks.
+ */
+export function makeOut<L>(cfg: CFG): Map<BlockId, MutableEnv<L> | null> {
+  const out = new Map<BlockId, MutableEnv<L> | null>();
+  for (const block of cfg.blocks) out.set(block.id, null);
+  return out;
+}
+
 export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
   hintEq: HintEq,
+  analyses: readonly AnalysisModule<any>[],
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
-  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, hintEq);
+  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, hintEq, analyses);
   visitor.register(ast);
   return units;
 }

@@ -1,7 +1,5 @@
 // src/specialization/index.ts — public API barrel
 
-export { runPinned } from "./run-pinned";
-
 // ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
 
 export type { FunctionUnit } from "./framework/function-unit";
@@ -9,8 +7,8 @@ export { buildFunctionUnits } from "./framework/function-unit";
 
 // ── Persistent worklist ─────────────────────────────────────────────────────
 
-export { PersistentWorklist } from "./framework/persistent-worklist";
-export type { WorklistStats } from "./framework/persistent-worklist";
+export { Worklist } from "./framework/worklist";
+export type { WorklistStats, ScopeChangeListener } from "./framework/worklist";
 export type { ObservationSink } from "./framework/observation-sink";
 
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
@@ -18,8 +16,6 @@ export type { ObservationSink } from "./framework/observation-sink";
 export type { AnalysisModule, TransformRule } from "./framework/interfaces";
 export type { OptimizationHint } from "./framework/hint";
 export { HintStore, hintEquals, HINT_EQ_NEVER } from "./framework/hint";
-export { OSRCoordinator } from "./framework/osr";
-export type { StateDeltaStrategy } from "./framework/osr";
 
 // ── Type lattice (codegen reads kind bits + refinements from hints) ──────────
 
@@ -74,11 +70,5 @@ export {
   CALL_COUNT_FIELD,
   MEMOIZED_FIELD,
 } from "./memoization-analysis/analysis";
-export type { CallObserver } from "./framework/interfaces";
-export {
-  memoLookup,
-  memoPut,
-  clearMemoCache,
-  memoCacheSnapshot,
-  MEMO_MISS,
-} from "../runtime/memo";
+export type { ProfileObserver } from "./framework/interfaces";
+export { memoLookup, memoPut, clearMemoCache, memoCacheSnapshot, MEMO_MISS } from "../runtime/memo";

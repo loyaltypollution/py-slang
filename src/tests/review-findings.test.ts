@@ -11,11 +11,7 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import {
-  INT_BIT,
-  BOOL_BIT,
-  BoolRef,
-} from "../specialization";
+import { INT_BIT, BOOL_BIT, BoolRef } from "../specialization";
 import { buildTestWorklist } from "./utils";
 
 function compileAndRun(code: string): unknown {
@@ -95,8 +91,8 @@ describe("[P2] Ternary result type annotation", () => {
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const engine = buildTestWorklist(ast, environments);
-  engine.converge();
-  const units = engine.units;
+    engine.converge();
+    const units = engine.units;
     const rootUnit = units.get(ast)!;
 
     const simpleExpr = ast.statements[0] as any;
@@ -147,8 +143,8 @@ acc
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const engine = buildTestWorklist(ast, environments);
-  engine.converge();
-  const units = engine.units;
+    engine.converge();
+    const units = engine.units;
     const rootUnit = units.get(ast)!;
 
     // The for-loop is stmt[1]. Its body[1] is `acc > 0` (a SimpleExpr).

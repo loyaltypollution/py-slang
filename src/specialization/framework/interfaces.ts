@@ -1,7 +1,7 @@
 import type { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "./function-unit";
-import type { SlotLookup } from "./slot-table";
 import type { HintStore, OptimizationHint } from "./hint";
+import type { SlotLookup } from "./slot-table";
 
 export interface StmtTransformRule {
   readonly name: string;
@@ -34,12 +34,8 @@ export interface ExprTransformRule {
  * its body as a unit. Used by rules whose input is per-scope facts rather
  * than per-statement patterns (e.g. memoization: the count that gates
  * wrapping lives on the FunctionDef's own hint, not on any statement inside
- * the body).
- *
- * `apply` returns the set of additional scopes the worklist should
- * invalidate after the rule fires — typically `[]` since mutating the
- * unit's own body already triggers a rebuild of its CFG via
- * `structuralVersion++`.
+ * the body). `apply` returns `true` if the AST changed, which triggers a
+ * CFG rebuild and the next transform round.
  */
 export interface ScopeTransformRule {
   readonly name: string;
@@ -50,40 +46,6 @@ export interface ScopeTransformRule {
    * changed (triggers CFG rebuild + next transform round).
    */
   apply(unit: FunctionUnit): boolean;
-  /**
-   * Pin-gate layer 1/3 (rule level — "is this transform safe against a
-   * live frame?"). Default: false (pinned scopes are skipped).
-   *
-   * If true, this rule may fire on a scope that is currently pinned
-   * (activeScopes.has(scopeKey)). The contract the rule promises: the
-   * mutation only affects *future* calls into the scope — existing on-stack
-   * frames must be unaffected. The interpreter copies `fd.body` at call
-   * time, so mutating `fd.body` is safe-on-stack as long as no in-flight
-   * reference reads from it. Rules that rewrite via splice (e.g. memoization
-   * prepending a cache-check prelude) satisfy this.
-   *
-   * Without this flag, a recursive function's transforms are parked for the
-   * entire duration of the outermost call — which for self-recursive
-   * workloads (fib) means transforms never fire until after the program
-   * completes, defeating the point of runtime specialization.
-   *
-   * Sister layers gate the same concern at different tiers (each is a
-   * separate opt-in; none subsumes another):
-   *   - `StateDeltaStrategy.canInstallOnStack` (osr.ts) — strategy level.
-   *     "Is the state-delta installation technique safe against a live
-   *     frame of this scope?" Whole-function IR swap: safe (frames hold
-   *     direct refs). In-place operand patches: unsafe.
-   *   - `SVMLInterpreter.patchFunction`'s `allowOnStack` param — engine
-   *     level. Bypasses the defensive live-frame assertion when the
-   *     strategy above has explicitly acknowledged safety.
-   *
-   * The three-layer split compensates for the absence of a
-   * Truffle-Assumption / explicit deopt mechanism. A descriptor-indirection
-   * refactor could collapse layers 2 and 3 (the strategy would always
-   * swap a descriptor pointer rather than a raw IR slot), but that
-   * refactor has not landed — do not collapse.
-   */
-  readonly safeOnStack?: boolean;
 
   /**
    * If true, the worklist scheduler records `(scope, rule)` after the first
@@ -156,15 +118,15 @@ export interface AnalysisModule<L> {
 }
 
 /**
- * Profile-style runtime observer. Unlike `AnalysisModule`, a `CallObserver`
+ * Profile-style runtime observer. Unlike `AnalysisModule`, a `ProfileObserver`
  * does not participate in any lattice / transfer / visitor path — it only
  * reacts to `observeCall` dispatch. Use for side-table counters and other
  * non-dataflow facts that would otherwise be smuggled through a dummy
  * `AnalysisModule` (e.g. the memoization saturating call counter).
  *
- * Registered on a worklist via `addCallObserver`.
+ * Registered on a worklist via `addProfileObserver`.
  */
-export interface CallObserver {
+export interface ProfileObserver {
   onCallObservation(
     callerKey: StmtNS.FileInput | StmtNS.FunctionDef,
     calleeKey: StmtNS.FileInput | StmtNS.FunctionDef,

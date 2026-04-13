@@ -80,34 +80,49 @@ execution.
 ## Phase 3 — Specialization framework
 
 Shared by all backends. Located under `src/specialization/`. There is no
-facade: evaluators construct `PersistentWorklist` directly, optionally pair
-it with an `OSRCoordinator`, and drive execution through the free helper
-`runPinned`. This shape replaced the earlier `SpecializationEngine` facade
-— the engine's one load-bearing invariant (clear pins on throw) became
-`runPinned`; every other responsibility dissolved into the worklist or the
-evaluator.
+facade: evaluators construct `Worklist` directly and drive execution through
+`worklist.withActiveScope(ast, fn)`. Engines that materialize the AST into
+some external form (SVML IR) additionally register a scope-change listener
+via `worklist.onScopeChanged` to patch that form when transforms fire
+mid-run. This shape replaced an earlier `SpecializationEngine` facade plus
+an `OSRCoordinator` / `StateDeltaStrategy` pair; both dissolved into the
+worklist once the single load-bearing invariant (clear pins on throw) moved
+into `withActiveScope`.
+
+**Naming note.** This is *not* on-stack replacement. No live frame is
+rebuilt; no state mapping exists. The mechanism is **dispatch patching**:
+`SVMLInterpreter.CallFrame` captures IR by reference at CALL time, so
+patching the program's function-table slot affects only subsequent CALLs —
+live frames drain on the old IR. The literature calls this "lazy
+replacement" (V8) or nmethod trampoline swap (HotSpot).
 
 Typical shape (SVML JIT — the richest path):
 
 ```ts
-const worklist = new PersistentWorklist(
+const worklist = new Worklist(
   ast, environments,
   [new TypeAnalysisModule(), new ConstAnalysisModule()],
   [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
 );
-worklist.addCallObserver(new CallCountObserver());
+worklist.addProfileObserver(new CallCountObserver());
 worklist.converge(); // initial static pass
 
 const compiler    = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units);
 const program     = compiler.compileProgram(ast);
 const interpreter = new SVMLInterpreter(program, { observationSink: worklist });
-const coordinator = new OSRCoordinator(worklist, new SVMLSwapStrategy(compiler, interpreter));
 
-await runPinned(worklist, coordinator, ast, () => interpreter.execute());
+worklist.onScopeChanged((scope, unit) => {
+  if (!(scope instanceof StmtNS.FunctionDef)) return;
+  const index = compiler.indexOf(scope);
+  if (index === undefined) return;
+  interpreter.patchFunction(index, compiler.compileFunction(unit));
+});
+
+await worklist.withActiveScope(ast, () => interpreter.execute());
 ```
 
-CSE passes `coordinator: null` — its materialized form is the AST itself, so
-the OSR loop has nothing to install. See Phase 4b.
+CSE does not register a listener — its materialized form *is* the AST, so
+the transforms that mutate it are the install. See Phase 4b.
 
 The framework composes:
 
@@ -116,16 +131,17 @@ The framework composes:
   `structuralVersion` that transforms bump when they mutate the body, and a
   `pinCount` that the worklist's `activateScope`/`deactivateScope` maintain
   as the single owner of pin-set state.
-- **PersistentWorklist** (`framework/persistent-worklist.ts`): priority-scheduled
+- **Worklist** (`framework/worklist.ts`): priority-scheduled
   fixpoint driver. Tier 1 is analysis over CFG blocks (type before const). Tier
   2 is transforms, which run only after local analysis fixpoint. The worklist
   directly implements `ObservationSink` — interpreters call `observeWrite` /
-  `observeCall` / `activateScope` / `deactivateScope` on it during execution,
-  and `subscribe` publishes scope-set notifications to the OSR coordinator.
+  `observeCall` / `activateScope` / `deactivateScope` on it during execution.
+  `onScopeChanged(cb)` / `subscribe(cb)` publish scope-set notifications to
+  engine-side dispatch patchers.
 - **ObservationSink** (`framework/observation-sink.ts`): nominal interface
   giving the four push-side methods their own name, so test mocks and
   interpreter typing don't have to structurally subtype the whole worklist.
-  `PersistentWorklist implements ObservationSink`.
+  `Worklist implements ObservationSink`.
 - **HintStore** (`framework/hint.ts`): `Map<nodeId, OptimizationHint>` with an
   injected `eq` callback. Production callers pass `(a, b) => hintEquals(a, b,
   worklist.analysesByName)`, which dispatches each field's lattice equality
@@ -136,74 +152,80 @@ The framework composes:
 - **Transforms** (`transforms/`): `DeadBranchEliminationRule`,
   `ConstantFoldingRule`, `MemoizationTransformRule`. Mutate the AST and bump
   `structuralVersion`, which invalidates downstream analysis for that unit.
-- **OSRCoordinator** (`framework/osr.ts`): subscribes to the worklist and, for
-  each changed unit whose scope is not pinned (and where the strategy's
-  optional `canInstall`/`canInstallOnStack` predicates allow), invokes the
-  installed `StateDeltaStrategy` to compute + apply a delta.
-- **runPinned** (`run-pinned.ts`): pins the root scope for the duration of
-  `fn`, starts/stops the coordinator, and — critically — calls
-  `worklist.clearAllPins()` if `fn` throws. CSE does not pop envs on JS-stack
-  unwind, so an exception leaves pins dirty; `clearAllPins` resets on throw.
+- **`Worklist.onScopeChanged(cb)`** (`framework/worklist.ts`): pre-unpacked
+  convenience over `subscribe`. Receives each changed scope with its
+  `FunctionUnit`. By construction (see the pin-set gate in
+  `processTransform`), a scope only enters the `changed` set if a transform
+  rule actually mutated it and passed its `safeOnStack` gate — so listeners
+  can install unconditionally, without re-checking pin state.
+- **`Worklist.withActiveScope(scope, fn)`**: pins the root scope for the
+  duration of `fn`, ticks once on success to drain parked transforms, and —
+  critically — calls `clearAllPins()` if `fn` throws. CSE does not pop envs
+  on JS-stack unwind, so an exception leaves pins dirty; `clearAllPins`
+  resets on throw.
 
 ```mermaid
 flowchart TB
     RESOLVE["environments + AST"]
-    BUILD["new PersistentWorklist<br/>(analyses, transforms)"]
-    PW["PersistentWorklist<br/>(analysis tier → transform tier)<br/>implements ObservationSink"]
+    BUILD["new Worklist<br/>(analyses, transforms)"]
+    PW["Worklist<br/>(analysis tier → transform tier)<br/>implements ObservationSink"]
     ANA["Analyses<br/>TypeAnalysisModule · ConstAnalysisModule"]
     XF["Transforms<br/>DeadBranchElimination · ConstantFolding · MemoizationTransformRule"]
     HS[("HintStore per unit<br/>nodeId → OptimizationHint<br/>eq via analysesByName registry")]
-    OSR["OSRCoordinator<br/>filters pin-set, drives strategy"]
-    STRAT["StateDeltaStrategy&lt;Delta&gt;<br/>computeDelta / applyDelta"]
+    PATCH["onScopeChanged listener<br/>(engine-specific install)"]
 
     RESOLVE --> BUILD --> PW
     PW -->|analysis pass| ANA -->|hint.set| HS
     PW -->|transform pass| XF -->|mutate AST + bump structuralVersion| PW
     HS -->|version bump| PW
-    PW -->|changed ScopeKeys| OSR --> STRAT
+    PW -->|changed ScopeKeys| PATCH
 
     EXT["external work<br/>observeWrite / observeCall / activate/deactivateScope"]
     EXT --> PW
 ```
 
-### Specialization lifecycle (safepoint contract)
+### Specialization lifecycle (pin-set gate + direct-IR-ref invariant)
 
-The OSR coordinator and the worklist's pin-count jointly implement a safepoint
-contract: **a transform's materialized form is never installed while a frame
-of the target scope is on the stack.** Mechanics:
+The worklist's pin-count and the rule-level `safeOnStack` flag jointly
+enforce: **a transform rule only mutates a pinned scope if it has
+explicitly declared its mutation safe against live frames; downstream
+dispatch patching relies on the engine's direct-IR-ref invariant to make
+the resulting install observable only to future CALLs.** Mechanics:
 
 1. Interpreter calls `worklist.activateScope(scope)` on call entry
-   (`FunctionUnit.pinCount` += 1).
-2. Any transform enqueued against a pinned scope stays parked in the worklist
-   (`hasProcessableTransform` / `processTransform` skip it).
-3. Interpreter calls `worklist.deactivateScope(scope)` on return (pinCount −1).
-   When it hits zero, a fresh transform pass for that scope is re-enqueued.
-4. The surrounding `runPinned(worklist, coord, scope, fn)` → `withActiveScope`
-   finally block calls `tick()`, which drains parked transforms whose scopes
-   are now unpinned, mutates AST / hints, and synchronously `notify()`s
-   subscribers.
-5. `OSRCoordinator.onChange` re-checks `isScopeActive` (defence in depth),
-   calls `strategy.computeDelta(unit)`, then `strategy.applyDelta(scopeKey, delta)`.
+   (`FunctionUnit.pinCount += 1`).
+2. A transform enqueued against a pinned scope is skipped by
+   `processTransform` **unless** the rule sets `safeOnStack = true`
+   (e.g. `MemoizationTransformRule`, which only splices new statements onto
+   `fd.body` — future calls see them, on-stack frames already copied the
+   body by reference and run to completion on the old list).
+3. Interpreter calls `worklist.deactivateScope(scope)` on return
+   (`pinCount -= 1`). When it hits zero, a fresh transform pass for that
+   scope is re-enqueued.
+4. `withActiveScope` ticks on success to drain parked transforms for the
+   now-unpinned root; non-`safeOnStack` rules for nested scopes that
+   became unpinned mid-run were already drained by the per-`observeCall`
+   tick (`worklist.ts` — `if (this.hasSafeOnStackScopeRule) this.tick()`).
+5. Any scope mutated during drain appears in the `changed` set passed to
+   `notify`. Listeners registered via `onScopeChanged` recompile and
+   install. For SVML: `interpreter.patchFunction(index, newIR)` — a direct
+   reassignment of `this.program`, which new CALLs read fresh while live
+   frames continue on the IR captured in their `CallFrame.ir` field.
 
-`StateDeltaStrategy<Delta>` is currently single-use in production:
-`SVMLSwapStrategy` for the SVML JIT path. It emits `Delta = { kind: 'whole',
-ir: SVMLIR }` (interpreter's `patchFunction` swaps the function-table slot)
-or `Delta = { kind: 'patches', patches: OperandPatch[] }` (interpreter
-`applyOperandPatches` mutates typed arrays in place). CSE does not install a
-strategy — it passes `coordinator: null` to `runPinned` — because its
-materialized form is the AST itself and transforms mutate it during `tick`.
+The install step is single-use in production: the `onScopeChanged` closure
+registered in `PySvmlJitEvaluator` (whole-function recompile → dispatch
+slot patch). CSE does not register a listener because its materialized
+form is the AST itself and transforms mutate it during `tick`.
 
 Rationale for this shape (five AST-mutation failure classes and why pin-set
 mitigates them) lives in `optimization-roadmap.md` under "Why the pin-set exists."
 
 ### Public surface (from `src/specialization/index.ts`)
 
-- `runPinned` — pin-ordering wrapper used by every evaluator.
-- `PersistentWorklist`, `ObservationSink`, `WorklistStats`.
+- `Worklist`, `ObservationSink`, `WorklistStats`, `ScopeChangeListener`.
 - `FunctionUnit`, `buildFunctionUnits`.
 - `HintStore`, `OptimizationHint`, `hintEquals`, `HINT_EQ_NEVER`.
-- `OSRCoordinator`, `StateDeltaStrategy`.
-- `AnalysisModule`, `TransformRule`, `CallObserver`.
+- `AnalysisModule`, `TransformRule`, `ProfileObserver`.
 - Analyses/lattices (`TypeAnalysisModule`, `ConstAnalysisModule`, lattice
   constructors).
 - Transforms (`ConstantFoldingRule`, `DeadBranchEliminationRule`,
@@ -225,17 +247,17 @@ Three SVML evaluators live in `src/conductor/`:
 
 | Evaluator | File | Role |
 |---|---|---|
-| `PySvmlEvaluator` | `PySvmlEvaluator.ts` | One-shot: converge, compile, run. No OSR. |
-| `PySvmlJitEvaluator` | `PySvmlJitEvaluator.ts` | Reactive JIT: runtime observations feed the worklist; OSR swaps IR between safepoints. |
+| `PySvmlEvaluator` | `PySvmlEvaluator.ts` | One-shot: converge, compile, run. No runtime recompilation. |
+| `PySvmlJitEvaluator` | `PySvmlJitEvaluator.ts` | Reactive JIT: runtime observations feed the worklist; a scope-change listener recompiles + patches the function table when transforms fire. |
 | `PySvmlSinterEvaluator` | `PySvmlSinterEvaluator.ts` | Compiles to SVML bytecode and executes on the Sinter WebAssembly VM. No reactive loop. |
 
 The JIT path is the one illustrated below; the non-JIT path is identical up
-through `worklist.converge()` + compile + execute, minus the `OSRCoordinator`
-and the post-execution OSR loop. Flow:
+through `worklist.converge()` + compile + execute, minus the
+`onScopeChanged` listener and the `withActiveScope` wrapping. Flow:
 
 1. `parse(script)` → AST.
 2. `analyzeWithEnvironments(...)` → environments.
-3. `worklist = new PersistentWorklist(ast, environments, analyses, transforms); worklist.converge()`.
+3. `worklist = new Worklist(ast, environments, analyses, transforms); worklist.converge()`.
 4. `compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units)`
    — root compiler with nested per-unit compilers keyed by scope.
 5. `program = compiler.compileProgram(ast)`. At emission time, `getHint(node)`
@@ -243,30 +265,30 @@ and the post-execution OSR loop. Flow:
    (e.g. `ADDF`/`NOTB` vs generic `ADDG`/`NOTG`) and to elide observation-site
    metadata for already-concrete expressions.
 6. `interpreter = new SVMLInterpreter(program, { sendOutput, observationSink: worklist })`.
-7. `coordinator = new OSRCoordinator(worklist, new SVMLSwapStrategy(compiler, interpreter))`
-   — the strategy captures both because its `computeDelta` may recompile the
-   unit and its `applyDelta` calls `interpreter.patchFunction` or
-   `interpreter.applyOperandPatches`.
-8. `await runPinned(worklist, coordinator, ast, () => interpreter.execute())`
-   — pins the root scope, starts the coordinator, runs the interpreter,
-   drains on exit, clears pins on throw.
+7. `worklist.onScopeChanged((scope, unit) => { ... interpreter.patchFunction(...) })`
+   — registers the dispatch patcher. For each FunctionDef that the worklist
+   mutates (e.g. memoization prelude spliced in), the closure looks up the
+   compiler's stable index and hot-swaps the function-table slot.
+8. `await worklist.withActiveScope(ast, () => interpreter.execute())`
+   — pins the root scope, runs the interpreter, drains on exit, clears
+   pins on throw.
 
 ```mermaid
 flowchart LR
     AST["FileInput AST"]
     ENV["environments"]
-    WL["new PersistentWorklist<br/>+ converge()"]
+    WL["new Worklist<br/>+ converge()"]
     UNITS["worklist.units"]
     COMP["SVMLCompiler.fromProgramUnit"]
     EMIT["compileProgram<br/>→ SVMLProgram<br/>getHint picks specialized opcodes"]
     INT["new SVMLInterpreter<br/>(observationSink = worklist)"]
-    COORD["new OSRCoordinator<br/>(worklist, new SVMLSwapStrategy(...))"]
-    RUN["runPinned(worklist, coord, ast, () => interpreter.execute())"]
+    LISTEN["worklist.onScopeChanged(...)<br/>→ interpreter.patchFunction"]
+    RUN["worklist.withActiveScope(ast, () => interpreter.execute())"]
     OUT["JS value → conductor.sendResult"]
 
     AST --> WL
     ENV --> WL
-    WL --> UNITS --> COMP --> EMIT --> INT --> COORD --> RUN --> OUT
+    WL --> UNITS --> COMP --> EMIT --> INT --> LISTEN --> RUN --> OUT
     AST --> COMP
     ENV --> COMP
 ```
@@ -274,9 +296,10 @@ flowchart LR
 Runtime feedback: the interpreter emits `observeWrite`/`observeCall` through
 its `observationSink` (the worklist), which enqueues analysis refinements.
 Profile-style facts — e.g. saturating call counts that drive memoization —
-are produced by `CallCountObserver` registered via `worklist.addCallObserver`.
-When a refinement triggers a transform on an unpinned scope, the coordinator
-fires `SVMLSwapStrategy.computeDelta`/`applyDelta` at the next safepoint.
+are produced by `CallCountObserver` registered via `worklist.addProfileObserver`.
+When a refinement triggers a transform that actually mutates a scope, the
+`onScopeChanged` listener fires and recompiles + patches the function-table
+slot for that scope.
 
 ---
 
@@ -287,14 +310,14 @@ machine in `src/engines/cse/interpreter.ts` is a stepper over control and
 stash stacks. Flow:
 
 1. `parse` + `analyzeWithEnvironments` as before.
-2. `worklist = new PersistentWorklist(ast, environments, analyses, transforms); worklist.converge()`.
+2. `worklist = new Worklist(ast, environments, analyses, transforms); worklist.converge()`.
 3. `context.runtime.rootScope = ast`.
 4. `context.runtime.observationSink = worklist` — the CSE interpreter emits
    observations through this during execution.
-5. `await runPinned(worklist, null, ast, () => evaluate(...))` — pins the root
-   scope, runs the interpreter, drains on exit. The coordinator argument is
-   `null`: CSE's materialized form is the AST, which transforms mutate
-   directly during `tick`, so there is no install step to sequence.
+5. `await worklist.withActiveScope(ast, () => evaluate(...))` — pins the root
+   scope, runs the interpreter, drains on exit. No `onScopeChanged` listener
+   is registered: CSE's materialized form is the AST, which transforms
+   mutate directly during `tick`, so there is no separate install step.
 6. Inside `evaluate`:
    - The interpreter **does not read hints on the hot path.** The single hint
      read that used to exist (per-step visualization metadata) was removed;
@@ -307,9 +330,9 @@ stash stacks. Flow:
 flowchart TB
     AST["FileInput AST"]
     ENV["environments"]
-    WL["new PersistentWorklist<br/>+ converge()"]
+    WL["new Worklist<br/>+ converge()"]
     WIRE["context.runtime.rootScope = ast<br/>context.runtime.observationSink = worklist"]
-    RUN["runPinned(worklist, null, ast, () => evaluate(...))<br/>(pins root, no coordinator — CSE installs in-AST)"]
+    RUN["worklist.withActiveScope(ast, () => evaluate(...))<br/>(pins root; CSE installs in-AST via transforms — no listener)"]
     EXEC["evaluate(ast, context)<br/>control/stash stepper<br/>(engines/cse/interpreter.ts)"]
     OBS["observeWrite / observeCall / activate/deactivateScope"]
     FIN["finally: observationSink = undefined"]
@@ -323,10 +346,10 @@ flowchart TB
 
 Failure modes worth noting:
 
-- If `evaluate` throws, `runPinned` catches, calls
-  `worklist.clearAllPins()`, and rethrows. `withActiveScope`'s finally
-  suppresses the post-run `tick()` on throw — otherwise a subscriber could
-  try to install against a unit whose interpreter state has unwound.
+- If `evaluate` throws, `withActiveScope` catches, calls
+  `worklist.clearAllPins()`, and rethrows — suppressing the post-run
+  `tick()` that would otherwise let a listener try to install against a
+  unit whose interpreter state has unwound.
 - `observationSink` is cleared in `finally` so subsequent chunks get a clean
   runtime.
 
@@ -343,36 +366,33 @@ flowchart TB
 
     subgraph SPEC["Specialization framework (src/specialization)"]
       direction TB
-      WL["PersistentWorklist<br/>analysis · transforms · subscribers · pin-count<br/>implements ObservationSink"]
-      UNIT["FunctionUnit<br/>{body getter, HintStore, slotLookup, structuralVersion, pinCount}"]
+      WL["Worklist<br/>analysis · transforms · subscribers · pin-count<br/>implements ObservationSink"]
+      UNIT["FunctionUnit<br/>{body getter, HintStore, (token: Token) => SlotInfo, structuralVersion, pinCount}"]
       HS["HintStore<br/>nodeId → OptimizationHint<br/>eq via analysesByName registry"]
-      OSR["OSRCoordinator<br/>StateDeltaStrategy&lt;Delta&gt;"]
-      RP["runPinned<br/>pin-ordering + clearAllPins on throw"]
+      WAS["withActiveScope<br/>pin-ordering + clearAllPins on throw"]
+      OSC["onScopeChanged listener<br/>(engine-registered closure)"]
       WL --> UNIT
       UNIT --> HS
-      WL --> OSR
-      RP --> WL
-      RP --> OSR
+      WL --> OSC
+      WAS --> WL
     end
     RESOLVE --> WL
 
     subgraph SVML["SVML JIT backend"]
       direction TB
       COMP["SVMLCompiler.fromProgramUnit<br/>compileProgram"]
-      INT["SVMLInterpreter.execute"]
-      STRAT["SVMLSwapStrategy<br/>(whole | patches)"]
+      INT["SVMLInterpreter.execute<br/>patchFunction (dispatch patch)"]
       COMP --> INT
-      STRAT --> INT
     end
     UNIT -. "getHint at emit time" .-> COMP
-    OSR -. "computeDelta / applyDelta" .-> STRAT
+    OSC -. "compileFunction → patchFunction" .-> INT
     INT -- "observeWrite/Call, activate/deactivateScope" --> WL
 
     subgraph CSE["CSE backend"]
       direction TB
       EXEC["evaluate<br/>(control/stash stepper)"]
     end
-    RP -. "coordinator = null<br/>(AST is the materialized form)" .-> EXEC
+    WAS -. "(no listener — AST is the materialized form)" .-> EXEC
     EXEC -- "observeWrite/Call<br/>activate/deactivateScope" --> WL
 
     classDef engine fill:#fff3cd,stroke:#b58900,color:#000;
@@ -389,15 +409,13 @@ flowchart TB
 |---|---|---|
 | Parse | `src/parser/parser-adapter.ts` | `parse` |
 | Resolve | `src/resolver/index.ts` | `analyzeWithEnvironments`, `FunctionEnvironments` |
-| Pin-ordering wrapper | `src/specialization/run-pinned.ts` | `runPinned(worklist, coord\|null, scope, fn)` |
-| Worklist | `src/specialization/framework/persistent-worklist.ts` | `PersistentWorklist`, `observeWrite`, `observeCall`, `activateScope`, `deactivateScope`, `withActiveScope`, `subscribe`, `addCallObserver`, `clearAllPins` |
-| Observation surface | `src/specialization/framework/observation-sink.ts` | `ObservationSink` (interface; `PersistentWorklist implements`) |
+| Worklist | `src/specialization/framework/worklist.ts` | `Worklist`, `observeWrite`, `observeCall`, `activateScope`, `deactivateScope`, `withActiveScope`, `subscribe`, `onScopeChanged`, `addProfileObserver`, `clearAllPins` |
+| Observation surface | `src/specialization/framework/observation-sink.ts` | `ObservationSink` (interface; `Worklist implements`) |
 | Units | `src/specialization/framework/function-unit.ts` | `FunctionUnit`, `buildFunctionUnits` |
 | Hints | `src/specialization/framework/hint.ts` | `HintStore`, `OptimizationHint`, `hintEquals`, `HINT_EQ_NEVER` |
-| OSR | `src/specialization/framework/osr.ts` | `OSRCoordinator`, `StateDeltaStrategy` |
-| SVML compile | `src/engines/svml/svml-compiler.ts` | `SVMLCompiler.fromProgramUnit`, `compileProgram`, `getHint` |
-| SVML run | `src/engines/svml/svml-interpreter.ts` | `SVMLInterpreter.execute`, `patchFunction`, `applyOperandPatches`, `toJSValue` |
-| SVML swap | `src/conductor/svml-swap-strategy.ts` | `SVMLSwapStrategy` (`computeDelta`, `applyDelta`, `canInstallOnStack`) |
+| SVML compile | `src/engines/svml/svml-compiler.ts` | `SVMLCompiler.fromProgramUnit`, `compileProgram`, `getHint`, `indexOf`, `compileFunction` |
+| SVML run | `src/engines/svml/svml-interpreter.ts` | `SVMLInterpreter.execute`, `patchFunction`, `toJSValue` |
+| SVML dispatch patch | `src/conductor/PySvmlJitEvaluator.ts` | inline `worklist.onScopeChanged(...)` closure |
 | CSE run | `src/engines/cse/interpreter.ts` | `evaluate` (writes to `runtime.observationSink`; does not read hints) |
 | Memo runtime | `src/runtime/memo.ts` | `memoLookup`, `memoPut`, `MEMO_MISS`, `MEMO_INTRINSIC_NAMES` |
 | SVML evaluators | `src/conductor/PySvmlEvaluator.ts`, `PySvmlJitEvaluator.ts`, `PySvmlSinterEvaluator.ts` | `evaluateChunk` |

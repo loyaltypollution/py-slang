@@ -3,7 +3,7 @@
 // CallCountObserver — accumulates a saturating per-FunctionDef call count
 // by reacting to the worklist's `observeCall` dispatch. Pure profile
 // machinery: no lattice, no transfer function, no expression visitor.
-// Registered on a PersistentWorklist via `addCallObserver`.
+// Registered on a Worklist via `addProfileObserver`.
 //
 // The count is stored as a plain number on the callee FunctionDef's
 // `OptimizationHint` under the field `callCount`, so
@@ -12,7 +12,7 @@
 // unboundedly.
 
 import { StmtNS } from "../../ast-types";
-import type { CallObserver } from "../framework/interfaces";
+import type { ProfileObserver } from "../framework/interfaces";
 import type { HintStore, OptimizationHint } from "../framework/hint";
 
 /** Number of recorded calls after which MemoizationTransformRule may fire. */
@@ -24,7 +24,7 @@ export const CALL_COUNT_FIELD = "callCount";
 /** Hint field the transform sets on a FunctionDef after wrapping it. */
 export const MEMOIZED_FIELD = "memoized";
 
-export class CallCountObserver implements CallObserver {
+export class CallCountObserver implements ProfileObserver {
   /**
    * Bump the callee's saturating call counter. The counter lives on the
    * callee FunctionDef's hint (keyed by its node.id);

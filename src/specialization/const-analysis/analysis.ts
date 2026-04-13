@@ -1,19 +1,19 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import type { AnalysisModule } from "../framework/interfaces";
 import { type HintStore, type OptimizationHint } from "../framework/hint";
+import type { AnalysisModule } from "../framework/interfaces";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
   CONST_BOTTOM,
   CONST_TOP,
-  constOf,
-  constLeq,
   constJoin,
+  constLeq,
   constMeet,
+  constOf,
 } from "./lattice";
 
-export { constLeq, constJoin, constMeet };
+export { constJoin, constLeq, constMeet };
 
 // ── Expression-level visitor ──────────────────────────────────────────────────
 
@@ -212,7 +212,10 @@ export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
   latticeEquals(a: unknown, b: unknown): boolean {
     const ca = a as ConstLattice;
     const cb = b as ConstLattice;
-    return ca === cb || (ca.tag !== "const" ? ca.tag === cb.tag : cb.tag === "const" && ca.value === cb.value);
+    return (
+      ca === cb ||
+      (ca.tag !== "const" ? ca.tag === cb.tag : cb.tag === "const" && ca.value === cb.value)
+    );
   }
   readonly mergeKind = "may" as const;
   readonly direction = "forward" as const;
@@ -243,7 +246,11 @@ export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
   observeValue(rawValue: unknown): ConstLattice | undefined {
     // Return `undefined` (not CONST_TOP) when there is no useful constant —
     // widening to TOP would erase existing static constants.
-    if (typeof rawValue === "number" || typeof rawValue === "boolean" || typeof rawValue === "string") {
+    if (
+      typeof rawValue === "number" ||
+      typeof rawValue === "boolean" ||
+      typeof rawValue === "string"
+    ) {
       return constOf(rawValue);
     }
     if (typeof rawValue === "bigint") return constOf(Number(rawValue));

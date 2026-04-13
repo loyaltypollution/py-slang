@@ -1,5 +1,5 @@
 /**
- * Convergence benchmark suite for PersistentWorklist.
+ * Convergence benchmark suite for Worklist.
  *
  * Measures convergence cost (items processed, transform rounds, wall-clock time)
  * across programs of increasing complexity. Results are printed as a table
@@ -104,7 +104,7 @@ describe("Convergence benchmarks", () => {
         transforms: s.transformItemsProcessed,
         rounds: s.transformRounds,
         drains: s.drainCalls,
-        "ms": Number(s.wallClockMs.toFixed(3)),
+        ms: Number(s.wallClockMs.toFixed(3)),
       };
     });
 

@@ -43,12 +43,9 @@ export class Context {
     breakpointSteps: number[];
     changepointSteps: number[];
     /**
-     * Push-side for runtime observations (wired by JIT-capable
-     * evaluators). Pin-set accounting also routes through this sink: CSE
-     * `pushEnvironment`/`popEnvironment` call `activateScope` /
-     * `deactivateScope`, which mutate `FunctionUnit.pinCount` on the
-     * owning worklist. Anchors the pin invariant to the engine's own
-     * balanced env-lifecycle primitive.
+     * Push-side for runtime observations (wired by JIT-capable evaluators).
+     * CSE feeds `observeWrite` / `observeCall` into this sink; the LBD
+     * interpreter contract makes call-time pin accounting unnecessary.
      */
     observationSink?: ObservationSink;
     /** Root scope key for emission when no enclosing closure exists (global scope). */

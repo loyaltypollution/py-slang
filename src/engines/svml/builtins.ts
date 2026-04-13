@@ -171,7 +171,6 @@ export function executePrimitive(
 function memoArgs(args: SVMLBoxType[], fn: string): [string, ...SVMLBoxType[]] {
   if (args.length < 1) throw new MissingRequiredPositionalError(`${fn}() requires id`);
   const id = args[0];
-  if (typeof id !== "string")
-    throw new SVMLInterpreterError(`${fn}() id must be a string`);
+  if (typeof id !== "string") throw new SVMLInterpreterError(`${fn}() id must be a string`);
   return [id, ...args.slice(1)];
 }

@@ -9,7 +9,7 @@ import {
   DeadBranchEliminationRule,
   CallCountObserver,
   MemoizationTransformRule,
-  PersistentWorklist,
+  Worklist,
   TypeAnalysisModule,
 } from "../specialization";
 import { EvaluatorError } from "./errors";
@@ -23,13 +23,17 @@ export class PySvmlEvaluator extends BasicEvaluator {
       if (errors.length > 0) {
         throw errors[0];
       }
-      const worklist = new PersistentWorklist(
+      const worklist = new Worklist(
         ast,
         environments,
         [new TypeAnalysisModule(), new ConstAnalysisModule()],
-        [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
+        [
+          new DeadBranchEliminationRule(),
+          new ConstantFoldingRule(),
+          new MemoizationTransformRule(),
+        ],
       );
-      worklist.addCallObserver(new CallCountObserver());
+      worklist.addProfileObserver(new CallCountObserver());
       worklist.converge();
       const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units);
       const program = compiler.compileProgram(ast);

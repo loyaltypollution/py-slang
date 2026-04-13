@@ -1,8 +1,5 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import type {
-  ExprTransformRule,
-  TransformRule,
-} from "./interfaces";
+import type { ExprTransformRule, TransformRule } from "./interfaces";
 import type { HintStore } from "./hint";
 
 /**
@@ -92,11 +89,21 @@ class ExprRewriteVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     return this.tryRewrite(expr);
   }
   // Leaves
-  visitLiteralExpr(expr: ExprNS.Literal): ExprNS.Expr { return this.tryRewrite(expr); }
-  visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ExprNS.Expr { return this.tryRewrite(expr); }
-  visitComplexExpr(expr: ExprNS.Complex): ExprNS.Expr { return this.tryRewrite(expr); }
-  visitVariableExpr(expr: ExprNS.Variable): ExprNS.Expr { return this.tryRewrite(expr); }
-  visitNoneExpr(expr: ExprNS.None): ExprNS.Expr { return this.tryRewrite(expr); }
+  visitLiteralExpr(expr: ExprNS.Literal): ExprNS.Expr {
+    return this.tryRewrite(expr);
+  }
+  visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ExprNS.Expr {
+    return this.tryRewrite(expr);
+  }
+  visitComplexExpr(expr: ExprNS.Complex): ExprNS.Expr {
+    return this.tryRewrite(expr);
+  }
+  visitVariableExpr(expr: ExprNS.Variable): ExprNS.Expr {
+    return this.tryRewrite(expr);
+  }
+  visitNoneExpr(expr: ExprNS.None): ExprNS.Expr {
+    return this.tryRewrite(expr);
+  }
 }
 
 /**
