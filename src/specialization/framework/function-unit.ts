@@ -57,15 +57,6 @@ export interface FunctionUnit {
     readonly callerKey: StmtNS.FileInput | StmtNS.FunctionDef;
     readonly calleeKey: StmtNS.FileInput | StmtNS.FunctionDef;
   }>;
-  /**
-   * Names of transforms whose `apply` has succeeded on this unit. Populated
-   * by the transform itself (`unit.appliedTransforms.add(this.name)`). Single
-   * source of truth for two readers:
-   *   - Scheduler's `fireOnce` re-fire guard (in `processTransform`).
-   *   - External consumers (tests, introspection) asking "did transform X
-   *     fire on this scope?".
-   */
-  readonly appliedTransforms: Set<string>;
 }
 
 /**
@@ -110,7 +101,6 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       analysisOuts,
       generation: 0,
       callObservations: [],
-      appliedTransforms: new Set<string>(),
       get body(): StmtNS.Stmt[] {
         return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
       },

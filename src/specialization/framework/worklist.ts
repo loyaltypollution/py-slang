@@ -305,14 +305,6 @@ export class Worklist implements ObservationSink {
    */
   private readonly observers: readonly ObservingAnalysis[];
 
-/**
-   * Cached at construction: true iff any transform is a non-monotone scope
-   * rule (fireOnce), meaning a runtime call observation can newly enable it
-   * and a mid-execution tick is worth the drain cost. For purely monotone
-   * configurations the tick is redundant and skipped.
-   */
-  private readonly hasNonMonotoneRule: boolean;
-
   /**
    * Internal per-scope dirty channel. `observeWrite`, `observeCall`, transform
    * completion, and cross-scope invalidation all publish here; `drain` flushes
@@ -320,15 +312,6 @@ export class Worklist implements ObservationSink {
    * `onScopeChanged` subscriber contract.
    */
   private readonly dirty = new Map<StmtNS.FileInput | StmtNS.FunctionDef, DirtyReason>();
-
-  /**
-   * Fields written by any registered `ScopePass.writesFields`. AnalysisPass
-   * transfers MUST NOT read these — the ordering invariant is that
-   * scope-level facts flow to `ScopeTransformRule.matches` (same round) and
-   * later ScopePasses, never back into expression-level DFA. Enforced at
-   * runtime in dev builds via `guardAnalysisHints`.
-   */
-  private readonly forbiddenScopeFields: ReadonlySet<string>;
 
   // ── Pass-graph dispatch (PR-2a) ────────────────────────────────────────
   //
@@ -382,18 +365,12 @@ export class Worklist implements ObservationSink {
     this.observers = analyses.filter(
       (m): m is ObservingAnalysis => m.observeWrite !== undefined,
     );
-    // Monotone-only post migration: callCountPass saturates, transforms are
-    // top-only lattices. The `hasNonMonotoneRule` gate is dead.
-    this.hasNonMonotoneRule = false;
 
     // Per-field equality: each AnalysisPass registers latticeEquals under its name.
     const fieldEq = new Map<string, FieldEquals>();
     for (const a of analyses) {
       fieldEq.set(a.name, (x, y) => a.latticeEquals(x, y));
     }
-
-    // No ScopePass instances post migration → empty guard set.
-    this.forbiddenScopeFields = new Set<string>();
 
     this.units = buildFunctionUnits(ast, functionEnvironments, analyses, fieldEq, this.factStore);
     for (const [key, unit] of this.units) {
@@ -746,12 +723,6 @@ export class Worklist implements ObservationSink {
     if (calleeKey instanceof StmtNS.FunctionDef) {
       this.observe(runtimeCallPass, calleeKey.id, calleeUnit.callObservations.length);
     }
-    // Tick so any newly-enabled non-monotone transforms (e.g. memoization
-    // crossing its call-count threshold) fire *during* execution. Safe
-    // under the LBD contract: interpreters re-resolve function bodies at
-    // call-entry, so mutations land on the next call. Skipped for purely
-    // monotone configurations where no call-count threshold can flip.
-    if (this.hasNonMonotoneRule) this.tick();
   }
 
   // ── Drain ────────────────────────────────────────────────────────────────
@@ -907,8 +878,7 @@ export class Worklist implements ObservationSink {
     if (!block) return false;
 
     const inEnv = computeBlockIN(block, module, out);
-    const hintsForTransfer = this.guardAnalysisHints(unit.hints, module.name);
-    const outEnv = transferBlock(block, inEnv, module, hintsForTransfer, unit.slotLookup);
+    const outEnv = transferBlock(block, inEnv, module, unit.hints, unit.slotLookup);
 
     const prevOut = out.get(block.id) ?? null;
     if (prevOut === null || !outEnv.equals(prevOut, module.leq.bind(module))) {
@@ -1003,50 +973,6 @@ export class Worklist implements ObservationSink {
   }
 
   // ── Seeding ──────────────────────────────────────────────────────────────
-
-  /**
-   * Opt-in guard: wrap `hints` so that an AnalysisPass transfer reading a
-   * field declared by some `ScopePass.writesFields` throws. Disabled by
-   * default — the Proxy incurs V8 interceptor overhead on every read and
-   * bloats the DFA hot path. Enable by setting
-   * `PY_SLANG_GUARD_SCOPE_FIELDS=1` when investigating an ordering
-   * invariant violation.
-   *
-   * Scope: only wraps the `get` / `getById` read paths. Writes are not
-   * guarded (the invariant is about *reads* from AnalysisPass visitors).
-   */
-  private guardAnalysisHints(hints: HintStore, moduleName: string): HintStore {
-    if (this.forbiddenScopeFields.size === 0) return hints;
-    if (typeof process === "undefined" || process.env?.PY_SLANG_GUARD_SCOPE_FIELDS !== "1") {
-      return hints;
-    }
-    const forbidden = this.forbiddenScopeFields;
-    const wrap = (h: OptimizationHint | undefined): OptimizationHint | undefined => {
-      if (h === undefined) return undefined;
-      return new Proxy(h, {
-        get(target, prop: string | symbol) {
-          if (typeof prop === "string" && forbidden.has(prop)) {
-            throw new Error(
-              `[Worklist] AnalysisPass "${moduleName}" read forbidden scope-level hint field "${prop}". ` +
-                `Scope-level facts flow to ScopeTransformRule / later ScopePasses, not back into expression-level DFA.`,
-            );
-          }
-          return Reflect.get(target, prop);
-        },
-      });
-    };
-    return new Proxy(hints, {
-      get(target, prop, receiver) {
-        if (prop === "get") {
-          return (node: ExprNS.Expr | StmtNS.Stmt) => wrap(target.get(node));
-        }
-        if (prop === "getById") {
-          return (id: number) => wrap(target.getById(id));
-        }
-        return Reflect.get(target, prop, receiver);
-      },
-    });
-  }
 
   /**
    * Publish to the internal dirty channel. Idempotent per scope;

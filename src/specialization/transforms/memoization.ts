@@ -42,14 +42,13 @@ export function applyMemoizationWrap(unit: FunctionUnit): boolean {
   if (!(fd instanceof StmtNS.FunctionDef)) return false;
   // Idempotence: re-invocation on an already-wrapped body must be a no-op.
   // Transfer mutates AST eagerly; the lattice "fired" write gates dispatch
-  // fan-out but the side effect happens before any equality check. Without
-  // this guard, each re-enqueue would prepend another prelude.
-  if (unit.appliedTransforms.has("memoization")) return false;
+  // fan-out but the side effect happens before any equality check. Detect
+  // the prelude by shape: an `If` whose condition is a Call to MEMO_HAS.
+  if (isAlreadyWrapped(fd.body)) return false;
 
   const id = mintId(fd);
   const params = fd.parameters.map(p => mkVar(fd, p.lexeme));
 
-  // Prelude: `if __memo_has(id, *params): return __memo_get(id, *params)`.
   const hasCall = mkCall(fd, MEMO_HAS, [mkStr(fd, id), ...params]);
   const getCall = mkCall(fd, MEMO_GET, [mkStr(fd, id), ...params.map(p => cloneVar(p))]);
   const prelude = new StmtNS.If(
@@ -60,16 +59,19 @@ export function applyMemoizationWrap(unit: FunctionUnit): boolean {
     null,
   );
 
-  // Rewrite every `return E` in the body to `return __memo_put(id, *params, E)`,
-  // skipping nested FunctionDef / class scopes.
   rewriteReturns(fd.body, fd, id, params);
-
   fd.body.unshift(prelude);
-
-  // Preserve legacy observability: tests read `unit.appliedTransforms`.
-  unit.appliedTransforms.add("memoization");
-
   return true;
+}
+
+function isAlreadyWrapped(body: StmtNS.Stmt[]): boolean {
+  if (body.length === 0) return false;
+  const first = body[0];
+  if (!(first instanceof StmtNS.If)) return false;
+  const cond = first.condition;
+  if (!(cond instanceof ExprNS.Call)) return false;
+  const callee = cond.callee;
+  return callee instanceof ExprNS.Variable && callee.name.lexeme === MEMO_HAS;
 }
 
 // ── AST construction helpers ────────────────────────────────────────────────
