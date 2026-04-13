@@ -15,7 +15,7 @@ export type { ObservationSink } from "./framework/observation-sink";
 
 export type { AnalysisPass, ScopePass, TransformRule } from "./framework/interfaces";
 export type { OptimizationHint } from "./framework/hint";
-export { HintStore, hintEquals, HINT_EQ_NEVER } from "./framework/hint";
+export { HintStore } from "./framework/hint";
 
 // ── Type lattice (codegen reads kind bits + refinements from hints) ──────────
 

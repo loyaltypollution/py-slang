@@ -18,7 +18,7 @@ import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import { buildFunctionUnits, makeOut, type FunctionUnit } from "./function-unit";
-import { hintEquals, type HintStore, type OptimizationHint } from "./hint";
+import type { HintStore, OptimizationHint } from "./hint";
 import type { AnalysisPass, ScopePass, ScopeTransformRule, TransformRule } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
 import type { ObservationSink } from "./observation-sink";
@@ -335,8 +335,7 @@ export class Worklist implements ObservationSink {
       r => r.level === "scope" && r.fireOnce === true,
     );
 
-    const hintEq = (a: OptimizationHint, b: OptimizationHint) =>
-      hintEquals(a, b, this.analysesByName);
+    const hintEq = (a: OptimizationHint, b: OptimizationHint) => this.hintFieldsEqual(a, b);
     this.units = buildFunctionUnits(ast, functionEnvironments, hintEq, analyses);
     for (const [key, unit] of this.units) {
       this.seedAnalysis(key, unit);
@@ -413,6 +412,31 @@ export class Worklist implements ObservationSink {
    */
   addScopePass(pass: ScopePass): void {
     this.scopePasses.push(pass);
+  }
+
+  /**
+   * Field-level equality for `OptimizationHint`. For each field present in
+   * either record, fast-path `===`; otherwise dispatch to the registered
+   * `AnalysisPass.latticeEquals`. Unregistered fields default to inequality
+   * (conservative over-invalidation).
+   *
+   * Lives here rather than being exported because it is the *only* per-field
+   * cross-cutting op in the codebase — per-slot `join`/`leq`/`top` run inside
+   * one analysis; this walks across them. One caller (the `HintStore` `eq`
+   * closure); no symmetry to enforce with an exported helper.
+   */
+  private hintFieldsEqual(a: OptimizationHint, b: OptimizationHint): boolean {
+    const names = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
+    for (const name of names) {
+      const av = a[name];
+      const bv = b[name];
+      if (av === bv) continue;
+      if (av === undefined || bv === undefined) return false;
+      const pass = this.analysesByName.get(name);
+      if (!pass) return false;
+      if (!pass.latticeEquals(av, bv)) return false;
+    }
+    return true;
   }
 
   /**

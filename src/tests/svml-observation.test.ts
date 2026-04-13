@@ -7,7 +7,7 @@
 import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { HintStore, HINT_EQ_NEVER } from "../specialization";
+import { HintStore } from "../specialization";
 import { buildTestWorklist } from "./utils";
 import type { ObservationSink } from "../specialization";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
@@ -36,7 +36,7 @@ x = "hello"
 
     const interpreter = new SVMLInterpreter(program, { observationSink: reactive });
 
-    const merged = new HintStore(HINT_EQ_NEVER);
+    const merged = new HintStore(() => false);
     const mergeUnit = (u: { hints: HintStore } | undefined) => {
       if (u) for (const [id, hint] of u.hints) merged.setById(id, hint);
     };

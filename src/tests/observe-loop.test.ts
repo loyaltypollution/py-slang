@@ -12,7 +12,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import { buildTestWorklist } from "./utils";
 import { Context } from "../engines/cse/context";
 import { evaluate } from "../engines/cse/interpreter";
-import { HintStore, HINT_EQ_NEVER } from "../specialization";
+import { HintStore } from "../specialization";
 import { STR_BIT, INT_BIT } from "../specialization/type-analysis/lattice";
 
 function setupReactive(code: string) {
@@ -33,7 +33,7 @@ async function runWithReactive(code: string) {
 
   // Merge collector — each unit owns a disjoint id range, so dedupe never
   // triggers; the eq callback fires only on re-writes we don't do.
-  const merged = new HintStore(HINT_EQ_NEVER);
+  const merged = new HintStore(() => false);
   for (const unit of reactive.units.values()) {
     for (const [id, hint] of unit.hints) merged.setById(id, hint);
   }
