@@ -5,7 +5,6 @@ import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
-  CallCountScopePass,
   ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
@@ -56,9 +55,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           new ConstantFoldingRule(),
           new MemoizationTransformRule(),
         ],
-        [
-          new CallCountScopePass(),
-        ],
+        [],
       );
       worklist.converge();
 

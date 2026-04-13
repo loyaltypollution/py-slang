@@ -73,7 +73,6 @@ export { ConstantFoldingRule } from "./transforms/constant-folding";
 export { DeadBranchEliminationRule } from "./transforms/dead-branch";
 export { MemoizationTransformRule } from "./transforms/memoization";
 export {
-  CallCountScopePass,
   MEMOIZATION_THRESHOLD,
   CALL_COUNT_FIELD,
 } from "./memoization-analysis/call-count";

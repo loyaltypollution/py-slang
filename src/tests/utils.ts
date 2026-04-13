@@ -14,7 +14,6 @@ import {
   ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
-  CallCountScopePass,
   MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
@@ -40,7 +39,7 @@ export function buildTestWorklist(
     functionEnvironments,
     [new TypeAnalysisPass(), new ConstAnalysisPass()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
-    [new CallCountScopePass()],
+    [],
   );
   return worklist;
 }

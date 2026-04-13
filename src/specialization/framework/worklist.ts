@@ -732,6 +732,18 @@ export class Worklist implements ObservationSink {
     if (!calleeUnit) return;
     calleeUnit.callObservations.push({ callerKey: scopeKey, calleeKey });
     this.markDirty(calleeKey, "data");
+    // PR-6b: drive the migrated `callCountPass` directly. Legacy
+    // `CallCountScopePass` used to fold `callObservations.length` into the
+    // `callCount` hint at scope-pass time; that class is deleted this PR.
+    // Writing the raw count into `runtimeCallPass` here makes
+    // `callCountPass.transfer` (saturating bucket) the sole driver of the
+    // hint. Only FunctionDef callees can be memoization callees — matches
+    // the legacy gate exactly. Engine paths that also call
+    // `observe(runtimeCallPass, …)` from the interpreter remain a no-op
+    // idempotent second write under the lattice equality gate.
+    if (calleeKey instanceof StmtNS.FunctionDef) {
+      this.observe(runtimeCallPass, calleeKey.id, calleeUnit.callObservations.length);
+    }
     // Tick so any newly-enabled non-monotone transforms (e.g. memoization
     // crossing its call-count threshold) fire *during* execution. Safe
     // under the LBD contract: interpreters re-resolve function bodies at

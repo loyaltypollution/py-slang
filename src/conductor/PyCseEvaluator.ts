@@ -15,7 +15,6 @@ import {
   ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
-  CallCountScopePass,
   MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
@@ -102,7 +101,7 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
           new ConstantFoldingRule(),
           new MemoizationTransformRule(),
         ],
-        [new CallCountScopePass()],
+        [],
       );
       worklist.converge();
 
