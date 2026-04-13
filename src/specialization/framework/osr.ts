@@ -125,13 +125,13 @@ export class OSRCoordinator<Delta> {
   }
 
   get stats() {
-    return {
+    return Object.freeze({
       notificationsSeen: this._notificationsSeen,
       skippedPinned: this._skippedPinned,
       skippedCanInstall: this._skippedCanInstall,
       skippedNoUnit: this._skippedNoUnit,
       installsFired: this._installsFired,
-    } as const;
+    } as const);
   }
 
   private onChange(changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>): void {

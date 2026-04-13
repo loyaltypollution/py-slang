@@ -37,7 +37,7 @@ x = "hello"
 
     const interpreter = new SVMLInterpreter(program, { observationSink: reactive });
 
-    const merged = new HintStore();
+    const merged = new HintStore(() => false);
     const mergeUnit = (u: { hints: HintStore } | undefined) => {
       if (u) for (const [id, hint] of u.hints) merged.setById(id, hint);
     };

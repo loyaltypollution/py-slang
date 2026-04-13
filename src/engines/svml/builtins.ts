@@ -8,6 +8,8 @@ import {
   MEMO_INTRINSIC_NAMES,
 } from "../../runtime/memo";
 
+const [MEMO_HAS_NAME, MEMO_GET_NAME, MEMO_PUT_NAME] = MEMO_INTRINSIC_NAMES;
+
 // Map Python builtin names to SVML primitive opcode indices
 export const PRIMITIVE_FUNCTIONS: Map<string, number> = new Map([
   ["print", 5],
@@ -22,9 +24,9 @@ export const PRIMITIVE_FUNCTIONS: Map<string, number> = new Map([
   ["round", 26],
   ["range", 30],
   ["len", 31],
-  [MEMO_INTRINSIC_NAMES[0], 40],
-  [MEMO_INTRINSIC_NAMES[1], 41],
-  [MEMO_INTRINSIC_NAMES[2], 42],
+  [MEMO_HAS_NAME, 40],
+  [MEMO_GET_NAME, 41],
+  [MEMO_PUT_NAME, 42],
 ]);
 
 function assertNumericArgs(args: SVMLBoxType[], fn: string): number[] {

@@ -215,6 +215,9 @@ export class PersistentWorklist implements ObservationSink {
     const SINK_METHODS = ["observeWrite", "observeCall", "activateScope", "deactivateScope"] as const;
     for (const name of SINK_METHODS) {
       const fn = (this as unknown as Record<string, unknown>)[name];
+      if (typeof fn !== "function") {
+        throw new Error(`ObservationSink.${name} is not a function`);
+      }
       if ((fn as { constructor?: { name?: string } }).constructor?.name === "AsyncFunction") {
         throw new Error(
           `ObservationSink.${name} must be synchronous; async implementations break the OSR safepoint contract`,

@@ -31,7 +31,9 @@ async function runWithReactive(code: string) {
   const reactive = buildTestWorklist(ast, environments);
   reactive.converge();
 
-  const merged = new HintStore();
+  // Merge collector — each unit owns a disjoint id range, so dedupe never
+  // triggers; the eq callback fires only on re-writes we don't do.
+  const merged = new HintStore(() => false);
   for (const unit of reactive.units.values()) {
     for (const [id, hint] of unit.hints) merged.setById(id, hint);
   }
