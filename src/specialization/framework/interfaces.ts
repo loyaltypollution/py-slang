@@ -3,21 +3,24 @@ import type { FunctionUnit } from "./function-unit";
 import type { HintStore, OptimizationHint } from "./hint";
 import type { SlotLookup } from "./slot-table";
 
+/**
+ * Result of a successful `StmtTransformRule.apply`. `replacements` is the
+ * spliced-in statement list (empty = delete). `invalidate` lists other
+ * scopes the rule mutated in the same operation — the worklist publishes
+ * a `"structural"` dirty mark for each. Declared at rewrite time instead
+ * of a separate `affectedScopes` callback so the cross-scope mutation is
+ * tied to the exact apply that caused it.
+ */
+export interface StmtTransformApplyResult {
+  readonly replacements: readonly StmtNS.Stmt[];
+  readonly invalidate?: readonly (StmtNS.FileInput | StmtNS.FunctionDef)[];
+}
+
 export interface StmtTransformRule {
   readonly name: string;
   readonly level: "stmt";
   matches(stmt: StmtNS.Stmt, hints: HintStore): boolean;
-  /** Returns replacement statements. Empty array = delete the statement. */
-  apply(stmt: StmtNS.Stmt, hints: HintStore): StmtNS.Stmt[];
-  /**
-   * Optional: additional scopes the worklist must rebuild after this rule
-   * fires on `stmt`. Used by non-monotone transforms that mutate a child
-   * scope's body from the parent's transform pass (e.g. memoization wrapping
-   * a FunctionDef: the parent scope gets rebuilt automatically, but the
-   * child's CFG / analysis sessions don't see the body mutation without an
-   * explicit invalidation).
-   */
-  affectedScopes?(stmt: StmtNS.Stmt): readonly (StmtNS.FileInput | StmtNS.FunctionDef)[];
+  apply(stmt: StmtNS.Stmt, hints: HintStore): StmtTransformApplyResult;
 }
 
 export interface ExprTransformRule {
@@ -107,20 +110,19 @@ export interface AnalysisPass<L> {
   ): ExprNS.Visitor<L>;
 
   /**
-   * Map a raw runtime value (pushed by an interpreter on a slot write) to a
-   * lattice element of this analysis. Return `undefined` to ignore the
-   * value (e.g. ConstAnalysisPass returns `undefined` for non-primitive
-   * JS values rather than widening the hint to TOP).
+   * Fold a raw runtime value (pushed by an interpreter on a slot write) into
+   * the node's hint. Must use `join` semantics — observations widen the set
+   * of seen values, they never narrow static facts (narrowing would be
+   * unsound for specialization consumers). Return `hint` unchanged when the
+   * value is not useful for this analysis (e.g. ConstAnalysisPass ignores
+   * non-primitive JS values rather than widening to TOP).
+   *
+   * Paired with `ObservationSink.observeWrite` on the worklist side: the
+   * sink's `observeWrite` is the runtime *event*; this method is the
+   * per-analysis *reaction* that lifts the raw value into the lattice and
+   * merges it into the hint in one step.
    */
-  observeValue?(rawValue: unknown): L | undefined;
-
-  /**
-   * Merge a lattice element produced by `observeValue` into the node's
-   * hint. Must use `join` semantics — observations widen the set of seen
-   * values, they never narrow static facts (narrowing would be unsound for
-   * specialization consumers).
-   */
-  mergeIntoHint?(hint: OptimizationHint, value: L): OptimizationHint;
+  observeWrite?(hint: OptimizationHint, rawValue: unknown): OptimizationHint;
 }
 
 /**
@@ -142,4 +144,13 @@ export interface AnalysisPass<L> {
 export interface ScopePass {
   readonly name: string;
   run(unit: FunctionUnit): void;
+  /**
+   * Hint field names this pass writes that expression-level `AnalysisPass`
+   * transfers must NOT read. Populates a runtime guard (dev/test builds
+   * only) that traps such reads inside `AnalysisPass.makeExprVisitor`
+   * transfer functions — turning the currently-comment-only ordering
+   * invariant (ScopePass outputs feed ScopeTransformRule / later
+   * ScopePasses, not AnalysisPass) into a checked contract.
+   */
+  readonly writesFields?: readonly (keyof import("./hint").OptimizationHint)[];
 }

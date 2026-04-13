@@ -1,4 +1,4 @@
-// src/specialization/framework/scope-index-map.ts — bidirectional scope ↔ function index map
+// src/engines/svml/scope-index-map.ts — bidirectional scope ↔ function index map
 
 import { StmtNS } from "../../ast-types";
 

@@ -22,7 +22,6 @@ import {
   HintStore,
   CallCountScopePass,
   MemoizationTransformRule,
-  PurityEffectAnalysis,
   PurityScopePass,
   Worklist,
   TypeAnalysisPass,
@@ -302,7 +301,7 @@ if (errors.length > 0) {
 const worklist = new Worklist(
   ast,
   environments,
-  [new TypeAnalysisPass(), new ConstAnalysisPass(), new PurityEffectAnalysis()],
+  [new TypeAnalysisPass(), new ConstAnalysisPass()],
   [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
   [new CallCountScopePass(), new PurityScopePass()],
 );

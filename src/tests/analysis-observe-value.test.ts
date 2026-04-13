@@ -1,8 +1,7 @@
 /**
- * Unit tests for AnalysisModule.observeValue + mergeIntoHint hooks.
- *
- * These hooks translate raw runtime values (e.g. tagged CSE stash values) into
- * lattice elements, then widen a HintStore entry via join.
+ * Unit tests for AnalysisPass.observeWrite — the per-analysis reaction to a
+ * runtime write. Lifts a raw value into the lattice and merges into the hint
+ * in one step (join semantics; never narrows).
  */
 
 import { ConstAnalysisPass } from "../specialization/const-analysis/analysis";
@@ -17,7 +16,7 @@ import {
 } from "../specialization/type-analysis/lattice";
 import { constOf, CONST_TOP } from "../specialization/const-analysis/lattice";
 
-describe("TypeAnalysisPass.observeValue", () => {
+describe("TypeAnalysisPass.observeWrite", () => {
   const m = new TypeAnalysisPass();
 
   test.each([
@@ -30,10 +29,10 @@ describe("TypeAnalysisPass.observeValue", () => {
     ["raw string", "hello", STR_BIT],
     ["raw null", null, NULL_BIT],
     ["raw undefined", undefined, NULL_BIT],
-  ])("%s → correct kind bit", (_name, raw, expectedBit) => {
-    const lattice = m.observeValue!(raw);
-    expect(lattice).toBeDefined();
-    expect(lattice!.kinds & expectedBit).toBeTruthy();
+  ])("%s → correct kind bit on hint.type", (_name, raw, expectedBit) => {
+    const merged = m.observeWrite!({}, raw);
+    expect(merged.type).toBeDefined();
+    expect(merged.type!.kinds & expectedBit).toBeTruthy();
   });
 
   test.each([
@@ -44,91 +43,71 @@ describe("TypeAnalysisPass.observeValue", () => {
     ["tagged closure", { type: "closure", closure: {} }, CLOSURE_BIT],
     ["tagged function", { type: "function" }, CLOSURE_BIT],
     ["tagged builtin", { type: "builtin" }, CLOSURE_BIT],
-  ])("%s → correct kind bit", (_name, raw, expectedBit) => {
-    const lattice = m.observeValue!(raw);
-    expect(lattice).toBeDefined();
-    expect(lattice!.kinds & expectedBit).toBeTruthy();
+  ])("%s → correct kind bit on hint.type", (_name, raw, expectedBit) => {
+    const merged = m.observeWrite!({}, raw);
+    expect(merged.type).toBeDefined();
+    expect(merged.type!.kinds & expectedBit).toBeTruthy();
   });
 
-  test("unknown shape returns undefined", () => {
-    expect(m.observeValue!({ foo: "bar" })).toBeUndefined();
-    expect(m.observeValue!(Symbol("x"))).toBeUndefined();
-  });
-});
-
-describe("TypeAnalysisPass.mergeIntoHint", () => {
-  const m = new TypeAnalysisPass();
-
-  test("merges into empty hint", () => {
-    const observed = m.observeValue!(42)!;
-    const merged = m.mergeIntoHint!({}, observed);
-    expect(merged.type).toBe(observed);
+  test("unknown shape leaves hint unchanged", () => {
+    const base = { type: undefined };
+    expect(m.observeWrite!(base, { foo: "bar" })).toBe(base);
+    expect(m.observeWrite!(base, Symbol("x"))).toBe(base);
   });
 
   test("widens (join) when hint already has a type", () => {
-    const intL = m.observeValue!(42)!;
-    const strL = m.observeValue!("hello")!;
-    const merged = m.mergeIntoHint!({ type: intL }, strL);
-    // Widened to include both kinds
-    expect(merged.type!.kinds & INT_BIT).toBeTruthy();
-    expect(merged.type!.kinds & STR_BIT).toBeTruthy();
+    const afterInt = m.observeWrite!({}, 42);
+    const afterBoth = m.observeWrite!(afterInt, "hello");
+    expect(afterBoth.type!.kinds & INT_BIT).toBeTruthy();
+    expect(afterBoth.type!.kinds & STR_BIT).toBeTruthy();
   });
 
   test("preserves other hint fields", () => {
-    const intL = m.observeValue!(42)!;
-    const merged = m.mergeIntoHint!({ constVal: constOf(42) }, intL);
+    const merged = m.observeWrite!({ constVal: constOf(42) }, 42);
     expect(merged.constVal).toEqual(constOf(42));
     expect(merged.type).toBeDefined();
   });
 });
 
-describe("ConstAnalysisPass.observeValue", () => {
+describe("ConstAnalysisPass.observeWrite", () => {
   const m = new ConstAnalysisPass();
 
-  test("primitive number → constOf", () => {
-    expect(m.observeValue!(42)).toEqual(constOf(42));
+  test("primitive number → constVal set", () => {
+    expect(m.observeWrite!({}, 42).constVal).toEqual(constOf(42));
   });
 
-  test("primitive string → constOf", () => {
-    expect(m.observeValue!("hello")).toEqual(constOf("hello"));
+  test("primitive string → constVal set", () => {
+    expect(m.observeWrite!({}, "hello").constVal).toEqual(constOf("hello"));
   });
 
-  test("primitive bool → constOf", () => {
-    expect(m.observeValue!(true)).toEqual(constOf(true));
+  test("primitive bool → constVal set", () => {
+    expect(m.observeWrite!({}, true).constVal).toEqual(constOf(true));
   });
 
-  test("tagged number → constOf", () => {
-    expect(m.observeValue!({ type: "number", value: 42 })).toEqual(constOf(42));
+  test("tagged number → constVal set", () => {
+    expect(m.observeWrite!({}, { type: "number", value: 42 }).constVal).toEqual(constOf(42));
   });
 
-  test("non-primitive returns undefined (not CONST_TOP)", () => {
-    // Critical: returning CONST_TOP here would erase existing constants on widening.
-    expect(m.observeValue!({ type: "closure" })).toBeUndefined();
-    expect(m.observeValue!({ type: "list", value: [] })).toBeUndefined();
-    expect(m.observeValue!(null)).toBeUndefined();
-  });
-});
-
-describe("ConstAnalysisPass.mergeIntoHint", () => {
-  const m = new ConstAnalysisPass();
-
-  test("merges into empty hint", () => {
-    const merged = m.mergeIntoHint!({}, constOf(42));
-    expect(merged.constVal).toEqual(constOf(42));
+  test("non-primitive leaves hint unchanged (does not widen to CONST_TOP)", () => {
+    // Critical: widening to CONST_TOP would erase existing constants.
+    const base = { constVal: constOf(42) };
+    expect(m.observeWrite!(base, { type: "closure" })).toBe(base);
+    expect(m.observeWrite!(base, { type: "list", value: [] })).toBe(base);
+    expect(m.observeWrite!(base, null)).toBe(base);
   });
 
-  test("same value twice → unchanged", () => {
-    const merged = m.mergeIntoHint!({ constVal: constOf(42) }, constOf(42));
-    expect(merged.constVal).toEqual(constOf(42));
+  test("same value twice → unchanged constVal", () => {
+    const after = m.observeWrite!({ constVal: constOf(42) }, 42);
+    expect(after.constVal).toEqual(constOf(42));
   });
 
   test("different values → widens to CONST_TOP", () => {
-    const merged = m.mergeIntoHint!({ constVal: constOf(42) }, constOf(99));
-    expect(merged.constVal).toEqual(CONST_TOP);
+    const after = m.observeWrite!({ constVal: constOf(42) }, 99);
+    expect(after.constVal).toEqual(CONST_TOP);
   });
 
   test("preserves other hint fields", () => {
-    const merged = m.mergeIntoHint!({ type: undefined }, constOf(42));
-    expect(merged.constVal).toEqual(constOf(42));
+    const after = m.observeWrite!({ type: undefined }, 42);
+    expect(after.constVal).toEqual(constOf(42));
   });
 });

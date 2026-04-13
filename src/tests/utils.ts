@@ -16,7 +16,6 @@ import {
   DeadBranchEliminationRule,
   CallCountScopePass,
   MemoizationTransformRule,
-  PurityEffectAnalysis,
   PurityScopePass,
   Worklist,
   TypeAnalysisPass,
@@ -40,7 +39,7 @@ export function buildTestWorklist(
   const worklist = new Worklist(
     ast,
     functionEnvironments,
-    [new TypeAnalysisPass(), new ConstAnalysisPass(), new PurityEffectAnalysis()],
+    [new TypeAnalysisPass(), new ConstAnalysisPass()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
     [new CallCountScopePass(), new PurityScopePass()],
   );

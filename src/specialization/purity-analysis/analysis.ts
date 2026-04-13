@@ -1,229 +1,273 @@
 // src/specialization/purity-analysis/analysis.ts
 //
-// Two-level purity analysis.
+// Intraprocedural purity analysis as a CFG-walking `ScopePass`.
 //
-// `PurityEffectAnalysis` (AnalysisPass<PureEffect>) runs a forward
-// may-analysis over each scope's CFG and annotates every Expr node with
-// a `pureEffect` hint. The slot env tracks per-local purity so reads of
-// a previously-assigned local pick up the rhs's effect.
+// Fires after the expression-level DFA fixpoint converges for the scope.
+// Walks `unit.cfg` directly: initialises every block's IN at ⊥
+// (`BOTTOM_FACT`), propagates per-statement transfer, joins at merges,
+// iterates to fixpoint on a FIFO worklist, then derives `hint.pure` from
+// the fact flowing out of the CFG exit block.
 //
-// `PurityScopePass` (ScopePass) folds the per-expression marks into a
-// scope-level `pure` hint on the enclosing FunctionDef, layering on
-// structural rules the lattice alone can't express:
-//   - Assign/AnnAssign target must be a frame-local Variable
-//   - For target must be frame-local
-//   - Nested FunctionDef / Global / NonLocal / FromImport / SimpleExpr
-//     / Assert are unsupported in a pure body
-//   - A Call to the enclosing function with pure args is exempt from
-//     the expression-level "Call is impure" verdict (self-recursion)
+// Grammar note: this AST has no `Raise`, `Yield`, `Try`/`Except`, or
+// attribute-store. The only disqualifying effects the language can
+// express are subscript-store, `assert`, nonlocal/global access,
+// `lambda`, `List` literal, nested `FunctionDef`, `Starred`, `Global`,
+// `NonLocal`, and `FromImport`. All collapse into the fact's sticky
+// `impure` flag.
 //
-// `MemoizationTransformRule.matches` reads `hint.pure === true` as its
-// purity gate. FileInput units are skipped (the top-level scope is
-// never a memoization callee).
+// Consumer: `MemoizationTransformRule.matches` reads `hint.pure`.
 
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { Token } from "../../tokenizer";
+import type { BasicBlock } from "../framework/cfg";
 import type { FunctionUnit } from "../framework/function-unit";
-import type { HintStore, OptimizationHint } from "../framework/hint";
-import type { AnalysisPass, ScopePass } from "../framework/interfaces";
-import type { SlotLookup } from "../framework/slot-table";
+import type { ScopePass } from "../framework/interfaces";
+import type { SlotInfo, SlotLookup } from "../framework/slot-table";
 import {
-  IMPURE,
-  PURE,
-  PURE_EFFECT_FIELD,
+  BOTTOM_FACT,
+  IMPURE_CALL,
   PURE_FIELD,
-  joinEffect,
-  leqEffect,
-  meetEffect,
-  type PureEffect,
+  WHITELISTED,
+  addMod,
+  bumpCalls,
+  factEquals,
+  joinFact,
+  markImpure,
+  type PurityFact,
 } from "./lattice";
 
-// ── Expression-level: AnalysisPass<PureEffect> ──────────────────────────
-
-class PurityEffectVisitor implements ExprNS.Visitor<PureEffect> {
-  constructor(
-    private readonly hints: HintStore,
-    private readonly env: { get(slot: number): PureEffect | undefined },
-    private readonly slotLookup: SlotLookup,
-  ) {}
-
-  private annotate(node: ExprNS.Expr, val: PureEffect): PureEffect {
-    const existing = this.hints.get(node) ?? {};
-    this.hints.set(node, { ...existing, [PURE_EFFECT_FIELD]: val });
-    return val;
-  }
-
-  visitLiteralExpr(e: ExprNS.Literal): PureEffect {
-    return this.annotate(e, PURE);
-  }
-  visitBigIntLiteralExpr(e: ExprNS.BigIntLiteral): PureEffect {
-    return this.annotate(e, PURE);
-  }
-  visitComplexExpr(e: ExprNS.Complex): PureEffect {
-    return this.annotate(e, PURE);
-  }
-  visitNoneExpr(e: ExprNS.None): PureEffect {
-    return this.annotate(e, PURE);
-  }
-
-  visitVariableExpr(e: ExprNS.Variable): PureEffect {
-    const info = this.slotLookup(e.name);
-    if (info.isPrimitive) return this.annotate(e, IMPURE);
-    if (info.envLevel !== 0) return this.annotate(e, IMPURE);
-    // Missing slot = bottom (PURE): parameter at entry or predecessor
-    // OUT not yet propagated. Fixpoint widens to IMPURE if warranted.
-    return this.annotate(e, this.env.get(info.slot) ?? PURE);
-  }
-
-  visitGroupingExpr(e: ExprNS.Grouping): PureEffect {
-    return this.annotate(e, e.expression.accept(this));
-  }
-  visitBinaryExpr(e: ExprNS.Binary): PureEffect {
-    return this.annotate(e, joinEffect(e.left.accept(this), e.right.accept(this)));
-  }
-  visitCompareExpr(e: ExprNS.Compare): PureEffect {
-    return this.annotate(e, joinEffect(e.left.accept(this), e.right.accept(this)));
-  }
-  visitBoolOpExpr(e: ExprNS.BoolOp): PureEffect {
-    return this.annotate(e, joinEffect(e.left.accept(this), e.right.accept(this)));
-  }
-  visitUnaryExpr(e: ExprNS.Unary): PureEffect {
-    return this.annotate(e, e.right.accept(this));
-  }
-  visitTernaryExpr(e: ExprNS.Ternary): PureEffect {
-    return this.annotate(
-      e,
-      joinEffect(
-        joinEffect(e.predicate.accept(this), e.consequent.accept(this)),
-        e.alternative.accept(this),
-      ),
-    );
-  }
-
-  // Calls are impure at the expression level; PurityScopePass re-checks
-  // self-recursion as a structural exemption.
-  visitCallExpr(e: ExprNS.Call): PureEffect {
-    e.callee.accept(this);
-    for (const a of e.args) a.accept(this);
-    return this.annotate(e, IMPURE);
-  }
-
-  visitLambdaExpr(e: ExprNS.Lambda): PureEffect {
-    return this.annotate(e, IMPURE);
-  }
-  visitMultiLambdaExpr(e: ExprNS.MultiLambda): PureEffect {
-    return this.annotate(e, IMPURE);
-  }
-  visitListExpr(e: ExprNS.List): PureEffect {
-    for (const el of e.elements) el.accept(this);
-    return this.annotate(e, IMPURE);
-  }
-  visitSubscriptExpr(e: ExprNS.Subscript): PureEffect {
-    e.value.accept(this);
-    e.index.accept(this);
-    return this.annotate(e, IMPURE);
-  }
-  visitStarredExpr(e: ExprNS.Starred): PureEffect {
-    e.value.accept(this);
-    return this.annotate(e, IMPURE);
-  }
-}
-
-export class PurityEffectAnalysis implements AnalysisPass<PureEffect> {
-  readonly name = PURE_EFFECT_FIELD;
-  readonly mergeKind = "may" as const;
-  readonly direction = "forward" as const;
-
-  latticeEquals(a: unknown, b: unknown): boolean {
-    return a === b;
-  }
-  top(): PureEffect {
-    return IMPURE;
-  }
-  bottom(): PureEffect {
-    return PURE;
-  }
-  join = joinEffect;
-  meet = meetEffect;
-  leq = leqEffect;
-
-  makeExprVisitor(
-    hints: HintStore,
-    env: { get(slot: number): PureEffect | undefined },
-    slotLookup: SlotLookup,
-  ): ExprNS.Visitor<PureEffect> {
-    return new PurityEffectVisitor(hints, env, slotLookup);
-  }
-
-  // No `observeValue` / `mergeIntoHint`: purity is a static property of
-  // the AST, not something observable from runtime values.
-}
-
-// ── Scope-level: ScopePass folding per-expr marks to hint.pure ─────────
+// Memo-safe builtins: deterministic, no I/O, no caller-state mutation.
+// `print` is deliberately excluded (I/O). `__memo_*` intrinsics are
+// whitelisted so a body already rewritten by MemoizationTransformRule
+// continues to classify as pure on subsequent passes.
+const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
+  "range",
+  "len",
+  "abs",
+  "min",
+  "max",
+  "int",
+  "float",
+  "str",
+  "bool",
+  "round",
+  "__memo_has",
+  "__memo_get",
+  "__memo_put",
+]);
 
 export class PurityScopePass implements ScopePass {
   readonly name = "purity";
+  readonly writesFields = [PURE_FIELD] as const;
 
   run(unit: FunctionUnit): void {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return;
     const self = fd.name.lexeme;
 
-    const isLocal = (tok: Token): boolean => {
-      const info = unit.slotLookup(tok);
-      return !info.isPrimitive && info.envLevel === 0;
-    };
+    const exitFact = solveCfg(unit, self);
+    const pure = !exitFact.impure && exitFact.calls !== IMPURE_CALL;
 
-    // Scope-level exemption: a Call to `self` with all-pure arguments is
-    // pure (self-recursion). Any other expr defers to its expr-level mark.
-    const exprPure = (expr: ExprNS.Expr): boolean => {
-      if (
-        expr instanceof ExprNS.Call &&
-        expr.callee instanceof ExprNS.Variable &&
-        expr.callee.name.lexeme === self
-      ) {
-        return expr.args.every(exprPure);
-      }
-      return unit.hints.get(expr)?.[PURE_EFFECT_FIELD] === PURE;
-    };
-
-    const stmtPure = (stmt: StmtNS.Stmt): boolean => {
-      if (stmt instanceof StmtNS.Pass) return true;
-      if (stmt instanceof StmtNS.Break) return true;
-      if (stmt instanceof StmtNS.Continue) return true;
-      if (stmt instanceof StmtNS.Return) {
-        return stmt.value === null || exprPure(stmt.value);
-      }
-      if (stmt instanceof StmtNS.Assign || stmt instanceof StmtNS.AnnAssign) {
-        return (
-          stmt.target instanceof ExprNS.Variable &&
-          isLocal(stmt.target.name) &&
-          exprPure(stmt.value)
-        );
-      }
-      if (stmt instanceof StmtNS.If) {
-        return (
-          exprPure(stmt.condition) &&
-          stmt.body.every(stmtPure) &&
-          (!stmt.elseBlock || stmt.elseBlock.every(stmtPure))
-        );
-      }
-      if (stmt instanceof StmtNS.While) {
-        return exprPure(stmt.condition) && stmt.body.every(stmtPure);
-      }
-      if (stmt instanceof StmtNS.For) {
-        return isLocal(stmt.target) && exprPure(stmt.iter) && stmt.body.every(stmtPure);
-      }
-      // FunctionDef, Global, NonLocal, FromImport, SimpleExpr, Assert,
-      // FileInput — unsupported in a pure body.
-      return false;
-    };
-
-    const pure = fd.body.every(stmtPure);
-
-    const prev = unit.hints.get(fd) ?? {};
-    if (prev[PURE_FIELD] === pure) return;
-    const nextHint: OptimizationHint = { ...prev, [PURE_FIELD]: pure };
-    unit.hints.set(fd, nextHint);
+    unit.hints.updateField(fd.id, PURE_FIELD, pure);
   }
+}
+
+function solveCfg(unit: FunctionUnit, selfName: string): PurityFact {
+  const outByBlock = new Map<number, PurityFact>();
+  for (const block of unit.cfg.blocks) outByBlock.set(block.id, BOTTOM_FACT);
+
+  const queue: BasicBlock[] = [unit.cfg.entry];
+  const inQueue = new Set<number>([unit.cfg.entry.id]);
+
+  const transfer = makeBlockTransfer(unit.slotLookup, selfName);
+
+  while (queue.length > 0) {
+    const block = queue.shift()!;
+    inQueue.delete(block.id);
+
+    let inFact: PurityFact = BOTTOM_FACT;
+    for (const pred of block.predecessors) {
+      inFact = joinFact(inFact, outByBlock.get(pred.id) ?? BOTTOM_FACT);
+    }
+
+    const outFact = transfer(block, inFact);
+    const prev = outByBlock.get(block.id) ?? BOTTOM_FACT;
+    if (factEquals(prev, outFact)) continue;
+
+    outByBlock.set(block.id, outFact);
+    for (const succ of block.successors) {
+      if (!inQueue.has(succ.id)) {
+        inQueue.add(succ.id);
+        queue.push(succ);
+      }
+    }
+  }
+
+  return outByBlock.get(unit.cfg.exit.id) ?? BOTTOM_FACT;
+}
+
+// ── Transfer ────────────────────────────────────────────────────────────
+
+type StmtTransfer = (stmt: StmtNS.Stmt, fact: PurityFact) => PurityFact;
+type ExprTransfer = (expr: ExprNS.Expr, fact: PurityFact) => PurityFact;
+
+function makeBlockTransfer(
+  slotLookup: SlotLookup,
+  selfName: string,
+): (block: BasicBlock, inFact: PurityFact) => PurityFact {
+  const exprTransfer = makeExprTransfer(slotLookup, selfName);
+  const stmtTransfer = makeStmtTransfer(slotLookup, exprTransfer);
+  return (block, inFact) => {
+    let fact = inFact;
+    for (const stmt of block.stmts) fact = stmtTransfer(stmt, fact);
+    return fact;
+  };
+}
+
+function makeStmtTransfer(slotLookup: SlotLookup, exprT: ExprTransfer): StmtTransfer {
+  const isLocal = (info: SlotInfo) => !info.isPrimitive && info.envLevel === 0;
+
+  return (stmt, fact) => {
+    switch (stmt.kind) {
+      case "Pass":
+      case "Break":
+      case "Continue":
+        return fact;
+
+      case "Return": {
+        const ret = stmt as StmtNS.Return;
+        return ret.value === null ? fact : exprT(ret.value, fact);
+      }
+
+      case "Assign": {
+        const a = stmt as StmtNS.Assign;
+        const f = exprT(a.value, fact);
+        if (a.target instanceof ExprNS.Variable) {
+          const info = slotLookup(a.target.name);
+          if (isLocal(info)) return addMod(f, info.slot);
+          return markImpure(f);
+        }
+        // Subscript-store: target may alias a caller-owned object (the
+        // grammar has no way to prove local construction without an escape
+        // model). Evaluate children, then mark impure.
+        let g = exprT(a.target.value, f);
+        g = exprT(a.target.index, g);
+        return markImpure(g);
+      }
+
+      case "AnnAssign": {
+        const a = stmt as StmtNS.AnnAssign;
+        const f = exprT(a.value, fact);
+        const info = slotLookup(a.target.name);
+        if (isLocal(info)) return addMod(f, info.slot);
+        return markImpure(f);
+      }
+
+      case "If":
+        return exprT((stmt as StmtNS.If).condition, fact);
+      case "While":
+        return exprT((stmt as StmtNS.While).condition, fact);
+
+      case "For": {
+        const fs = stmt as StmtNS.For;
+        const acc = exprT(fs.iter, fact);
+        const info = slotLookup(fs.target);
+        if (isLocal(info)) return addMod(acc, info.slot);
+        return markImpure(acc);
+      }
+
+      case "SimpleExpr": {
+        // Bare expression-statement has no consumer for its value. Parity
+        // with the prior structural-fold rule: disqualify.
+        const s = stmt as StmtNS.SimpleExpr;
+        return markImpure(exprT(s.expression, fact));
+      }
+
+      case "Assert": {
+        const a = stmt as StmtNS.Assert;
+        return markImpure(exprT(a.value, fact));
+      }
+
+      case "FunctionDef":
+      case "Global":
+      case "NonLocal":
+      case "FromImport":
+        return markImpure(fact);
+
+      case "FileInput":
+        return fact;
+    }
+    return fact;
+  };
+}
+
+function makeExprTransfer(slotLookup: SlotLookup, selfName: string): ExprTransfer {
+  const isLocal = (info: SlotInfo) => !info.isPrimitive && info.envLevel === 0;
+
+  const walk: ExprTransfer = (expr, fact) => {
+    if (expr instanceof ExprNS.Literal) return fact;
+    if (expr instanceof ExprNS.BigIntLiteral) return fact;
+    if (expr instanceof ExprNS.Complex) return fact;
+    if (expr instanceof ExprNS.None) return fact;
+
+    if (expr instanceof ExprNS.Variable) {
+      const info = slotLookup(expr.name);
+      if (isLocal(info)) return fact;
+      return markImpure(fact);
+    }
+
+    if (expr instanceof ExprNS.Grouping) return walk(expr.expression, fact);
+    if (expr instanceof ExprNS.Binary) return walk(expr.right, walk(expr.left, fact));
+    if (expr instanceof ExprNS.Compare) return walk(expr.right, walk(expr.left, fact));
+    if (expr instanceof ExprNS.BoolOp) return walk(expr.right, walk(expr.left, fact));
+    if (expr instanceof ExprNS.Unary) return walk(expr.right, fact);
+    if (expr instanceof ExprNS.Ternary) {
+      return walk(expr.alternative, walk(expr.consequent, walk(expr.predicate, fact)));
+    }
+
+    if (expr instanceof ExprNS.Call) {
+      // Classify callee without routing it through the Variable rule (which
+      // would flag nonlocal/primitive reads as impure). Self-recursion and
+      // whitelisted builtins stay pure.
+      let f = fact;
+      if (expr.callee instanceof ExprNS.Variable) {
+        const name = expr.callee.name.lexeme;
+        if (name === selfName || WHITELISTED_BUILTINS.has(name)) {
+          f = bumpCalls(f, WHITELISTED);
+        } else {
+          f = bumpCalls(f, IMPURE_CALL);
+        }
+      } else {
+        // Computed callee (e.g. subscript of a list-of-fns). Walk value
+        // subtree; call site disqualifies.
+        f = walk(expr.callee, f);
+        f = bumpCalls(f, IMPURE_CALL);
+      }
+      for (const a of expr.args) f = walk(a, f);
+      return f;
+    }
+
+    if (expr instanceof ExprNS.Subscript) {
+      // Read is pure in effect. `visitSubscriptExpr` in the old code marked
+      // it IMPURE unconditionally; this rewrite removes that monkey patch.
+      let f = walk(expr.value, fact);
+      f = walk(expr.index, f);
+      return f;
+    }
+
+    if (expr instanceof ExprNS.List) {
+      // Allocation identity is caller-observable; without an escape model
+      // we conservatively disqualify.
+      let f = fact;
+      for (const el of expr.elements) f = walk(el, f);
+      return markImpure(f);
+    }
+
+    if (expr instanceof ExprNS.Lambda) return markImpure(fact);
+    if (expr instanceof ExprNS.MultiLambda) return markImpure(fact);
+    if (expr instanceof ExprNS.Starred) return markImpure(walk(expr.value, fact));
+
+    return markImpure(fact);
+  };
+
+  return walk;
 }

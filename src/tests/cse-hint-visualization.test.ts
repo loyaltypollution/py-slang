@@ -31,7 +31,7 @@ function parseOptimizeAndMerge(code: string): {
   engine.converge();
   const units = engine.units;
 
-  const merged = new HintStore(() => false);
+  const merged = new HintStore();
   for (const unit of units.values()) {
     for (const [id, hint] of unit.hints) merged.setById(id, hint);
   }

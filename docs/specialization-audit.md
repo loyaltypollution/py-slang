@@ -1,156 +1,125 @@
-# Specialization Engine — Architectural Diagnosis (round 2)
+# Specialization Engine — Architectural Diagnosis (round 3)
 
 **Subject**: `src/specialization/` (working tree, branch `worktree-pr3-hint-store`)
-**Method**: descriptive inventory → roadmap archaeology → falsification prosecution → grep verification → forensic pattern diagnosis
-**Verdict**: **INCOMPLETE, two load-bearing patterns half-wired.** Most "architecture sprawl" is either (a) residue of a dissolution that stopped one step short, or (b) a monkey patch that compensates for a missing step in an established pattern. Fix the gaps, the patches become redundant.
+**Method**: descriptive inventory → roadmap archaeology → adversarial prosecution → grep verification → forensic pattern diagnosis
+**Verdict**: **One subsystem misclassified, one indirection parametric-in-name-only, one citizenship error, and minor doc drift.** The prior round's `safeOnStack` / `canInstallOnStack` / `OSRCoordinator` / `runPinned` concerns are resolved by deletion (already landed on this branch). The remaining live defects are smaller but load-bearing.
 
-This memo supersedes the prior round's diagnosis. Scope narrower, prescriptions sharper.
-
----
-
-> **Update (2026-04-13).** The 1b "lazy replacement / not OSR" diagnosis
-> below has been executed: `OSRCoordinator`, `StateDeltaStrategy`,
-> `SVMLSwapStrategy`, `SVMLDelta`, `OperandPatch`,
-> `SVMLInterpreter.applyOperandPatches`, the `allowOnStack` arg on
-> `patchFunction`, and `runPinned` were all deleted. The install seam is
-> now a direct `Worklist.onScopeChanged((scope, unit) => ...)` callback,
-> documented as **dispatch patching** (not OSR). The pin-set gate at
-> `processTransform` is the single load-bearing pin layer; the prior
-> "three-layer" model was dead-code redundant once the scheduler stopped
-> notifying for pinned-and-unsafe scopes. S3 resolved by deletion;
-> `safeOnStack` (S4) remains the one-bit trust flag, unchanged. Entries
-> below that prescribe deletion (table row 1, survives row 3–4) read as
-> now-executed; retained for historical trace.
+This memo supersedes round 2. Round 2's findings that prescribed deletion are now executed; the ghost-field narrative is retained only in §6 as historical trace.
 
 ---
 
-## 1. What the literature already named
+## 1. What this round found
 
-### 1a. Reactive/incremental monotone dataflow
+Six suspect clusters went to prosecution. Two were defended, two authorized for trimming, one deferred on user-specific framing, one escalated to architecture rewrite.
 
-> Kildall, *A Unified Approach to Global Program Optimization*, POPL '73 §3.
-> Arzt & Bodden, *Reviser: Efficiently Updating IFDS-Based Analyses on Incremental Changes*, ICSE '14 §§3–4.
-> Acar, *Self-Adjusting Computation*, CMU PhD (2005) §2.3 "Change propagation."
+| Cluster | Nouns | Verdict |
+|---|---|---|
+| A | `AnalysisPass.observeValue` / `mergeIntoHint` / `bottom()` / `join()` at pass level | **DEFER** — absent production callers look like a not-yet-wired JIT observer seam, not ceremony. Revisit when JIT observations land. |
+| B | `ExprRewriteVisitor` / `TransformApplyVisitor` / `applyTransformPass` | **KEEP** — visitor pattern is idiomatic across codebase; prosecutor's LoC win marginal. |
+| C | `safeOnStack` field + pin-count / `withActiveScope` / `runPinned` docs | **FIX** — code already deleted; `docs/specialization-audit.md` round 2 and `docs/compilation-flow.md` stale references cleaned. |
+| D | `ScopeIndexMap` placement | **RELOCATE** — lives in `specialization/framework/` but only `engines/svml/svml-compiler.ts` + two tests consume it; zero framework-internal callers. |
+| E | `PurityScopePass` / `lattice.ts` | **LANDED** — grammar review (no `Raise` / `Yield` / `Try`) + driver shape review (per-slot `MutableEnv<L>`) redirected the rewrite: `PurityEffectAnalysis` deleted, purity now lives entirely in `PurityScopePass` as a CFG-walking fixpoint with a block-level `PurityFact` (mod-set, call-purity, sticky impure). Capability gains: whitelist of memo-safe builtins (`range`, `len`, …), subscript-read is pure. Parity preserved on all prior pure/impure cases. |
+| F | `HintStore.eq` callback | **DELETE** — parametric-in-name-only. Production always passes `hintFieldsEqual`; three tests pass `() => false` to defeat dedupe. No custom `eq` in the wild; no production site depends on write-suppression. |
 
-**Pattern core.** Modifiables (cells) → readers (computations that dereferenced a cell) → scheduler (re-runs dirty readers in topo order). On edit, the scheduler dirties *exactly* the readers whose inputs changed. Publication is at fact granularity, not region granularity.
+---
 
-**Our implementation.** Tier-1 `tick()` is textbook Kildall. Tier-2 is incremental *in intent* only: every write that flips a hint calls `rebuildAndReseed(scope)`, which discards all sessions for that scope and re-enqueues from the entry — a full re-analysis per invalidation. A `generation` stamp on queue items then discards stale work from prior rounds.
+## 2. Forensic naming — purity subsystem (cluster E)
+
+The subsystem presents itself as a forward may-dataflow but is a single-pass structural tree walk. The `mergeKind` / `direction` / `top` / `bottom` / `join` / `meet` / `leq` declarations are framework-conformance with no CFG-driver behind them.
+
+**Literature match.** Banning, *An Efficient Way to Find the Side Effects of Procedure Calls and the Aliases of Variables*, POPL '79 §§2–3. Cooper & Kennedy, *Interprocedural Side-Effect Analysis in Linear Time*, PLDI '88 §3. Lucassen & Gifford (POPL '88) and Talpin & Jouvelot (Inf&Comp '94) are candidate effect-system matches but diverge: effects are carried on side-tables, not on function types, and there is no polymorphism.
+
+**Verdict: INCOMPLETE** application of Banning / Cooper-Kennedy, not INCORRECT. The direction is right; the structure is degenerate.
+
+**Resolution (landed).** The rewrite deleted `PurityEffectAnalysis` and moved all purity logic into `PurityScopePass`, which now walks the scope's CFG directly with a block-level `PurityFact` = `{ mod: Set<slot>, calls: Clean|Whitelisted|Impure, impure: boolean }`. Two grammar / driver realities narrowed the target architecture from the literature spec:
+
+- **Grammar.** This AST has no `Raise` / `Yield` / `Try`/`Except` and no attribute-store target. `throws` and `yields` as separate fact fields have no source statements; they collapse into the sticky `impure` flag alongside nonlocal writes, `lambda`, `List` literal, and disqualifying statement kinds. The only source of a "throws" fact in this grammar is `assert`.
+- **Driver shape.** `MutableEnv<L>` in `framework/mutable-env.ts` is a per-slot scalar lattice; `transferStmt` can only write `env.set(slot, L)`. A block-level struct fact does not fit as `AnalysisPass<L>` without a framework extension whose only beneficiary would be this pass. The `ScopePass` interface (`framework/interfaces.ts:142`) already names "purity summaries" as its use case, so the rewrite lives there.
+
+The dead `mergeKind` / `direction` / `top` / `bottom` / `join` / `meet` / `leq` framework-conformance fields on the old `PurityEffectAnalysis` are gone along with the class.
 
 **Missing steps.**
-- **S1** — No per-block dependency tracking. The scheduler does not know *which* block's transfer read the mutated hint, so it cannot dirty only the affected blocks.
-- **S2** — Publication is coarse: subscribers receive `ReadonlySet<Scope>`, not the changed facts. Consumers filter at the subscriber (OSRCoordinator.onChange) using `canInstall`, `canInstallOnStack`, `needsInstall` — doing work the scheduler should have done by not notifying.
+- **S1 — per-slot MOD set.** Current lattice is `{PURE, IMPURE}`; a real MOD analysis tracks which slots a path definitely writes. Without this, assigning to a local collapses the same way as assigning to a nonlocal.
+- **S2 — CFG join at merge points.** Currently `PurityScopePass.stmtPure` is a syntactic fold over the statement list. The join-at-merge is the job that the fold is compensating for.
+- **S3 — interprocedural summary.** Currently every user-defined call is monolithically `IMPURE`. A real MOD analysis propagates callee summaries. For our single consumer (memoization) this is punt-able; a whitelist of builtins + intraprocedural precision is adequate until a second consumer lands.
 
-### 1b. Lazy / return-barrier replacement (not OSR)
+**Monkey patches currently compensating:**
+1. `PurityScopePass.stmtPure` structural recursion — compensates for missing CFG join (S2).
+2. Self-call exemption in `exprPure` — compensates for missing SCC summary (S3).
+3. Unconditional `Call → IMPURE` — compensates for missing callee summary (S3).
+4. Unconditional `List` / `Subscript → IMPURE` — compensates for missing escape model (slot-locality is already decidable; the lattice can express it).
+5. `mergeKind` / `direction` / `top` / `bottom` declarations — framework conformance with no driver behind them.
 
-> Hölzle, Chambers, Ungar, *Debugging Optimized Code with Dynamic Deoptimization*, PLDI '92 §4.2 (lazy replacement).
-> Fink & Qian, *Adaptive Recompilation with On-Stack Replacement* (Jikes RVM), CGO '03 §§3–4 (true OSR with state mapping).
-> Agesen, *GC Points in a Threaded Environment*, Sun TR-98-70 §§2–3 (safepoint vs yieldpoint).
+Target lattice in the rewrite:
 
-**Pattern core.** Two distinct lines: (i) safepoint selection — *when* is thread state inspectable/patchable; (ii) on-stack vs off-stack replacement — do existing frames get rewritten (true OSR; needs a state-mapping function), or only future dispatches (lazy replacement; old frames run to completion against old IR).
+```
+PurityFact = {
+  mod:     BitSet<slotIndex>,
+  escapes: BitSet<slotIndex>,
+  throws:  boolean,
+  yields:  boolean,
+  calls:   CLEAN | WHITELISTED | IMPURE_USER | UNKNOWN
+}
+```
 
-**Our implementation.** `SVMLSwapStrategy` is **lazy replacement**: `CallFrame` captures IR by value, so old frames run to completion; future calls dispatch the new IR. `canInstallOnStack=true` is misleading — nothing is replaced on the stack. The single-threaded JS host makes "stop the world" trivial for us; the rule that genuinely mutates a live scope's body (`MemoizationTransformRule`) is closer to atomic-AST-rewrite-under-a-tree-walker, a mode the literature does not model.
+A function is pure iff at function-exit: `mod ⊆ locals(self) ∧ escapes == ∅ ∧ !throws ∧ !yields ∧ calls ∈ {CLEAN, WHITELISTED}`.
 
-**Missing steps / misshapes.**
-- **S3** — `canInstallOnStack` is per-strategy but the actual distinction is per-*delta*. Whole-function recompile is on-stack-safe; operand patches are not. Strategy-level flag forces a TODO for when operand patches land.
-- **S4** — `safeOnStack` (per-rule) is a one-bit trust flag standing in for the state-reconciliation contract the literature requires (Fink–Qian §4.2). Memoization gets away with it by accident of its rewrite shape; the framework does not check the precondition.
-
-### 1c. Type-class dictionary dispatch (abandoned mid-wire)
-
-> Wadler & Blott, *How to make ad-hoc polymorphism less ad hoc*, POPL '89 §§1–2.
-
-**Pattern core.** Operation (`==`) resolved by dictionary lookup keyed on type / tag. Dictionary = instances; method = class member.
-
-**Our implementation.** `AnalysisModule.name` is the dictionary key; `AnalysisModule.latticeEquals` (interfaces.ts:95) is the class method; the worklist owns the registry. The call site (`hintEquals`, hint.ts:35) bypasses the dictionary and hardcodes `switch(name) { case "type": … case "constVal": … default: return false }`. The interface method is declared on every module but never invoked.
-
-**Monkey patch.** The switch + orphan method. SPEC-02's open-record contract is documentation drift — the index signature `[field: string]: unknown` is structurally open but operationally closed by the switch.
-
-### 1d. Ghost interface — one-step-short dissolution
-
-`ObservationSink = Pick<Worklist, "observeWrite" | "observeCall" | "activateScope" | "deactivateScope">`. Production callers always receive a real `Worklist`; the alias exists only so test mocks can present an object literal with four methods. This is the residue of the SPEC-05 dissolution that collapsed a 75-line interface file into a Pick — one step short of deleting the alias entirely.
-
-### 1e. Scope-identity diffusion — owner dissolved, state externalized
-
-`SpecializationEngine` was deleted in commit `efe8951`; its one invariant (`pinSet.clear()` on throw) became the free function `runPinned`. The pin-set became an external `Map<Scope, number>` shared by reference between the CSE evaluator, the SVML-JIT evaluator, and `Worklist.activeScopes`. `FunctionUnit` already owns a `Map<Scope, FunctionUnit>` as the unit registry and already holds mutable state (`hints`, body splicing, `structuralVersion`). The pin-count is the single remaining piece of per-scope state that isn't on the unit. Putting it there collapses three nouns (`pinSet`, `activeScopes`, and the parameter aliasing) into one field.
+Discriminator red test: `def f(x): y = 0; if x > 0: y = 1; else: y = 2; return y` must classify as pure. Current code may or may not; new code classifies as pure via CFG join on `mod = {y}` where `y` is local.
 
 ---
 
-## 2. Monkey-patch inventory — which missing step does each compensate for?
+## 3. Parametric-in-name-only — `HintStore.eq` (cluster F)
 
-| Escape hatch | Compensates for |
+`HintStore` constructor takes an `eq: (a, b) => boolean` callback. Verified call sites:
+
+| Site | Value passed |
 |---|---|
-| `needsInstall=false` (StateDeltaStrategy) | S2 — subscriber filters what the scheduler should not have notified |
-| `canInstallOnStack` (per-strategy) | S3 — wrong locus; safety is per-delta, not per-strategy |
-| `safeOnStack` (per-rule) | S4 — one bit substituting for a `reconcileLiveFrame` hook |
-| `ObservationSink` Pick<> alias | 1d — ghost interface, dissolution stopped short |
-| `hasSafeOnStackScopeRule` cache + conditional tick in `observeCall` | S1 — non-incremental scheduler second-guesses when to flush |
-| `generation` stamp on queue items | S1 — stale-item discrimination in a reseed-everything scheme |
-| `hintEquals` switch + `default: return false` | 1c — dictionary bypassed, open-record contract broken |
-| external `pinSet` param aliasing `activeScopes` | 1e — unit registry already exists; pin-count belongs on the unit |
+| `framework/function-unit.ts:105` (only production) | `this.hintEq` — closure over `Worklist.hintFieldsEqual` |
+| `tests/svml-observation.test.ts:39` | `() => false` |
+| `tests/observe-loop.test.ts:36` | `() => false` |
+| `tests/cse-hint-visualization.test.ts:34` | `() => false` |
 
-Eight patches, four gaps. Closing S1 alone retires three of them.
+No production site ever passes anything but `hintFieldsEqual`. Tests pass the always-false comparator specifically to defeat the dedupe path — meaning no test *depends* on dedupe either. The callback is a seam with zero design variation and zero behavioural coverage.
+
+**Resolution:** drop the callback, drop the write-suppression path in `setById`. `hintFieldsEqual` and the `analysesByName` registry survive as per-field equality oracles used elsewhere.
 
 ---
 
-## 3. Survives / delete / relocate
+## 4. Citizenship error — `ScopeIndexMap` (cluster D)
 
-### Survives (earns keep)
-- `Worklist` itself (Kildall + attempted incremental layer).
-- `withActiveScope` — SPEC-15 structural owner of pin/tick/throw ordering.
-- `OSRCoordinator` — real event-dispatch noun (kept distinct from data ownership).
-- `StateDeltaStrategy` interface — SVMLSwapStrategy is real.
-- `MemoizationTransformRule` — load-bearing; its `fireOnce` + `safeOnStack` flags encode a genuine non-monotone contract (pending S4 resolution).
-- `ScopeIndexMap` — orthogonal SVML backend index.
-- `isPureFunctionDef` — SPEC-16 carve-out; syntactic purity gate, not DFA.
+Defined at `src/specialization/framework/scope-index-map.ts`. Consumers:
 
-### Delete (cluster verdicts accepted by reviewer)
-- `deactivateAndTick` — 2-line private method, single caller; inline.
-- `InPlaceASTStrategy` — zero production instantiations.
-- `needsInstall` flag — closed setter/reader loop within the dead strategy.
-- `OSRStats` interface — test-only consumer; inline counters on coordinator.
-- `hintEquals` as separate export — single production caller (HintStore.setById); inline.
-- `HintStore` class (conditional) — reduces to `Map<number, OptimizationHint>` + free `setHint` once the SPEC-02 dispatch is resolved.
-- external `pinSet` Map aliasing — collapses into `FunctionUnit.pinCount`.
-- `assertSyncObservationSink` — self-targeted; inline into constructor.
-- `ObservationSink` alias — delete once test mocks resolved (see cleanup plan).
-- `MEMO_MISS` export — replace with `memoHas`-gate pattern (SVML already uses this).
+- `src/engines/svml/svml-compiler.ts:6, 57, 100, 189`
+- `src/tests/interpreter-replace-program.test.ts:191` (test named "ScopeIndexMap wiring")
+- `src/tests/svml-stable-indices.test.ts`
 
-### Relocate
-- `memoization-analysis/runtime.ts` → `src/runtime/memo.ts`. Consumers are stdlib + svml/builtins; it is not DFA infra.
-- Optional: `memoization-analysis/` → `memoization/` (drops the "-analysis" suffix that miscategorizes `isPureFunctionDef`).
-
-### Refine
-- `MEMO_INTRINSIC_NAMES` — extend the constant to all 5 use sites (transform + 2 builtin registries + resolver + stdlib), or inline and delete. Current state (1 of 5) is DRY-by-halves.
-- `index.ts` barrel — trim dead re-exports last, after upstream deletions land.
-
-### Explicitly rejected by reviewer (left in place)
-- `canInstallOnStack` — role-distinct from `canInstall` despite current body-equivalence. Left as an independent prosecution target; see S3 note.
-- `safeOnStack` relocation onto FunctionUnit — category error (static rule contract, not scope state). Left as an independent prosecution target; see S4 note.
+No other file under `src/specialization/` imports it. It is an SVML-backend index; placing it in `framework/` is a category error. Relocate to `src/engines/svml/scope-index-map.ts`.
 
 ---
 
-## 4. Answers to reviewer's open questions
+## 5. Deferred — AnalysisPass observer hooks (cluster A)
 
-**Q1 — Wire `AnalysisModule.latticeEquals` through a registry, or delete it?**
-**Wire it.** Every other lattice operation (`join`, `leq`, `top`) already dispatches through the registered module; equality is the sole exception. Deleting `latticeEquals` maximizes surface-area inconsistency. The fix is mechanical: `hintEquals(a, b, modules)` receives the registry (already threaded through the worklist) and calls `modules.get(name)?.latticeEquals(av, bv) ?? (av === bv)`. The `default: return false` bug disappears; new analyses are a one-file edit.
+Prosecutor established:
+- `observeValue` and `mergeIntoHint` are only called by `src/tests/analysis-observe-value.test.ts`; no production caller.
+- `bottom()` and `join()` at pass level are never called by the Kildall driver.
+- `latticeEquals` has a single caller (`Worklist.hintFieldsEqual`).
 
-Counter-case: if the set of analyses is closed forever (four and no more), deletion + canonical switch is simpler. The memoization additions and the roadmap's extensibility claim don't read as closed.
-
-**Retraction (2026-04-13).** The *answer* above was right in spirit — the registry should drive field equality, and `AnalysisPass.latticeEquals` is the correct dispatch target. The *reasoning* was wrong: `join` / `leq` / `top` are **per-slot** operations inside a single analysis, whereas hint equality is **per-field** across analyses. They are not symmetric, so "every other lattice op dispatches through the module" is not a load-bearing argument for exporting a standalone `hintEquals` helper. Hint equality is the only per-field cross-cutting op in the codebase; it gets one inlined walker (`Worklist.hintFieldsEqual`) and no exported symbol. See the `HintEqualsDispatcher` / `hintEquals` / `HINT_EQ_NEVER` entry in `optimization-roadmap.md`'s Removed concepts.
-
-**Q3 — Close `OptimizationHint` to exhaustive dispatch, or document the openness?**
-**Downstream of Q1, not independent.** If Q1 = wire, keep the open index signature — dispatch is data-driven, any field works, honesty preserved. If Q1 = delete/canonicalize, `OptimizationHint` **must** close (drop the index signature, enumerate fields, let TS exhaustiveness-check the switch). Leaving the index signature open alongside a closed switch is the worst cell of the matrix — it invites the extension the switch silently rejects.
-
-**Q2 — Prosecute `canInstallOnStack` and `safeOnStack` separately?**
-Yes, but with the forensic framing:
-- `canInstallOnStack` — the real fix is moving the flag from strategy to *delta shape* (`delta.onStackSafe: boolean`, computed by `computeDelta`). Whole-function → true, operand-patch → false, CSE void → N/A. Today's per-strategy flag is a monkey patch for the wrong locus; the reviewer is right that the role is distinct from `canInstall`, and the fix preserves the distinction while moving it to the correct noun.
-- `safeOnStack` — the real fix is `reconcileLiveFrame(unit, frame): void` as a required sibling method whenever `safeOnStack=true`. Today's one-bit flag documents an invariant the framework does not check. The reviewer's "static rule contract" framing is correct *as a placement judgment* (it doesn't belong on FunctionUnit); the prosecution it warrants is a shape change on `ScopeTransformRule`, not a relocation.
-
-Both are substantive, both are independent of C1/C3/C6/C8, and both are lower priority than closing S1.
+Naively this reads as ceremony. But the real tell is architectural: the JIT evaluator does not yet wire a runtime observation sink through `observeValue` / `mergeIntoHint`. When it does, production callers will appear. Deletion now would be premature demolition of a partially-wired seam. Keep pending JIT observation wiring; re-prosecute then.
 
 ---
 
-## 5. Priority
+## 6. Historical trace (round 2 → round 3)
 
-The ordering the reviewer gave (C7 → C1+C8 → C3 → C2 → C6 → C4) is correct for risk isolation. From the forensic lens, the **load-bearing gap** is S1 (per-block dependency tracking in the incremental layer); closing it retires `generation`, `hasSafeOnStackScopeRule`, and `needsInstall` as side effects, and the per-cluster sequencing the reviewer picked lands into a framework that no longer needs them.
+Round 2 prescribed deletion of `OSRCoordinator`, `StateDeltaStrategy`, `SVMLSwapStrategy`, `SVMLDelta`, `OperandPatch`, `SVMLInterpreter.applyOperandPatches`, the `allowOnStack` arg on `patchFunction`, `runPinned`, `withActiveScope`, `activateScope` / `deactivateScope`, and `safeOnStack`. All executed. The install seam is now a direct `Worklist.onScopeChanged((scope, unit) => ...)` callback, documented as **dispatch patching** (not OSR). LBD — interpreters re-read callee bodies at CALL time — is the single safety mechanism; no pin-count, no safepoint gate.
+
+Round 2's §4 retraction ("hint equality is the only per-field cross-cutting op; gets one inlined walker and no exported symbol") stands; cluster F executes the final piece of that retraction (the vestigial `eq` callback through which the inlined walker was passed).
+
+Round 2's "survives" list for `MemoizationTransformRule.safeOnStack` is superseded: no rule sets `safeOnStack` and the framework does not read it. The field is gone from `ScopeTransformRule`.
+
+---
+
+## 7. Priority
+
+Execution order from the accompanying cleanup plan: **C** (doc hygiene; this memo is the C-deliverable for the audit doc) → **D** (mechanical relocation) → **F** (callback deletion; small diff) → **E** (purity rewrite; separate PR). **A** filed as follow-up blocked on JIT observation wiring. **B** no action.
 
 See `docs/specialization-cleanup-plan.md` for step-by-step execution.

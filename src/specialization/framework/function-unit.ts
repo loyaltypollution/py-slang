@@ -2,13 +2,11 @@ import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
-import { HintStore, type OptimizationHint } from "./hint";
+import { HintStore, type FieldEquals } from "./hint";
 import type { AnalysisPass } from "./interfaces";
 import type { MutableEnv } from "./mutable-env";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
-
-type HintEq = (a: OptimizationHint, b: OptimizationHint) => boolean;
 
 /**
  * Per-scope optimization unit. Aggregates scope-keyed state: the AST node
@@ -60,11 +58,11 @@ export interface FunctionUnit {
   }>;
   /**
    * Names of transforms whose `apply` has succeeded on this unit. Populated
-   * by the transform itself (`unit.appliedTransforms.add(this.name)`). Read
-   * by external consumers (tests, introspection) to answer "did transform X
-   * fire on this scope?". The scheduler's own re-fire guard is `fireOnce`
-   * bookkeeping on `(scope, rule)` pairs — this set is not consulted for
-   * control flow.
+   * by the transform itself (`unit.appliedTransforms.add(this.name)`). Single
+   * source of truth for two readers:
+   *   - Scheduler's `fireOnce` re-fire guard (in `processTransform`).
+   *   - External consumers (tests, introspection) asking "did transform X
+   *     fire on this scope?".
    */
   readonly appliedTransforms: Set<string>;
 }
@@ -83,8 +81,8 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   constructor(
     private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
     private readonly functionEnvironments: FunctionEnvironments,
-    private readonly hintEq: HintEq,
     private readonly analyses: readonly AnalysisPass<any>[],
+    private readonly fieldEq: ReadonlyMap<string, FieldEquals>,
   ) {}
 
   register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
@@ -102,7 +100,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     const analysisOuts = this.analyses.map(() => makeOut(cfg));
     const unit: FunctionUnit = {
       funcAst,
-      hints: new HintStore(this.hintEq),
+      hints: new HintStore(this.fieldEq),
       slotLookup: buildSlotTable(env, paramNames),
       structuralVersion: 0,
       cfg,
@@ -164,11 +162,11 @@ export function makeOut<L>(cfg: CFG): Map<BlockId, MutableEnv<L> | null> {
 export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
-  hintEq: HintEq,
   analyses: readonly AnalysisPass<any>[],
+  fieldEq: ReadonlyMap<string, FieldEquals>,
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
-  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, hintEq, analyses);
+  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, analyses, fieldEq);
   visitor.register(ast);
   return units;
 }

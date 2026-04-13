@@ -59,8 +59,7 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   ) {}
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
-    const existing = this.hints.get(node) ?? {};
-    this.hints.set(node, { ...existing, type: val });
+    this.hints.updateField(node.id, "type", val);
     return val;
   }
 
@@ -267,51 +266,53 @@ export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
     return new TypeAnalysisVisitor(hints, env, slotLookup);
   }
 
-  observeValue(rawValue: unknown): TypeLattice | undefined {
-    // CSE stack values are tagged objects with `.type` discriminator.
-    // Duck-type on the tag to avoid an engine → framework import.
-    if (rawValue === null || rawValue === undefined) return nullValue();
-    if (typeof rawValue === "number") return rawToNumberLattice(rawValue);
-    if (typeof rawValue === "boolean") return rawValue ? trueValue() : falseValue();
-    if (typeof rawValue === "string") return stringValue();
-    if (typeof rawValue === "bigint") return rawToNumberLattice(Number(rawValue));
-    if (typeof rawValue !== "object") return undefined;
-
-    const tagged = rawValue as { type?: string; value?: unknown };
-    switch (tagged.type) {
-      case "number":
-        return typeof tagged.value === "number" ? rawToNumberLattice(tagged.value) : undefined;
-      case "bigint":
-        return typeof tagged.value === "bigint"
-          ? rawToNumberLattice(Number(tagged.value))
-          : undefined;
-      case "bool":
-        return tagged.value === true
-          ? trueValue()
-          : tagged.value === false
-            ? falseValue()
-            : undefined;
-      case "string":
-        return stringValue();
-      case "none":
-        return nullValue();
-      case "closure":
-      case "function":
-      case "multi_lambda":
-      case "builtin":
-        return closureValue();
-      case "complex":
-        return complexValue();
-      default:
-        return undefined;
-    }
-  }
-
-  mergeIntoHint(hint: OptimizationHint, value: TypeLattice): OptimizationHint {
+  observeWrite(hint: OptimizationHint, rawValue: unknown): OptimizationHint {
+    const value = liftType(rawValue);
+    if (value === undefined) return hint;
     // Widen (join) — observations add seen values, never narrow static facts.
     const prev = hint.type;
     const next = prev ? join(prev, value) : value;
     return { ...hint, type: next };
+  }
+}
+
+// CSE stack values are tagged objects with `.type` discriminator.
+// Duck-type on the tag to avoid an engine → framework import.
+function liftType(rawValue: unknown): TypeLattice | undefined {
+  if (rawValue === null || rawValue === undefined) return nullValue();
+  if (typeof rawValue === "number") return rawToNumberLattice(rawValue);
+  if (typeof rawValue === "boolean") return rawValue ? trueValue() : falseValue();
+  if (typeof rawValue === "string") return stringValue();
+  if (typeof rawValue === "bigint") return rawToNumberLattice(Number(rawValue));
+  if (typeof rawValue !== "object") return undefined;
+
+  const tagged = rawValue as { type?: string; value?: unknown };
+  switch (tagged.type) {
+    case "number":
+      return typeof tagged.value === "number" ? rawToNumberLattice(tagged.value) : undefined;
+    case "bigint":
+      return typeof tagged.value === "bigint"
+        ? rawToNumberLattice(Number(tagged.value))
+        : undefined;
+    case "bool":
+      return tagged.value === true
+        ? trueValue()
+        : tagged.value === false
+          ? falseValue()
+          : undefined;
+    case "string":
+      return stringValue();
+    case "none":
+      return nullValue();
+    case "closure":
+    case "function":
+    case "multi_lambda":
+    case "builtin":
+      return closureValue();
+    case "complex":
+      return complexValue();
+    default:
+      return undefined;
   }
 }
 

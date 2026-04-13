@@ -1,5 +1,5 @@
 import { StmtNS } from "../../ast-types";
-import type { StmtTransformRule } from "../framework/interfaces";
+import type { StmtTransformApplyResult, StmtTransformRule } from "../framework/interfaces";
 import type { HintStore } from "../framework/hint";
 import type { ConstLattice } from "../const-analysis/lattice";
 
@@ -17,9 +17,9 @@ export class DeadBranchEliminationRule implements StmtTransformRule {
     return cv?.tag === "const" && typeof cv.value === "boolean";
   }
 
-  apply(stmt: StmtNS.Stmt, hints: HintStore): StmtNS.Stmt[] {
+  apply(stmt: StmtNS.Stmt, hints: HintStore): StmtTransformApplyResult {
     const ifStmt = stmt as StmtNS.If;
     const cv = hints.get(ifStmt.condition)!.constVal as ConstLattice & { tag: "const" };
-    return cv.value ? ifStmt.body : (ifStmt.elseBlock ?? []);
+    return { replacements: cv.value ? ifStmt.body : (ifStmt.elseBlock ?? []) };
   }
 }

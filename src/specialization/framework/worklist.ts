@@ -18,8 +18,8 @@ import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import { buildFunctionUnits, makeOut, type FunctionUnit } from "./function-unit";
-import type { HintStore, OptimizationHint } from "./hint";
-import type { AnalysisPass, ScopePass, ScopeTransformRule, TransformRule } from "./interfaces";
+import type { FieldEquals, HintStore, OptimizationHint } from "./hint";
+import type { AnalysisPass, ScopePass, TransformRule } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
 import type { ObservationSink } from "./observation-sink";
 import type { SlotLookup } from "./slot-table";
@@ -235,7 +235,18 @@ export interface WorklistStats {
   readonly transformRounds: number;
   readonly drainCalls: number;
   readonly wallClockMs: number;
+  /** Structural rebuilds: CFG rebuilt and generation bumped. */
+  readonly cfgBuilds: number;
+  /** Data-only reseeds: analysisOuts cleared and queues reseeded, CFG reused. */
+  readonly dataReseeds: number;
 }
+
+/**
+ * Invalidation reason on the internal dirty channel. `structural` dominates
+ * `data` on merge: if a scope is marked `data` and later `structural` (or
+ * vice versa) before the next drain flushes, the stronger reason wins.
+ */
+type DirtyReason = "data" | "structural";
 
 // ── Subscribers ─────────────────────────────────────────────────────────────
 
@@ -261,16 +272,13 @@ export type { ObservationSink } from "./observation-sink";
 // ── Observation-capable analysis (narrowed subtype) ────────────────────────
 
 type ObservingAnalysis = AnalysisPass<any> & {
-  observeValue: NonNullable<AnalysisPass<any>["observeValue"]>;
-  mergeIntoHint: NonNullable<AnalysisPass<any>["mergeIntoHint"]>;
+  observeWrite: NonNullable<AnalysisPass<any>["observeWrite"]>;
 };
 
 // ── Worklist ────────────────────────────────────────────────────────────────
 
 export class Worklist implements ObservationSink {
   readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
-  private readonly analysesByName: ReadonlyMap<string, AnalysisPass<any>>;
-
   private readonly analysisQueues: Queue<QueuedBlock>[];
   private readonly transformQueue = new Queue<QueuedTransform>();
 
@@ -278,31 +286,36 @@ export class Worklist implements ObservationSink {
 
   /**
    * Pre-filtered subset of `analyses` that implement the runtime-observation
-   * hooks. Observation handling iterates this list rather than re-checking
-   * `observeValue` / `mergeIntoHint` on every analysis per write. The type
-   * narrows both hooks to required so the loop body needs no non-null asserts.
+   * hook. Observation handling iterates this list rather than re-checking
+   * `observeWrite` on every analysis per write. The type narrows the hook to
+   * required so the loop body needs no non-null asserts.
    */
   private readonly observers: readonly ObservingAnalysis[];
 
-
-  /**
-   * Records scope-rule (scope × rule) pairs whose `fireOnce` flag is set
-   * and have already succeeded once. The scheduler skips matches/apply
-   * for any recorded pair. This is what lets non-monotone rules
-   * (memoization) live here without self-latching through the hint.
-   */
-  private readonly firedOneShotRules = new Map<
-    StmtNS.FileInput | StmtNS.FunctionDef,
-    Set<ScopeTransformRule>
-  >();
-
-  /**
+/**
    * Cached at construction: true iff any transform is a non-monotone scope
    * rule (fireOnce), meaning a runtime call observation can newly enable it
    * and a mid-execution tick is worth the drain cost. For purely monotone
    * configurations the tick is redundant and skipped.
    */
   private readonly hasNonMonotoneRule: boolean;
+
+  /**
+   * Internal per-scope dirty channel. `observeWrite`, `observeCall`, transform
+   * completion, and cross-scope invalidation all publish here; `drain` flushes
+   * at the top of each iteration. One idiom, nested inside the external
+   * `onScopeChanged` subscriber contract.
+   */
+  private readonly dirty = new Map<StmtNS.FileInput | StmtNS.FunctionDef, DirtyReason>();
+
+  /**
+   * Fields written by any registered `ScopePass.writesFields`. AnalysisPass
+   * transfers MUST NOT read these — the ordering invariant is that
+   * scope-level facts flow to `ScopeTransformRule.matches` (same round) and
+   * later ScopePasses, never back into expression-level DFA. Enforced at
+   * runtime in dev builds via `guardAnalysisHints`.
+   */
+  private readonly forbiddenScopeFields: ReadonlySet<string>;
 
   // Perf counters
   private _itemsProcessed = 0;
@@ -311,6 +324,8 @@ export class Worklist implements ObservationSink {
   private _transformRounds = 0;
   private _drainCalls = 0;
   private _wallClockMs = 0;
+  private _cfgBuilds = 0;
+  private _dataReseeds = 0;
 
   constructor(
     ast: StmtNS.FileInput,
@@ -321,15 +336,27 @@ export class Worklist implements ObservationSink {
   ) {
     this.analysisQueues = analyses.map(() => new Queue<QueuedBlock>());
     this.observers = analyses.filter(
-      (m): m is ObservingAnalysis => m.observeValue !== undefined && m.mergeIntoHint !== undefined,
+      (m): m is ObservingAnalysis => m.observeWrite !== undefined,
     );
-    this.analysesByName = new Map(analyses.map(a => [a.name, a]));
-    this.hasNonMonotoneRule = transforms.some(
-      r => r.level === "scope" && r.fireOnce === true,
-    );
+    this.hasNonMonotoneRule = transforms.some(r => r.level === "scope" && r.fireOnce === true);
 
-    const hintEq = (a: OptimizationHint, b: OptimizationHint) => this.hintFieldsEqual(a, b);
-    this.units = buildFunctionUnits(ast, functionEnvironments, hintEq, analyses);
+    // Per-field equality: each AnalysisPass registers latticeEquals under its name.
+    const fieldEq = new Map<string, FieldEquals>();
+    for (const a of analyses) {
+      fieldEq.set(a.name, (x, y) => a.latticeEquals(x, y));
+    }
+
+    // Ordering-invariant guard: every field written by a ScopePass must NOT
+    // be read inside an AnalysisPass transfer (see `processTransform`
+    // ordering comment). Collected once at construction; used by
+    // `guardAnalysisHints` below.
+    const forbidden = new Set<string>();
+    for (const p of scopePasses) {
+      if (p.writesFields) for (const f of p.writesFields) forbidden.add(f);
+    }
+    this.forbiddenScopeFields = forbidden;
+
+    this.units = buildFunctionUnits(ast, functionEnvironments, analyses, fieldEq);
     for (const [key, unit] of this.units) {
       this.seedAnalysis(key, unit);
       this.enqueueTransform(key, unit.generation);
@@ -346,14 +373,10 @@ export class Worklist implements ObservationSink {
     for (const name of SINK_METHODS) {
       const fn = (this as unknown as Record<string, unknown>)[name];
       if (typeof fn !== "function") {
-        throw new Error(
-          `ObservationSink.${name} was replaced with a non-function value`,
-        );
+        throw new Error(`ObservationSink.${name} was replaced with a non-function value`);
       }
       if ((fn as { constructor?: { name?: string } }).constructor?.name === "AsyncFunction") {
-        throw new Error(
-          `ObservationSink.${name} must be synchronous`,
-        );
+        throw new Error(`ObservationSink.${name} must be synchronous`);
       }
     }
   }
@@ -399,31 +422,6 @@ export class Worklist implements ObservationSink {
   }
 
   /**
-   * Field-level equality for `OptimizationHint`. For each field present in
-   * either record, fast-path `===`; otherwise dispatch to the registered
-   * `AnalysisPass.latticeEquals`. Unregistered fields default to inequality
-   * (conservative over-invalidation).
-   *
-   * Lives here rather than being exported because it is the *only* per-field
-   * cross-cutting op in the codebase — per-slot `join`/`leq`/`top` run inside
-   * one analysis; this walks across them. One caller (the `HintStore` `eq`
-   * closure); no symmetry to enforce with an exported helper.
-   */
-  private hintFieldsEqual(a: OptimizationHint, b: OptimizationHint): boolean {
-    const names = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
-    for (const name of names) {
-      const av = a[name];
-      const bv = b[name];
-      if (av === bv) continue;
-      if (av === undefined || bv === undefined) return false;
-      const pass = this.analysesByName.get(name);
-      if (!pass) return false;
-      if (!pass.latticeEquals(av, bv)) return false;
-    }
-    return true;
-  }
-
-  /**
    * nodeId → owning FunctionUnit cache for `hintsFor`. Ownership is
    * structural (set by AST scope) and immutable across the worklist's
    * lifetime, so positive hits can be cached permanently. A miss may become
@@ -460,14 +458,11 @@ export class Worklist implements ObservationSink {
     if (!unit) return;
     const hints = unit.hints;
     let next = hints.getById(rhsNode.id) ?? {};
-    for (const { observeValue, mergeIntoHint } of this.observers) {
-      const lattice = observeValue(rawValue);
-      if (lattice === undefined) continue;
-      next = mergeIntoHint(next, lattice);
+    for (const observer of this.observers) {
+      next = observer.observeWrite(next, rawValue);
     }
-    if (hints.setById(rhsNode.id, next)) {
-      this.rebuildAndReseed(scopeKey, unit);
-    }
+    hints.setById(rhsNode.id, next);
+    this.markDirty(scopeKey, "data");
   }
 
   observeCall(
@@ -477,7 +472,7 @@ export class Worklist implements ObservationSink {
     const calleeUnit = this.units.get(calleeKey);
     if (!calleeUnit) return;
     calleeUnit.callObservations.push({ callerKey: scopeKey, calleeKey });
-    this.rebuildAndReseed(calleeKey, calleeUnit);
+    this.markDirty(calleeKey, "data");
     // Tick so any newly-enabled non-monotone transforms (e.g. memoization
     // crossing its call-count threshold) fire *during* execution. Safe
     // under the LBD contract: interpreters re-resolve function bodies at
@@ -503,6 +498,18 @@ export class Worklist implements ObservationSink {
     let lastQueueShape = this.queueShape();
 
     while (processed < limit) {
+      // Flush dirty channel first: convert pending invalidation marks into
+      // queue state before selecting an item. Structural flushes rebuild the
+      // CFG; data flushes reuse it. If flush mutated any queue, reset the
+      // stall baseline — new items added by flush are progress, not stalls.
+      const shapeBeforeFlush = this.queueShape();
+      this.flushDirty();
+      const shapeAfterFlush = this.queueShape();
+      if (shapeAfterFlush !== shapeBeforeFlush) {
+        stallWindow = 0;
+        lastQueueShape = shapeAfterFlush;
+      }
+
       const qIdx = this.findActiveQueue();
       if (qIdx === -1) break;
 
@@ -583,6 +590,8 @@ export class Worklist implements ObservationSink {
       transformRounds: this._transformRounds,
       drainCalls: this._drainCalls,
       wallClockMs: this._wallClockMs,
+      cfgBuilds: this._cfgBuilds,
+      dataReseeds: this._dataReseeds,
     });
   }
 
@@ -593,6 +602,8 @@ export class Worklist implements ObservationSink {
     this._transformRounds = 0;
     this._drainCalls = 0;
     this._wallClockMs = 0;
+    this._cfgBuilds = 0;
+    this._dataReseeds = 0;
   }
 
   // ── Queue selection ─────────────────────────────────────────────────────
@@ -623,7 +634,8 @@ export class Worklist implements ObservationSink {
     if (!block) return false;
 
     const inEnv = computeBlockIN(block, module, out);
-    const outEnv = transferBlock(block, inEnv, module, unit.hints, unit.slotLookup);
+    const hintsForTransfer = this.guardAnalysisHints(unit.hints, module.name);
+    const outEnv = transferBlock(block, inEnv, module, hintsForTransfer, unit.slotLookup);
 
     const prevOut = out.get(block.id) ?? null;
     if (prevOut === null || !outEnv.equals(prevOut, module.leq.bind(module))) {
@@ -672,17 +684,12 @@ export class Worklist implements ObservationSink {
     for (const rule of this.transforms) {
       if (rule.level === "scope") {
         // One-shot rules: skip once they've fired successfully on this scope.
-        if (rule.fireOnce && this.firedOneShotRules.get(item.scopeKey)?.has(rule)) continue;
+        // `appliedTransforms` is the single source of truth — populated by
+        // `apply` (the rule itself calls `unit.appliedTransforms.add(this.name)`),
+        // read here as the re-fire guard.
+        if (rule.fireOnce && unit.appliedTransforms.has(rule.name)) continue;
         if (rule.matches(unit) && rule.apply(unit)) {
           anyChanged = true;
-          if (rule.fireOnce) {
-            let set = this.firedOneShotRules.get(item.scopeKey);
-            if (!set) {
-              set = new Set();
-              this.firedOneShotRules.set(item.scopeKey, set);
-            }
-            set.add(rule);
-          }
         }
         continue;
       }
@@ -695,19 +702,19 @@ export class Worklist implements ObservationSink {
       this._transformRounds++;
       unit.structuralVersion++;
       changed.add(item.scopeKey);
-      this.rebuildAndReseed(item.scopeKey, unit);
+      this.markDirty(item.scopeKey, "structural");
     }
     // Rule-requested invalidations (e.g. memoization mutated a child
-    // FunctionDef's body from the parent pass) run even if the local body
-    // array wasn't spliced — the body list of the parent stays the same
-    // reference, but the child's CFG needs a rebuild.
+    // FunctionDef's body from the parent pass): publish to the same dirty
+    // channel as the originating scope's own mark. No dedicated code path —
+    // the child's CFG rebuild happens uniformly on the next drain iteration.
     for (const scope of extraInvalidate) {
       if (scope === item.scopeKey) continue;
       const childUnit = this.units.get(scope);
       if (childUnit) {
         childUnit.structuralVersion++;
         changed.add(scope);
-        this.rebuildAndReseed(scope, childUnit);
+        this.markDirty(scope, "structural");
       }
     }
 
@@ -716,13 +723,112 @@ export class Worklist implements ObservationSink {
 
   // ── Seeding ──────────────────────────────────────────────────────────────
 
-  private rebuildAndReseed(key: StmtNS.FileInput | StmtNS.FunctionDef, unit: FunctionUnit): void {
+  /**
+   * Opt-in guard: wrap `hints` so that an AnalysisPass transfer reading a
+   * field declared by some `ScopePass.writesFields` throws. Disabled by
+   * default — the Proxy incurs V8 interceptor overhead on every read and
+   * bloats the DFA hot path. Enable by setting
+   * `PY_SLANG_GUARD_SCOPE_FIELDS=1` when investigating an ordering
+   * invariant violation.
+   *
+   * Scope: only wraps the `get` / `getById` read paths. Writes are not
+   * guarded (the invariant is about *reads* from AnalysisPass visitors).
+   */
+  private guardAnalysisHints(hints: HintStore, moduleName: string): HintStore {
+    if (this.forbiddenScopeFields.size === 0) return hints;
+    if (typeof process === "undefined" || process.env?.PY_SLANG_GUARD_SCOPE_FIELDS !== "1") {
+      return hints;
+    }
+    const forbidden = this.forbiddenScopeFields;
+    const wrap = (h: OptimizationHint | undefined): OptimizationHint | undefined => {
+      if (h === undefined) return undefined;
+      return new Proxy(h, {
+        get(target, prop: string | symbol) {
+          if (typeof prop === "string" && forbidden.has(prop)) {
+            throw new Error(
+              `[Worklist] AnalysisPass "${moduleName}" read forbidden scope-level hint field "${prop}". ` +
+                `Scope-level facts flow to ScopeTransformRule / later ScopePasses, not back into expression-level DFA.`,
+            );
+          }
+          return Reflect.get(target, prop);
+        },
+      });
+    };
+    return new Proxy(hints, {
+      get(target, prop, receiver) {
+        if (prop === "get") {
+          return (node: ExprNS.Expr | StmtNS.Stmt) => wrap(target.get(node));
+        }
+        if (prop === "getById") {
+          return (id: number) => wrap(target.getById(id));
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+  }
+
+  /**
+   * Publish to the internal dirty channel. Idempotent per scope;
+   * `structural` dominates `data` if both are marked before the next flush.
+   */
+  private markDirty(
+    key: StmtNS.FileInput | StmtNS.FunctionDef,
+    reason: DirtyReason,
+  ): void {
+    if (this.dirty.get(key) === "structural") return;
+    this.dirty.set(key, reason);
+  }
+
+  /**
+   * Consume all pending dirty entries. Called at the top of each `drain`
+   * iteration so that `findActiveQueue` sees up-to-date queue state.
+   */
+  private flushDirty(): void {
+    if (this.dirty.size === 0) return;
+    for (const [key, reason] of this.dirty) {
+      const unit = this.units.get(key);
+      if (!unit) continue;
+      if (reason === "structural") {
+        this.rebuildStructural(key, unit);
+      } else {
+        this.reseedAnalysis(key, unit);
+      }
+    }
+    this.dirty.clear();
+  }
+
+  /**
+   * Structural path: the body reference was spliced by a transform (or a
+   * cross-scope rewrite). Rebuild the CFG, bump `generation` so any
+   * in-flight queue items are dropped, and reseed analysis + transform.
+   */
+  private rebuildStructural(
+    key: StmtNS.FileInput | StmtNS.FunctionDef,
+    unit: FunctionUnit,
+  ): void {
+    this._cfgBuilds++;
     unit.generation++;
     unit.cfg = buildCFG(unit.body);
     unit.blockMap = new Map<BlockId, BasicBlock>();
     for (const block of unit.cfg.blocks) unit.blockMap.set(block.id, block);
     unit.analysisOuts = this.analyses.map(() => makeOut(unit.cfg));
 
+    this.seedAnalysis(key, unit);
+    this.enqueueTransform(key, unit.generation);
+  }
+
+  /**
+   * Data path: hints changed but the body is identical. Skip `buildCFG`
+   * (the point of the split); clear `analysisOuts` since transfers read
+   * hints; bump `generation` to drop in-flight queued items.
+   */
+  private reseedAnalysis(
+    key: StmtNS.FileInput | StmtNS.FunctionDef,
+    unit: FunctionUnit,
+  ): void {
+    this._dataReseeds++;
+    unit.generation++;
+    unit.analysisOuts = this.analyses.map(() => makeOut(unit.cfg));
     this.seedAnalysis(key, unit);
     this.enqueueTransform(key, unit.generation);
   }

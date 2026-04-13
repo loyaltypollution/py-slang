@@ -10,7 +10,6 @@ import {
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   MemoizationTransformRule,
-  PurityEffectAnalysis,
   PurityScopePass,
   TypeAnalysisPass,
   Worklist,
@@ -34,13 +33,19 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const worklist = new Worklist(
         ast,
         environments,
-        [new TypeAnalysisPass(), new ConstAnalysisPass(), new PurityEffectAnalysis()],
+        [
+          new TypeAnalysisPass(),
+          new ConstAnalysisPass(),
+        ],
         [
           new DeadBranchEliminationRule(),
           new ConstantFoldingRule(),
           new MemoizationTransformRule(),
         ],
-        [new CallCountScopePass(), new PurityScopePass()],
+        [
+          new CallCountScopePass(),
+          new PurityScopePass()
+        ],
       );
       worklist.converge();
 
@@ -60,7 +65,6 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       });
 
       const returnValue = await interpreter.execute();
-      worklist.tick();
       this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
     } catch (e) {
       this.conductor.sendError(new EvaluatorError(e));

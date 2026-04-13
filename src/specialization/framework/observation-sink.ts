@@ -29,3 +29,13 @@ export interface ObservationSink {
     calleeKey: StmtNS.FileInput | StmtNS.FunctionDef,
   ): void;
 }
+
+/**
+ * No-op sink used when no JIT/worklist is attached. Interpreters always hold
+ * a sink reference — this singleton lets them drop `if (sink)` guards at
+ * every call site without materializing conditional work.
+ */
+export const NullObservationSink: ObservationSink = Object.freeze({
+  observeWrite(): void {},
+  observeCall(): void {},
+});

@@ -14,16 +14,16 @@
 import { StmtNS } from "../../ast-types";
 import type { ScopePass } from "../framework/interfaces";
 import type { FunctionUnit } from "../framework/function-unit";
-import type { OptimizationHint } from "../framework/hint";
 
 /** Number of recorded calls after which MemoizationTransformRule may fire. */
 export const MEMOIZATION_THRESHOLD = 10;
 
-/** Name of the open-record hint field this pass writes to. */
-export const CALL_COUNT_FIELD = "callCount";
+/** Name of the hint field this pass writes to. */
+export const CALL_COUNT_FIELD = "callCount" as const;
 
 export class CallCountScopePass implements ScopePass {
   readonly name = "callCount";
+  readonly writesFields = [CALL_COUNT_FIELD] as const;
 
   run(unit: FunctionUnit): void {
     // Only FunctionDefs can be memoization callees; calls to FileInput
@@ -32,13 +32,8 @@ export class CallCountScopePass implements ScopePass {
     if (!(fd instanceof StmtNS.FunctionDef)) return;
 
     const observed = unit.callObservations.length;
+    if (observed === 0) return; // don't materialize the field until first call
     const saturated = Math.min(observed, MEMOIZATION_THRESHOLD + 1);
-
-    const prev = unit.hints.get(fd) ?? {};
-    const prevCount = (prev[CALL_COUNT_FIELD] as number | undefined) ?? 0;
-    if (saturated === prevCount) return;
-
-    const nextHint: OptimizationHint = { ...prev, [CALL_COUNT_FIELD]: saturated };
-    unit.hints.set(fd, nextHint);
+    unit.hints.updateField(fd.id, CALL_COUNT_FIELD, saturated);
   }
 }

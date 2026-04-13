@@ -138,12 +138,7 @@ describe("ScopePass dispatch", () => {
     // checking the buffer length is N.
     const { ast, environments } = parseAndResolve("def f():\n  return 1\nf()");
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const worklist = new Worklist(
-      ast,
-      environments,
-      [new TypeAnalysisPass()],
-      [],
-    );
+    const worklist = new Worklist(ast, environments, [new TypeAnalysisPass()], []);
     worklist.converge();
     const unit = worklist.units.get(fd)!;
     expect(unit.callObservations.length).toBe(0);

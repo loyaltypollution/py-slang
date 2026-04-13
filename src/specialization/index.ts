@@ -10,6 +10,7 @@ export { buildFunctionUnits } from "./framework/function-unit";
 export { Worklist } from "./framework/worklist";
 export type { WorklistStats, ScopeChangeListener } from "./framework/worklist";
 export type { ObservationSink } from "./framework/observation-sink";
+export { NullObservationSink } from "./framework/observation-sink";
 
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
 
@@ -69,10 +70,6 @@ export {
   MEMOIZATION_THRESHOLD,
   CALL_COUNT_FIELD,
 } from "./memoization-analysis/call-count";
-export { PurityEffectAnalysis, PurityScopePass } from "./purity-analysis/analysis";
-export {
-  PURE_EFFECT_FIELD,
-  PURE_FIELD,
-  type PureEffect,
-} from "./purity-analysis/lattice";
+export { PurityScopePass } from "./purity-analysis/analysis";
+export { PURE_FIELD } from "./purity-analysis/lattice";
 export { memoLookup, memoPut, clearMemoCache, memoCacheSnapshot, MEMO_MISS } from "../runtime/memo";

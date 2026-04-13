@@ -15,7 +15,7 @@ import {
   SVMLProgram,
   SVMLType,
 } from "./types";
-import type { ObservationSink } from "../../specialization";
+import { type ObservationSink, NullObservationSink } from "../../specialization";
 
 const __DEBUG__ =
   typeof (globalThis as Record<string, unknown>).__DEBUG__ !== "undefined" &&
@@ -59,11 +59,12 @@ export class SVMLInterpreter {
   private maxInstructionLimit: number = 1000000;
 
   /**
-   * Optional push-side hook invoked at STORE / CALL / scope-entry / scope-exit.
-   * Wired by `PySvmlJitEvaluator` to the reactive worklist; unset for standalone
-   * bytecode execution. All callbacks are best-effort and must not throw.
+   * Push-side hook invoked at STORE / CALL sites. Defaults to
+   * `NullObservationSink` for standalone bytecode execution;
+   * `PySvmlJitEvaluator` wires in the reactive worklist. All callbacks are
+   * best-effort and must not throw.
    */
-  private observationSink?: ObservationSink;
+  private observationSink: ObservationSink = NullObservationSink;
 
   constructor(
     program: SVMLProgram,
@@ -85,7 +86,7 @@ export class SVMLInterpreter {
       if (options.maxStackSize) this.maxStackSize = options.maxStackSize;
       if (options.maxCallDepth) this.maxCallDepth = options.maxCallDepth;
       if (options.maxInstructions) this.maxInstructionLimit = options.maxInstructions;
-      this.observationSink = options.observationSink;
+      if (options.observationSink) this.observationSink = options.observationSink;
     }
   }
 
@@ -748,28 +749,30 @@ export class SVMLInterpreter {
   /**
    * Look up the observation site at `pc` in the current frame's IR. If it's
    * a "write" site, push the RHS node + stored value into the sink. No-op
-   * when no sink is attached or the pc has no recorded site.
+   * when the pc has no recorded site; sink is always non-null
+   * (`NullObservationSink` by default).
    */
   private dispatchWriteSite(pc: number, value: SVMLBoxType): void {
-    const sink = this.observationSink;
-    if (!sink || !this.currentFrame) return;
+    if (!this.currentFrame) return;
     const ir = this.currentFrame.ir;
     if (ir.scopeKey === undefined) return;
     const site = ir.observationSites.get(pc);
     if (!site || site.kind !== "write") return;
-    sink.observeWrite(ir.scopeKey, site.node, value);
+    this.observationSink.observeWrite(ir.scopeKey, site.node, value);
   }
 
-  /** Dispatch observeCall for a recorded call site. Caller scope = current frame. */
+  /**
+   * Dispatch observeCall for a recorded call site. Caller scope = current frame.
+   * LBD contract: see observation-sink.ts header.
+   */
   private dispatchCallSite(pc: number, calleeIR: SVMLIR): void {
-    const sink = this.observationSink;
-    if (!sink || !this.currentFrame) return;
+    if (!this.currentFrame) return;
     const callerKey = this.currentFrame.ir.scopeKey;
     const calleeKey = calleeIR.scopeKey;
     if (callerKey === undefined || calleeKey === undefined) return;
     const site: ObservationSite | undefined = this.currentFrame.ir.observationSites.get(pc);
     if (!site || site.kind !== "call") return;
-    sink.observeCall(callerKey, calleeKey);
+    this.observationSink.observeCall(callerKey, calleeKey);
   }
 
   // ========================================================================

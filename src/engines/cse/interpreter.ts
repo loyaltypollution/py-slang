@@ -837,10 +837,11 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       }
       pyDefineVariable(context, instr.symbol, value);
 
-      const sink = context.runtime.observationSink;
-      if (sink && instr.srcNode instanceof StmtNS.Assign) {
+      if (instr.srcNode instanceof StmtNS.Assign) {
         const scopeKey = currentScopeKey(context);
-        if (scopeKey) sink.observeWrite(scopeKey, instr.srcNode.value, value);
+        if (scopeKey) {
+          context.runtime.observationSink.observeWrite(scopeKey, instr.srcNode.value, value);
+        }
       }
     }
   },
@@ -1100,12 +1101,12 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         control.push(instrCreator.endOfFunctionBodyInstr(instr.srcNode));
       }
 
-      const sink = context.runtime.observationSink;
-      if (sink) {
-        const calleeKey = closure.node as StmtNS.FileInput | StmtNS.FunctionDef;
-        const callerKey = currentScopeKey(context);
-        if (callerKey) sink.observeCall(callerKey, calleeKey);
-      }
+      // LBD contract: the sink may install non-monotone transforms mid-run;
+      // safe because interpreters re-resolve function bodies at call-entry.
+      // See observation-sink.ts header.
+      const calleeKey = closure.node as StmtNS.FileInput | StmtNS.FunctionDef;
+      const callerKey = currentScopeKey(context);
+      if (callerKey) context.runtime.observationSink.observeCall(callerKey, calleeKey);
 
       const newEnv = createEnvironment(code, context, closure, args, instr.srcNode as ExprNS.Call);
       pushEnvironment(context, newEnv);

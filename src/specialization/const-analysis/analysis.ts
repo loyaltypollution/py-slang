@@ -25,8 +25,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   ) {}
 
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
-    const existing = this.hints.get(node) ?? {};
-    this.hints.set(node, { ...existing, constVal: val });
+    this.hints.updateField(node.id, "constVal", val);
     return val;
   }
 
@@ -243,39 +242,41 @@ export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
     return new ConstAnalysisVisitor(hints, env, slotLookup);
   }
 
-  observeValue(rawValue: unknown): ConstLattice | undefined {
-    // Return `undefined` (not CONST_TOP) when there is no useful constant —
-    // widening to TOP would erase existing static constants.
-    if (
-      typeof rawValue === "number" ||
-      typeof rawValue === "boolean" ||
-      typeof rawValue === "string"
-    ) {
-      return constOf(rawValue);
-    }
-    if (typeof rawValue === "bigint") return constOf(Number(rawValue));
-    if (typeof rawValue !== "object" || rawValue === null) return undefined;
-
-    const tagged = rawValue as { type?: string; value?: unknown };
-    switch (tagged.type) {
-      case "number":
-      case "string":
-        return typeof tagged.value === "number" || typeof tagged.value === "string"
-          ? constOf(tagged.value)
-          : undefined;
-      case "bool":
-        return typeof tagged.value === "boolean" ? constOf(tagged.value) : undefined;
-      case "bigint":
-        return typeof tagged.value === "bigint" ? constOf(Number(tagged.value)) : undefined;
-      default:
-        return undefined;
-    }
-  }
-
-  mergeIntoHint(hint: OptimizationHint, value: ConstLattice): OptimizationHint {
+  observeWrite(hint: OptimizationHint, rawValue: unknown): OptimizationHint {
+    // Return `hint` unchanged (don't widen to CONST_TOP) when there is no
+    // useful constant — widening would erase existing static constants.
+    const value = liftConst(rawValue);
+    if (value === undefined) return hint;
     // Widen via constJoin — two different observed constants collapse to CONST_TOP.
     const prev = hint.constVal;
     const next = prev ? constJoin(prev, value) : value;
     return { ...hint, constVal: next };
+  }
+}
+
+function liftConst(rawValue: unknown): ConstLattice | undefined {
+  if (
+    typeof rawValue === "number" ||
+    typeof rawValue === "boolean" ||
+    typeof rawValue === "string"
+  ) {
+    return constOf(rawValue);
+  }
+  if (typeof rawValue === "bigint") return constOf(Number(rawValue));
+  if (typeof rawValue !== "object" || rawValue === null) return undefined;
+
+  const tagged = rawValue as { type?: string; value?: unknown };
+  switch (tagged.type) {
+    case "number":
+    case "string":
+      return typeof tagged.value === "number" || typeof tagged.value === "string"
+        ? constOf(tagged.value)
+        : undefined;
+    case "bool":
+      return typeof tagged.value === "boolean" ? constOf(tagged.value) : undefined;
+    case "bigint":
+      return typeof tagged.value === "bigint" ? constOf(Number(tagged.value)) : undefined;
+    default:
+      return undefined;
   }
 }

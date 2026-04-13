@@ -17,10 +17,10 @@ import {
   DeadBranchEliminationRule,
   CallCountScopePass,
   MemoizationTransformRule,
-  PurityEffectAnalysis,
   PurityScopePass,
   Worklist,
   TypeAnalysisPass,
+  NullObservationSink,
 } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
@@ -95,7 +95,7 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
       const worklist = new Worklist(
         ast,
         environments,
-        [new TypeAnalysisPass(), new ConstAnalysisPass(), new PurityEffectAnalysis()],
+        [new TypeAnalysisPass(), new ConstAnalysisPass()],
         [
           new DeadBranchEliminationRule(),
           new ConstantFoldingRule(),
@@ -115,7 +115,7 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         });
         worklist.tick();
       } finally {
-        this.context.runtime.observationSink = undefined;
+        this.context.runtime.observationSink = NullObservationSink;
       }
     } catch (e) {
       if (e instanceof SyntaxError) {

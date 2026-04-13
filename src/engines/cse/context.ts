@@ -1,6 +1,6 @@
 import { ConductorError } from "@sourceacademy/conductor/common";
 import { StmtNS } from "../../ast-types";
-import type { ObservationSink } from "../../specialization";
+import { type ObservationSink, NullObservationSink } from "../../specialization";
 import { ModuleContext, NativeStorage } from "../../types";
 import { Control } from "./control";
 import { Environment } from "./environment";
@@ -43,11 +43,12 @@ export class Context {
     breakpointSteps: number[];
     changepointSteps: number[];
     /**
-     * Push-side for runtime observations (wired by JIT-capable evaluators).
-     * CSE feeds `observeWrite` / `observeCall` into this sink; the LBD
-     * interpreter contract makes call-time pin accounting unnecessary.
+     * Push-side for runtime observations. Always set — defaults to
+     * `NullObservationSink` for standalone execution; JIT-capable evaluators
+     * swap in the `Worklist` for the duration of a run. The LBD interpreter
+     * contract makes call-time pin accounting unnecessary.
      */
-    observationSink?: ObservationSink;
+    observationSink: ObservationSink;
     /** Root scope key for emission when no enclosing closure exists (global scope). */
     rootScope?: StmtNS.FileInput;
   };
@@ -103,6 +104,7 @@ export class Context {
     envStepsTotal: 0,
     breakpointSteps: [],
     changepointSteps: [],
+    observationSink: NullObservationSink,
   });
 
   createEmptyStreams = (): { initialised: false } => ({

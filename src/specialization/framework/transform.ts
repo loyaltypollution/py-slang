@@ -137,12 +137,10 @@ class TransformApplyVisitor implements StmtNS.Visitor<void> {
       let i = 0;
       while (i < stmts.length) {
         if (this.rule.matches(stmts[i], this.hints)) {
-          const original = stmts[i];
-          const replacements = this.rule.apply(original, this.hints);
-          stmts.splice(i, 1, ...replacements);
+          const result = this.rule.apply(stmts[i], this.hints);
+          stmts.splice(i, 1, ...result.replacements);
           this.changed = true;
-          const affected = this.rule.affectedScopes?.(original);
-          if (affected) for (const s of affected) this.invalidate.add(s);
+          if (result.invalidate) for (const s of result.invalidate) this.invalidate.add(s);
         } else {
           stmts[i].accept(this);
           i++;
@@ -196,10 +194,10 @@ class TransformApplyVisitor implements StmtNS.Visitor<void> {
 
 /**
  * Apply one transformation rule to a statement list.
- * Returns `changed` flag plus any additional scopes the rule flagged via
- * `affectedScopes` — the worklist rebuilds those too (used by non-monotone
- * transforms like memoization that mutate a child scope's body from the
- * parent's pass).
+ * Returns `changed` plus any additional scopes the rule flagged via its
+ * `apply` result — the worklist publishes `"structural"` dirty marks for
+ * those scopes (used by non-monotone transforms that mutate a child
+ * scope's body from the parent's pass).
  */
 export interface TransformPassResult {
   readonly changed: boolean;

@@ -3,7 +3,7 @@ import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { OptimizationHint } from "../../specialization";
 import type { HintStore } from "../../specialization/framework/hint";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
-import { ScopeIndexMap } from "../../specialization/framework/scope-index-map";
+import { ScopeIndexMap } from "./scope-index-map";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
 import { Token } from "../../tokenizer";
 import { TokenType } from "../../tokens";

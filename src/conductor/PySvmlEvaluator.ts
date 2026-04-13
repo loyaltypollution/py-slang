@@ -9,7 +9,6 @@ import {
   DeadBranchEliminationRule,
   CallCountScopePass,
   MemoizationTransformRule,
-  PurityEffectAnalysis,
   PurityScopePass,
   Worklist,
   TypeAnalysisPass,
@@ -28,7 +27,7 @@ export class PySvmlEvaluator extends BasicEvaluator {
       const worklist = new Worklist(
         ast,
         environments,
-        [new TypeAnalysisPass(), new ConstAnalysisPass(), new PurityEffectAnalysis()],
+        [new TypeAnalysisPass(), new ConstAnalysisPass()],
         [
           new DeadBranchEliminationRule(),
           new ConstantFoldingRule(),

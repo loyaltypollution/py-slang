@@ -88,4 +88,3 @@ x = 1
     expect(calleeUnit.structuralVersion).toBeGreaterThanOrEqual(versionBefore);
   });
 });
-

@@ -31,9 +31,9 @@ async function runWithReactive(code: string) {
   const reactive = buildTestWorklist(ast, environments);
   reactive.converge();
 
-  // Merge collector — each unit owns a disjoint id range, so dedupe never
-  // triggers; the eq callback fires only on re-writes we don't do.
-  const merged = new HintStore(() => false);
+  // Merge collector — each unit owns a disjoint id range, so no dedupe is
+  // needed; writes are unconditional.
+  const merged = new HintStore();
   for (const unit of reactive.units.values()) {
     for (const [id, hint] of unit.hints) merged.setById(id, hint);
   }
@@ -111,7 +111,6 @@ x = "hello"
     for (const set of notified) for (const k of set) allKeys.add(k);
     expect(allKeys.has(ast)).toBe(true);
   });
-
 });
 
 describe("OBSERVE loop: regression guard", () => {
