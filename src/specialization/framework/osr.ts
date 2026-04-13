@@ -131,7 +131,7 @@ export class OSRCoordinator<Delta> {
       skippedCanInstall: this._skippedCanInstall,
       skippedNoUnit: this._skippedNoUnit,
       installsFired: this._installsFired,
-    } as const);
+    });
   }
 
   private onChange(changed: ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef>): void {

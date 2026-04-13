@@ -212,11 +212,16 @@ export class PersistentWorklist implements ObservationSink {
     // is declared. The OSR safepoint contract depends on all four sink
     // methods being synchronous; catch the `async`-declared case at
     // construction rather than at first observation.
-    const SINK_METHODS = ["observeWrite", "observeCall", "activateScope", "deactivateScope"] as const;
+    // `satisfies` pins the tuple to exactly the keys of ObservationSink —
+    // if the interface gains or loses a method, this line stops compiling
+    // instead of the runtime check silently drifting out of sync.
+    const SINK_METHODS = ["observeWrite", "observeCall", "activateScope", "deactivateScope"] as const satisfies readonly (keyof ObservationSink)[];
     for (const name of SINK_METHODS) {
       const fn = (this as unknown as Record<string, unknown>)[name];
       if (typeof fn !== "function") {
-        throw new Error(`ObservationSink.${name} is not a function`);
+        throw new Error(
+          `ObservationSink.${name} was replaced with a non-function value; the OSR safepoint contract requires all four sink methods to be callable`,
+        );
       }
       if ((fn as { constructor?: { name?: string } }).constructor?.name === "AsyncFunction") {
         throw new Error(

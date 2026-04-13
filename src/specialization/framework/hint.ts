@@ -19,10 +19,13 @@ export interface OptimizationHint {
  * Minimal view of `AnalysisModule` needed for hint equality dispatch.
  * Declared here (rather than importing the full interface) so `hint.ts`
  * does not circularly depend on `interfaces.ts` / concrete analyses.
+ * Structurally compatible with `ReadonlyMap<string, AnalysisModule<any>>`,
+ * so callers pass their existing registry without conversion.
  */
-export interface HintEqualsDispatcher {
-  get(name: string): { latticeEquals(a: unknown, b: unknown): boolean } | undefined;
-}
+export type HintEqualsDispatcher = ReadonlyMap<
+  string,
+  { latticeEquals(a: unknown, b: unknown): boolean }
+>;
 
 /**
  * Field-level equality over open `OptimizationHint` records. Each field's
@@ -53,6 +56,15 @@ export function hintEquals(
   }
   return true;
 }
+
+/**
+ * Equality that treats every pair as distinct. Use for merged / display-only
+ * stores where write-coalescing is irrelevant (e.g. test harnesses that
+ * aggregate hints across units for inspection). Production stores should
+ * pass `(a, b) => hintEquals(a, b, worklist.analysesByName)` so lattice-
+ * equal writes don't invalidate downstream.
+ */
+export const HINT_EQ_NEVER: (a: OptimizationHint, b: OptimizationHint) => boolean = () => false;
 
 /**
  * Map-based hint storage keyed by node.id. Analysis visitors call

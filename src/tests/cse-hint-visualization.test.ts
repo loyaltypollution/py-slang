@@ -14,7 +14,7 @@ import { Context } from "../engines/cse/context";
 import { generateCSEMachineStateStream } from "../engines/cse/interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { HintStore } from "../specialization";
+import { HintStore, HINT_EQ_NEVER } from "../specialization";
 import { buildTestWorklist } from "./utils";
 
 function parseOptimizeAndMerge(code: string): {
@@ -31,7 +31,7 @@ function parseOptimizeAndMerge(code: string): {
   engine.converge();
   const units = engine.units;
 
-  const merged = new HintStore(() => false);
+  const merged = new HintStore(HINT_EQ_NEVER);
   for (const unit of units.values()) {
     for (const [id, hint] of unit.hints) merged.setById(id, hint);
   }

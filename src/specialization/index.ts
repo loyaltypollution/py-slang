@@ -17,7 +17,7 @@ export type { ObservationSink } from "./framework/observation-sink";
 
 export type { AnalysisModule, TransformRule } from "./framework/interfaces";
 export type { OptimizationHint } from "./framework/hint";
-export { HintStore, hintEquals } from "./framework/hint";
+export { HintStore, hintEquals, HINT_EQ_NEVER } from "./framework/hint";
 export { OSRCoordinator } from "./framework/osr";
 export type { StateDeltaStrategy } from "./framework/osr";
 
