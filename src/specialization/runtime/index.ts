@@ -7,3 +7,4 @@ export { QueryHandle, defineQuery } from "./query";
 export { InputHandle, defineInput } from "./input";
 export { Db } from "./db";
 export * from "./inputs";
+export { cfgOf } from "./queries/cfg";
