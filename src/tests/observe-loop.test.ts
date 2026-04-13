@@ -2,8 +2,8 @@
  * End-to-end test for the OBSERVE loop.
  *
  * Verifies that the CSE interpreter emits runtime observations which the
- * reactive optimization worklist translates into HintStore refinements,
- * visible to consumers via `.get(node)`.
+ * reactive optimization worklist translates into fact-store refinements,
+ * visible to consumers via the per-field accessors.
  */
 
 import { StmtNS } from "../ast-types";
@@ -12,7 +12,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import { buildTestWorklist } from "./utils";
 import { Context } from "../engines/cse/context";
 import { evaluate } from "../engines/cse/interpreter";
-import { HintStore } from "../specialization";
+import { readTypeFact } from "../specialization/framework/fact-accessors";
 import { STR_BIT, INT_BIT } from "../specialization/type-analysis/lattice";
 
 function setupReactive(code: string) {
@@ -31,82 +31,66 @@ async function runWithReactive(code: string) {
   const reactive = buildTestWorklist(ast, environments);
   reactive.converge();
 
-  // Merge collector — each unit owns a disjoint id range, so no dedupe is
-  // needed; writes are unconditional.
-  const merged = new HintStore();
-  for (const unit of reactive.units.values()) {
-    for (const [id, hint] of unit.hints) merged.setById(id, hint);
-  }
   context.runtime.observationSink = reactive;
   context.runtime.rootScope = ast;
 
   await evaluate("", ast, context, { variant: 4, groups: [] });
   reactive.tick();
 
-  // Re-merge hints after the run picks up any runtime-observation widening.
-  for (const unit of reactive.units.values()) {
-    for (const [id, hint] of unit.hints) merged.setById(id, hint);
-  }
-
-  return { ast, reactive, merged };
+  return { ast, reactive };
 }
 
 describe("OBSERVE loop: end-to-end", () => {
-  test("runtime string write widens the RHS hint from INT to INT|STR", async () => {
+  test("runtime string write widens the RHS fact from INT to INT|STR", async () => {
     // After static analysis, `x = 1` has type=INT only. Running CSE on a
     // program that later assigns a string should push a string observation
-    // into the hint store via observeWrite.
+    // into the fact store via observeWrite.
     const code = `
 x = 1
 x = "hello"
 `;
-    const { ast, merged } = await runWithReactive(code);
+    const { ast, reactive } = await runWithReactive(code);
 
     const firstAssign = ast.statements[0] as StmtNS.Assign;
     const secondAssign = ast.statements[1] as StmtNS.Assign;
 
-    const firstHint = merged.get(firstAssign.value);
-    const secondHint = merged.get(secondAssign.value);
+    const firstType = readTypeFact(reactive.factStore, firstAssign.value.id);
+    const secondType = readTypeFact(reactive.factStore, secondAssign.value.id);
 
     // First assign's RHS is a literal 1 — static analysis gave INT.
-    expect(firstHint?.type?.kinds).toBeDefined();
-    expect(firstHint!.type!.kinds & INT_BIT).toBeTruthy();
+    expect(firstType).toBeDefined();
+    expect(firstType!.kinds & INT_BIT).toBeTruthy();
 
     // Second assign's RHS is "hello" — static analysis gave STR.
     // Additionally, the observation path may widen this further.
-    expect(secondHint?.type?.kinds).toBeDefined();
-    expect(secondHint!.type!.kinds & STR_BIT).toBeTruthy();
+    expect(secondType).toBeDefined();
+    expect(secondType!.kinds & STR_BIT).toBeTruthy();
   });
 
-  test("program with no runtime mutations: observing a known value leaves hints unchanged", async () => {
-    // If a runtime observation of a value that static analysis already
-    // covered lands at a node, the hint's lattice element should be equal
-    // before and after.
+  test("program with no runtime mutations: observing a known value leaves facts unchanged", async () => {
     const { ast, reactive } = setupReactive("x = 1");
     reactive.converge();
     const assign = ast.statements[0] as StmtNS.Assign;
-    const before = reactive.units.get(ast)!.hints.get(assign.value);
+    const before = readTypeFact(reactive.factStore, assign.value.id);
 
     reactive.observeWrite(ast, assign.value, 1);
-    const after = reactive.units.get(ast)!.hints.get(assign.value);
+    const after = readTypeFact(reactive.factStore, assign.value.id);
 
-    expect(after?.type).toEqual(before?.type);
+    expect(after).toEqual(before);
   });
 
 });
 
 describe("OBSERVE loop: regression guard", () => {
-  test("observation of an already-known value leaves the node's hint equal", async () => {
-    // If a runtime observation of value X lands at a node whose hint
-    // already covers X, the stored hint should be equal (same lattice).
+  test("observation of an already-known value leaves the node's fact equal", async () => {
     const { ast, reactive } = setupReactive("x = 42");
     reactive.converge();
 
     const assign = ast.statements[0] as StmtNS.Assign;
-    const before = reactive.units.get(ast)!.hints.get(assign.value);
+    const before = readTypeFact(reactive.factStore, assign.value.id);
     reactive.observeWrite(ast, assign.value, 42);
-    const after = reactive.units.get(ast)!.hints.get(assign.value);
+    const after = readTypeFact(reactive.factStore, assign.value.id);
 
-    expect(after?.type).toEqual(before?.type);
+    expect(after).toEqual(before);
   });
 });

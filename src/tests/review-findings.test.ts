@@ -12,6 +12,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { INT_BIT, BOOL_BIT, BoolRef } from "../specialization";
+import { readTypeFact } from "../specialization/framework/fact-accessors";
 import { buildTestWorklist } from "./utils";
 
 function compileAndRun(code: string): unknown {
@@ -22,7 +23,7 @@ function compileAndRun(code: string): unknown {
   const engine = buildTestWorklist(ast, environments);
   engine.converge();
   const units = engine.units;
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, engine.factStore);
   const program = compiler.compileProgram(ast);
   return SVMLInterpreter.toJSValue(new SVMLInterpreter(program).execute());
 }
@@ -92,15 +93,13 @@ describe("[P2] Ternary result type annotation", () => {
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const engine = buildTestWorklist(ast, environments);
     engine.converge();
-    const units = engine.units;
-    const rootUnit = units.get(ast)!;
 
     const simpleExpr = ast.statements[0] as any;
     const ternary = simpleExpr.expression;
-    const hint = rootUnit.hints.get(ternary);
+    const type = readTypeFact(engine.factStore, ternary.id);
     // Currently TOP (all kinds set). Should be INT_BIT once fixed.
     // Flip this expectation to INT_BIT after the fix lands.
-    expect(hint?.type?.kinds).not.toBe(INT_BIT);
+    expect(type?.kinds).not.toBe(INT_BIT);
   });
 });
 
@@ -144,21 +143,19 @@ acc
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const engine = buildTestWorklist(ast, environments);
     engine.converge();
-    const units = engine.units;
-    const rootUnit = units.get(ast)!;
 
     // The for-loop is stmt[1]. Its body[1] is `acc > 0` (a SimpleExpr).
     const forStmt = ast.statements[1] as any;
     const cmpExpr = forStmt.body[1].expression; // acc > 0
-    const hint = rootUnit.hints.get(cmpExpr);
+    const type = readTypeFact(engine.factStore, cmpExpr.id);
 
     // The comparison should be annotated as BOOL (kind = BOOL_BIT).
-    expect(hint?.type?.kinds).toBe(BOOL_BIT);
+    expect(type?.kinds).toBe(BOOL_BIT);
 
     // With single-pass: acc=INT(Zero) at body entry, so acc > 0 may annotate as False.
     // Document current behaviour — boolRef is False (imprecise but harmless today).
     // If this starts being used for branch elimination, this test will catch the regression.
-    const boolRef = hint?.type?.boolRef;
+    const boolRef = type?.boolRef;
     // The loop variable i = TOP propagates through acc + i → INT(Top),
     // so acc > 0 correctly annotates as BOOL(Top) even in a single pass.
     // P3 is moot: the one-pass analysis is precise enough here.

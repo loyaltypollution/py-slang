@@ -1,7 +1,9 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
-import type { OptimizationHint } from "../../specialization";
-import type { HintStore } from "../../specialization/framework/hint";
+import type { ConstLattice } from "../../specialization/const-analysis/lattice";
+import type { TypeLattice } from "../../specialization/type-analysis/lattice";
+import { readTypeFact, readConstFact } from "../../specialization/framework/fact-accessors";
+import type { FactStore } from "../../specialization/framework/fact-store";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import { ScopeIndexMap } from "./scope-index-map";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
@@ -23,10 +25,7 @@ const I32_MAX = 2_147_483_647;
  * cannot refine it further. Used to elide observation-site recording on
  * trivially monomorphic stores.
  */
-function isHintConcrete(hint: OptimizationHint | undefined): boolean {
-  if (!hint) return false;
-  const type = hint.type;
-  const constVal = hint.constVal;
+function isConcrete(type: TypeLattice | undefined, constVal: ConstLattice | undefined): boolean {
   if (!type || !constVal) return false;
   // Singleton kind: exactly one bit set.
   const kinds = type.kinds;
@@ -52,7 +51,7 @@ export class SVMLCompiler
   private currentEnvironment: Environment;
   private functionEnvironments: FunctionEnvironments;
   private isTailCall: boolean;
-  private hints: HintStore | undefined;
+  private factStore: FactStore | undefined;
   private unitMap?: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
   private _scopeIndexMap?: ScopeIndexMap;
   /**
@@ -83,17 +82,17 @@ export class SVMLCompiler
     currentEnvironment: Environment,
     functionEnvironments: FunctionEnvironments,
     builder: SVMLIRBuilder,
-    hints?: HintStore,
+    factStore?: FactStore,
   ) {
     this.builder = builder;
     this.currentEnvironment = currentEnvironment;
     this.functionEnvironments = functionEnvironments;
     this.isTailCall = false;
-    this.hints = hints;
+    this.factStore = factStore;
   }
 
-  setHints(hints: HintStore): void {
-    this.hints = hints;
+  setFactStore(factStore: FactStore): void {
+    this.factStore = factStore;
   }
 
   /** Scope → function index map, populated during compilation via fromProgramUnit(). */
@@ -101,8 +100,12 @@ export class SVMLCompiler
     return this._scopeIndexMap;
   }
 
-  private getHint(node: ExprNS.Expr | StmtNS.Stmt): OptimizationHint | undefined {
-    return this.hints?.get(node);
+  private getType(node: ExprNS.Expr | StmtNS.Stmt): TypeLattice | undefined {
+    return this.factStore ? readTypeFact(this.factStore, node.id) : undefined;
+  }
+
+  private getConst(node: ExprNS.Expr | StmtNS.Stmt): ConstLattice | undefined {
+    return this.factStore ? readConstFact(this.factStore, node.id) : undefined;
   }
 
   /**
@@ -161,14 +164,11 @@ export class SVMLCompiler
     return compiler;
   }
 
-  /**
-   * Create SVMLCompiler wired to a unit map from optimize().
-   * Each child compiler automatically gets the correct per-function hints.
-   */
   static fromProgramUnit(
     program: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
     unitMap: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
+    factStore?: FactStore,
   ): SVMLCompiler {
     const mainEnv = functionEnvironments.get(program);
     if (!mainEnv) {
@@ -177,8 +177,7 @@ export class SVMLCompiler
     const functionIndices = SVMLCompiler.computeFunctionIndices(program);
     const builder = new SVMLIRBuilder(0, functionIndices.get(program)!);
     builder.setScopeKey(program);
-    const rootHints = unitMap.get(program)?.hints;
-    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, rootHints);
+    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, factStore);
     compiler.unitMap = unitMap;
     compiler.functionIndices = functionIndices;
 
@@ -214,15 +213,11 @@ export class SVMLCompiler
       builder.setScopeKey(node);
     }
 
-    // Per-unit hints: if a FunctionUnit exists for this scope, use its HintStore
-    const childUnit = this.unitMap?.get(node as StmtNS.FunctionDef);
-    const childHints = childUnit?.hints ?? this.hints;
-
     const compiler = new SVMLCompiler(
       nextEnvironment,
       this.functionEnvironments,
       builder,
-      childHints,
+      this.factStore,
     );
     compiler.unitMap = this.unitMap;
     compiler._scopeIndexMap = this._scopeIndexMap;
@@ -298,12 +293,11 @@ export class SVMLCompiler
     const builder = new SVMLIRBuilder(numArgs, index);
     builder.setScopeKey(funcAst);
 
-    const childHints = unit.hints;
     const subCompiler = new SVMLCompiler(
       nextEnvironment,
       this.functionEnvironments,
       builder,
-      childHints,
+      this.factStore,
     );
     subCompiler.unitMap = this.unitMap;
     subCompiler._scopeIndexMap = this._scopeIndexMap;
@@ -543,8 +537,8 @@ export class SVMLCompiler
 
   /** True when both operands have a statically known numeric type (int or float). */
   private bothNumeric(left: ExprNS.Expr, right: ExprNS.Expr): boolean {
-    const lk = this.getHint(left)?.type?.kinds;
-    const rk = this.getHint(right)?.type?.kinds;
+    const lk = this.getType(left)?.kinds;
+    const rk = this.getType(right)?.kinds;
     return (lk === INT_BIT || lk === FLOAT_BIT) && (rk === INT_BIT || rk === FLOAT_BIT);
   }
 
@@ -618,11 +612,11 @@ export class SVMLCompiler
 
     switch (expr.operator.type) {
       case TokenType.NOT: {
-        opcode = this.getHint(expr.right)?.type?.kinds === BOOL_BIT ? OpCodes.NOTB : OpCodes.NOTG;
+        opcode = this.getType(expr.right)?.kinds === BOOL_BIT ? OpCodes.NOTB : OpCodes.NOTG;
         break;
       }
       case TokenType.MINUS: {
-        const k = this.getHint(expr.right)?.type?.kinds;
+        const k = this.getType(expr.right)?.kinds;
         opcode = k === INT_BIT || k === FLOAT_BIT ? OpCodes.NEGF : OpCodes.NEGG;
         break;
       }
@@ -736,7 +730,7 @@ export class SVMLCompiler
     // RHS hint is already concrete (singleton type kind + known constVal) —
     // a runtime observation cannot refine it further, so the Map.get(pc) on
     // every STORE would be dead overhead.
-    if (!isHintConcrete(this.getHint(stmt.value))) {
+    if (!isConcrete(this.getType(stmt.value), this.getConst(stmt.value))) {
       this.builder.recordWriteSite(stmt.value);
     }
     this.emitStoreSymbol((stmt.target as ExprNS.Variable).name);

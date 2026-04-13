@@ -12,7 +12,8 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { buildTestWorklist } from "./utils";
 import type { FunctionUnit } from "../specialization/framework/function-unit";
-import type { HintStore } from "../specialization/framework/hint";
+import type { FactStore } from "../specialization/framework/fact-store";
+import { readConstFact } from "../specialization/framework/fact-accessors";
 
 function parseAndResolve(code: string) {
   const script = code + "\n";
@@ -31,47 +32,6 @@ function serializeStmts(stmts: StmtNS.Stmt[]): string {
   });
 }
 
-/**
- * Collect all hint entries from a HintStore by scanning the unit's body.
- * Returns a map of nodeId → hint for comparison.
- */
-function collectHints(hints: HintStore, stmts: StmtNS.Stmt[]): Map<string, unknown> {
-  const result = new Map<string, unknown>();
-  function visitExpr(expr: any): void {
-    if (!expr || typeof expr !== "object") return;
-    if (typeof expr.id === "number") {
-      const hint = hints.get(expr);
-      if (hint) result.set(String(expr.id), hint);
-    }
-    for (const key of Object.keys(expr)) {
-      if (key === "startToken" || key === "endToken") continue;
-      const val = expr[key];
-      if (Array.isArray(val)) val.forEach(visitExpr);
-      else if (val && typeof val === "object" && typeof val.id === "number") visitExpr(val);
-    }
-  }
-  function visitStmt(stmt: any): void {
-    if (!stmt || typeof stmt !== "object") return;
-    if (typeof stmt.id === "number") {
-      const hint = hints.get(stmt);
-      if (hint) result.set(String(stmt.id), hint);
-    }
-    for (const key of Object.keys(stmt)) {
-      if (key === "startToken" || key === "endToken") continue;
-      const val = stmt[key];
-      if (Array.isArray(val))
-        val.forEach((v: any) => {
-          if (v && typeof v === "object") {
-            if (v instanceof StmtNS.Stmt) visitStmt(v);
-            else visitExpr(v);
-          }
-        });
-      else if (val && typeof val === "object" && typeof val.id === "number") visitExpr(val);
-    }
-  }
-  stmts.forEach(visitStmt);
-  return result;
-}
 
 // ── Differential tests: reactive vs one-shot ────────────────────────────────
 
@@ -231,32 +191,28 @@ describe("Worklist: post-optimization AST", () => {
 });
 
 describe("Worklist: post-optimization hints", () => {
-  function analyse(code: string): { hints: HintStore; body: StmtNS.Stmt[] } {
+  function analyse(code: string): { factStore: FactStore; body: StmtNS.Stmt[] } {
     const { ast, environments } = parseAndResolve(code);
     const reactive = buildTestWorklist(ast, environments);
     reactive.converge();
     const unit = reactive.units.get(ast)!;
-    return { hints: unit.hints, body: unit.body };
+    return { factStore: reactive.factStore, body: unit.body };
   }
 
   test("x = 3 + 4: BinOp (pre-fold) or Literal(7) (post-fold) has constVal const(7)", () => {
-    // After convergence, 3+4 has already folded to Literal(7). Verify either
-    // the surviving Literal carries constVal=const(7), OR (if folding didn't
-    // fire for some reason) the original BinOp does.
-    const { hints, body } = analyse("x = 3 + 4");
+    const { factStore, body } = analyse("x = 3 + 4");
     const assign = body[0] as StmtNS.Assign;
-    const hint = hints.get(assign.value) as any;
-    expect(hint?.constVal?.tag).toBe("const");
-    expect(hint?.constVal?.value).toBe(7);
+    const cv = readConstFact(factStore, assign.value.id);
+    expect(cv?.tag).toBe("const");
+    expect((cv as any)?.value).toBe(7);
   });
 
   test("variable propagation: x = 5; y = x + 2 → x+2 has constVal const(7)", () => {
-    const { hints, body } = analyse("x = 5\ny = x + 2");
-    // After convergence, x + 2 folds to 7. Grab the second assignment's value.
+    const { factStore, body } = analyse("x = 5\ny = x + 2");
     const assignY = body[1] as StmtNS.Assign;
-    const hint = hints.get(assignY.value) as any;
-    expect(hint?.constVal?.tag).toBe("const");
-    expect(hint?.constVal?.value).toBe(7);
+    const cv = readConstFact(factStore, assignY.value.id);
+    expect(cv?.tag).toBe("const");
+    expect((cv as any)?.value).toBe(7);
   });
 });
 

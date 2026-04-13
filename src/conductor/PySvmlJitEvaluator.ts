@@ -45,7 +45,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       ]);
       worklist.converge();
 
-      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units);
+      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units, worklist.factStore);
       const program = compiler.compileProgram(ast);
 
       // Per-callee raw count map for runtimeCallPass.

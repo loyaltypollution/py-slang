@@ -26,7 +26,7 @@ function buildUnit(code: string) {
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const reactive = buildTestWorklist(ast, environments);
   reactive.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, reactive.factStore);
   const program = compiler.compileProgram(ast);
   return { ast, environments, reactive, compiler, program };
 }

@@ -1,6 +1,7 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import { type HintStore, type OptimizationHint } from "../framework/hint";
+import { readConstFact, writeConstFact } from "../framework/fact-accessors";
+import type { FactStore } from "../framework/fact-store";
 import type { AnalysisPass } from "../framework/interfaces";
 import type { SlotLookup } from "../framework/slot-table";
 import {
@@ -19,13 +20,13 @@ export { constJoin, constLeq, constMeet };
 
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
-    private readonly hints: HintStore,
+    private readonly factStore: FactStore,
     private readonly constEnv: { get(slot: number): ConstLattice | undefined },
     private readonly slotLookup: SlotLookup,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
-    this.hints.updateField(node.id, "constVal", val);
+    writeConstFact(this.factStore, node.id, val);
     return val;
   }
 
@@ -235,22 +236,22 @@ export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
   }
 
   makeExprVisitor(
-    hints: HintStore,
+    factStore: FactStore,
     env: { get(slot: number): ConstLattice | undefined },
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<ConstLattice> {
-    return new ConstAnalysisVisitor(hints, env, slotLookup);
+    return new ConstAnalysisVisitor(factStore, env, slotLookup);
   }
 
-  observeWrite(hint: OptimizationHint, rawValue: unknown): OptimizationHint {
-    // Return `hint` unchanged (don't widen to CONST_TOP) when there is no
-    // useful constant — widening would erase existing static constants.
+  observeWrite(factStore: FactStore, id: number, rawValue: unknown): void {
+    // No-op (don't widen to CONST_TOP) when there is no useful constant —
+    // widening would erase existing static constants.
     const value = liftConst(rawValue);
-    if (value === undefined) return hint;
+    if (value === undefined) return;
     // Widen via constJoin — two different observed constants collapse to CONST_TOP.
-    const prev = hint.constVal;
+    const prev = readConstFact(factStore, id);
     const next = prev ? constJoin(prev, value) : value;
-    return { ...hint, constVal: next };
+    writeConstFact(factStore, id, next);
   }
 }
 

@@ -7,12 +7,7 @@
 // `../framework/migrated-passes.ts`), fed by `runtimeCallPass` writes
 // that `Worklist.observeCall` dispatches on each recorded call.
 //
-// Only the hint-field name and the firing threshold remain here — both
-// are still consumed by `MemoizationTransformRule.matches` as the
-// hint-surface keys into `OptimizationHint`.
+// Only the firing threshold remains here.
 
 /** Number of recorded calls after which MemoizationTransformRule may fire. */
 export const MEMOIZATION_THRESHOLD = 10;
-
-/** Name of the hint field this pass writes to. */
-export const CALL_COUNT_FIELD = "callCount" as const;

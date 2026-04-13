@@ -1,11 +1,11 @@
 // Singleton `Pass<K, V>` factories for migrated analyses and transforms.
 //
 // Wiring:
-//   - Node-keyed analyses (`typeAnalysisPass`, `constAnalysisPass`) back
-//     the corresponding `OptimizationHint` fields; HintStore writes route
-//     to these pass cells.
-//   - Scope-keyed passes (`purityScopePass`, `callCountPass`) back
-//     `pure` / `callCount`, keyed by owning `FunctionDef.id`.
+//   - Node-keyed analyses (`typeAnalysisPass`, `constAnalysisPass`) are
+//     populated by the analysis visitors writing directly through the
+//     fact-store accessors in `fact-accessors.ts`.
+//   - Scope-keyed passes (`purityScopePass`, `callCountPass`) keyed by
+//     owning `FunctionDef.id`.
 //   - Transforms (`deadBranchRule`, `constantFoldingRule`,
 //     `memoizationRule`) are top-only `Pass<K, "fired">`. The top-only
 //     `"fired"` lattice is the re-fire guard: once set, a re-write yields
@@ -39,8 +39,9 @@ const typeLattice: Lattice<TypeLattice> = {
   join: typeJoin,
 };
 
-// PR-4: transfer is a no-op — legacy DFA drives values via HintStore
-// write-through into this pass's fact cell.
+// Transfer is a no-op: values are written directly by the analysis
+// visitors via `writeTypeFact`; this pass exists as a Pass<K, V> handle so
+// downstream readers can subscribe via the normal pass-graph mechanism.
 export const typeAnalysisPass: Pass<number, TypeLattice> = {
   id: Symbol("typeAnalysisPass"),
   debugName: "typeAnalysisPass",
@@ -92,8 +93,7 @@ const purityLattice: Lattice<PurityPoint> = {
   },
 };
 
-// Key is the owning FunctionDef.id, matching the HintStore route so
-// `hintsFor(fd).pure` sees the transfer's output with no adapter.
+// Key is the owning FunctionDef.id.
 // Initial converge is primed from worklist.processTransform.
 export const purityScopePass: Pass<number, PurityPoint> = {
   id: Symbol("purityScopePass"),
@@ -168,7 +168,7 @@ const firedLattice: Lattice<Fired> = {
 // ctx, affectedKeys defers to the explicit seed from `processTransform`.
 function unitSweepRule(
   name: string,
-  sweep: (unit: FunctionUnit) => boolean,
+  sweep: (unit: FunctionUnit, factStore: import("./fact-store").FactStore) => boolean,
 ): Pass<FunctionUnit, Fired> {
   return {
     id: Symbol(name),
@@ -182,8 +182,8 @@ function unitSweepRule(
       }
       return [];
     },
-    transfer(_ctx: PassCtx, key: FunctionUnit): Fired {
-      if (!sweep(key)) return undefined;
+    transfer(ctx: PassCtx, key: FunctionUnit): Fired {
+      if (!sweep(key, ctx.factStore)) return undefined;
       return "fired";
     },
   };

@@ -17,20 +17,21 @@
 // no downstream consumer wakes spuriously.
 
 import { StmtNS } from "../../ast-types";
-import type { HintStore } from "../framework/hint";
+import { readConstFact } from "../framework/fact-accessors";
+import type { FactStore } from "../framework/fact-store";
 import type { ConstLattice } from "../const-analysis/lattice";
 import type { FunctionUnit } from "../framework/function-unit";
 
 /** Does this `if`-stmt have a statically-known boolean condition? */
-function matchesIf(stmt: StmtNS.Stmt, hints: HintStore): stmt is StmtNS.If {
+function matchesIf(stmt: StmtNS.Stmt, factStore: FactStore): stmt is StmtNS.If {
   if (!(stmt instanceof StmtNS.If)) return false;
-  const cv = hints.get(stmt.condition)?.constVal;
+  const cv = readConstFact(factStore, stmt.condition.id);
   return cv?.tag === "const" && typeof cv.value === "boolean";
 }
 
 /** Replace an `if <const bool>:` with the taken branch body. */
-function applyIf(ifStmt: StmtNS.If, hints: HintStore): StmtNS.Stmt[] {
-  const cv = hints.get(ifStmt.condition)!.constVal as ConstLattice & { tag: "const" };
+function applyIf(ifStmt: StmtNS.If, factStore: FactStore): StmtNS.Stmt[] {
+  const cv = readConstFact(factStore, ifStmt.condition.id) as ConstLattice & { tag: "const" };
   return cv.value ? ifStmt.body : (ifStmt.elseBlock ?? []);
 }
 
@@ -44,14 +45,14 @@ function applyIf(ifStmt: StmtNS.If, hints: HintStore): StmtNS.Stmt[] {
  */
 class DeadBranchVisitor implements StmtNS.Visitor<void> {
   changed = false;
-  constructor(private readonly hints: HintStore) {}
+  constructor(private readonly factStore: FactStore) {}
 
   sweep(stmts: StmtNS.Stmt[]): void {
     let i = 0;
     while (i < stmts.length) {
       const s = stmts[i];
-      if (matchesIf(s, this.hints)) {
-        const replacements = applyIf(s, this.hints);
+      if (matchesIf(s, this.factStore)) {
+        const replacements = applyIf(s, this.factStore);
         stmts.splice(i, 1, ...replacements);
         this.changed = true;
         // Do not advance i: inspect the newly spliced-in head as the
@@ -99,8 +100,8 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
  * `deadBranchRule.transfer`; the worklist marks the scope structurally
  * dirty and bumps the `structuralPass` version when this returns `true`.
  */
-export function applyDeadBranchSweep(unit: FunctionUnit): boolean {
-  const v = new DeadBranchVisitor(unit.hints);
+export function applyDeadBranchSweep(unit: FunctionUnit, factStore: FactStore): boolean {
+  const v = new DeadBranchVisitor(factStore);
   v.sweep(unit.body);
   return v.changed;
 }

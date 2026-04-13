@@ -18,13 +18,13 @@ import { analyzeWithEnvironments } from "../resolver";
 import {
   clearMemoCache,
   MEMOIZATION_THRESHOLD,
-  CALL_COUNT_FIELD,
   memoCacheSnapshot,
   memoizationRule,
   memoLookup,
   MEMO_MISS,
   memoPut,
 } from "../specialization";
+import { readCallCountFact } from "../specialization/framework/fact-accessors";
 import type { FunctionUnit } from "../specialization/framework/function-unit";
 import type { Worklist } from "../specialization";
 import { buildTestWorklist } from "./utils";
@@ -55,12 +55,11 @@ describe("CallCountScopePass + transform", () => {
     const { ast, reactive } = setup("def f(x):\n    return x + 1");
     reactive.converge();
     const fd = findFunctionDef(ast, "f");
-    const calleeUnit = reactive.units.get(fd)!;
 
-    expect(calleeUnit.hints.get(fd)?.[CALL_COUNT_FIELD]).toBeUndefined();
+    expect(readCallCountFact(reactive.factStore, fd.id)).toBeUndefined();
 
     for (let i = 0; i < 3; i++) reactive.observeCall(ast, fd);
-    expect(calleeUnit.hints.get(fd)?.[CALL_COUNT_FIELD]).toBe(3);
+    expect(readCallCountFact(reactive.factStore, fd.id)).toBe(3);
   });
 
   test("below threshold: no transform", () => {

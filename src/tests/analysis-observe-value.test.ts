@@ -1,11 +1,17 @@
 /**
  * Unit tests for AnalysisPass.observeWrite — the per-analysis reaction to a
- * runtime write. Lifts a raw value into the lattice and merges into the hint
- * in one step (join semantics; never narrows).
+ * runtime write. Lifts a raw value into the lattice and merges into the
+ * corresponding fact cell in one step (join semantics; never narrows).
  */
 
 import { ConstAnalysisPass } from "../specialization/const-analysis/analysis";
 import { TypeAnalysisPass } from "../specialization/type-analysis/analysis";
+import { FactStore } from "../specialization/framework/fact-store";
+import {
+  readConstFact,
+  readTypeFact,
+  writeConstFact,
+} from "../specialization/framework/fact-accessors";
 import {
   BOOL_BIT,
   INT_BIT,
@@ -15,6 +21,9 @@ import {
   FLOAT_BIT,
 } from "../specialization/type-analysis/lattice";
 import { constOf, CONST_TOP } from "../specialization/const-analysis/lattice";
+
+let nextId = 1;
+const freshId = () => nextId++;
 
 describe("TypeAnalysisPass.observeWrite", () => {
   const m = new TypeAnalysisPass();
@@ -29,10 +38,13 @@ describe("TypeAnalysisPass.observeWrite", () => {
     ["raw string", "hello", STR_BIT],
     ["raw null", null, NULL_BIT],
     ["raw undefined", undefined, NULL_BIT],
-  ])("%s → correct kind bit on hint.type", (_name, raw, expectedBit) => {
-    const merged = m.observeWrite!({}, raw);
-    expect(merged.type).toBeDefined();
-    expect(merged.type!.kinds & expectedBit).toBeTruthy();
+  ])("%s → correct kind bit on type fact", (_name, raw, expectedBit) => {
+    const fs = new FactStore();
+    const id = freshId();
+    m.observeWrite!(fs, id, raw);
+    const t = readTypeFact(fs, id);
+    expect(t).toBeDefined();
+    expect(t!.kinds & expectedBit).toBeTruthy();
   });
 
   test.each([
@@ -43,29 +55,41 @@ describe("TypeAnalysisPass.observeWrite", () => {
     ["tagged closure", { type: "closure", closure: {} }, CLOSURE_BIT],
     ["tagged function", { type: "function" }, CLOSURE_BIT],
     ["tagged builtin", { type: "builtin" }, CLOSURE_BIT],
-  ])("%s → correct kind bit on hint.type", (_name, raw, expectedBit) => {
-    const merged = m.observeWrite!({}, raw);
-    expect(merged.type).toBeDefined();
-    expect(merged.type!.kinds & expectedBit).toBeTruthy();
+  ])("%s → correct kind bit on type fact", (_name, raw, expectedBit) => {
+    const fs = new FactStore();
+    const id = freshId();
+    m.observeWrite!(fs, id, raw);
+    const t = readTypeFact(fs, id);
+    expect(t).toBeDefined();
+    expect(t!.kinds & expectedBit).toBeTruthy();
   });
 
-  test("unknown shape leaves hint unchanged", () => {
-    const base = { type: undefined };
-    expect(m.observeWrite!(base, { foo: "bar" })).toBe(base);
-    expect(m.observeWrite!(base, Symbol("x"))).toBe(base);
+  test("unknown shape leaves fact unchanged", () => {
+    const fs = new FactStore();
+    const id = freshId();
+    m.observeWrite!(fs, id, { foo: "bar" });
+    expect(readTypeFact(fs, id)).toBeUndefined();
+    m.observeWrite!(fs, id, Symbol("x"));
+    expect(readTypeFact(fs, id)).toBeUndefined();
   });
 
-  test("widens (join) when hint already has a type", () => {
-    const afterInt = m.observeWrite!({}, 42);
-    const afterBoth = m.observeWrite!(afterInt, "hello");
-    expect(afterBoth.type!.kinds & INT_BIT).toBeTruthy();
-    expect(afterBoth.type!.kinds & STR_BIT).toBeTruthy();
+  test("widens (join) when fact already has a type", () => {
+    const fs = new FactStore();
+    const id = freshId();
+    m.observeWrite!(fs, id, 42);
+    m.observeWrite!(fs, id, "hello");
+    const t = readTypeFact(fs, id)!;
+    expect(t.kinds & INT_BIT).toBeTruthy();
+    expect(t.kinds & STR_BIT).toBeTruthy();
   });
 
-  test("preserves other hint fields", () => {
-    const merged = m.observeWrite!({ constVal: constOf(42) }, 42);
-    expect(merged.constVal).toEqual(constOf(42));
-    expect(merged.type).toBeDefined();
+  test("preserves other fact fields (distinct pass cells)", () => {
+    const fs = new FactStore();
+    const id = freshId();
+    writeConstFact(fs, id, constOf(42));
+    m.observeWrite!(fs, id, 42);
+    expect(readConstFact(fs, id)).toEqual(constOf(42));
+    expect(readTypeFact(fs, id)).toBeDefined();
   });
 });
 
@@ -73,41 +97,66 @@ describe("ConstAnalysisPass.observeWrite", () => {
   const m = new ConstAnalysisPass();
 
   test("primitive number → constVal set", () => {
-    expect(m.observeWrite!({}, 42).constVal).toEqual(constOf(42));
+    const fs = new FactStore();
+    const id = freshId();
+    m.observeWrite!(fs, id, 42);
+    expect(readConstFact(fs, id)).toEqual(constOf(42));
   });
 
   test("primitive string → constVal set", () => {
-    expect(m.observeWrite!({}, "hello").constVal).toEqual(constOf("hello"));
+    const fs = new FactStore();
+    const id = freshId();
+    m.observeWrite!(fs, id, "hello");
+    expect(readConstFact(fs, id)).toEqual(constOf("hello"));
   });
 
   test("primitive bool → constVal set", () => {
-    expect(m.observeWrite!({}, true).constVal).toEqual(constOf(true));
+    const fs = new FactStore();
+    const id = freshId();
+    m.observeWrite!(fs, id, true);
+    expect(readConstFact(fs, id)).toEqual(constOf(true));
   });
 
   test("tagged number → constVal set", () => {
-    expect(m.observeWrite!({}, { type: "number", value: 42 }).constVal).toEqual(constOf(42));
+    const fs = new FactStore();
+    const id = freshId();
+    m.observeWrite!(fs, id, { type: "number", value: 42 });
+    expect(readConstFact(fs, id)).toEqual(constOf(42));
   });
 
-  test("non-primitive leaves hint unchanged (does not widen to CONST_TOP)", () => {
+  test("non-primitive leaves fact unchanged (does not widen to CONST_TOP)", () => {
     // Critical: widening to CONST_TOP would erase existing constants.
-    const base = { constVal: constOf(42) };
-    expect(m.observeWrite!(base, { type: "closure" })).toBe(base);
-    expect(m.observeWrite!(base, { type: "list", value: [] })).toBe(base);
-    expect(m.observeWrite!(base, null)).toBe(base);
+    const fs = new FactStore();
+    const id = freshId();
+    writeConstFact(fs, id, constOf(42));
+    m.observeWrite!(fs, id, { type: "closure" });
+    expect(readConstFact(fs, id)).toEqual(constOf(42));
+    m.observeWrite!(fs, id, { type: "list", value: [] });
+    expect(readConstFact(fs, id)).toEqual(constOf(42));
+    m.observeWrite!(fs, id, null);
+    expect(readConstFact(fs, id)).toEqual(constOf(42));
   });
 
   test("same value twice → unchanged constVal", () => {
-    const after = m.observeWrite!({ constVal: constOf(42) }, 42);
-    expect(after.constVal).toEqual(constOf(42));
+    const fs = new FactStore();
+    const id = freshId();
+    writeConstFact(fs, id, constOf(42));
+    m.observeWrite!(fs, id, 42);
+    expect(readConstFact(fs, id)).toEqual(constOf(42));
   });
 
   test("different values → widens to CONST_TOP", () => {
-    const after = m.observeWrite!({ constVal: constOf(42) }, 99);
-    expect(after.constVal).toEqual(CONST_TOP);
+    const fs = new FactStore();
+    const id = freshId();
+    writeConstFact(fs, id, constOf(42));
+    m.observeWrite!(fs, id, 99);
+    expect(readConstFact(fs, id)).toEqual(CONST_TOP);
   });
 
-  test("preserves other hint fields", () => {
-    const after = m.observeWrite!({ type: undefined }, 42);
-    expect(after.constVal).toEqual(constOf(42));
+  test("preserves other fact fields (distinct pass cells)", () => {
+    const fs = new FactStore();
+    const id = freshId();
+    m.observeWrite!(fs, id, 42);
+    expect(readConstFact(fs, id)).toEqual(constOf(42));
   });
 });

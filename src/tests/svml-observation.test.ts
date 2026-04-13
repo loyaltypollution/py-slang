@@ -7,7 +7,7 @@
 import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { HintStore } from "../specialization";
+import { readTypeFact } from "../specialization/framework/fact-accessors";
 import { buildTestWorklist } from "./utils";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
@@ -22,7 +22,7 @@ function build(code: string) {
 }
 
 describe("SVML observation sink", () => {
-  test("runtime string store widens the RHS hint via observeWrite", async () => {
+  test("runtime string store widens the RHS fact via observeWrite", async () => {
     const code = `
 x = 1
 x = "hello"
@@ -30,28 +30,20 @@ x = "hello"
     const { ast, environments, reactive } = build(code);
     reactive.converge();
 
-    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units);
+    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, reactive.factStore);
     const program = compiler.compileProgram(ast);
 
     const interpreter = new SVMLInterpreter(program, { observationSink: reactive });
 
-    const merged = new HintStore();
-    const mergeUnit = (u: { hints: HintStore } | undefined) => {
-      if (u) for (const [id, hint] of u.hints) merged.setById(id, hint);
-    };
-
     await interpreter.execute();
     reactive.tick();
 
-    // Re-merge after the run so any runtime-observation widening lands.
-    for (const unit of reactive.units.values()) mergeUnit(unit);
-
     const secondAssign = ast.statements[1] as StmtNS.Assign;
-    const hint = merged.get(secondAssign.value);
-    expect(hint?.type?.kinds).toBeDefined();
+    const type = readTypeFact(reactive.factStore, secondAssign.value.id);
+    expect(type).toBeDefined();
     // String literal RHS: either static analysis or the runtime observation
     // should have recorded STR_BIT.
-    expect(hint!.type!.kinds & STR_BIT).toBeTruthy();
+    expect(type!.kinds & STR_BIT).toBeTruthy();
   });
 
   test("observeCall fires with caller/callee scope keys on user-function calls", async () => {
@@ -76,7 +68,7 @@ f()
       },
     };
 
-    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units);
+    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, reactive.factStore);
     const program = compiler.compileProgram(ast);
     const interpreter = new SVMLInterpreter(program, { observationSink: sink });
 
