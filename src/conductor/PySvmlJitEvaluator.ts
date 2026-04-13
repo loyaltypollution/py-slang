@@ -3,13 +3,13 @@ import { StmtNS } from "../ast-types";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
-import { analyzeWithEnvironments } from "../resolver";
+import { analyzeWithEnvironments, FunctionEnvironments } from "../resolver";
 import { buildFunctionUnits } from "../specialization";
 import {
   Db,
   astOf,
   environmentsOf,
-  optimizedAstOf,
+  optimizedLoweredOf,
   runtimeCall,
   runtimeWrite,
 } from "../specialization/runtime";
@@ -69,12 +69,12 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           callCounts.set(scopeId, next);
           runtimeCall.set(this.db, scopeId, next);
 
-          // Pull the current lowered AST. Cache + lattice-equals make
+          // Pull the current lowered unit. Cache + lattice-equals make
           // this O(1) once the unit has saturated.
-          const newAst = this.db.get(optimizedAstOf, 0);
-          if (newAst !== undefined && newAst !== this.lastCompiledAst) {
-            this.lastCompiledAst = newAst;
-            this.recompileAndPatch(newAst, interpreter);
+          const lowered = this.db.get(optimizedLoweredOf, 0);
+          if (lowered !== undefined && lowered.ast !== this.lastCompiledAst) {
+            this.lastCompiledAst = lowered.ast;
+            this.recompileAndPatch(lowered.ast, lowered.environments, interpreter);
           }
         },
       });
@@ -87,10 +87,10 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
   }
 
   /**
-   * Whole-unit recompile + patch every function slot. Re-resolves the
-   * lowered AST because lowering passes (notably memoization) synthesize
-   * fresh FunctionDef nodes that the original `functionEnvironments`
-   * map — keyed by node identity — does not contain.
+   * Whole-unit recompile + patch every function slot. The lowering chain
+   * already threaded an extended `environments` map covering the
+   * memoize-synthesized FunctionDef nodes, so the resolver does not need
+   * to run again.
    *
    * `patchFunction` is safe to call mid-execution: it only rewrites the
    * function-table slot. Live `CallFrame.ir` references captured at CALL
@@ -99,17 +99,16 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
    */
   private recompileAndPatch(
     ast: StmtNS.FileInput,
+    environments: FunctionEnvironments,
     interpreter: SVMLInterpreter,
   ): void {
-    // Source text irrelevant for re-resolution of synthesized AST.
-    const { environments: newEnvs } = analyzeWithEnvironments(ast, "", 4);
     // Throwaway Db: the recompile runs on a lowered AST whose node ids no
     // longer match analysis facts in `this.db`, so specialization hints
     // fall back to BOTTOM (safe, generic opcodes) — exactly what we want.
     const rebuildDb = new Db();
     astOf.set(rebuildDb, 0, ast);
-    environmentsOf.set(rebuildDb, 0, newEnvs);
-    const newCompiler = SVMLCompiler.fromProgram(ast, rebuildDb, newEnvs);
+    environmentsOf.set(rebuildDb, 0, environments);
+    const newCompiler = SVMLCompiler.fromProgram(ast, rebuildDb, environments);
     const newProgram = newCompiler.compileProgram(ast);
     for (let i = 0; i < newProgram.functions.length; i++) {
       interpreter.patchFunction(i, newProgram.functions[i]);

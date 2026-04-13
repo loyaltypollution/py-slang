@@ -18,4 +18,9 @@ export {
   astAfterConstFold,
   astAfterMemoize,
   optimizedAstOf,
+  loweredAfterDeadBranch,
+  loweredAfterConstFold,
+  loweredAfterMemoize,
+  optimizedLoweredOf,
+  optimizedEnvironmentsOf,
 } from "./queries/lowering";

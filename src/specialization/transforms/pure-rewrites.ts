@@ -11,11 +11,37 @@
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { ConstLattice } from "../const-analysis/lattice";
+import type { FunctionEnvironments } from "../../resolver/resolver";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokens";
 import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
+
+// A (ast, environments) pair. Lowering queries thread both through the
+// chain because memoize synthesizes new FunctionDef nodes that the resolver
+// did not index; extending the env map incrementally avoids a full re-run
+// of analyzeWithEnvironments on the lowered AST.
+export interface LoweredUnit {
+  ast: StmtNS.FileInput;
+  environments: FunctionEnvironments;
+}
+
+// Helper: when the FileInput wrapper is rebuilt, the env map must carry
+// the root-scope entry forward. Returns a new map only if an extension
+// was needed; otherwise returns the input reference (preserves early cutoff).
+function carryFileInput(
+  envs: FunctionEnvironments,
+  oldAst: StmtNS.FileInput,
+  newAst: StmtNS.FileInput,
+): FunctionEnvironments {
+  if (oldAst === newAst) return envs;
+  const env = envs.get(oldAst);
+  if (env === undefined) return envs;
+  const out: FunctionEnvironments = new Map(envs);
+  out.set(newAst, env);
+  return out;
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -134,12 +160,13 @@ function sweepStmt(
 }
 
 export function rewriteDeadBranch(
-  ast: StmtNS.FileInput,
+  input: LoweredUnit,
   getConst: ConstFactFn,
-): StmtNS.FileInput {
-  const statements = sweepStmts(ast.statements, getConst);
-  if (statements === ast.statements) return ast;
-  return rebuildFileInput(ast, statements);
+): LoweredUnit {
+  const statements = sweepStmts(input.ast.statements, getConst);
+  if (statements === input.ast.statements) return input;
+  const ast = rebuildFileInput(input.ast, statements);
+  return { ast, environments: carryFileInput(input.environments, input.ast, ast) };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -334,12 +361,13 @@ function foldStmts(
 }
 
 export function rewriteConstantFold(
-  ast: StmtNS.FileInput,
+  input: LoweredUnit,
   getConst: ConstFactFn,
-): StmtNS.FileInput {
-  const statements = foldStmts(ast.statements, getConst);
-  if (statements === ast.statements) return ast;
-  return rebuildFileInput(ast, statements);
+): LoweredUnit {
+  const statements = foldStmts(input.ast.statements, getConst);
+  if (statements === input.ast.statements) return input;
+  const ast = rebuildFileInput(input.ast, statements);
+  return { ast, environments: carryFileInput(input.environments, input.ast, ast) };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -449,15 +477,29 @@ export function wrapMemoize(fd: StmtNS.FunctionDef): StmtNS.FunctionDef {
 // Walk top-level statements and wrap any FunctionDef the caller approves.
 // Nested FunctionDefs are not wrapped here — each scope is a separate unit.
 export function rewriteMemoize(
-  ast: StmtNS.FileInput,
+  input: LoweredUnit,
   shouldMemoize: ShouldMemoizeFn,
-): StmtNS.FileInput {
-  const statements = mapShared(ast.statements, (s) => {
+): LoweredUnit {
+  let wraps: Array<[StmtNS.FunctionDef, StmtNS.FunctionDef]> | undefined;
+  const statements = mapShared(input.ast.statements, (s) => {
     if (s instanceof StmtNS.FunctionDef && shouldMemoize(s.id)) {
-      return wrapMemoize(s);
+      const wrapped = wrapMemoize(s);
+      (wraps ??= []).push([s, wrapped]);
+      return wrapped;
     }
     return s;
   });
-  if (statements === ast.statements) return ast;
-  return rebuildFileInput(ast, statements);
+  if (statements === input.ast.statements) return input;
+  const ast = rebuildFileInput(input.ast, statements);
+
+  const environments: FunctionEnvironments = new Map(input.environments);
+  const rootEnv = input.environments.get(input.ast);
+  if (rootEnv !== undefined) environments.set(ast, rootEnv);
+  if (wraps !== undefined) {
+    for (const [oldFd, newFd] of wraps) {
+      const e = input.environments.get(oldFd);
+      if (e !== undefined) environments.set(newFd, e);
+    }
+  }
+  return { ast, environments };
 }

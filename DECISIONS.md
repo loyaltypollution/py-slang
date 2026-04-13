@@ -373,3 +373,71 @@ Second overnight agent run. Audited round 1's self-report without trusting it.
 - Phase A-fix (this commit): remove stale comments in interpreters, fix `§end-of-run` note, collapse `optimizedAstOf` to a re-export (or leave with a brief note justifying the extra cell). Add coverage for while-loop const propagation and nested-function purity only if Phase D leaves time.
 - Proceed to Phase B.
 
+---
+
+## Round 2 Phase B — recompileAndPatch env resolver coupling resolved
+
+`recompileAndPatch` no longer runs `analyzeWithEnvironments` on the lowered
+AST. The fix threads a `LoweredUnit = { ast, environments }` pair through the
+three pure rewriters and their corresponding lowering queries instead of AST
+alone.
+
+### Why this shape
+
+Option 1 considered in round 1 ("mutate the outer FunctionDef in place") was
+rejected — it violates query purity (`astAfterMemoize` would mutate its
+`astAfterConstFold` input). Option 2 ("teach env resolver to synthesize
+entries for new nodes") is what this change implements, but pushed the
+synthesis *into the rewriters* rather than a post-hoc walk. The rewriters
+already know exactly which nodes they replaced; harvesting that mapping
+there is O(replacements) with zero extra tree traversal, vs. O(tree) for a
+two-AST diff.
+
+Only memoize actually replaces `FunctionDef` nodes; dead-branch and
+const-fold only rebuild the outer `FileInput`, so they carry just the
+root-scope entry. `FunctionEnvironments` is keyed solely on
+`FileInput | FunctionDef | Lambda | MultiLambda` (see
+`src/resolver/resolver.ts:15-18`), so synthesized statements inside
+memoize prelude are not scope-introducers and don't need env entries.
+
+### Shape changes
+
+- `LoweredUnit` interface exported from `pure-rewrites.ts`.
+- `rewriteDeadBranch`, `rewriteConstantFold`, `rewriteMemoize` now take and
+  return `LoweredUnit`. Each returns the input reference unchanged when
+  nothing changed (preserves early cutoff).
+- New queries: `loweredAfterDeadBranch`, `loweredAfterConstFold`,
+  `loweredAfterMemoize`, `optimizedLoweredOf` (alias of
+  `loweredAfterMemoize`), `optimizedEnvironmentsOf`.
+- Legacy `astAfterDeadBranch` / `astAfterConstFold` / `astAfterMemoize` /
+  `optimizedAstOf` retained as thin `.ast` projections — no AST-only
+  caller needed to change. Tests + SVML compiler consumers untouched.
+- `PySvmlJitEvaluator` reads `optimizedLoweredOf` (not `optimizedAstOf`)
+  so it gets both AST and environments in one cell lookup; the
+  `analyzeWithEnvironments(ast, "", 4)` call in `recompileAndPatch` is
+  gone.
+
+### Verification
+
+`yarn test`: 36/36 suites, 2572 tests passing. `svml-jit-end-to-end`
+specifically exercises recompile-on-saturation; still green without the
+resolver re-run.
+
+### Secondary cost removed
+
+DECISIONS §Phase 5b-i "secondary cost" note (resolver re-runs synthesized
+nodes) is now closed. If compile-latency micro-benchmarks are added later,
+they should show the call-50 recompile drop by the cost of one full
+resolver pass per wrapped unit.
+
+### Follow-up (not blocking)
+
+- The `astExtractor` projection queries allocate their own cell per stage
+  (name = `astAfterX`) even though they're pure pass-throughs. Acceptable
+  for readability — introspection sees the stage name — but these could be
+  direct property accessors if cell pressure ever matters.
+- `optimizedEnvironmentsOf` is similarly a thin projection. Kept for
+  symmetry with `optimizedAstOf`; consumers needing both fields should
+  read `optimizedLoweredOf` directly (one cell hit instead of two).
+
+
