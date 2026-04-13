@@ -15,7 +15,6 @@ import { buildFunctionUnits, makeOut, type FunctionUnit } from "./function-unit"
 import type { FieldEquals, HintStore, OptimizationHint } from "./hint";
 import type { AnalysisPass } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
-import type { ObservationSink } from "./observation-sink";
 import type { Pass, PassCtx } from "./pass";
 import type { SlotLookup } from "./slot-table";
 import { structuralPass } from "./structural-pass";
@@ -253,18 +252,19 @@ export interface WorklistStats {
  */
 type DirtyReason = "data" | "structural";
 
-// `Worklist implements ObservationSink` — the synchronous surface interpreters
-// call during execution. Synchrony is enforced in-constructor (AsyncFunction
-// check) because TS accepts `() => Promise<void>` where `() => void` is declared.
-export type { ObservationSink } from "./observation-sink";
-
+// Interpreters call `observeWrite` / `observeCall` during execution — the
+// synchronous runtime surface. Synchrony is enforced in-constructor
+// (AsyncFunction check) because TS accepts `() => Promise<void>` where
+// `() => void` is declared. The former `ObservationSink` nominal interface
+// was dropped in PR-D; engines type their `sink` parameter against the
+// structural shape locally.
 type ObservingAnalysis = AnalysisPass<any> & {
   observeWrite: NonNullable<AnalysisPass<any>["observeWrite"]>;
 };
 
 // ── Worklist ────────────────────────────────────────────────────────────────
 
-export class Worklist implements ObservationSink {
+export class Worklist {
   readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
   private readonly analysisQueues: Queue<QueuedBlock>[];
   private readonly transformQueue = new Queue<QueuedTransform>();
@@ -339,20 +339,18 @@ export class Worklist implements ObservationSink {
     this.register(memoizationRule);
     this.factStore.onChange(c => this.handleFactChange(c));
 
-    // Synchrony tripwire: reject `async`-declared ObservationSink methods at
+    // Synchrony tripwire: reject `async`-declared sink methods at
     // construction. TS accepts `() => Promise<void>` where `() => void` is
-    // declared, so this must be checked at runtime.
-    const SINK_METHODS = [
-      "observeWrite",
-      "observeCall",
-    ] as const satisfies readonly (keyof ObservationSink)[];
-    for (const name of SINK_METHODS) {
+    // declared, so this must be checked at runtime. Verified by typeof at
+    // runtime (no compile-time interface dependency after PR-D).
+    const SYNC_ENFORCED_METHODS = ["observeWrite", "observeCall"] as const;
+    for (const name of SYNC_ENFORCED_METHODS) {
       const fn = (this as unknown as Record<string, unknown>)[name];
       if (typeof fn !== "function") {
-        throw new Error(`ObservationSink.${name} was replaced with a non-function value`);
+        throw new Error(`Worklist.${name} was replaced with a non-function value`);
       }
       if ((fn as Function).constructor.name === "AsyncFunction") {
-        throw new Error(`ObservationSink.${name} must be synchronous`);
+        throw new Error(`Worklist.${name} must be synchronous`);
       }
     }
   }

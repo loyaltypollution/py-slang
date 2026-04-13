@@ -1,7 +1,7 @@
 /**
- * Synchrony invariant on `ObservationSink` — enforced at runtime inside
- * `Worklist`'s constructor because TypeScript treats
- * `() => Promise<void>` as assignable to `() => void`.
+ * Synchrony invariant on the worklist's `observeWrite` / `observeCall`
+ * surface — enforced at runtime inside `Worklist`'s constructor because
+ * TypeScript treats `() => Promise<void>` as assignable to `() => void`.
  *
  * The happy path is covered implicitly by every other worklist test. This
  * file pins the tripwire by monkey-patching the prototype with an async
