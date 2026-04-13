@@ -2,6 +2,7 @@ import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
+import type { FactStore } from "./fact-store";
 import { HintStore, type FieldEquals } from "./hint";
 import type { AnalysisPass } from "./interfaces";
 import type { MutableEnv } from "./mutable-env";
@@ -83,6 +84,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     private readonly functionEnvironments: FunctionEnvironments,
     private readonly analyses: readonly AnalysisPass<any>[],
     private readonly fieldEq: ReadonlyMap<string, FieldEquals>,
+    private readonly factStore: FactStore,
   ) {}
 
   register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
@@ -100,7 +102,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     const analysisOuts = this.analyses.map(() => makeOut(cfg));
     const unit: FunctionUnit = {
       funcAst,
-      hints: new HintStore(this.fieldEq),
+      hints: new HintStore(this.factStore, this.fieldEq),
       slotLookup: buildSlotTable(env, paramNames),
       structuralVersion: 0,
       cfg,
@@ -164,9 +166,10 @@ export function buildFunctionUnits(
   functionEnvironments: FunctionEnvironments,
   analyses: readonly AnalysisPass<any>[],
   fieldEq: ReadonlyMap<string, FieldEquals>,
+  factStore: FactStore,
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
-  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, analyses, fieldEq);
+  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, analyses, fieldEq, factStore);
   visitor.register(ast);
   return units;
 }

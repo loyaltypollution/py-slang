@@ -383,7 +383,7 @@ export class Worklist implements ObservationSink {
     }
     this.forbiddenScopeFields = forbidden;
 
-    this.units = buildFunctionUnits(ast, functionEnvironments, analyses, fieldEq);
+    this.units = buildFunctionUnits(ast, functionEnvironments, analyses, fieldEq, this.factStore);
     for (const [key, unit] of this.units) {
       this.seedAnalysis(key, unit);
       this.enqueueTransform(key, unit.generation);
