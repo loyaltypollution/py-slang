@@ -125,7 +125,7 @@ describe("ReactiveOptimization: dual versioning", () => {
     reactive.converge();
 
     for (const unit of reactive.units.values()) {
-      expect(unit.structuralVersion).toBe(0);
+      expect(reactive.structuralVersionOf(unit)).toBe(0);
     }
   });
 
@@ -136,7 +136,7 @@ describe("ReactiveOptimization: dual versioning", () => {
 
     const rootUnit = reactive.units.get(ast);
     expect(rootUnit).toBeDefined();
-    expect(rootUnit!.structuralVersion).toBeGreaterThan(0);
+    expect(reactive.structuralVersionOf(rootUnit!)).toBeGreaterThan(0);
   });
 
   test("tick() returns true when work was done", () => {

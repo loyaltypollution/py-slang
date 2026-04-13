@@ -96,8 +96,8 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
 /**
  * Sweep `unit.body` for `if <const bool>:` statements and splice them
  * out. Returns `true` iff a mutation occurred. Called from
- * `deadBranchRule.transfer`; the worklist bumps `unit.structuralVersion`
- * and marks the scope structurally dirty when this returns `true`.
+ * `deadBranchRule.transfer`; the worklist marks the scope structurally
+ * dirty and bumps the `structuralPass` version when this returns `true`.
  */
 export function applyDeadBranchSweep(unit: FunctionUnit): boolean {
   const v = new DeadBranchVisitor(unit.hints);

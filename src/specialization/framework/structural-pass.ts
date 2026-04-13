@@ -1,10 +1,10 @@
 // src/specialization/framework/structural-pass.ts
 //
 // Singleton `Pass<FunctionUnit, AstVersion>` written through by
-// `Worklist.rebuildStructural`. Value is a monotonically-increasing integer
-// (the unit's `structuralVersion` at the time of the rebuild); every CFG
-// rebuild produces a strictly-greater value, so `lattice.equals` is plain
-// numeric equality and suppresses fan-out when a rebuild is elided.
+// `Worklist.processTransform` (on transform fire) and re-primed by
+// `Worklist.rebuildStructural`. Value is a monotonically-increasing integer;
+// every transform round produces a strictly-greater value, so `lattice.equals`
+// is plain numeric equality and suppresses fan-out when a rebuild is elided.
 //
 // `transfer` is a no-op: this pass is a *source*, not a derived fact. It
 // exists so analyses / transforms / the JIT can declare

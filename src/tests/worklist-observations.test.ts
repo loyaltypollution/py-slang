@@ -71,7 +71,7 @@ x = 1
 
     const funcDef = ast.statements[0] as StmtNS.FunctionDef;
     const calleeUnit = units.get(funcDef)!;
-    const versionBefore = calleeUnit.structuralVersion;
+    const versionBefore = worklist.structuralVersionOf(calleeUnit);
 
     worklist.observeCall(ast, funcDef);
     worklist.drain();
@@ -81,6 +81,6 @@ x = 1
     // (verifiable by subsequent drain producing changed scopes or not — for
     // this sanity test it's enough that no throw occurs).
     expect(worklist.idle).toBe(true);
-    expect(calleeUnit.structuralVersion).toBeGreaterThanOrEqual(versionBefore);
+    expect(worklist.structuralVersionOf(calleeUnit)).toBeGreaterThanOrEqual(versionBefore);
   });
 });
