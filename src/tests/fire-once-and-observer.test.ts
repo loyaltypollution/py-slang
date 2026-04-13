@@ -3,7 +3,7 @@
  *   1. `fireOnce` ScopeTransformRule: after a successful apply, the
  *      scheduler must NOT re-invoke `matches` on the same scope, even when
  *      the scope is re-ticked by a fresh observation. Guards both the new
- *      scheduler plumbing and the `MEMOIZED_FIELD` latch removal.
+ *      scheduler plumbing and the transform-marker latch removal.
  *   2. `ScopePass` dispatch: `addScopePass` passes run once per scope per
  *      generation, and the callObservations buffer accumulates calls
  *      independently of any `AnalysisPass` path.

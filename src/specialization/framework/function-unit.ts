@@ -58,6 +58,15 @@ export interface FunctionUnit {
     readonly callerKey: StmtNS.FileInput | StmtNS.FunctionDef;
     readonly calleeKey: StmtNS.FileInput | StmtNS.FunctionDef;
   }>;
+  /**
+   * Names of transforms whose `apply` has succeeded on this unit. Populated
+   * by the transform itself (`unit.appliedTransforms.add(this.name)`). Read
+   * by external consumers (tests, introspection) to answer "did transform X
+   * fire on this scope?". The scheduler's own re-fire guard is `fireOnce`
+   * bookkeeping on `(scope, rule)` pairs — this set is not consulted for
+   * control flow.
+   */
+  readonly appliedTransforms: Set<string>;
 }
 
 /**
@@ -101,6 +110,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       analysisOuts,
       generation: 0,
       callObservations: [],
+      appliedTransforms: new Set<string>(),
       get body(): StmtNS.Stmt[] {
         return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
       },

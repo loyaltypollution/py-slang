@@ -19,7 +19,6 @@ import {
   clearMemoCache,
   MEMOIZATION_THRESHOLD,
   CALL_COUNT_FIELD,
-  MEMOIZED_FIELD,
   memoCacheSnapshot,
   memoLookup,
   MEMO_MISS,
@@ -65,7 +64,7 @@ describe("CallCountScopePass + transform", () => {
     for (let i = 0; i < MEMOIZATION_THRESHOLD - 1; i++) reactive.observeCall(ast, fd);
     reactive.tick();
 
-    expect(reactive.units.get(fd)!.hints.get(fd)?.[MEMOIZED_FIELD]).toBeFalsy();
+    expect(reactive.units.get(fd)!.appliedTransforms.has("memoization")).toBe(false);
     // Body is still just the original return.
     expect(fd.body.length).toBe(1);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.Return);
@@ -79,8 +78,8 @@ describe("CallCountScopePass + transform", () => {
     for (let i = 0; i < MEMOIZATION_THRESHOLD; i++) reactive.observeCall(ast, fd);
     reactive.tick();
 
-    // Memoized hint set on the FunctionDef.
-    expect(reactive.units.get(fd)!.hints.get(fd)?.[MEMOIZED_FIELD]).toBe(true);
+    // Transform marker recorded on the unit.
+    expect(reactive.units.get(fd)!.appliedTransforms.has("memoization")).toBe(true);
 
     // Body now starts with `if __memo_has(...): return __memo_get(...)`.
     expect(fd.body.length).toBe(2);
@@ -133,7 +132,7 @@ describe("CallCountScopePass + transform", () => {
     for (let i = 0; i < MEMOIZATION_THRESHOLD; i++) reactive.observeCall(ast, fd);
     reactive.tick();
 
-    expect(reactive.units.get(fd)!.hints.get(fd)?.[MEMOIZED_FIELD]).toBe(true);
+    expect(reactive.units.get(fd)!.appliedTransforms.has("memoization")).toBe(true);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.If);
 
     // Runtime slab with empty args: one entry keyed on "" after a put.
@@ -193,7 +192,7 @@ describe("CallCountScopePass + transform", () => {
     for (let i = 0; i < MEMOIZATION_THRESHOLD * 2; i++) reactive.observeCall(ast, fd);
     reactive.tick();
 
-    expect(reactive.units.get(fd)!.hints.get(fd)?.[MEMOIZED_FIELD]).toBeFalsy();
+    expect(reactive.units.get(fd)!.appliedTransforms.has("memoization")).toBe(false);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.Return);
   });
 
@@ -218,7 +217,7 @@ describe("CallCountScopePass + transform", () => {
     for (let i = 0; i < MEMOIZATION_THRESHOLD * 2; i++) reactive.observeCall(ast, fd);
     reactive.tick();
 
-    expect(reactive.units.get(fd)!.hints.get(fd)?.[MEMOIZED_FIELD]).toBeFalsy();
+    expect(reactive.units.get(fd)!.appliedTransforms.has("memoization")).toBe(false);
     // Body length unchanged — no prelude inserted.
     expect(fd.body.length).toBe(2);
   });

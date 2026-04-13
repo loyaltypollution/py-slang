@@ -68,7 +68,6 @@ export {
   CallCountScopePass,
   MEMOIZATION_THRESHOLD,
   CALL_COUNT_FIELD,
-  MEMOIZED_FIELD,
 } from "./memoization-analysis/call-count";
 export {
   PurityEffectAnalysis,

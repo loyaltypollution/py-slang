@@ -26,12 +26,7 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { ScopeTransformRule } from "../framework/interfaces";
 import type { FunctionUnit } from "../framework/function-unit";
-import type { OptimizationHint } from "../framework/hint";
-import {
-  CALL_COUNT_FIELD,
-  MEMOIZATION_THRESHOLD,
-  MEMOIZED_FIELD,
-} from "../memoization-analysis/call-count";
+import { CALL_COUNT_FIELD, MEMOIZATION_THRESHOLD } from "../memoization-analysis/call-count";
 import { PURE_FIELD } from "../memoization-analysis/purity-summary";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokens";
@@ -85,14 +80,10 @@ export class MemoizationTransformRule implements ScopeTransformRule {
     // Splice the prelude as the first statement.
     fd.body.unshift(prelude);
 
-    // Annotate the FunctionDef so external consumers (tests,
-    // introspection) can detect that memoization fired on this scope.
-    // The re-fire guard is provided by the scheduler's `fireOnce`
-    // bookkeeping (this rule sets `fireOnce = true`), not by this
-    // hint — `matches()` no longer reads it.
-    const prev = unit.hints.get(fd) ?? {};
-    const nextHint: OptimizationHint = { ...prev, [MEMOIZED_FIELD]: true };
-    unit.hints.set(fd, nextHint);
+    // Record that this transform fired on this scope so external consumers
+    // (tests, introspection) can observe it. Not consulted by `matches()` —
+    // the re-fire guard is the scheduler's `fireOnce` bookkeeping.
+    unit.appliedTransforms.add(this.name);
 
     return true;
   }

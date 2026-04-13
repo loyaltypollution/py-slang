@@ -22,9 +22,6 @@ export const MEMOIZATION_THRESHOLD = 10;
 /** Name of the open-record hint field this pass writes to. */
 export const CALL_COUNT_FIELD = "callCount";
 
-/** Hint field the memoization transform sets on a FunctionDef after wrapping it. */
-export const MEMOIZED_FIELD = "memoized";
-
 export class CallCountScopePass implements ScopePass {
   readonly name = "callCount";
 
