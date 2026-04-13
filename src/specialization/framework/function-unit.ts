@@ -2,8 +2,6 @@ import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
-import type { FactStore } from "./fact-store";
-import { HintStore, type FieldEquals } from "./hint";
 import type { AnalysisPass } from "./interfaces";
 import type { MutableEnv } from "./mutable-env";
 import type { SlotLookup } from "./slot-table";
@@ -21,7 +19,6 @@ import { buildSlotTable } from "./slot-table";
  */
 export interface FunctionUnit {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
-  readonly hints: HintStore;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
   cfg: CFG;
@@ -43,8 +40,6 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
     private readonly functionEnvironments: FunctionEnvironments,
     private readonly analyses: readonly AnalysisPass<any>[],
-    private readonly fieldEq: ReadonlyMap<string, FieldEquals>,
-    private readonly factStore: FactStore,
   ) {}
 
   register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
@@ -62,7 +57,6 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     const analysisOuts = this.analyses.map(() => makeOut(cfg));
     const unit: FunctionUnit = {
       funcAst,
-      hints: new HintStore(this.factStore, this.fieldEq),
       slotLookup: buildSlotTable(env, paramNames),
       cfg,
       blockMap,
@@ -119,11 +113,9 @@ export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
   analyses: readonly AnalysisPass<any>[],
-  fieldEq: ReadonlyMap<string, FieldEquals>,
-  factStore: FactStore,
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
-  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, analyses, fieldEq, factStore);
+  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, analyses);
   visitor.register(ast);
   return units;
 }

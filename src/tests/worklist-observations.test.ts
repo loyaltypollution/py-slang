@@ -8,6 +8,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import { Worklist } from "../specialization/framework/worklist";
 import { ConstAnalysisPass } from "../specialization/const-analysis/analysis";
 import { TypeAnalysisPass } from "../specialization/type-analysis/analysis";
+import { readTypeFact } from "../specialization/framework/fact-accessors";
 import type { StmtNS } from "../ast-types";
 
 function setup(code: string) {
@@ -22,20 +23,19 @@ function setup(code: string) {
 }
 
 describe("Worklist.observeWrite", () => {
-  test("writes a hint at the target nodeId", () => {
-    const { ast, units, worklist } = setup("x = 1");
+  test("writes a fact at the target nodeId", () => {
+    const { ast, worklist } = setup("x = 1");
     worklist.drain();
 
-    const rootUnit = units.get(ast)!;
     const assign = ast.statements[0] as StmtNS.Assign;
 
-    const hintBefore = rootUnit.hints.getById(assign.value.id);
+    const typeBefore = readTypeFact(worklist.factStore, assign.value.id);
     worklist.observeWrite(ast, assign.value, "hello-string");
 
-    // Observation should have merged a string lattice fact into the existing hint.
-    const hint = rootUnit.hints.getById(assign.value.id)!;
-    expect(hint.type).toBeDefined();
-    expect(hint.type).not.toEqual(hintBefore?.type);
+    // Observation should have merged a string lattice fact into the existing fact.
+    const typeAfter = readTypeFact(worklist.factStore, assign.value.id);
+    expect(typeAfter).toBeDefined();
+    expect(typeAfter).not.toEqual(typeBefore);
   });
 
   test("unknown scopeKey is silently ignored", () => {
@@ -46,16 +46,15 @@ describe("Worklist.observeWrite", () => {
   });
 
   test("non-primitive observation that analyses ignore is a no-op", () => {
-    const { ast, units, worklist } = setup("x = 1");
+    const { ast, worklist } = setup("x = 1");
     worklist.drain();
-    const rootUnit = units.get(ast)!;
     const assign = ast.statements[0] as StmtNS.Assign;
-    const hintBefore = rootUnit.hints.getById(assign.value.id);
+    const typeBefore = readTypeFact(worklist.factStore, assign.value.id);
 
     worklist.observeWrite(ast, assign.value, Symbol("weird"));
 
-    // Neither module returned a lattice delta — hint unchanged.
-    expect(rootUnit.hints.getById(assign.value.id)).toEqual(hintBefore);
+    // Neither module returned a lattice delta — fact unchanged.
+    expect(readTypeFact(worklist.factStore, assign.value.id)).toEqual(typeBefore);
   });
 });
 

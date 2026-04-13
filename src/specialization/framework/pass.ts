@@ -1,5 +1,6 @@
 import type { FunctionUnit } from "./function-unit";
 import type { StmtNS } from "../../ast-types";
+import type { FactStore } from "./fact-store";
 
 /**
  * Algebraic structure a `Pass`'s value space must satisfy. `equals` gates
@@ -74,4 +75,6 @@ export interface PassCtx {
   read<K2, V2>(p: Pass<K2, V2>, key: K2): V2;
   readAll<K2, V2>(p: Pass<K2, V2>): ReadonlyMap<K2, V2>;
   unitFor(scope: StmtNS.FileInput | StmtNS.FunctionDef): FunctionUnit | undefined;
+  /** Direct fact-store handle for accessor-mediated reads/writes from transforms. */
+  readonly factStore: FactStore;
 }

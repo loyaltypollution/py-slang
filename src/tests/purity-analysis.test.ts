@@ -16,8 +16,8 @@ import {
   ConstAnalysisPass,
   TypeAnalysisPass,
   Worklist,
-  PURE_FIELD,
 } from "../specialization";
+import { readPurityFact } from "../specialization/framework/fact-accessors";
 
 function purityOf(code: string, fnName: string): boolean | undefined {
   const script = code + "\n";
@@ -28,7 +28,8 @@ function purityOf(code: string, fnName: string): boolean | undefined {
 
   for (const stmt of ast.statements) {
     if (stmt instanceof StmtNS.FunctionDef && stmt.name.lexeme === fnName) {
-      return worklist.units.get(stmt)?.hints.get(stmt)?.[PURE_FIELD] as boolean | undefined;
+      const p = readPurityFact(worklist.factStore, stmt.id);
+      return p === "contested" ? undefined : p;
     }
   }
   throw new Error(`FunctionDef ${fnName} not found`);

@@ -20,7 +20,7 @@ function build(code: string) {
   const engine = buildTestWorklist(ast, environments);
   engine.converge();
   const units = engine.units;
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, engine.factStore);
   return { ast, environments, units, compiler };
 }
 

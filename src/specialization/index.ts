@@ -22,8 +22,14 @@ export { structuralPass } from "./framework/structural-pass";
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
 
 export type { AnalysisPass } from "./framework/interfaces";
-export type { OptimizationHint } from "./framework/hint";
-export { HintStore } from "./framework/hint";
+export {
+  readTypeFact,
+  writeTypeFact,
+  readConstFact,
+  writeConstFact,
+  readPurityFact,
+  readCallCountFact,
+} from "./framework/fact-accessors";
 
 // ── Type lattice (codegen reads kind bits + refinements from hints) ──────────
 
@@ -71,9 +77,6 @@ export { CONST_BOTTOM, CONST_TOP, constOf } from "./const-analysis/lattice";
 
 export { applyMemoizationWrap } from "./transforms/memoization";
 export { memoizationRule } from "./framework/migrated-passes";
-export {
-  MEMOIZATION_THRESHOLD,
-  CALL_COUNT_FIELD,
-} from "./memoization-analysis/call-count";
+export { MEMOIZATION_THRESHOLD } from "./memoization-analysis/call-count";
 export { PURE_FIELD } from "./purity-analysis/lattice";
 export { memoLookup, memoPut, clearMemoCache, memoCacheSnapshot, MEMO_MISS } from "../runtime/memo";

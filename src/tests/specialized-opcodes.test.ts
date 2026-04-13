@@ -27,7 +27,7 @@ function compileAndRunSpecialized(code: string): unknown {
 
   const engine = buildTestWorklist(ast, environments);
   engine.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, engine.factStore);
   const program = compiler.compileProgram(ast);
   const interpreter = new SVMLInterpreter(program);
   return SVMLInterpreter.toJSValue(interpreter.execute());

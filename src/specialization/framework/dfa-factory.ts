@@ -10,8 +10,8 @@
 //     per transfer. `affectedKeys` expands via CFG successors (forward)
 //     or predecessors (backward).
 //   - `nodeKeyedPass:  Pass<NodeId,  L>`             — projection of a
-//     block's OUT env onto the per-node hints that downstream consumers
-//     read. Re-runs when its companion block-pass changes.
+//     block's OUT env onto per-node facts that downstream consumers read.
+//     Re-runs when its companion block-pass changes.
 //
 // Option C' (plan review resolution 2): block envs are a first-class
 // registered pass, not hidden closure scratch. Introspection and
@@ -129,8 +129,8 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
   };
 
   // Node-keyed pass: projects the block env onto each node. Reads the
-  // block pass. PR-4 scaffolding — transfer is a no-op; legacy DFA fills
-  // hints today.
+  // block pass. PR-4 scaffolding — transfer is a no-op; the legacy DFA
+  // driver populates node facts today.
   const nodeKeyedPass: Pass<number, L> = {
     id: nodePassId,
     debugName: `${config.debugName}:nodes`,

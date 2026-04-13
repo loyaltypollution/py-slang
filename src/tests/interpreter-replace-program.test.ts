@@ -20,7 +20,7 @@ function compileWithOptimization(code: string) {
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const engine = buildTestWorklist(ast, environments);
   engine.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, engine.factStore);
   const program = compiler.compileProgram(ast);
   return { ast, environments, compiler, program };
 }
@@ -31,7 +31,7 @@ function compileWithReactive(code: string) {
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const reactive = buildTestWorklist(ast, environments);
   reactive.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, reactive.factStore);
   const program = compiler.compileProgram(ast);
   return { ast, environments, reactive, compiler, program };
 }

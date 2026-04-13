@@ -19,19 +19,20 @@
 // wakes spuriously.
 
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { HintStore } from "../framework/hint";
+import { readConstFact } from "../framework/fact-accessors";
+import type { FactStore } from "../framework/fact-store";
 import type { ConstLattice } from "../const-analysis/lattice";
 import type { FunctionUnit } from "../framework/function-unit";
 
 /** Does this expression have a statically-known constant value that we can fold? */
-function matchesExpr(expr: ExprNS.Expr, hints: HintStore): boolean {
+function matchesExpr(expr: ExprNS.Expr, factStore: FactStore): boolean {
   if (!(expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare)) return false;
-  return hints.get(expr)?.constVal?.tag === "const";
+  return readConstFact(factStore, expr.id)?.tag === "const";
 }
 
 /** Replace a folded Binary/Compare with the corresponding Literal. */
-function applyExpr(expr: ExprNS.Expr, hints: HintStore): ExprNS.Expr {
-  const cv = hints.get(expr)!.constVal as ConstLattice & { tag: "const" };
+function applyExpr(expr: ExprNS.Expr, factStore: FactStore): ExprNS.Expr {
+  const cv = readConstFact(factStore, expr.id) as ConstLattice & { tag: "const" };
   return new ExprNS.Literal(
     expr.startToken,
     expr.endToken,
@@ -48,12 +49,12 @@ function applyExpr(expr: ExprNS.Expr, hints: HintStore): ExprNS.Expr {
 class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
 
-  constructor(private readonly hints: HintStore) {}
+  constructor(private readonly factStore: FactStore) {}
 
   private tryRewrite(expr: ExprNS.Expr): ExprNS.Expr {
-    if (matchesExpr(expr, this.hints)) {
+    if (matchesExpr(expr, this.factStore)) {
       this.changed = true;
-      return applyExpr(expr, this.hints);
+      return applyExpr(expr, this.factStore);
     }
     return expr;
   }
@@ -148,8 +149,8 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: ConstFoldExprVisitor;
 
-  constructor(hints: HintStore) {
-    this.exprVisitor = new ConstFoldExprVisitor(hints);
+  constructor(factStore: FactStore) {
+    this.exprVisitor = new ConstFoldExprVisitor(factStore);
   }
 
   private rewriteExpr(expr: ExprNS.Expr): ExprNS.Expr {
@@ -213,8 +214,8 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
  * `constantFoldingRule.transfer`; the worklist marks the scope structurally
  * dirty and bumps the `structuralPass` version when this returns `true`.
  */
-export function applyConstantFoldingSweep(unit: FunctionUnit): boolean {
-  const v = new ConstFoldStmtVisitor(unit.hints);
+export function applyConstantFoldingSweep(unit: FunctionUnit, factStore: FactStore): boolean {
+  const v = new ConstFoldStmtVisitor(factStore);
   v.sweep(unit.body);
   return v.changed;
 }

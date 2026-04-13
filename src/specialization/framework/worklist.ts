@@ -12,7 +12,6 @@ import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import { FactStore, type FactChange } from "./fact-store";
 import { buildFunctionUnits, makeOut, type FunctionUnit } from "./function-unit";
-import type { FieldEquals, HintStore, OptimizationHint } from "./hint";
 import type { AnalysisPass } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
 import type { ObservationSink } from "./observation-sink";
@@ -200,11 +199,11 @@ export function transferBlock<L>(
   block: BasicBlock,
   inEnv: MutableEnv<L>,
   module: AnalysisPass<L>,
-  hints: HintStore,
+  factStore: FactStore,
   slotLookup: SlotLookup,
 ): MutableEnv<L> {
   const env = inEnv.snapshot(); // OUT starts as a copy of IN
-  const visitor = module.makeExprVisitor(hints, env, slotLookup);
+  const visitor = module.makeExprVisitor(factStore, env, slotLookup);
   const stmts = block.stmts;
   if (module.direction === "backward") {
     for (let i = stmts.length - 1; i >= 0; i--) {
@@ -315,13 +314,7 @@ export class Worklist implements ObservationSink {
       (m): m is ObservingAnalysis => m.observeWrite !== undefined,
     );
 
-    // Per-field equality: each AnalysisPass registers latticeEquals under its name.
-    const fieldEq = new Map<string, FieldEquals>();
-    for (const a of analyses) {
-      fieldEq.set(a.name, (x, y) => a.latticeEquals(x, y));
-    }
-
-    this.units = buildFunctionUnits(ast, functionEnvironments, analyses, fieldEq, this.factStore);
+    this.units = buildFunctionUnits(ast, functionEnvironments, analyses);
     for (const [key, unit] of this.units) {
       this.seedAnalysis(key, unit);
       this.enqueueTransform(key, unit.generation);
@@ -453,6 +446,7 @@ export class Worklist implements ObservationSink {
     read: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.read(p, key),
     readAll: <K2, V2>(p: Pass<K2, V2>) => this.factStore.readAll(p),
     unitFor: (scope: StmtNS.FileInput | StmtNS.FunctionDef) => this.units.get(scope),
+    factStore: this.factStore,
   };
 
   private handleFactChange(change: FactChange<unknown, unknown>): void {
@@ -541,25 +535,6 @@ export class Worklist implements ObservationSink {
     return false;
   }
 
-  // Positive hits cached permanently (ownership is structural & immutable).
-  // Misses are not cached — a hint may be populated later by a transform.
-  private readonly nodeUnitCache = new Map<number, FunctionUnit>();
-
-  /** Look up the hint for an AST node by routing to the owning FunctionUnit. */
-  hintsFor(node: ExprNS.Expr | StmtNS.Stmt): OptimizationHint | undefined {
-    const id = node.id;
-    const cached = this.nodeUnitCache.get(id);
-    if (cached !== undefined) return cached.hints.getById(id);
-    for (const unit of this.units.values()) {
-      const h = unit.hints.getById(id);
-      if (h !== undefined) {
-        this.nodeUnitCache.set(id, unit);
-        return h;
-      }
-    }
-    return undefined;
-  }
-
   observeWrite(
     scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
     rhsNode: ExprNS.Expr,
@@ -567,12 +542,9 @@ export class Worklist implements ObservationSink {
   ): void {
     const unit = this.units.get(scopeKey);
     if (!unit) return;
-    const hints = unit.hints;
-    let next = hints.getById(rhsNode.id) ?? {};
     for (const observer of this.observers) {
-      next = observer.observeWrite(next, rawValue);
+      observer.observeWrite(this.factStore, rhsNode.id, rawValue);
     }
-    hints.setById(rhsNode.id, next);
     this.markDirty(scopeKey, "data");
   }
 
@@ -749,7 +721,7 @@ export class Worklist implements ObservationSink {
     if (!block) return false;
 
     const inEnv = computeBlockIN(block, module, out);
-    const outEnv = transferBlock(block, inEnv, module, unit.hints, unit.slotLookup);
+    const outEnv = transferBlock(block, inEnv, module, this.factStore, unit.slotLookup);
 
     const prevOut = out.get(block.id) ?? null;
     if (prevOut === null || !outEnv.equals(prevOut, module.leq.bind(module))) {
@@ -860,9 +832,9 @@ export class Worklist implements ObservationSink {
   }
 
   /**
-   * Data path: hints changed but the body is identical. Skip `buildCFG`
-   * (the point of the split); clear `analysisOuts` since transfers read
-   * hints; bump `generation` to drop in-flight queued items.
+   * Data path: inputs changed but the body is identical. Skip `buildCFG`
+   * (the point of the split); clear `analysisOuts` so transfers re-derive;
+   * bump `generation` to drop in-flight queued items.
    */
   private reseedAnalysis(
     key: StmtNS.FileInput | StmtNS.FunctionDef,

@@ -1,6 +1,7 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import { type HintStore, type OptimizationHint } from "../framework/hint";
+import { readTypeFact, writeTypeFact } from "../framework/fact-accessors";
+import type { FactStore } from "../framework/fact-store";
 import type { AnalysisPass } from "../framework/interfaces";
 import type { SlotLookup } from "../framework/slot-table";
 import {
@@ -53,13 +54,13 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
 
 export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
-    private readonly hints: HintStore,
+    private readonly factStore: FactStore,
     private readonly slotTypes: { get(slot: number): TypeLattice | undefined },
     private readonly slotLookup: SlotLookup,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
-    this.hints.updateField(node.id, "type", val);
+    writeTypeFact(this.factStore, node.id, val);
     return val;
   }
 
@@ -259,20 +260,20 @@ export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
   }
 
   makeExprVisitor(
-    hints: HintStore,
+    factStore: FactStore,
     env: { get(slot: number): TypeLattice | undefined },
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<TypeLattice> {
-    return new TypeAnalysisVisitor(hints, env, slotLookup);
+    return new TypeAnalysisVisitor(factStore, env, slotLookup);
   }
 
-  observeWrite(hint: OptimizationHint, rawValue: unknown): OptimizationHint {
+  observeWrite(factStore: FactStore, id: number, rawValue: unknown): void {
     const value = liftType(rawValue);
-    if (value === undefined) return hint;
+    if (value === undefined) return;
     // Widen (join) — observations add seen values, never narrow static facts.
-    const prev = hint.type;
+    const prev = readTypeFact(factStore, id);
     const next = prev ? join(prev, value) : value;
-    return { ...hint, type: next };
+    writeTypeFact(factStore, id, next);
   }
 }
 
