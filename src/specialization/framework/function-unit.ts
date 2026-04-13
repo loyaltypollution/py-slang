@@ -3,7 +3,7 @@ import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import { HintStore, type OptimizationHint } from "./hint";
-import type { AnalysisModule } from "./interfaces";
+import type { AnalysisPass } from "./interfaces";
 import type { MutableEnv } from "./mutable-env";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
@@ -64,7 +64,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
     private readonly functionEnvironments: FunctionEnvironments,
     private readonly hintEq: HintEq,
-    private readonly analyses: readonly AnalysisModule<any>[],
+    private readonly analyses: readonly AnalysisPass<any>[],
   ) {}
 
   register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
@@ -143,7 +143,7 @@ export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
   hintEq: HintEq,
-  analyses: readonly AnalysisModule<any>[],
+  analyses: readonly AnalysisPass<any>[],
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
   const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, hintEq, analyses);

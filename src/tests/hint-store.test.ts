@@ -5,16 +5,16 @@
  * with a registry: `hintEquals` consults the analysis module registered
  * under each field's name and calls its `latticeEquals`. Fields with no
  * registered module default to inequality — callers in this file construct
- * a minimal `{ type: TypeAnalysisModule, constVal: ConstAnalysisModule }`
+ * a minimal `{ type: TypeAnalysisPass, constVal: ConstAnalysisPass }`
  * dispatcher to mirror production usage.
  */
 
 import { ExprNS } from "../ast-types";
 import {
-  ConstAnalysisModule,
+  ConstAnalysisPass,
   HintStore,
   hintEquals,
-  TypeAnalysisModule,
+  TypeAnalysisPass,
   positiveInteger,
   negativeInteger,
   join,
@@ -30,8 +30,8 @@ function fakeNode(id: number): ExprNS.Expr {
 }
 
 const registry = new Map<string, { latticeEquals(a: unknown, b: unknown): boolean }>([
-  ["type", new TypeAnalysisModule()],
-  ["constVal", new ConstAnalysisModule()],
+  ["type", new TypeAnalysisPass()],
+  ["constVal", new ConstAnalysisPass()],
 ]);
 const eq = (a: OptimizationHint, b: OptimizationHint) => hintEquals(a, b, registry);
 

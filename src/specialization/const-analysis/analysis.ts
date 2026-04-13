@@ -1,7 +1,7 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import { type HintStore, type OptimizationHint } from "../framework/hint";
-import type { AnalysisModule } from "../framework/interfaces";
+import type { AnalysisPass } from "../framework/interfaces";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
@@ -199,15 +199,15 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 }
 
-// ── AnalysisModule ────────────────────────────────────────────────────────────
+// ── AnalysisPass ────────────────────────────────────────────────────────────
 
 /**
- * Constant-propagation AnalysisModule.
+ * Constant-propagation AnalysisPass.
  *
  * Tracks whether each expression evaluates to a statically known constant.
  * mergeKind = "may" (join at control-flow merge points).
  */
-export class ConstAnalysisModule implements AnalysisModule<ConstLattice> {
+export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
   readonly name = "constVal";
   latticeEquals(a: unknown, b: unknown): boolean {
     const ca = a as ConstLattice;

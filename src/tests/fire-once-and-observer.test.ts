@@ -12,12 +12,12 @@ import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
-  ConstAnalysisModule,
+  ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   MemoizationTransformRule,
   Worklist,
-  TypeAnalysisModule,
+  TypeAnalysisPass,
   type ProfileObserver,
   type FunctionUnit,
 } from "../specialization";
@@ -56,7 +56,7 @@ describe("ScopeTransformRule fireOnce scheduling", () => {
       },
     };
 
-    const worklist = new Worklist(ast, environments, [new TypeAnalysisModule()], [rule]);
+    const worklist = new Worklist(ast, environments, [new TypeAnalysisPass()], [rule]);
     worklist.converge();
     const afterConvergeApply = applyCalls;
 
@@ -108,7 +108,7 @@ describe("ProfileObserver dispatch", () => {
     const worklist = new Worklist(
       ast,
       environments,
-      [new TypeAnalysisModule(), new ConstAnalysisModule()],
+      [new TypeAnalysisPass(), new ConstAnalysisPass()],
       [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
     );
     worklist.addProfileObserver(observer);
@@ -128,7 +128,7 @@ describe("ProfileObserver dispatch", () => {
   test("AnalysisModule no longer receives onCallObservation path", () => {
     // Structural assertion: AnalysisModule interface must not declare
     // onCallObservation. If this assertion flips, the ε1 split has leaked.
-    const mod = new TypeAnalysisModule() as unknown as {
+    const mod = new TypeAnalysisPass() as unknown as {
       onCallObservation?: (...args: unknown[]) => void;
     };
     expect(mod.onCallObservation).toBeUndefined();

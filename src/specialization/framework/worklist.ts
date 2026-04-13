@@ -19,7 +19,7 @@ import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import { buildFunctionUnits, makeOut, type FunctionUnit } from "./function-unit";
 import { hintEquals, type HintStore, type OptimizationHint } from "./hint";
-import type { AnalysisModule, ProfileObserver, ScopeTransformRule, TransformRule } from "./interfaces";
+import type { AnalysisPass, ProfileObserver, ScopeTransformRule, TransformRule } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
 import type { ObservationSink } from "./observation-sink";
 import type { SlotLookup } from "./slot-table";
@@ -58,7 +58,7 @@ export function sentinelBlock(cfg: CFG, direction: "forward" | "backward"): Basi
 export function mergeInto<L>(
   acc: MutableEnv<L>,
   incoming: MutableEnv<L>,
-  module: AnalysisModule<L>,
+  module: AnalysisPass<L>,
 ): void {
   if (module.mergeKind === "must") {
     acc.meetWith(incoming, module.meet.bind(module), module.top());
@@ -73,7 +73,7 @@ export function mergeInto<L>(
  */
 export function computeBlockIN<L>(
   block: BasicBlock,
-  module: AnalysisModule<L>,
+  module: AnalysisPass<L>,
   out: Map<BlockId, MutableEnv<L> | null>,
 ): MutableEnv<L> {
   let result: MutableEnv<L> | null = null;
@@ -102,7 +102,7 @@ function transferStmt<L>(
   stmt: StmtNS.Stmt,
   env: MutableEnv<L>,
   visitor: ExprNS.Visitor<L>,
-  module: AnalysisModule<L>,
+  module: AnalysisPass<L>,
   slotLookup: SlotLookup,
 ): void {
   switch (stmt.kind) {
@@ -194,7 +194,7 @@ function transferStmt<L>(
 export function transferBlock<L>(
   block: BasicBlock,
   inEnv: MutableEnv<L>,
-  module: AnalysisModule<L>,
+  module: AnalysisPass<L>,
   hints: HintStore,
   slotLookup: SlotLookup,
 ): MutableEnv<L> {
@@ -260,16 +260,16 @@ export type { ObservationSink } from "./observation-sink";
 
 // ── Observation-capable analysis (narrowed subtype) ────────────────────────
 
-type ObservingAnalysis = AnalysisModule<any> & {
-  observeValue: NonNullable<AnalysisModule<any>["observeValue"]>;
-  mergeIntoHint: NonNullable<AnalysisModule<any>["mergeIntoHint"]>;
+type ObservingAnalysis = AnalysisPass<any> & {
+  observeValue: NonNullable<AnalysisPass<any>["observeValue"]>;
+  mergeIntoHint: NonNullable<AnalysisPass<any>["mergeIntoHint"]>;
 };
 
 // ── Worklist ────────────────────────────────────────────────────────────────
 
 export class Worklist implements ObservationSink {
   readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
-  private readonly analysesByName: ReadonlyMap<string, AnalysisModule<any>>;
+  private readonly analysesByName: ReadonlyMap<string, AnalysisPass<any>>;
 
   private readonly analysisQueues: Queue<QueuedBlock>[];
   private readonly transformQueue = new Queue<QueuedTransform>();
@@ -322,7 +322,7 @@ export class Worklist implements ObservationSink {
   constructor(
     ast: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
-    private readonly analyses: readonly AnalysisModule<any>[],
+    private readonly analyses: readonly AnalysisPass<any>[],
     private readonly transforms: readonly TransformRule[],
   ) {
     this.analysisQueues = analyses.map(() => new Queue<QueuedBlock>());

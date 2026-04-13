@@ -1,7 +1,7 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import { type HintStore, type OptimizationHint } from "../framework/hint";
-import type { AnalysisModule } from "../framework/interfaces";
+import type { AnalysisPass } from "../framework/interfaces";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type TypeLattice,
@@ -221,14 +221,14 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 }
 
 /**
- * Type analysis AnalysisModule: wraps TypeAnalysisVisitor transfer functions
- * in the AnalysisModule interface. Lattice operations delegate to lattice.ts.
+ * Type analysis AnalysisPass: wraps TypeAnalysisVisitor transfer functions
+ * in the AnalysisPass interface. Lattice operations delegate to lattice.ts.
  *
  * This is a forward May analysis: merge = join (least upper bound).
  * At join points (if/else, loop headers) the env takes the union of possible types,
  * so we specialize only when the type is known to be numeric on ALL incoming paths.
  */
-export class TypeAnalysisModule implements AnalysisModule<TypeLattice> {
+export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
   readonly name = "type";
   latticeEquals(a: unknown, b: unknown): boolean {
     const ta = a as TypeLattice;

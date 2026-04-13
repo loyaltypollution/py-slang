@@ -11,13 +11,13 @@ import { parse } from "../parser/parser-adapter";
 import { Resolver } from "../resolver";
 import type { FunctionEnvironments } from "../resolver";
 import {
-  ConstAnalysisModule,
+  ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   CallCountObserver,
   MemoizationTransformRule,
   Worklist,
-  TypeAnalysisModule,
+  TypeAnalysisPass,
 } from "../specialization";
 import { Group } from "../stdlib/utils";
 import { RecursivePartial, Result } from "../types";
@@ -38,7 +38,7 @@ export function buildTestWorklist(
   const worklist = new Worklist(
     ast,
     functionEnvironments,
-    [new TypeAnalysisModule(), new ConstAnalysisModule()],
+    [new TypeAnalysisPass(), new ConstAnalysisPass()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
   );
   worklist.addProfileObserver(new CallCountObserver());

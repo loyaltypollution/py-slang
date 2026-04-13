@@ -101,7 +101,7 @@ Typical shape (SVML JIT — the richest path):
 ```ts
 const worklist = new Worklist(
   ast, environments,
-  [new TypeAnalysisModule(), new ConstAnalysisModule()],
+  [new TypeAnalysisPass(), new ConstAnalysisPass()],
   [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
 );
 worklist.addProfileObserver(new CallCountObserver());
@@ -169,7 +169,7 @@ flowchart TB
     RESOLVE["environments + AST"]
     BUILD["new Worklist<br/>(analyses, transforms)"]
     PW["Worklist<br/>(analysis tier → transform tier)<br/>implements ObservationSink"]
-    ANA["Analyses<br/>TypeAnalysisModule · ConstAnalysisModule"]
+    ANA["Analyses<br/>TypeAnalysisPass · ConstAnalysisPass"]
     XF["Transforms<br/>DeadBranchElimination · ConstantFolding · MemoizationTransformRule"]
     HS[("HintStore per unit<br/>nodeId → OptimizationHint<br/>eq via analysesByName registry")]
     PATCH["onScopeChanged listener<br/>(engine-specific install)"]
@@ -226,7 +226,7 @@ mitigates them) lives in `optimization-roadmap.md` under "Why the pin-set exists
 - `FunctionUnit`, `buildFunctionUnits`.
 - `HintStore`, `OptimizationHint`, `hintEquals`, `HINT_EQ_NEVER`.
 - `AnalysisModule`, `TransformRule`, `ProfileObserver`.
-- Analyses/lattices (`TypeAnalysisModule`, `ConstAnalysisModule`, lattice
+- Analyses/lattices (`TypeAnalysisPass`, `ConstAnalysisPass`, lattice
   constructors).
 - Transforms (`ConstantFoldingRule`, `DeadBranchEliminationRule`,
   `MemoizationTransformRule`) and `CallCountObserver`.

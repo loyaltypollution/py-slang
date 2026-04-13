@@ -6,8 +6,8 @@
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { Worklist } from "../specialization/framework/worklist";
-import { ConstAnalysisModule } from "../specialization/const-analysis/analysis";
-import { TypeAnalysisModule } from "../specialization/type-analysis/analysis";
+import { ConstAnalysisPass } from "../specialization/const-analysis/analysis";
+import { TypeAnalysisPass } from "../specialization/type-analysis/analysis";
 import { ConstantFoldingRule } from "../specialization/transforms/constant-folding";
 import { DeadBranchEliminationRule } from "../specialization/transforms/dead-branch";
 import type { StmtNS } from "../ast-types";
@@ -19,7 +19,7 @@ function setup(code: string) {
   const worklist = new Worklist(
     ast,
     environments,
-    [new TypeAnalysisModule(), new ConstAnalysisModule()],
+    [new TypeAnalysisPass(), new ConstAnalysisPass()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule()],
   );
   return { ast, units: worklist.units, worklist };

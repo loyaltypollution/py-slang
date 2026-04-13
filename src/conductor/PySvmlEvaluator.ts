@@ -4,13 +4,13 @@ import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
-  ConstAnalysisModule,
+  ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   CallCountObserver,
   MemoizationTransformRule,
   Worklist,
-  TypeAnalysisModule,
+  TypeAnalysisPass,
 } from "../specialization";
 import { EvaluatorError } from "./errors";
 
@@ -26,7 +26,7 @@ export class PySvmlEvaluator extends BasicEvaluator {
       const worklist = new Worklist(
         ast,
         environments,
-        [new TypeAnalysisModule(), new ConstAnalysisModule()],
+        [new TypeAnalysisPass(), new ConstAnalysisPass()],
         [
           new DeadBranchEliminationRule(),
           new ConstantFoldingRule(),

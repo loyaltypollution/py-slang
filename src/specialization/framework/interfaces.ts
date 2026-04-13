@@ -71,14 +71,18 @@ export interface ScopeTransformRule {
 export type TransformRule = StmtTransformRule | ExprTransformRule | ScopeTransformRule;
 
 /**
- * An analysis pass. The `name` doubles as the hint-record field under
- * which the analysis stores its lattice value. A new analysis adds a
- * module (and an optional field on `OptimizationHint`) and the framework
- * picks it up. `latticeEquals` is declared directly on each concrete
- * module — consumers that need equality route through `hintEquals` rather
- * than calling module-level equality.
+ * Expression-level dataflow analysis pass. The `name` doubles as the
+ * hint-record field under which the analysis stores its lattice value. A
+ * new analysis adds a pass (and an optional field on `OptimizationHint`)
+ * and the framework picks it up. `latticeEquals` is declared directly on
+ * each concrete pass — consumers that need equality route through
+ * `hintEquals` rather than calling pass-level equality.
+ *
+ * An `AnalysisPass<L>` runs as a Kildall fixpoint over basic blocks within
+ * a `FunctionUnit`. For scope-level one-shot folds (call counts, purity
+ * summaries), use `ScopePass` instead.
  */
-export interface AnalysisModule<L> {
+export interface AnalysisPass<L> {
   readonly name: string;
   latticeEquals(a: unknown, b: unknown): boolean;
   top(): L;
@@ -103,7 +107,7 @@ export interface AnalysisModule<L> {
   /**
    * Map a raw runtime value (pushed by an interpreter on a slot write) to a
    * lattice element of this analysis. Return `undefined` to ignore the
-   * value (e.g. ConstAnalysisModule returns `undefined` for non-primitive
+   * value (e.g. ConstAnalysisPass returns `undefined` for non-primitive
    * JS values rather than widening the hint to TOP).
    */
   observeValue?(rawValue: unknown): L | undefined;
@@ -118,13 +122,29 @@ export interface AnalysisModule<L> {
 }
 
 /**
- * Profile-style runtime observer. Unlike `AnalysisModule`, a `ProfileObserver`
- * does not participate in any lattice / transfer / visitor path — it only
- * reacts to `observeCall` dispatch. Use for side-table counters and other
- * non-dataflow facts that would otherwise be smuggled through a dummy
- * `AnalysisModule` (e.g. the memoization saturating call counter).
+ * Scope-level, one-shot pass. Runs once per scope per generation, after
+ * the expression-level `AnalysisPass` fixpoint has converged for that
+ * scope. No lattice, no transfer function — reads converged expression
+ * facts from `unit.analysisOuts` / `unit.hints` and/or buffered runtime
+ * observations from `unit.callObservations`, and folds them into a
+ * scope-level hint on `unit.funcAst.id`.
  *
- * Registered on a worklist via `addProfileObserver`.
+ * Use when a fact is naturally a *summary over a whole scope* — call
+ * counts, purity summaries, escape summaries — and a fixpoint would either
+ * not converge (semiring increments on cycles) or adds no value over a
+ * single walk.
+ *
+ * Registered on a worklist via `addScopePass`. Registration order is run
+ * order.
+ */
+export interface ScopePass {
+  readonly name: string;
+  run(unit: FunctionUnit): void;
+}
+
+/**
+ * @deprecated Transitional. Use `ScopePass` instead. Will be removed once
+ * the last observer (`CallCountObserver`) has migrated to a `ScopePass`.
  */
 export interface ProfileObserver {
   onCallObservation(

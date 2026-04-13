@@ -13,7 +13,7 @@ export type { ObservationSink } from "./framework/observation-sink";
 
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
 
-export type { AnalysisModule, TransformRule } from "./framework/interfaces";
+export type { AnalysisPass, ScopePass, TransformRule } from "./framework/interfaces";
 export type { OptimizationHint } from "./framework/hint";
 export { HintStore, hintEquals, HINT_EQ_NEVER } from "./framework/hint";
 
@@ -54,8 +54,8 @@ export {
 
 // ── Concrete analyses ────────────────────────────────────────────────────────
 
-export { TypeAnalysisModule } from "./type-analysis/analysis";
-export { ConstAnalysisModule, constLeq, constJoin, constMeet } from "./const-analysis/analysis";
+export { TypeAnalysisPass } from "./type-analysis/analysis";
+export { ConstAnalysisPass, constLeq, constJoin, constMeet } from "./const-analysis/analysis";
 export type { ConstLattice, ConstValue } from "./const-analysis/lattice";
 export { CONST_BOTTOM, CONST_TOP, constOf } from "./const-analysis/lattice";
 

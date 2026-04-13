@@ -6,11 +6,11 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
   CallCountObserver,
-  ConstAnalysisModule,
+  ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   MemoizationTransformRule,
-  TypeAnalysisModule,
+  TypeAnalysisPass,
   Worklist,
 } from "../specialization";
 import { EvaluatorError } from "./errors";
@@ -32,7 +32,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const worklist = new Worklist(
         ast,
         environments,
-        [new TypeAnalysisModule(), new ConstAnalysisModule()],
+        [new TypeAnalysisPass(), new ConstAnalysisPass()],
         [
           new DeadBranchEliminationRule(),
           new ConstantFoldingRule(),

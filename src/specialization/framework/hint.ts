@@ -3,7 +3,7 @@ import type { TypeLattice } from "../type-analysis/lattice";
 import type { ConstLattice } from "../const-analysis/lattice";
 
 /**
- * Open record of analysis values keyed by `AnalysisModule.name`. Built-in
+ * Open record of analysis values keyed by `AnalysisPass.name`. Built-in
  * analyses write to the named fields below; a new analysis adds an
  * optional field here and exposes the same name on its module.
  */
@@ -16,10 +16,10 @@ export interface OptimizationHint {
 }
 
 /**
- * Minimal view of `AnalysisModule` needed for hint equality dispatch.
+ * Minimal view of `AnalysisPass` needed for hint equality dispatch.
  * Declared here (rather than importing the full interface) so `hint.ts`
  * does not circularly depend on `interfaces.ts` / concrete analyses.
- * Structurally compatible with `ReadonlyMap<string, AnalysisModule<any>>`,
+ * Structurally compatible with `ReadonlyMap<string, AnalysisPass<any>>`,
  * so callers pass their existing registry without conversion.
  */
 export type HintEqualsDispatcher = ReadonlyMap<

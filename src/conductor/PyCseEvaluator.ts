@@ -12,13 +12,13 @@ import {
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
-  ConstAnalysisModule,
+  ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   CallCountObserver,
   MemoizationTransformRule,
   Worklist,
-  TypeAnalysisModule,
+  TypeAnalysisPass,
 } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
@@ -93,7 +93,7 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
       const worklist = new Worklist(
         ast,
         environments,
-        [new TypeAnalysisModule(), new ConstAnalysisModule()],
+        [new TypeAnalysisPass(), new ConstAnalysisPass()],
         [
           new DeadBranchEliminationRule(),
           new ConstantFoldingRule(),

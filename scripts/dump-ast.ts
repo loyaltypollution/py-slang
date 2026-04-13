@@ -16,14 +16,14 @@ import { ExprNS, StmtNS } from "../src/ast-types";
 import { parse } from "../src/parser/parser-adapter";
 import { analyzeWithEnvironments } from "../src/resolver";
 import {
-  ConstAnalysisModule,
+  ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   HintStore,
   CallCountObserver,
   MemoizationTransformRule,
   Worklist,
-  TypeAnalysisModule,
+  TypeAnalysisPass,
   type OptimizationHint,
   INT_BIT,
   BOOL_BIT,
@@ -300,7 +300,7 @@ if (errors.length > 0) {
 const worklist = new Worklist(
   ast,
   environments,
-  [new TypeAnalysisModule(), new ConstAnalysisModule()],
+  [new TypeAnalysisPass(), new ConstAnalysisPass()],
   [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
 );
 worklist.addProfileObserver(new CallCountObserver());

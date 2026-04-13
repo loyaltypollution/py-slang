@@ -5,8 +5,8 @@
  * lattice elements, then widen a HintStore entry via join.
  */
 
-import { ConstAnalysisModule } from "../specialization/const-analysis/analysis";
-import { TypeAnalysisModule } from "../specialization/type-analysis/analysis";
+import { ConstAnalysisPass } from "../specialization/const-analysis/analysis";
+import { TypeAnalysisPass } from "../specialization/type-analysis/analysis";
 import {
   BOOL_BIT,
   INT_BIT,
@@ -17,8 +17,8 @@ import {
 } from "../specialization/type-analysis/lattice";
 import { constOf, CONST_TOP } from "../specialization/const-analysis/lattice";
 
-describe("TypeAnalysisModule.observeValue", () => {
-  const m = new TypeAnalysisModule();
+describe("TypeAnalysisPass.observeValue", () => {
+  const m = new TypeAnalysisPass();
 
   test.each([
     ["raw number 42", 42, INT_BIT],
@@ -56,8 +56,8 @@ describe("TypeAnalysisModule.observeValue", () => {
   });
 });
 
-describe("TypeAnalysisModule.mergeIntoHint", () => {
-  const m = new TypeAnalysisModule();
+describe("TypeAnalysisPass.mergeIntoHint", () => {
+  const m = new TypeAnalysisPass();
 
   test("merges into empty hint", () => {
     const observed = m.observeValue!(42)!;
@@ -82,8 +82,8 @@ describe("TypeAnalysisModule.mergeIntoHint", () => {
   });
 });
 
-describe("ConstAnalysisModule.observeValue", () => {
-  const m = new ConstAnalysisModule();
+describe("ConstAnalysisPass.observeValue", () => {
+  const m = new ConstAnalysisPass();
 
   test("primitive number → constOf", () => {
     expect(m.observeValue!(42)).toEqual(constOf(42));
@@ -109,8 +109,8 @@ describe("ConstAnalysisModule.observeValue", () => {
   });
 });
 
-describe("ConstAnalysisModule.mergeIntoHint", () => {
-  const m = new ConstAnalysisModule();
+describe("ConstAnalysisPass.mergeIntoHint", () => {
+  const m = new ConstAnalysisPass();
 
   test("merges into empty hint", () => {
     const merged = m.mergeIntoHint!({}, constOf(42));
