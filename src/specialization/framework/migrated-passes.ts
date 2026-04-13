@@ -34,6 +34,7 @@ import {
   constLeq,
 } from "../const-analysis/lattice";
 import { computePurity } from "../purity-analysis/analysis";
+import { applyConstantFoldingSweep } from "../transforms/constant-folding";
 import { applyDeadBranchSweep } from "../transforms/dead-branch";
 import {
   type TypeLattice,
@@ -319,18 +320,61 @@ export const deadBranchRule: Pass<FunctionUnit, Fired> = {
 };
 
 /**
- * Constant folding. Top-only `Pass<ExprNodeId, "fired">`. Side-effect
- * idempotence per plan resolution 3: re-write of `"fired"` is equal → no
- * re-fire.
+ * Constant folding (PR-6d end-to-end). Top-only
+ * `Pass<FunctionUnit, "fired">`. Transfer sweeps `unit.body` for
+ * Binary/Compare expressions whose `constVal` hint has collapsed to a
+ * statically-known constant and rewrites them in place to `Literal`
+ * nodes (see `applyConstantFoldingSweep`).
+ *
+ * Idempotence (two-layer):
+ *  1. AST-level — once a Binary/Compare has been rewritten to a
+ *     `Literal`, the `matchesExpr` predicate returns false on the
+ *     replacement node, so a second sweep over an already-folded body
+ *     mutates nothing.
+ *  2. Lattice-level — the top-only `"fired"` lattice: rewriting `"fired"`
+ *     on a key that already holds `"fired"` yields `lattice.equals ===
+ *     true`, suppressing `onChange` and preventing spurious downstream
+ *     wakes.
+ *
+ * Scheduling: `reads = [constAnalysisPass, structuralPass]`. Same story
+ * as `deadBranchRule` — legacy const analysis writes land through the
+ * PR-3 adapter into `constAnalysisPass`'s fact cell and wake this pass
+ * through the dispatch graph. An initial-converge seed is primed from
+ * `worklist.processTransform`.
+ *
+ * Side effects: the transfer mutates expression slots inside
+ * `unit.body` and bumps `unit.structuralVersion` on fire; the worklist's
+ * `processTransform` reacts to the version delta by setting
+ * `anyChanged = true`, which marks the scope `"structural"` dirty and
+ * rebuilds the CFG on the next drain iteration.
  */
-export const constantFoldingRule: Pass<number, Fired> = {
+export const constantFoldingRule: Pass<FunctionUnit, Fired> = {
   id: Symbol("constantFoldingRule"),
   debugName: "constantFoldingRule",
   lattice: firedLattice,
   reads: [constAnalysisPass, structuralPass],
   tier: "transform",
-  coarse: true,
-  transfer(_ctx: PassCtx, _key: number): Fired {
+  // Precise affectedKeys: mirror `deadBranchRule`. A `structuralPass`
+  // write for unit U enqueues this pass for U; `constAnalysisPass` is
+  // node-keyed so we fall back to the explicit seed from
+  // `processTransform` (no node-id → owning-unit map in ctx yet).
+  affectedKeys(triggerPass, triggerKey) {
+    if (triggerPass === (structuralPass as Pass<any, any>)) {
+      return [triggerKey as FunctionUnit];
+    }
+    return [];
+  },
+  transfer(_ctx: PassCtx, key: FunctionUnit): Fired {
+    const fired = applyConstantFoldingSweep(key);
+    if (fired) {
+      // Side-channel structural bump: the sweep mutated expression slots
+      // in `key.body`, so CFG must be rebuilt. The worklist's
+      // `processTransform` reads `unit.structuralVersion` before/after
+      // `drainPasses()` and sets `anyChanged = true` on delta, triggering
+      // the usual markDirty("structural") → rebuildStructural path.
+      key.structuralVersion++;
+      return "fired";
+    }
     return undefined;
   },
 };

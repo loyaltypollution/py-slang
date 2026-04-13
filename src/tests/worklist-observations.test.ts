@@ -8,7 +8,6 @@ import { analyzeWithEnvironments } from "../resolver";
 import { Worklist } from "../specialization/framework/worklist";
 import { ConstAnalysisPass } from "../specialization/const-analysis/analysis";
 import { TypeAnalysisPass } from "../specialization/type-analysis/analysis";
-import { ConstantFoldingRule } from "../specialization/transforms/constant-folding";
 import type { StmtNS } from "../ast-types";
 
 function setup(code: string) {
@@ -19,7 +18,7 @@ function setup(code: string) {
     ast,
     environments,
     [new TypeAnalysisPass(), new ConstAnalysisPass()],
-    [new ConstantFoldingRule()],
+    [],
   );
   return { ast, units: worklist.units, worklist };
 }

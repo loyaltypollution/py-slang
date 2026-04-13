@@ -6,7 +6,6 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
   ConstAnalysisPass,
-  ConstantFoldingRule,
   MemoizationTransformRule,
   TypeAnalysisPass,
   Worklist,
@@ -50,7 +49,6 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           new ConstAnalysisPass(),
         ],
         [
-          new ConstantFoldingRule(),
           new MemoizationTransformRule(),
         ],
         [],

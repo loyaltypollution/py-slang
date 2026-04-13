@@ -69,7 +69,6 @@ export { CONST_BOTTOM, CONST_TOP, constOf } from "./const-analysis/lattice";
 
 // ── Concrete transforms ──────────────────────────────────────────────────────
 
-export { ConstantFoldingRule } from "./transforms/constant-folding";
 export { MemoizationTransformRule } from "./transforms/memoization";
 export {
   MEMOIZATION_THRESHOLD,

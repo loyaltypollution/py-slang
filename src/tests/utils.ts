@@ -12,7 +12,6 @@ import { Resolver } from "../resolver";
 import type { FunctionEnvironments } from "../resolver";
 import {
   ConstAnalysisPass,
-  ConstantFoldingRule,
   MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
@@ -37,7 +36,7 @@ export function buildTestWorklist(
     ast,
     functionEnvironments,
     [new TypeAnalysisPass(), new ConstAnalysisPass()],
-    [new ConstantFoldingRule(), new MemoizationTransformRule()],
+    [new MemoizationTransformRule()],
     [],
   );
   return worklist;

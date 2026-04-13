@@ -14,7 +14,6 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
   ConstAnalysisPass,
-  ConstantFoldingRule,
   MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
@@ -107,7 +106,7 @@ describe("ScopePass dispatch", () => {
       ast,
       environments,
       [new TypeAnalysisPass(), new ConstAnalysisPass()],
-      [new ConstantFoldingRule(), new MemoizationTransformRule()],
+      [new MemoizationTransformRule()],
       [pass],
     );
     worklist.converge();

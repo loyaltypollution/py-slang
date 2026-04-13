@@ -933,6 +933,16 @@ export class Worklist implements ObservationSink {
     const unit = this.units.get(item.scopeKey);
     if (!unit || item.generation !== unit.generation) return false;
 
+    // Capture the unit's structural version up-front. Several pass-graph
+    // events below (the `structuralPass` write that primes purity, the
+    // dead-branch / constant-folding seeds) all wake transforms whose
+    // `reads` include `structuralPass` — so by the time we reach the
+    // dedicated transform-drain section those transforms may have *already*
+    // fired during purity's drain. A single capture here lets the
+    // post-drain delta detect any fire regardless of which drain scheduled
+    // it.
+    const preTransformVersion = unit.structuralVersion;
+
     // Scope-level passes run once per scope per generation, after the
     // expression-level fixpoint has converged (lower-priority queue
     // guarantees all analysis queues are empty at this point) and before
@@ -962,18 +972,21 @@ export class Worklist implements ObservationSink {
       this.drainPasses();
     }
 
-    // PR-6c: dead-branch elimination is no longer a legacy StmtTransformRule.
-    // Drive it through the pass-graph. The transfer sweeps `unit.body`,
-    // splicing If-statements whose condition is a known boolean const,
-    // and bumps `unit.structuralVersion` iff it mutated. We capture the
-    // pre-drain version and detect a fire via the delta — no fact-store
-    // bookkeeping needed beyond the top-only `"fired"` lattice.
-    const preDeadBranchVersion = unit.structuralVersion;
+    // PR-6c/6d: dead-branch elimination + constant folding are both
+    // pass-graph-driven, sharing reads `[constAnalysisPass, structuralPass]`.
+    // Each transfer sweeps `unit.body` (splicing const-bool `If`s and
+    // rewriting Binary/Compare into Literal respectively) and bumps
+    // `unit.structuralVersion` iff it mutated. Enqueue both seeds and
+    // drain once; either may already have fired during the purity drain
+    // above (woken by the `structuralPass` write priming purity), so the
+    // version-delta capture lives at the top of `processTransform` —
+    // see `preTransformVersion`.
     this.enqueue(deadBranchRule, unit);
+    this.enqueue(constantFoldingRule, unit);
     this.drainPasses();
-    const deadBranchFired = unit.structuralVersion !== preDeadBranchVersion;
+    const transformsFired = unit.structuralVersion !== preTransformVersion;
 
-    let anyChanged = deadBranchFired;
+    let anyChanged = transformsFired;
     const extraInvalidate = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     for (const rule of this.transforms) {
       if (rule.level === "scope") {
