@@ -47,16 +47,11 @@ export interface FunctionUnit {
   analysisOuts: Map<BlockId, MutableEnv<any> | null>[];
   generation: number;
   /**
-   * Raw call observations recorded since the worklist was constructed.
-   * Append-only: `observeCall` pushes `(callerKey, calleeKey)` pairs where
-   * this unit is the callee. Read by ScopePasses (e.g. CallCountScopePass)
-   * and then folded into a scope-level hint. Deliberately not reset on
-   * rebuild — call counts are monotone over the worklist's lifetime.
+   * Monotone call counter incremented by `observeCall` when this unit is
+   * the callee. Mirrored into `runtimeCallPass` for `callCountPass` to
+   * read; persists across CFG rebuilds (call counts don't reset).
    */
-  callObservations: Array<{
-    readonly callerKey: StmtNS.FileInput | StmtNS.FunctionDef;
-    readonly calleeKey: StmtNS.FileInput | StmtNS.FunctionDef;
-  }>;
+  callCount: number;
 }
 
 /**
@@ -100,7 +95,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       blockMap,
       analysisOuts,
       generation: 0,
-      callObservations: [],
+      callCount: 0,
       get body(): StmtNS.Stmt[] {
         return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
       },

@@ -653,24 +653,19 @@ export class Worklist implements ObservationSink {
   }
 
   observeCall(
-    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
+    _scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
     calleeKey: StmtNS.FileInput | StmtNS.FunctionDef,
   ): void {
     const calleeUnit = this.units.get(calleeKey);
     if (!calleeUnit) return;
-    calleeUnit.callObservations.push({ callerKey: scopeKey, calleeKey });
+    calleeUnit.callCount++;
     this.markDirty(calleeKey, "data");
-    // PR-6b: drive the migrated `callCountPass` directly. Legacy
-    // `CallCountScopePass` used to fold `callObservations.length` into the
-    // `callCount` hint at scope-pass time; that class is deleted this PR.
-    // Writing the raw count into `runtimeCallPass` here makes
-    // `callCountPass.transfer` (saturating bucket) the sole driver of the
-    // hint. Only FunctionDef callees can be memoization callees — matches
-    // the legacy gate exactly. Engine paths that also call
-    // `observe(runtimeCallPass, …)` from the interpreter remain a no-op
-    // idempotent second write under the lattice equality gate.
+    // Only FunctionDef callees can be memoization callees — matches the
+    // legacy gate. Engine paths that also call `observe(runtimeCallPass, …)`
+    // from the interpreter remain a no-op idempotent second write under
+    // the lattice equality gate.
     if (calleeKey instanceof StmtNS.FunctionDef) {
-      this.observe(runtimeCallPass, calleeKey.id, calleeUnit.callObservations.length);
+      this.observe(runtimeCallPass, calleeKey.id, calleeUnit.callCount);
     }
   }
 
