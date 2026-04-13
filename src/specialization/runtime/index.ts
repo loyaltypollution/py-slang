@@ -12,3 +12,4 @@ export { typeBlockEnvs, constBlockEnvs } from "./queries/block-envs";
 export { kildall } from "./queries/kildall";
 export { typeOf } from "./queries/type-of";
 export { constOf } from "./queries/const-of";
+export { callCountOf, purityOf, shouldMemoize } from "./queries/scope";

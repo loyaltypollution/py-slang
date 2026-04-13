@@ -25,7 +25,7 @@
 // routes through the migrated `purityScopePass` fact cell.
 
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { BasicBlock } from "../framework/cfg";
+import type { BasicBlock, CFG } from "../framework/cfg";
 import type { FunctionUnit } from "../framework/function-unit";
 import type { SlotInfo, SlotLookup } from "../framework/slot-table";
 import {
@@ -70,19 +70,37 @@ const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
 export function computePurity(unit: FunctionUnit): boolean | undefined {
   const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
+  return computePurityFromParts(fd, unit.cfg, unit.slotLookup);
+}
+
+/**
+ * Pure-extraction of `computePurity` for consumers (Phase 3e runtime
+ * queries) that do not have a `FunctionUnit` — only the scope's AST node,
+ * CFG, and slot lookup. Returns the same boolean verdict as `computePurity`
+ * (or `undefined` for non-FunctionDef scopes).
+ */
+export function computePurityFromParts(
+  fd: StmtNS.FunctionDef,
+  cfg: CFG,
+  slotLookup: SlotLookup,
+): boolean | undefined {
   const self = fd.name.lexeme;
-  const exitFact = solveCfg(unit, self);
+  const exitFact = solveCfgFromParts(cfg, slotLookup, self);
   return !exitFact.impure && exitFact.calls !== IMPURE_CALL;
 }
 
-function solveCfg(unit: FunctionUnit, selfName: string): PurityFact {
+function solveCfgFromParts(
+  cfg: CFG,
+  slotLookup: SlotLookup,
+  selfName: string,
+): PurityFact {
   const outByBlock = new Map<number, PurityFact>();
-  for (const block of unit.cfg.blocks) outByBlock.set(block.id, BOTTOM_FACT);
+  for (const block of cfg.blocks) outByBlock.set(block.id, BOTTOM_FACT);
 
-  const queue: BasicBlock[] = [unit.cfg.entry];
-  const inQueue = new Set<number>([unit.cfg.entry.id]);
+  const queue: BasicBlock[] = [cfg.entry];
+  const inQueue = new Set<number>([cfg.entry.id]);
 
-  const transfer = makeBlockTransfer(unit.slotLookup, selfName);
+  const transfer = makeBlockTransfer(slotLookup, selfName);
 
   while (queue.length > 0) {
     const block = queue.shift()!;
@@ -106,7 +124,7 @@ function solveCfg(unit: FunctionUnit, selfName: string): PurityFact {
     }
   }
 
-  return outByBlock.get(unit.cfg.exit.id) ?? BOTTOM_FACT;
+  return outByBlock.get(cfg.exit.id) ?? BOTTOM_FACT;
 }
 
 // ── Transfer ────────────────────────────────────────────────────────────
