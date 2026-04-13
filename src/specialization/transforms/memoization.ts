@@ -31,7 +31,7 @@ import {
   CALL_COUNT_FIELD,
   MEMOIZATION_THRESHOLD,
   MEMOIZED_FIELD,
-} from "../memoization-analysis/analysis";
+} from "../memoization-analysis/call-count";
 import { isPureFunctionDef } from "../memoization-analysis/purity";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokens";

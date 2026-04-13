@@ -65,10 +65,9 @@ export { ConstantFoldingRule } from "./transforms/constant-folding";
 export { DeadBranchEliminationRule } from "./transforms/dead-branch";
 export { MemoizationTransformRule } from "./transforms/memoization";
 export {
-  CallCountObserver,
+  CallCountScopePass,
   MEMOIZATION_THRESHOLD,
   CALL_COUNT_FIELD,
   MEMOIZED_FIELD,
-} from "./memoization-analysis/analysis";
-export type { ProfileObserver } from "./framework/interfaces";
+} from "./memoization-analysis/call-count";
 export { memoLookup, memoPut, clearMemoCache, memoCacheSnapshot, MEMO_MISS } from "../runtime/memo";

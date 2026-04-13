@@ -1,11 +1,12 @@
 /**
- * ε1 red tests:
+ * Tests:
  *   1. `fireOnce` ScopeTransformRule: after a successful apply, the
  *      scheduler must NOT re-invoke `matches` on the same scope, even when
  *      the scope is re-ticked by a fresh observation. Guards both the new
  *      scheduler plumbing and the `MEMOIZED_FIELD` latch removal.
- *   2. `ProfileObserver` dispatch: `addProfileObserver` observers fire on
- *      `observeCall`, independently of any `AnalysisModule` path.
+ *   2. `ScopePass` dispatch: `addScopePass` passes run once per scope per
+ *      generation, and the callObservations buffer accumulates calls
+ *      independently of any `AnalysisPass` path.
  */
 
 import { StmtNS } from "../ast-types";
@@ -18,7 +19,7 @@ import {
   MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
-  type ProfileObserver,
+  type ScopePass,
   type FunctionUnit,
 } from "../specialization";
 import type { ScopeTransformRule } from "../specialization/framework/interfaces";
@@ -90,18 +91,16 @@ describe("ScopeTransformRule fireOnce scheduling", () => {
   });
 });
 
-describe("ProfileObserver dispatch", () => {
-  test("addProfileObserver receives onCallObservation for every observeCall", () => {
+describe("ScopePass dispatch", () => {
+  test("observeCall appends to callObservations; registered ScopePass reads them", () => {
     const { ast, environments } = parseAndResolve("def f():\n  return 1\nf()\nf()");
     const fd = ast.statements[0] as StmtNS.FunctionDef;
 
-    const calls: Array<{
-      caller: StmtNS.FileInput | StmtNS.FunctionDef;
-      callee: StmtNS.FileInput | StmtNS.FunctionDef;
-    }> = [];
-    const observer: ProfileObserver = {
-      onCallObservation(caller, callee) {
-        calls.push({ caller, callee });
+    const runs: Array<{ scope: StmtNS.FileInput | StmtNS.FunctionDef; observed: number }> = [];
+    const pass: ScopePass = {
+      name: "test-count",
+      run(unit: FunctionUnit) {
+        runs.push({ scope: unit.funcAst, observed: unit.callObservations.length });
       },
     };
 
@@ -111,7 +110,7 @@ describe("ProfileObserver dispatch", () => {
       [new TypeAnalysisPass(), new ConstAnalysisPass()],
       [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
     );
-    worklist.addProfileObserver(observer);
+    worklist.addScopePass(pass);
     worklist.converge();
 
     worklist.observeCall(ast, fd);
@@ -119,15 +118,18 @@ describe("ProfileObserver dispatch", () => {
     worklist.observeCall(ast, fd);
     worklist.tick();
 
-    expect(calls.length).toBe(2);
-    expect(calls[0].caller).toBe(ast);
-    expect(calls[0].callee).toBe(fd);
-    expect(calls[1].callee).toBe(fd);
+    // After two observeCall dispatches on fd, the ScopePass has seen fd with
+    // a buffer that grew to >= 2. We don't pin the exact number of runs
+    // (converge + each tick schedules one transform round per scope) — we
+    // pin the observed-count invariant at the last run for fd.
+    const fdRuns = runs.filter(r => r.scope === fd);
+    expect(fdRuns.length).toBeGreaterThanOrEqual(1);
+    expect(fdRuns[fdRuns.length - 1].observed).toBe(2);
   });
 
-  test("AnalysisModule no longer receives onCallObservation path", () => {
-    // Structural assertion: AnalysisModule interface must not declare
-    // onCallObservation. If this assertion flips, the ε1 split has leaked.
+  test("AnalysisPass does not declare onCallObservation", () => {
+    // Structural assertion: AnalysisPass interface must not have grown an
+    // onCallObservation hook — observation dispatch goes through ScopePass.
     const mod = new TypeAnalysisPass() as unknown as {
       onCallObservation?: (...args: unknown[]) => void;
     };

@@ -20,7 +20,7 @@ import {
   ConstantFoldingRule,
   DeadBranchEliminationRule,
   HintStore,
-  CallCountObserver,
+  CallCountScopePass,
   MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
@@ -303,7 +303,7 @@ const worklist = new Worklist(
   [new TypeAnalysisPass(), new ConstAnalysisPass()],
   [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
 );
-worklist.addProfileObserver(new CallCountObserver());
+worklist.addScopePass(new CallCountScopePass());
 worklist.converge();
 const units = worklist.units;
 

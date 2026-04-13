@@ -141,15 +141,3 @@ export interface ScopePass {
   readonly name: string;
   run(unit: FunctionUnit): void;
 }
-
-/**
- * @deprecated Transitional. Use `ScopePass` instead. Will be removed once
- * the last observer (`CallCountObserver`) has migrated to a `ScopePass`.
- */
-export interface ProfileObserver {
-  onCallObservation(
-    callerKey: StmtNS.FileInput | StmtNS.FunctionDef,
-    calleeKey: StmtNS.FileInput | StmtNS.FunctionDef,
-    calleeHints: HintStore,
-  ): void;
-}

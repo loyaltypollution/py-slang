@@ -7,7 +7,7 @@ import {
   ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
-  CallCountObserver,
+  CallCountScopePass,
   MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
@@ -33,7 +33,7 @@ export class PySvmlEvaluator extends BasicEvaluator {
           new MemoizationTransformRule(),
         ],
       );
-      worklist.addProfileObserver(new CallCountObserver());
+      worklist.addScopePass(new CallCountScopePass());
       worklist.converge();
       const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units);
       const program = compiler.compileProgram(ast);

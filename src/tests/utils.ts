@@ -14,7 +14,7 @@ import {
   ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
-  CallCountObserver,
+  CallCountScopePass,
   MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
@@ -41,7 +41,7 @@ export function buildTestWorklist(
     [new TypeAnalysisPass(), new ConstAnalysisPass()],
     [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
   );
-  worklist.addProfileObserver(new CallCountObserver());
+  worklist.addScopePass(new CallCountScopePass());
   return worklist;
 }
 

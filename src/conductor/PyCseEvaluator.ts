@@ -15,7 +15,7 @@ import {
   ConstAnalysisPass,
   ConstantFoldingRule,
   DeadBranchEliminationRule,
-  CallCountObserver,
+  CallCountScopePass,
   MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
@@ -100,7 +100,7 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
           new MemoizationTransformRule(),
         ],
       );
-      worklist.addProfileObserver(new CallCountObserver());
+      worklist.addScopePass(new CallCountScopePass());
       worklist.converge();
 
       this.context.runtime.rootScope = ast;

@@ -19,7 +19,7 @@ import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import { buildFunctionUnits, makeOut, type FunctionUnit } from "./function-unit";
 import { hintEquals, type HintStore, type OptimizationHint } from "./hint";
-import type { AnalysisPass, ProfileObserver, ScopeTransformRule, TransformRule } from "./interfaces";
+import type { AnalysisPass, ScopePass, ScopeTransformRule, TransformRule } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
 import type { ObservationSink } from "./observation-sink";
 import type { SlotLookup } from "./slot-table";
@@ -285,12 +285,13 @@ export class Worklist implements ObservationSink {
   private readonly observers: readonly ObservingAnalysis[];
 
   /**
-   * Runtime call-site observers. Populated via `addProfileObserver`. Fires on
-   * every `observeCall` dispatch, independently of the analysis lattice
-   * path. Used for profile-style facts (e.g. memoization saturating count)
-   * that don't belong in a Kildall transfer function.
+   * Scope-level, one-shot passes. Populated via `addScopePass`. Each pass
+   * runs once per scope per generation, after the expression-level
+   * analysis fixpoint has converged (see `rebuildAndReseed`). Used for
+   * per-scope facts (call counts, purity summaries) that don't belong in
+   * a Kildall transfer function.
    */
-  private readonly profileObservers: ProfileObserver[] = [];
+  private readonly scopePasses: ScopePass[] = [];
 
   /**
    * Records scope-rule (scope × rule) pairs whose `fireOnce` flag is set
@@ -406,12 +407,12 @@ export class Worklist implements ObservationSink {
   }
 
   /**
-   * Register a profile-style call observer. Fires on every `observeCall`
-   * dispatch. Independent of the analysis lattice path — observers receive
-   * the callee's `HintStore` and can write counter fields directly.
+   * Register a scope-level pass. Runs once per scope per generation after
+   * the expression-level fixpoint has converged, in registration order.
+   * See `ScopePass` for the invariants.
    */
-  addProfileObserver(observer: ProfileObserver): void {
-    this.profileObservers.push(observer);
+  addScopePass(pass: ScopePass): void {
+    this.scopePasses.push(pass);
   }
 
   /**
@@ -467,9 +468,7 @@ export class Worklist implements ObservationSink {
   ): void {
     const calleeUnit = this.units.get(calleeKey);
     if (!calleeUnit) return;
-    for (const obs of this.profileObservers) {
-      obs.onCallObservation(scopeKey, calleeKey, calleeUnit.hints);
-    }
+    calleeUnit.callObservations.push({ callerKey: scopeKey, calleeKey });
     this.rebuildAndReseed(calleeKey, calleeUnit);
     // Tick so any newly-enabled non-monotone transforms (e.g. memoization
     // crossing its call-count threshold) fire *during* execution. Safe
@@ -642,6 +641,18 @@ export class Worklist implements ObservationSink {
 
     const unit = this.units.get(item.scopeKey);
     if (!unit || item.generation !== unit.generation) return false;
+
+    // Scope-level passes run once per scope per generation, after the
+    // expression-level fixpoint has converged (lower-priority queue
+    // guarantees all analysis queues are empty at this point) and before
+    // transform rules read scope-level hints. A pass that writes to
+    // `unit.hints` may invalidate downstream lattice facts; the
+    // `hintStore.set` equality check suppresses no-op writes, and a
+    // genuine change triggers the transform round's own
+    // `rebuildAndReseed` below.
+    for (const pass of this.scopePasses) {
+      pass.run(unit);
+    }
 
     let anyChanged = false;
     const extraInvalidate = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();

@@ -1,5 +1,5 @@
 /**
- * End-to-end test for CallCountObserver + MemoizationTransformRule.
+ * End-to-end test for CallCountScopePass + MemoizationTransformRule.
  *
  * Exercises the whole observation → hint-accumulation → transform chain:
  *   1. `observeCall` fires N times on a FunctionDef; the analysis increments
@@ -42,7 +42,7 @@ function findFunctionDef(ast: StmtNS.FileInput, name: string): StmtNS.FunctionDe
   throw new Error(`FunctionDef ${name} not found`);
 }
 
-describe("CallCountObserver + transform", () => {
+describe("CallCountScopePass + transform", () => {
   beforeEach(() => clearMemoCache());
 
   test("observeCall bumps the callCount hint on the callee FunctionDef", () => {
