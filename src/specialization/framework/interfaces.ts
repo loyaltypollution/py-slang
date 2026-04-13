@@ -43,8 +43,8 @@ export interface AnalysisPass<L> {
    * value is not useful for this analysis (e.g. ConstAnalysisPass ignores
    * non-primitive JS values rather than widening to TOP).
    *
-   * Paired with `ObservationSink.observeWrite` on the worklist side: the
-   * sink's `observeWrite` is the runtime *event*; this method is the
+   * Paired with `Worklist.observeWrite` on the worklist side: the
+   * worklist's `observeWrite` is the runtime *event*; this method is the
    * per-analysis *reaction* that lifts the raw value into the lattice and
    * merges it into the hint in one step.
    */

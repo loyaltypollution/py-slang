@@ -92,8 +92,8 @@ export class SVMLInterpreter {
    * STORE / CALL sites. `observeNodeWrite(nodeId, value)` feeds
    * `runtimeWritePass`; `observeScopeCall(scopeId)` feeds
    * `runtimeCallPass`. Defaults are no-ops; `PySvmlJitEvaluator` wires
-   * them to `worklist.observe(...)` calls. ObservationSink stays live
-   * alongside until PR-6.
+   * them to `worklist.observe(...)` calls. The legacy observationSink
+   * callback pair stays live alongside until PR-B inlines it.
    */
   private observeNodeWrite: (nodeId: number, value: unknown) => void = () => {};
   private observeScopeCall: (scopeId: number) => void = () => {};
