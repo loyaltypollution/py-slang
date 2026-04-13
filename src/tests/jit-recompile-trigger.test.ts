@@ -63,7 +63,7 @@ describe("PR-5 jitPass + callCountPass saturation", () => {
         const v = ctx.read(callCountPass, key);
         return v ?? 0;
       },
-      affectedKeys(triggerPass, triggerKey) {
+      affectedKeys(_ctx, triggerPass, triggerKey) {
         if (triggerPass === (callCountPass as Pass<any, any>)) {
           return [triggerKey as number];
         }
@@ -104,7 +104,7 @@ describe("PR-5 jitPass + callCountPass saturation", () => {
       reads: [callCountPass],
       tier: "jit",
       coarse: true,
-      affectedKeys(_triggerPass, _triggerKey) {
+      affectedKeys(_ctx, _triggerPass, _triggerKey) {
         return [unit];
       },
       transfer(ctx: PassCtx, _u: FunctionUnit): number | undefined {

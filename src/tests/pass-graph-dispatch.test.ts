@@ -71,7 +71,9 @@ function makePass<K, V>(opts: {
     tier: opts.tier,
     coarse: opts.coarse ?? opts.affectedKeys === undefined,
     transfer: (_ctx, key) => (opts.transfer ? opts.transfer(key as K) : undefined),
-    affectedKeys: opts.affectedKeys,
+    affectedKeys: opts.affectedKeys
+      ? (_ctx, p, k) => opts.affectedKeys!(p, k)
+      : undefined,
     prune: opts.prune ? (_ctx, unit, prev) => opts.prune!(unit, prev as Iterable<K>) : undefined,
   };
 }

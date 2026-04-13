@@ -53,6 +53,7 @@ export interface Pass<K, V> {
   readonly coarse?: boolean;
   transfer(ctx: PassCtx, key: K): V | undefined;
   affectedKeys?(
+    ctx: PassCtx,
     triggerPass: Pass<any, any>,
     triggerKey: unknown,
   ): Iterable<K>;
@@ -75,6 +76,7 @@ export interface PassCtx {
   read<K2, V2>(p: Pass<K2, V2>, key: K2): V2;
   readAll<K2, V2>(p: Pass<K2, V2>): ReadonlyMap<K2, V2>;
   unitFor(scope: StmtNS.FileInput | StmtNS.FunctionDef): FunctionUnit | undefined;
+  unitForBlock(block: import("./cfg").BasicBlock): FunctionUnit | undefined;
   /** Direct fact-store handle for accessor-mediated reads/writes from transforms. */
   readonly factStore: FactStore;
 }

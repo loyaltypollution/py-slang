@@ -57,10 +57,18 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     private readonly factStore: FactStore,
     private readonly slotTypes: { get(slot: number): TypeLattice | undefined },
     private readonly slotLookup: SlotLookup,
+    /**
+     * Per-node tap. When supplied (e.g. by `nodeFactView.get`'s replay), the
+     * visitor emits to the tap and skips the fact-store write — the View
+     * gates publication itself. When absent (legacy driver), `annotate`
+     * publishes to the fact store as before.
+     */
+    private readonly tap?: (id: number, val: TypeLattice) => void,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
-    writeTypeFact(this.factStore, node.id, val);
+    if (this.tap) this.tap(node.id, val);
+    else writeTypeFact(this.factStore, node.id, val);
     return val;
   }
 
@@ -263,8 +271,9 @@ export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
     factStore: FactStore,
     env: { get(slot: number): TypeLattice | undefined },
     slotLookup: SlotLookup,
+    tap?: (id: number, val: TypeLattice) => void,
   ): ExprNS.Visitor<TypeLattice> {
-    return new TypeAnalysisVisitor(factStore, env, slotLookup);
+    return new TypeAnalysisVisitor(factStore, env, slotLookup, tap);
   }
 
   observeWrite(factStore: FactStore, id: number, rawValue: unknown): void {
