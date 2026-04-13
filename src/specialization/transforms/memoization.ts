@@ -24,10 +24,7 @@
 // No new scopes are introduced (Gap 5 respected).
 
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { ScopeTransformRule } from "../framework/interfaces";
 import type { FunctionUnit } from "../framework/function-unit";
-import { CALL_COUNT_FIELD, MEMOIZATION_THRESHOLD } from "../memoization-analysis/call-count";
-import { PURE_FIELD } from "../purity-analysis/lattice";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokens";
 
@@ -35,58 +32,44 @@ import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
-export class MemoizationTransformRule implements ScopeTransformRule {
-  readonly name = "memoization";
-  readonly level = "scope" as const;
-  // Non-monotone rule: without one-shot scheduling, `matches` would re-fire
-  // after a successful apply (there is no lattice fact that `apply`
-  // "raises" to block its own predicate). The scheduler's `fireOnce`
-  // bookkeeping records `(scope, rule)` after the first success; the rule
-  // itself carries no self-latch.
-  readonly fireOnce = true;
+/**
+ * Wrap `unit`'s FunctionDef body with the memoization prelude in place.
+ * Returns `true` iff the body was mutated. Caller gates on threshold +
+ * purity; this helper only handles the rewrite.
+ */
+export function applyMemoizationWrap(unit: FunctionUnit): boolean {
+  const fd = unit.funcAst;
+  if (!(fd instanceof StmtNS.FunctionDef)) return false;
+  // Idempotence: re-invocation on an already-wrapped body must be a no-op.
+  // Transfer mutates AST eagerly; the lattice "fired" write gates dispatch
+  // fan-out but the side effect happens before any equality check. Without
+  // this guard, each re-enqueue would prepend another prelude.
+  if (unit.appliedTransforms.has("memoization")) return false;
 
-  matches(unit: FunctionUnit): boolean {
-    const fd = unit.funcAst;
-    if (!(fd instanceof StmtNS.FunctionDef)) return false;
-    const hint = unit.hints.get(fd);
-    if (!hint) return false;
-    const count =
-      typeof hint[CALL_COUNT_FIELD] === "number" ? (hint[CALL_COUNT_FIELD] as number) : 0;
-    if (count < MEMOIZATION_THRESHOLD) return false;
-    return hint[PURE_FIELD] === true;
-  }
+  const id = mintId(fd);
+  const params = fd.parameters.map(p => mkVar(fd, p.lexeme));
 
-  apply(unit: FunctionUnit): boolean {
-    const fd = unit.funcAst as StmtNS.FunctionDef;
-    const id = mintId(fd);
-    const params = fd.parameters.map(p => mkVar(fd, p.lexeme));
+  // Prelude: `if __memo_has(id, *params): return __memo_get(id, *params)`.
+  const hasCall = mkCall(fd, MEMO_HAS, [mkStr(fd, id), ...params]);
+  const getCall = mkCall(fd, MEMO_GET, [mkStr(fd, id), ...params.map(p => cloneVar(p))]);
+  const prelude = new StmtNS.If(
+    fd.startToken,
+    fd.endToken,
+    hasCall,
+    [new StmtNS.Return(fd.startToken, fd.endToken, getCall)],
+    null,
+  );
 
-    // Prelude: `if __memo_has(id, *params): return __memo_get(id, *params)`.
-    const hasCall = mkCall(fd, MEMO_HAS, [mkStr(fd, id), ...params]);
-    const getCall = mkCall(fd, MEMO_GET, [mkStr(fd, id), ...params.map(p => cloneVar(p))]);
-    const prelude = new StmtNS.If(
-      fd.startToken,
-      fd.endToken,
-      hasCall,
-      [new StmtNS.Return(fd.startToken, fd.endToken, getCall)],
-      null,
-    );
+  // Rewrite every `return E` in the body to `return __memo_put(id, *params, E)`,
+  // skipping nested FunctionDef / class scopes.
+  rewriteReturns(fd.body, fd, id, params);
 
-    // Rewrite every `return E` in the body to `return __memo_put(id, *params, E)`,
-    // skipping nested FunctionDef / class scopes so inner functions aren't
-    // entangled with the outer cache.
-    rewriteReturns(fd.body, fd, id, params);
+  fd.body.unshift(prelude);
 
-    // Splice the prelude as the first statement.
-    fd.body.unshift(prelude);
+  // Preserve legacy observability: tests read `unit.appliedTransforms`.
+  unit.appliedTransforms.add("memoization");
 
-    // Record that this transform fired on this scope so external consumers
-    // (tests, introspection) can observe it. Not consulted by `matches()` —
-    // the re-fire guard is the scheduler's `fireOnce` bookkeeping.
-    unit.appliedTransforms.add(this.name);
-
-    return true;
-  }
+  return true;
 }
 
 // ── AST construction helpers ────────────────────────────────────────────────

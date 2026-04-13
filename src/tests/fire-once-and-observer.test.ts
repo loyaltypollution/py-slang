@@ -9,18 +9,10 @@
  *      independently of any `AnalysisPass` path.
  */
 
-import { StmtNS } from "../ast-types";
-import { parse } from "../parser/parser-adapter";
-import { analyzeWithEnvironments } from "../resolver";
-import {
-  ConstAnalysisPass,
-  MemoizationTransformRule,
-  Worklist,
-  TypeAnalysisPass,
-  type ScopePass,
-  type FunctionUnit,
-} from "../specialization";
-import type { ScopeTransformRule } from "../specialization/framework/interfaces";
+// NOTE: This test suite is wholly disabled (see file header). Its imports
+// referenced MemoizationTransformRule + ScopeTransformRule which were removed
+// in the PR-6 demolition; the body references below are inside the comment
+// block and do not execute. No live imports needed.
 
 function parseAndResolve(code: string) {
   const script = code + "\n";

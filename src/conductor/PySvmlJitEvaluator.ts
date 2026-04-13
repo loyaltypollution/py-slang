@@ -6,7 +6,6 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
   ConstAnalysisPass,
-  MemoizationTransformRule,
   TypeAnalysisPass,
   Worklist,
   callCountPass,
@@ -48,9 +47,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           new TypeAnalysisPass(),
           new ConstAnalysisPass(),
         ],
-        [
-          new MemoizationTransformRule(),
-        ],
+        [],
         [],
       );
       worklist.converge();

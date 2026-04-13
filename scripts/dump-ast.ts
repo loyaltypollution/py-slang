@@ -17,12 +17,7 @@ import { parse } from "../src/parser/parser-adapter";
 import { analyzeWithEnvironments } from "../src/resolver";
 import {
   ConstAnalysisPass,
-  ConstantFoldingRule,
-  DeadBranchEliminationRule,
   HintStore,
-  CallCountScopePass,
-  MemoizationTransformRule,
-  PurityScopePass,
   Worklist,
   TypeAnalysisPass,
   type OptimizationHint,
@@ -302,8 +297,8 @@ const worklist = new Worklist(
   ast,
   environments,
   [new TypeAnalysisPass(), new ConstAnalysisPass()],
-  [new DeadBranchEliminationRule(), new ConstantFoldingRule(), new MemoizationTransformRule()],
-  [new CallCountScopePass(), new PurityScopePass()],
+  [],
+  [],
 );
 worklist.converge();
 const units = worklist.units;

@@ -13,7 +13,6 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
   ConstAnalysisPass,
-  MemoizationTransformRule,
   Worklist,
   TypeAnalysisPass,
   NullObservationSink,
@@ -94,9 +93,7 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         ast,
         environments,
         [new TypeAnalysisPass(), new ConstAnalysisPass()],
-        [
-          new MemoizationTransformRule(),
-        ],
+        [],
         [],
       );
       worklist.converge();

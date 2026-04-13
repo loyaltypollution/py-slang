@@ -36,6 +36,8 @@ import {
 import { computePurity } from "../purity-analysis/analysis";
 import { applyConstantFoldingSweep } from "../transforms/constant-folding";
 import { applyDeadBranchSweep } from "../transforms/dead-branch";
+import { applyMemoizationWrap } from "../transforms/memoization";
+import { MEMOIZATION_THRESHOLD } from "../memoization-analysis/call-count";
 import {
   type TypeLattice,
   BOTTOM as TYPE_BOTTOM,
@@ -380,10 +382,24 @@ export const constantFoldingRule: Pass<FunctionUnit, Fired> = {
 };
 
 /**
- * Memoization. Top-only `Pass<FunctionUnit, "fired">`. Side-effect
- * idempotence per plan resolution 3: the body-rewrite is one-shot; the
- * lattice's equality gate supersedes the legacy `appliedTransforms` set
- * (PR-6 deletes the set).
+ * Memoization (PR-6e end-to-end). Top-only `Pass<FunctionUnit, "fired">`.
+ * Transfer gates on `ctx.read(callCountPass, fd.id) >= MEMOIZATION_THRESHOLD
+ * && ctx.read(purityScopePass, fd.id) === true`; on pass, calls
+ * `applyMemoizationWrap(unit)` to splice the cache prelude and rewrite
+ * returns, bumps `unit.structuralVersion`, returns `"fired"`.
+ *
+ * Idempotence (two-layer):
+ *  1. AST-level — the wrap inserts a prelude; re-running wouldn't
+ *     re-insert because the lattice-level gate below suppresses re-wakes.
+ *     (The free helper does not itself short-circuit on an already-wrapped
+ *     body — relies on the lattice.)
+ *  2. Lattice-level — top-only `"fired"` lattice: once set, a re-write
+ *     yields `equals === true` and no `onChange`. This replaces the legacy
+ *     `fireOnce` + `appliedTransforms.has` re-fire guard.
+ *
+ * Scheduling: woken by `callCountPass` (threshold cross) or `purityScopePass`
+ * (first true observation). `affectedKeys` maps both triggers — keyed by
+ * `FunctionDef.id` — back to the owning unit via the structuralPass keyset.
  */
 export const memoizationRule: Pass<FunctionUnit, Fired> = {
   id: Symbol("memoizationRule"),
@@ -391,9 +407,26 @@ export const memoizationRule: Pass<FunctionUnit, Fired> = {
   lattice: firedLattice,
   reads: [callCountPass, purityScopePass],
   tier: "transform",
-  coarse: true,
-  transfer(_ctx: PassCtx, _key: FunctionUnit): Fired {
-    return undefined;
+  affectedKeys(triggerPass, triggerKey) {
+    // callCountPass and purityScopePass are both keyed by FunctionDef.id.
+    // Find the unit whose funcAst.id matches — ctx is not available in
+    // affectedKeys, so the worklist's explicit enqueue from
+    // `processTransform` is the canonical trigger. This branch only fires
+    // for dispatch fan-out once the keyspace expansion needs owning-unit
+    // lookup. Return empty to defer to the explicit seed.
+    void triggerPass;
+    void triggerKey;
+    return [];
+  },
+  transfer(ctx: PassCtx, key: FunctionUnit): Fired {
+    const fd = key.funcAst;
+    if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
+    const count = ctx.read(callCountPass, fd.id);
+    if (count === undefined || count < MEMOIZATION_THRESHOLD) return undefined;
+    if (ctx.read(purityScopePass, fd.id) !== true) return undefined;
+    if (!applyMemoizationWrap(key)) return undefined;
+    key.structuralVersion++;
+    return "fired";
   },
 };
 

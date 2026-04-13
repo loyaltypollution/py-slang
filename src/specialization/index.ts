@@ -69,7 +69,8 @@ export { CONST_BOTTOM, CONST_TOP, constOf } from "./const-analysis/lattice";
 
 // ── Concrete transforms ──────────────────────────────────────────────────────
 
-export { MemoizationTransformRule } from "./transforms/memoization";
+export { applyMemoizationWrap } from "./transforms/memoization";
+export { memoizationRule } from "./framework/migrated-passes";
 export {
   MEMOIZATION_THRESHOLD,
   CALL_COUNT_FIELD,

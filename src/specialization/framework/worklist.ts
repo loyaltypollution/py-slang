@@ -983,6 +983,13 @@ export class Worklist implements ObservationSink {
     // see `preTransformVersion`.
     this.enqueue(deadBranchRule, unit);
     this.enqueue(constantFoldingRule, unit);
+    // PR-6e: memoization is pass-graph-driven. Its transfer gates on
+    // callCountPass >= threshold && purityScopePass === true; top-only
+    // lattice means the first fire writes "fired" and subsequent
+    // re-enqueues no-op via lattice equality. Legacy `appliedTransforms`
+    // Set write preserved inside the wrap for test observability until
+    // the final PR-6 demolition slice deletes the field.
+    this.enqueue(memoizationRule, unit);
     this.drainPasses();
     const transformsFired = unit.structuralVersion !== preTransformVersion;
 
