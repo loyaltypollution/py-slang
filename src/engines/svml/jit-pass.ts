@@ -2,8 +2,8 @@
 // (callCount, purity, structural) and, on lattice-change, recompiles the
 // affected FunctionDef and patches its entry in the interpreter's function
 // table. Side-effect idempotence: patchFunction only fires when the
-// produced IR digest differs from the previously-stored one; the digest
-// is also the lattice value, so equal writes suppress onChange.
+// produced IR differs structurally from the previously-stored one; the
+// IR itself is the lattice value, so equal writes suppress onChange.
 
 import { StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
@@ -13,7 +13,7 @@ import { callCountPass } from "../../specialization/memoization-analysis/call-co
 import { purityScopePass } from "../../specialization/purity-analysis/analysis";
 import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
-import type { SVMLIR } from "./types";
+import { SVMLIR } from "./types";
 
 export interface JitPassDeps {
   readonly compiler: SVMLCompiler;
@@ -22,63 +22,85 @@ export interface JitPassDeps {
   readonly unitsOf: () => Iterable<FunctionUnit>;
 }
 
-export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, number> {
+/** Sentinel "not yet compiled" — a unique SVMLIR instance distinct from every real one by reference. */
+const UNCOMPILED: SVMLIR = new SVMLIR(
+  new Int32Array(0),
+  new Float64Array(0),
+  new Int32Array(0),
+  [],
+  0,
+  0,
+  0,
+);
+
+export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
   const { compiler, interpreter, unitsOf } = deps;
 
-  const jitPass: Pass<FunctionUnit, number> = {
+  const jitPass: Pass<FunctionUnit, SVMLIR> = {
     id: Symbol("jitPass"),
     debugName: "jitPass",
     lattice: {
-      bottom: 0,
-      equals: (a, b) => a === b,
-      join: (a, b) => Math.max(a, b),
+      bottom: UNCOMPILED,
+      equals: structuralEquals,
+      join: (_a, b) => b,
     },
     reads: [callCountPass, purityScopePass, structuralPass],
     tier: "transform",
-    coarse: true,
     // Any change in a read pass invalidates every FunctionDef unit.
-    // Without this the coarse fallback (re-run on previously-written keys)
-    // would never wake jitPass before its first own write, breaking the
-    // priming order.
     affectedKeys(_ctx, _triggerPass, _triggerKey) {
       return Array.from(unitsOf());
     },
-    transfer(ctx: PassCtx, unit: FunctionUnit): number | undefined {
+    transfer(ctx: PassCtx, unit: FunctionUnit): SVMLIR | undefined {
       const scope = unit.funcAst;
       if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
       const index = compiler.indexOf(scope);
       if (index === undefined) return undefined;
       const newCode = compiler.compileFunction(unit);
-      const digest = digestSVMLIR(newCode);
       const prev = ctx.read(jitPass, unit);
-      if (digest === prev) return undefined; // equal → no write, no patch
+      if (structuralEquals(newCode, prev)) return undefined; // no write, no patch
       interpreter.patchFunction(index, newCode);
-      return digest;
+      return newCode;
     },
   };
   return jitPass;
 }
 
 /**
- * Cheap structural digest for an SVMLIR. Combines opcode count with a
- * rolling XOR/multiply over opcodes and operand arrays. Not
- * cryptographic — collisions are tolerated only insofar as they
- * suppress one redundant patch; correctness comes from `patchFunction`
- * being idempotent. Hot-path cost: O(opcodes.length).
+ * Collision-free structural equality over two SVMLIR instances. Fails fast
+ * on first divergence. A hash would risk suppressing a required patchFunction.
  */
-function digestSVMLIR(ir: SVMLIR): number {
-  let h = ir.count | 0;
-  const ops = ir.opcodes;
-  for (let i = 0; i < ops.length; i++) {
-    h = (h * 31 + ops[i]) | 0;
+function i32Equals(a: Int32Array, b: Int32Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+// Float64: bitwise NaN-safe compare — two NaNs compare equal if bit-identical.
+function f64Equals(a: Float64Array, b: Float64Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i], y = b[i];
+    if (x !== y && !(Number.isNaN(x) && Number.isNaN(y))) return false;
   }
-  const a2 = ir.arg2s;
-  for (let i = 0; i < a2.length; i++) {
-    h = (h * 17 + a2[i]) | 0;
-  }
-  const a1 = ir.arg1s;
-  for (let i = 0; i < a1.length; i++) {
-    h = (h * 13 + (a1[i] | 0)) | 0;
-  }
-  return h;
+  return true;
+}
+
+function strEquals(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function structuralEquals(a: SVMLIR, b: SVMLIR): boolean {
+  if (a === b) return true;
+  return (
+    a.count === b.count &&
+    a.stackSize === b.stackSize &&
+    a.envSize === b.envSize &&
+    a.numArgs === b.numArgs &&
+    i32Equals(a.opcodes, b.opcodes) &&
+    i32Equals(a.arg2s, b.arg2s) &&
+    f64Equals(a.arg1s, b.arg1s) &&
+    strEquals(a.strings, b.strings)
+  );
 }

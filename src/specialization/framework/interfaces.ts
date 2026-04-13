@@ -13,7 +13,6 @@ import type { SlotLookup } from "./slot-table";
  */
 export interface AnalysisPass<L> {
   readonly name: string;
-  latticeEquals(a: unknown, b: unknown): boolean;
   top(): L;
   bottom(): L;
   join(a: L, b: L): L;

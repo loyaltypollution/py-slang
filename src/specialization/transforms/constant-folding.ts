@@ -1,20 +1,6 @@
-// src/specialization/transforms/constant-folding.ts
-//
-// Constant folding. `constantFoldingRule` (below) is a unit-keyed
-// `Pass<FunctionUnit, Fired>` whose transfer calls
-// `applyConstantFoldingSweep`.
-//
-// Fires whenever `constAnalysisPass` or `structuralPass` produce a
-// lattice-change for the unit, plus an explicit initial-converge seed
-// from `worklist.processTransform` (same seeding pattern as PR-6c
-// dead-branch).
-//
-// Idempotence: once a Binary/Compare has been rewritten to a `Literal`,
-// the match predicate returns false on the replacement (Literal is not a
-// Binary/Compare) — re-entry on an already-converged body is a no-op
-// sweep. The top-only `"fired"` lattice adds a second gate: rewriting
-// `"fired"` on the same key equals → no onChange → no downstream consumer
-// wakes spuriously.
+// Constant folding. Idempotent: once a Binary/Compare is rewritten to a
+// Literal, `matchesExpr` returns false on the replacement, so re-entry on
+// a converged body is a no-op sweep.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import { constAnalysisPass } from "../const-analysis/analysis";
@@ -26,12 +12,12 @@ import { unitSweepRule } from "../framework/transform-rule";
 /** Does this expression have a statically-known constant value that we can fold? */
 function matchesExpr(expr: ExprNS.Expr, factStore: FactStore): boolean {
   if (!(expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare)) return false;
-  return factStore.tryRead(constAnalysisPass,expr.id)?.tag === "const";
+  return factStore.tryRead(constAnalysisPass, expr.id)?.tag === "const";
 }
 
 /** Replace a folded Binary/Compare with the corresponding Literal. */
 function applyExpr(expr: ExprNS.Expr, factStore: FactStore): ExprNS.Expr {
-  const cv = factStore.tryRead(constAnalysisPass,expr.id) as ConstLattice & { tag: "const" };
+  const cv = factStore.tryRead(constAnalysisPass, expr.id) as ConstLattice & { tag: "const" };
   return new ExprNS.Literal(
     expr.startToken,
     expr.endToken,
@@ -39,12 +25,6 @@ function applyExpr(expr: ExprNS.Expr, factStore: FactStore): ExprNS.Expr {
   );
 }
 
-/**
- * Bottom-up expression rewriter specialised for constant folding.
- * Mirrors the generic `ExprRewriteVisitor` in `../framework/transform.ts`
- * but inlined so the legacy `ExprTransformRule` interface is no longer
- * required for this transform.
- */
 class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
 
@@ -138,12 +118,7 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   }
 }
 
-/**
- * Statement-level walker that drives the expression rewriter at every
- * expression slot. Mirrors `TransformApplyVisitor` in
- * `../framework/transform.ts` restricted to expression rewrites; function
- * bodies are skipped (each unit is optimised independently).
- */
+// Function bodies are skipped — each unit is optimised independently.
 class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: ConstFoldExprVisitor;

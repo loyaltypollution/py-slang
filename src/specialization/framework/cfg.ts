@@ -1,6 +1,7 @@
 // src/specialization/framework/cfg.ts — BasicBlock / CFG types + builder
 
 import { StmtNS } from "../../ast-types";
+import type { FunctionUnit } from "./function-unit";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -12,6 +13,8 @@ export interface BasicBlock {
   readonly stmts: StmtNS.Stmt[];
   readonly successors: BasicBlock[];
   readonly predecessors: BasicBlock[];
+  /** Set by `indexCFG` immediately after `buildCFG`. Non-null post-indexing. */
+  unit: FunctionUnit;
 }
 
 export interface CFG {
@@ -41,6 +44,8 @@ export function buildCFG(body: StmtNS.Stmt[]): CFG {
       stmts: [],
       successors: [],
       predecessors: [],
+      // Populated by indexCFG; cast keeps the field non-optional for callers.
+      unit: undefined as unknown as FunctionUnit,
     };
     blocks.push(block);
     return block;

@@ -95,8 +95,7 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
     tier: "analysis",
     coarse: false,
     transfer(ctx: PassCtx, block: BasicBlock): MutableEnv<L> | undefined {
-      const unit = ctx.unitForBlock(block);
-      if (unit === undefined) return undefined;
+      const unit = block.unit;
       const inEnv = inEnvFor(ctx, block, unit);
       return config.transferBlock(ctx, block, inEnv, unit);
     },
@@ -123,12 +122,9 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
       }
       return [];
     },
-    prune(ctx, _unit, previousKeys) {
-      // BlockId is a per-CFG counter from 0, so ids collide across units —
-      // filtering by id would evict live sibling-unit cells. rebuildStructural
-      // swaps unit.blockMap before the structuralPass write, so at prune time
-      // orphaned (stale) blocks are exactly those no unit owns by identity.
-      return Array.from(previousKeys).filter(k => ctx.unitForBlock(k) === undefined);
+    prune(_ctx, unit, previousKeys) {
+      // Fresh blocks aren't in `previousKeys` yet, so `k.unit === unit` selects exactly the stale ones.
+      return Array.from(previousKeys).filter(k => k.unit === unit);
     },
   };
 

@@ -264,17 +264,6 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
  */
 export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
   readonly name = "type";
-  latticeEquals(a: unknown, b: unknown): boolean {
-    const ta = a as TypeLattice;
-    const tb = b as TypeLattice;
-    return (
-      ta === tb ||
-      (ta.kinds === tb.kinds &&
-        ta.intRef === tb.intRef &&
-        ta.boolRef === tb.boolRef &&
-        ta.floatRef === tb.floatRef)
-    );
-  }
   readonly mergeKind = "may" as const;
   readonly direction = "forward" as const;
   top(): TypeLattice {

@@ -10,7 +10,7 @@ export { buildFunctionUnits } from "./framework/function-unit";
 export { Worklist } from "./framework/worklist";
 export type { WorklistStats } from "./framework/worklist";
 
-// ── Pass-graph framework (PR-5: runtime-tier exports for evaluator wiring) ─
+// ── Pass-graph framework (runtime-tier exports for evaluator wiring) ──────
 
 export type { Pass, PassCtx, Lattice } from "./framework/pass";
 export { runtimeWritePass, runtimeCallPass } from "./framework/runtime-passes";

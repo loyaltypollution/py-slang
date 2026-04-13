@@ -57,7 +57,6 @@ describe("PR-5 jitPass + callCountPass saturation", () => {
       },
       reads: [callCountPass],
       tier: "transform",
-      coarse: true,
       transfer(ctx: PassCtx, key: number): number | undefined {
         transferRuns++;
         const v = ctx.read(callCountPass, key);
@@ -103,7 +102,6 @@ describe("PR-5 jitPass + callCountPass saturation", () => {
       },
       reads: [callCountPass],
       tier: "transform",
-      coarse: true,
       affectedKeys(_ctx, _triggerPass, _triggerKey) {
         return [unit];
       },

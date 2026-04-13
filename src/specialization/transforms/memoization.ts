@@ -1,27 +1,7 @@
-// src/specialization/transforms/memoization.ts
-//
-// MemoizationTransformRule — wraps a hot, pure FunctionDef with a runtime
-// cache by mutating its body in place. Scope-level rule: matches when the
-// unit *is* a FunctionDef whose hint carries a callCount ≥ threshold and
-// whose body passes the syntactic purity check. The unit's own transform
-// queue is re-enqueued every time the worklist rebuilds the scope after an
-// observeCall, so the rule fires on the next tick after threshold is hit.
-//
-// Relies on three runtime intrinsics registered by the interpreter:
-//
-//     __memo_has(id, *args) -> bool
-//     __memo_get(id, *args) -> cached value
-//     __memo_put(id, *args, value) -> value       (returns the stored value)
-//
-// Wrap shape (for `def f(x)` at line 1 with id = "f@L1"):
-//
-//     def f(x):
-//         if __memo_has("f@L1", x):
-//             return __memo_get("f@L1", x)
-//         # original body, with each `return E` rewritten to
-//         # `return __memo_put("f@L1", x, E)`
-//
-// No new scopes are introduced (Gap 5 respected).
+// Memoization: wraps a hot, pure FunctionDef with a runtime cache by
+// mutating its body in place. Relies on three interpreter-registered
+// intrinsics: __memo_has(id, *args), __memo_get(id, *args),
+// __memo_put(id, *args, value). No new scopes introduced.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "../framework/function-unit";
@@ -148,19 +128,17 @@ export const memoizationRule: Pass<FunctionUnit, Fired> = {
       return [triggerKey as FunctionUnit];
     }
     const fdId = triggerKey as number;
-    for (const unit of ctx.readAll(structuralPass).keys()) {
-      const u = unit as FunctionUnit;
-      if (u.funcAst instanceof StmtNS.FunctionDef && u.funcAst.id === fdId) {
-        return [u];
-      }
-    }
-    return [];
+    const unit = ctx.unitForFdId(fdId);
+    return unit === undefined ? [] : [unit];
   },
+  // No `prune`: memoization is one-shot per function. `applyMemoizationWrap`
+  // returns false on re-entry, so the "fired" cell persists and the equality
+  // gate suppresses onChange. Pruning would self-trigger via structuralPass.
   transfer(ctx: PassCtx, key: FunctionUnit): Fired {
     const fd = key.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
     const count = ctx.read(callCountPass, fd.id);
-    if (count === undefined || count < MEMOIZATION_THRESHOLD) return undefined;
+    if (count < MEMOIZATION_THRESHOLD) return undefined;
     if (ctx.read(purityScopePass, fd.id) !== true) return undefined;
     if (!applyMemoizationWrap(key)) return undefined;
     return "fired";

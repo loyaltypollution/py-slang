@@ -6,14 +6,12 @@ import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
 /**
- * Per-scope optimization unit. `cfg`, `blockMap`, `analysisOuts`, and
- * `generation` are scheduler-owned and replaced wholesale on body-level
- * invalidation (see `Worklist.rebuildAndReseed`). `body` is a read-through
- * getter onto the AST's statement array, which non-monotone transforms
- * splice in place. `analysisOuts[i]` entries are `null` for blocks never
- * processed (unreachable blocks stay `null`). `callCount` persists across
- * CFG rebuilds. The structural version is tracked by `structuralPass` in
- * the fact store; read it via `Worklist.structuralVersionOf(unit)`.
+ * Per-scope optimization unit. `cfg`, `blockMap`, and `generation` are
+ * scheduler-owned and replaced wholesale on body-level invalidation by
+ * `Worklist.flushPendingRebuilds`. `body` is a read-through getter onto
+ * the AST's statement array, which non-monotone transforms splice in
+ * place. `callCount` persists across CFG rebuilds. The structural
+ * version is tracked by `structuralPass` in the fact store.
  */
 export interface FunctionUnit {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
@@ -28,13 +26,7 @@ export interface FunctionUnit {
   callCount: number;
 }
 
-/**
- * The `StmtNS.Visitor<void>` dispatch (vs a hand-rolled `instanceof` chain)
- * means any new control-flow form added to `StmtNS.Visitor` forces a
- * compile-time decision here — important for future constructs
- * (try/with/class/method) that introduce blocks. Lambda bodies are a
- * separate scope and not analyzed here.
- */
+// Lambda bodies are a separate scope and are not analyzed here.
 class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   constructor(
     private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
@@ -51,19 +43,21 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     const body: StmtNS.Stmt[] =
       funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
     const cfg = buildCFG(body);
-    const { blockMap, blockOfNode } = indexCFG(cfg);
     const unit: FunctionUnit = {
       funcAst,
       slotLookup: buildSlotTable(env, paramNames),
       cfg,
-      blockMap,
-      blockOfNode,
+      blockMap: new Map(),
+      blockOfNode: new Map(),
       generation: 0,
       callCount: 0,
       get body(): StmtNS.Stmt[] {
         return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
       },
     };
+    const { blockMap, blockOfNode } = indexCFG(cfg, unit);
+    unit.blockMap = blockMap;
+    unit.blockOfNode = blockOfNode;
     this.units.set(funcAst, unit);
     for (const stmt of unit.body) stmt.accept(this);
   }
@@ -99,27 +93,23 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-/**
- * Walk all AST nodes reachable from `node` and record their containing block.
- * Generic via runtime reflection: any object with a numeric `.id` is a node,
- * and we recurse into arrays and plain-object children. Tokens have no `.id`
- * and are ignored. One-shot at CFG-build time.
- */
-/** Build `blockMap` (id → block) and `blockOfNode` (nodeId → containing block). */
-export function indexCFG(cfg: CFG): {
+/** Populates `blockMap`, `blockOfNode`, and each block's `unit`
+ *  back-pointer. This is the only write site for `BasicBlock.unit`. */
+export function indexCFG(cfg: CFG, unit: FunctionUnit): {
   blockMap: Map<BlockId, BasicBlock>;
   blockOfNode: Map<number, BasicBlock>;
 } {
   const blockMap = new Map<BlockId, BasicBlock>();
   const blockOfNode = new Map<number, BasicBlock>();
   for (const block of cfg.blocks) {
+    block.unit = unit;
     blockMap.set(block.id, block);
     for (const stmt of block.stmts) populateBlockOfNode(stmt, block, blockOfNode);
   }
   return { blockMap, blockOfNode };
 }
 
-export function populateBlockOfNode(
+function populateBlockOfNode(
   node: unknown,
   block: BasicBlock,
   out: Map<number, BasicBlock>,

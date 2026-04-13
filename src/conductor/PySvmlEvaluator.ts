@@ -3,11 +3,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import {
-  ConstAnalysisPass,
-  Worklist,
-  TypeAnalysisPass,
-} from "../specialization";
+import { Worklist } from "../specialization";
 import { EvaluatorError } from "./errors";
 
 export class PySvmlEvaluator extends BasicEvaluator {

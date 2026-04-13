@@ -238,14 +238,6 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
  */
 export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
   readonly name = "constVal";
-  latticeEquals(a: unknown, b: unknown): boolean {
-    const ca = a as ConstLattice;
-    const cb = b as ConstLattice;
-    return (
-      ca === cb ||
-      (ca.tag !== "const" ? ca.tag === cb.tag : cb.tag === "const" && ca.value === cb.value)
-    );
-  }
   readonly mergeKind = "may" as const;
   readonly direction = "forward" as const;
   top(): ConstLattice {

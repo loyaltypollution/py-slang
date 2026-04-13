@@ -31,8 +31,14 @@ export interface WorklistStats {
 
 // ── Worklist ────────────────────────────────────────────────────────────────
 
+type QItem = { pass: Pass<any, any>; key: unknown };
+
 export class Worklist {
   readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
+  /** funcAst.id → owning unit. Stable for the life of the Worklist: unit
+   *  Map membership doesn't change after construction (CFG rebuilds mutate
+   *  units in place), and `FunctionDef.id` is assigned at parse time. */
+  private readonly unitsByFdId: Map<number, FunctionUnit> = new Map();
 
   /** Units with a transform-tier "fired" write that have not yet had their
    *  CFG rebuilt. Populated by `handleFactChange`; drained after
@@ -46,18 +52,20 @@ export class Worklist {
   readonly factStore = new FactStore();
   private readonly registeredPasses: Pass<any, any>[] = [];
   private readonly passReaders = new Map<Pass<any, any>, Pass<any, any>[]>();
-  private readonly passQueue: Array<{ pass: Pass<any, any>; key: unknown }> = [];
-  /** Deduper for passQueue — at most one pending entry per (pass, key). */
-  private readonly passQueueSet = new Set<string>();
+  /** Tier-indexed FIFO queues. `runtimeQ`/`analysisQ` drain strict-FIFO via
+   *  `shift()`; `transformQ` is scanned head→tail for the first item whose
+   *  unit has no pending analysis work. Queue depths stay small (<100), so
+   *  O(n) `shift` is cheaper than maintaining head indices + compaction. */
+  private readonly runtimeQ: QItem[] = [];
+  private readonly analysisQ: QItem[] = [];
+  private readonly transformQ: QItem[] = [];
+  /** Global deduper — at most one pending entry per (pass, key). */
+  private readonly pendingKeysByPass = new Map<Pass<any, any>, Set<unknown>>();
   private draining = false;
 
   /** Counter: analysis-tier pass items pending per unit. Maintained incrementally
    *  by enqueue/drain so `analysisPendingForUnit` is O(1). */
   private readonly analysisPendingByUnit = new Map<FunctionUnit, number>();
-
-  /** key → unit resolution for pass-queue items. Populated on enqueue when the
-   *  key is an object we can map to a unit. */
-  private readonly keyToUnit = new WeakMap<object, FunctionUnit>();
 
   // Perf counters
   private _itemsProcessed = 0;
@@ -70,21 +78,16 @@ export class Worklist {
   constructor(
     ast: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
+    passes: ReadonlyArray<Pass<any, any>> = DEFAULT_PASSES,
   ) {
     this.units = buildFunctionUnits(ast, functionEnvironments);
+    for (const unit of this.units.values()) {
+      if (unit.funcAst instanceof StmtNS.FunctionDef) {
+        this.unitsByFdId.set(unit.funcAst.id, unit);
+      }
+    }
 
-    this.register(structuralPass);
-    this.register(runtimeWritePass);
-    this.register(runtimeCallPass);
-    this.register(typeAnalysisPass);
-    this.register(constAnalysisPass);
-    this.register(typeAnalysisDfa.blockKeyedPass);
-    this.register(constAnalysisDfa.blockKeyedPass);
-    this.register(purityScopePass);
-    this.register(callCountPass);
-    this.register(deadBranchRule);
-    this.register(constantFoldingRule);
-    this.register(memoizationRule);
+    for (const p of passes) this.register(p);
     this.factStore.onChange(c => this.handleFactChange(c));
 
     // Seed `structuralPass` for every unit so analyses + transforms wake via
@@ -95,14 +98,10 @@ export class Worklist {
       this.factStore.write(structuralPass, unit, 0);
     }
 
-    // Synchrony tripwire: reject `async`-declared observe method at
-    // construction. TS accepts `() => Promise<void>` where `() => void` is
-    // declared, so this must be checked at runtime.
+    // Synchrony tripwire: reject `async`-declared observe. TS accepts
+    // `() => Promise<void>` where `() => void` is declared, so check at runtime.
     const fn = (this as unknown as Record<string, unknown>)["observe"];
-    if (typeof fn !== "function") {
-      throw new Error(`Worklist.observe was replaced with a non-function value`);
-    }
-    if ((fn as Function).constructor.name === "AsyncFunction") {
+    if (typeof fn !== "function" || (fn as Function).constructor.name === "AsyncFunction") {
       throw new Error(`Worklist.observe must be synchronous`);
     }
   }
@@ -133,6 +132,11 @@ export class Worklist {
         `[Worklist] pass "${pass.debugName}" must declare affectedKeys or coarse:true`,
       );
     }
+    if (pass.affectedKeys !== undefined && pass.coarse === true) {
+      throw new Error(
+        `[Worklist] pass "${pass.debugName}" must not set both affectedKeys and coarse:true`,
+      );
+    }
     this.registeredPasses.push(pass as Pass<any, any>);
     for (const reader of pass.reads) {
       const list = this.passReaders.get(reader) ?? [];
@@ -157,25 +161,24 @@ export class Worklist {
    * enqueue for the same pair before drain is a no-op.
    */
   enqueue<K, V>(pass: Pass<K, V>, key: K): void {
-    const tag = this.passItemTag(pass as Pass<any, any>, key);
-    if (this.passQueueSet.has(tag)) return;
-    this.passQueueSet.add(tag);
-    this.passQueue.push({ pass: pass as Pass<any, any>, key });
-
-    // Resolve key→unit for O(1) unitOfKey lookups.
-    if (typeof key === "object" && key !== null) {
-      const obj = key as object;
-      if ("funcAst" in obj) {
-        this.keyToUnit.set(obj, obj as unknown as FunctionUnit);
-      } else if ("kind" in obj) {
-        const unit = this.units.get(obj as StmtNS.FileInput | StmtNS.FunctionDef);
-        if (unit !== undefined) this.keyToUnit.set(obj, unit);
-      }
+    const p = pass as Pass<any, any>;
+    let pending = this.pendingKeysByPass.get(p);
+    if (pending === undefined) {
+      pending = new Set();
+      this.pendingKeysByPass.set(p, pending);
     }
+    if (pending.has(key)) return;
+    pending.add(key);
+    const item: QItem = { pass: p, key };
 
-    // Incremental analysis-pending counter. Effective tier defaults to "analysis".
-    const tier = (pass as Pass<any, any>).tier ?? "analysis";
-    if (tier === "analysis") {
+    // Route to tier-indexed queue. Effective tier defaults to "analysis".
+    const tier = p.tier ?? "analysis";
+    if (tier === "runtime") {
+      this.runtimeQ.push(item);
+    } else if (tier === "transform") {
+      this.transformQ.push(item);
+    } else {
+      this.analysisQ.push(item);
       const unit = this.unitOfKey(key);
       if (unit !== undefined) {
         this.analysisPendingByUnit.set(unit, (this.analysisPendingByUnit.get(unit) ?? 0) + 1);
@@ -192,13 +195,10 @@ export class Worklist {
     if (this.draining) return;
     this.draining = true;
     try {
-      while (this.passQueue.length > 0) {
-        const idx = this.pickNextPassItem();
-        if (idx === -1) break;
-        const item = this.passQueue.splice(idx, 1)[0];
-        const tag = this.passItemTag(item.pass, item.key);
-        this.passQueueSet.delete(tag);
-        // Decrement analysis-pending counter for this unit, if applicable.
+      while (true) {
+        const item = this.popNextItem();
+        if (item === undefined) break;
+        this.pendingKeysByPass.get(item.pass)?.delete(item.key);
         const itemTier = item.pass.tier ?? "analysis";
         if (itemTier === "analysis") {
           const unit = this.unitOfKey(item.key);
@@ -212,48 +212,44 @@ export class Worklist {
         if (value !== undefined) {
           this.factStore.write(item.pass, item.key, value);
         }
-        if (item.pass.tier === "analysis" || item.pass.tier === undefined) {
-          this._analysisItemsProcessed++;
-          this._itemsProcessed++;
-        }
+        this._itemsProcessed++;
+        if (itemTier === "analysis") this._analysisItemsProcessed++;
+        else if (itemTier === "transform") this._transformItemsProcessed++;
       }
     } finally {
       this.draining = false;
     }
   }
 
-  private readonly _keyIds = new WeakMap<object, number>();
-  private _nextKeyId = 1;
-
-  private passItemTag(pass: Pass<any, any>, key: unknown): string {
-    const passTag = (pass.id as symbol).toString();
-    if (typeof key === "object" && key !== null) {
-      let kid = this._keyIds.get(key);
-      if (kid === undefined) {
-        kid = this._nextKeyId++;
-        this._keyIds.set(key, kid);
-      }
-      return `${passTag}::o${kid}`;
+  /**
+   * Pop in tier order: runtime, analysis, then the first transform-tier item
+   * whose unit has no pending analysis work.
+   */
+  private popNextItem(): QItem | undefined {
+    if (this.runtimeQ.length > 0) return this.runtimeQ.shift();
+    if (this.analysisQ.length > 0) return this.analysisQ.shift();
+    for (let i = 0; i < this.transformQ.length; i++) {
+      const item = this.transformQ[i];
+      const unit = this.unitOfKey(item.key);
+      if (unit !== undefined && this.analysisPendingForUnit(unit)) continue;
+      this.transformQ.splice(i, 1);
+      return item;
     }
-    return `${passTag}::${String(key)}`;
+    return undefined;
   }
 
   private readonly passCtx: PassCtx = {
     read: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.read(p, key),
+    tryRead: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.tryRead(p, key),
     readAll: <K2, V2>(p: Pass<K2, V2>) => this.factStore.readAll(p),
-    unitFor: (scope: StmtNS.FileInput | StmtNS.FunctionDef) => this.units.get(scope),
-    unitForBlock: (block) => {
-      for (const unit of this.units.values()) {
-        if (unit.blockMap.get(block.id) === block) return unit;
-      }
-      return undefined;
-    },
+    unitFor: (funcAst: StmtNS.FileInput | StmtNS.FunctionDef) => this.units.get(funcAst),
     unitForNode: (nodeId: number) => {
       for (const unit of this.units.values()) {
         if (unit.blockOfNode.has(nodeId)) return unit;
       }
       return undefined;
     },
+    unitForFdId: (fdId: number) => this.unitsByFdId.get(fdId),
     factStore: this.factStore,
   };
 
@@ -294,7 +290,7 @@ export class Worklist {
     for (const unit of this.pendingRebuilds) {
       unit.generation++;
       unit.cfg = buildCFG(unit.body);
-      const { blockMap, blockOfNode } = indexCFG(unit.cfg);
+      const { blockMap, blockOfNode } = indexCFG(unit.cfg, unit);
       unit.blockMap = blockMap;
       unit.blockOfNode = blockOfNode;
       const cur = this.factStore.read(structuralPass, unit);
@@ -316,35 +312,11 @@ export class Worklist {
     return Array.from(this.factStore.readAll(reader).keys());
   }
 
-  private pickNextPassItem(): number {
-    const tierOrder: Record<string, number> = {
-      runtime: 0,
-      analysis: 1,
-      transform: 2,
-    };
-    const defaultTier = 1; // "analysis" default per plan
-    let bestIdx = -1;
-    let bestTier = Infinity;
-    for (let i = 0; i < this.passQueue.length; i++) {
-      const { pass, key } = this.passQueue[i];
-      const tier = pass.tier ? tierOrder[pass.tier] : defaultTier;
-      // Defer transforms if any analysis item is pending for the same unit.
-      if (pass.tier === "transform") {
-        const unit = this.unitOfKey(key);
-        if (unit !== undefined && this.analysisPendingForUnit(unit)) continue;
-      }
-      if (tier < bestTier) {
-        bestTier = tier;
-        bestIdx = i;
-      }
-    }
-    return bestIdx;
-  }
-
   private unitOfKey(key: unknown): FunctionUnit | undefined {
-    return typeof key === "object" && key !== null
-      ? this.keyToUnit.get(key as object)
-      : undefined;
+    if (typeof key !== "object" || key === null) return undefined;
+    if ("funcAst" in key) return key as unknown as FunctionUnit;
+    if ("kind" in key) return this.units.get(key as StmtNS.FileInput | StmtNS.FunctionDef);
+    return undefined;
   }
 
   private analysisPendingForUnit(unit: FunctionUnit): boolean {
@@ -374,8 +346,6 @@ export class Worklist {
       for (const unit of rebuilt) {
         changed.add(unit.funcAst);
         processed++;
-        this._itemsProcessed++;
-        this._transformItemsProcessed++;
       }
     }
 
@@ -388,12 +358,16 @@ export class Worklist {
     return this.factStore.read(structuralPass, unit);
   }
 
+  private get queueDepth(): number {
+    return this.runtimeQ.length + this.analysisQ.length + this.transformQ.length;
+  }
+
   get idle(): boolean {
-    return this.passQueue.length === 0 && this.pendingRebuilds.size === 0;
+    return this.queueDepth === 0 && this.pendingRebuilds.size === 0;
   }
 
   get pending(): number {
-    return this.passQueue.length + this.pendingRebuilds.size;
+    return this.queueDepth + this.pendingRebuilds.size;
   }
 
   get stats(): WorklistStats {
@@ -416,6 +390,24 @@ export class Worklist {
     this._wallClockMs = 0;
   }
 
-  // ── Transform processing ────────────────────────────────────────────────
-
 }
+
+/**
+ * Default production pass set registered by `Worklist`. Tests can pass
+ * a subset (or `[]`) to `new Worklist(ast, envs, passes)` to exercise
+ * dispatch in isolation.
+ */
+export const DEFAULT_PASSES: ReadonlyArray<Pass<any, any>> = [
+  structuralPass,
+  runtimeWritePass,
+  runtimeCallPass,
+  typeAnalysisPass,
+  constAnalysisPass,
+  typeAnalysisDfa.blockKeyedPass,
+  constAnalysisDfa.blockKeyedPass,
+  purityScopePass,
+  callCountPass,
+  deadBranchRule,
+  constantFoldingRule,
+  memoizationRule,
+];

@@ -1,5 +1,5 @@
 // Shared scaffolding for unit-keyed transform rules (dead-branch,
-// constant-folding, memoization). The top-only `"fired"` lattice is the
+// constant-folding). The top-only `"fired"` lattice is the
 // re-fire guard: once set, a re-write yields `equals === true`,
 // suppressing `onChange` and downstream wakes. On structural rebuild the
 // cell must be pruned so the rule can fire again on the new body.
@@ -37,6 +37,14 @@ export function unitSweepRule(
       if (triggerPass === (structuralPass as Pass<any, any>)) {
         return [triggerKey as FunctionUnit];
       }
+      return [];
+    },
+    // Evict the "fired" cell for this unit on structural rebuild so the
+    // rule can re-fire against the new body. Without this the top-only
+    // lattice permanently suppresses re-entry.
+    prune(_ctx, unit, previousKeys) {
+      // Fact-store keysets are unique, so at most one match exists.
+      for (const k of previousKeys) if (k === unit) return [unit];
       return [];
     },
     transfer(ctx: PassCtx, key: FunctionUnit): Fired {

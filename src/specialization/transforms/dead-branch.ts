@@ -1,17 +1,5 @@
-// src/specialization/transforms/dead-branch.ts
-//
-// Dead branch elimination. `deadBranchRule` (below) is a unit-keyed
-// `Pass<FunctionUnit, Fired>` whose transfer calls `applyDeadBranchSweep`.
-//
-// Fires whenever `constAnalysisPass` or `structuralPass` produce a
-// lattice-change for the unit, plus an explicit initial-converge seed
-// from `worklist.processTransform` (same seeding pattern as PR-6a purity).
-//
-// Idempotence: the `StmtNS.If` match predicate naturally returns false
-// once the If has been spliced out of its block — re-entry on an already-
-// converged body is a no-op sweep. The top-only `"fired"` lattice adds a
-// second gate: rewriting `"fired"` on the same key equals → no onChange →
-// no downstream consumer wakes spuriously.
+// Dead branch elimination. Idempotent: once an `If` is spliced out,
+// `matchesIf` returns false on the replacement statements.
 
 import { StmtNS } from "../../ast-types";
 import { constAnalysisPass } from "../const-analysis/analysis";
@@ -23,24 +11,16 @@ import { unitSweepRule } from "../framework/transform-rule";
 /** Does this `if`-stmt have a statically-known boolean condition? */
 function matchesIf(stmt: StmtNS.Stmt, factStore: FactStore): stmt is StmtNS.If {
   if (!(stmt instanceof StmtNS.If)) return false;
-  const cv = factStore.tryRead(constAnalysisPass,stmt.condition.id);
+  const cv = factStore.tryRead(constAnalysisPass, stmt.condition.id);
   return cv?.tag === "const" && typeof cv.value === "boolean";
 }
 
 /** Replace an `if <const bool>:` with the taken branch body. */
 function applyIf(ifStmt: StmtNS.If, factStore: FactStore): StmtNS.Stmt[] {
-  const cv = factStore.tryRead(constAnalysisPass,ifStmt.condition.id) as ConstLattice & { tag: "const" };
+  const cv = factStore.tryRead(constAnalysisPass, ifStmt.condition.id) as ConstLattice & { tag: "const" };
   return cv.value ? ifStmt.body : (ifStmt.elseBlock ?? []);
 }
 
-/**
- * Walk `stmts` bottom-up, splicing any `If` whose condition has a known
- * boolean constVal. Mirrors the statement-level traversal of
- * `applyTransformPass` but inlined so we can drop the legacy
- * `StmtTransformRule` interface for this transform.
- *
- * Returns `true` iff at least one splice occurred.
- */
 class DeadBranchVisitor implements StmtNS.Visitor<void> {
   changed = false;
   constructor(private readonly factStore: FactStore) {}

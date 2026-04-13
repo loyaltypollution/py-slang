@@ -2,13 +2,11 @@ import type { Pass } from "./pass";
 
 /**
  * Event emitted when a fact-store write changes a `(pass, key)` cell's
- * value under `pass.lattice.equals`. Equality-identical writes produce no
- * event — this is the single mechanism that collapses the old
- * `markDirty`/`flushDirty`/`subscribers` triad into one primitive.
+ * value under `pass.lattice.equals`. Equality-identical writes produce
+ * no event — the primitive that drives change propagation.
  *
- * `oldValue` is the pre-write value; `null` if the cell was previously
- * empty. `newValue` is always a defined value — `undefined` returns from a
- * pass's `transfer` never reach the store.
+ * `oldValue` is `null` if the cell was previously empty. `newValue` is
+ * always defined — `undefined` returns from `transfer` never reach the store.
  */
 export interface FactChange<K, V> {
   readonly pass: Pass<K, V>;
@@ -37,14 +35,14 @@ export class FactStore {
     return inner.get(key) as V;
   }
 
+  has<K, V>(pass: Pass<K, V>, key: K): boolean {
+    return this.cells.get(pass as Pass<unknown, unknown>)?.has(key) ?? false;
+  }
+
   tryRead<K, V>(pass: Pass<K, V>, key: K): V | undefined {
     const inner = this.cells.get(pass as Pass<unknown, unknown>);
     if (inner === undefined || !inner.has(key)) return undefined;
     return inner.get(key) as V;
-  }
-
-  has<K, V>(pass: Pass<K, V>, key: K): boolean {
-    return this.cells.get(pass as Pass<unknown, unknown>)?.has(key) ?? false;
   }
 
   readAll<K, V>(pass: Pass<K, V>): ReadonlyMap<K, V> {

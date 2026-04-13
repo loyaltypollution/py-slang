@@ -1,26 +1,8 @@
-// src/specialization/purity-analysis/analysis.ts
-//
-// Intraprocedural purity analysis as a CFG-walking helper.
-// `purityScopePass` (below) is the `Pass<K,V>` handle whose transfer calls
-// `computePurity(unit)`.
-//
-// Fires once per `(unit, generation)` whenever `structuralPass` produces a
-// lattice-change write for the unit, and once at initial converge (seeded
-// by the worklist's legacy `processTransform` step). Walks `unit.cfg`
-// directly: initialises every block's IN at ⊥ (`BOTTOM_FACT`), propagates
-// per-statement transfer, joins at merges, iterates to fixpoint on a FIFO
-// worklist, then derives a boolean `pure` verdict from the fact flowing
-// out of the CFG exit block.
-//
-// Grammar note: this AST has no `Raise`, `Yield`, `Try`/`Except`, or
-// attribute-store. The only disqualifying effects the language can
-// express are subscript-store, `assert`, nonlocal/global access,
-// `lambda`, `List` literal, nested `FunctionDef`, `Starred`, `Global`,
-// `NonLocal`, and `FromImport`. All collapse into the fact's sticky
-// `impure` flag.
-//
-// Consumer: `MemoizationTransformRule.matches` reads `hint.pure`, which
-// routes through the migrated `purityScopePass` fact cell.
+// Intraprocedural purity analysis. `purityScopePass.transfer` runs a FIFO
+// CFG fixpoint (`solveCfg`) per FunctionDef and derives a boolean verdict
+// from the exit-block fact. Disqualifying effects (subscript-store, assert,
+// nonlocal/global, lambda, List literal, nested FunctionDef, Starred, etc.)
+// collapse into the fact's sticky `impure` flag. Consumer: memoizationRule.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
@@ -60,17 +42,9 @@ const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
   "__memo_put",
 ]);
 
-/**
- * Compute a purity verdict for `unit`. Returns `undefined` for non-
- * FunctionDef scopes (FileInput has no meaningful purity). Invoked from
- * `purityScopePass.transfer` after the expression-level DFA fixpoint has
- * converged for the scope — reads only the CFG + slot table, so its only
- * declared framework read is `structuralPass`.
- */
 // ── Pass<K,V> handle ────────────────────────────────────────────────────────
 // 3-point lattice: ⊥ = undefined, true, false, ⊤ = "contested". The
-// "contested" sentinel is reachable only from the Pass-layer join; while
-// `purityScopePass` is the sole writer, transfer returns boolean.
+// "contested" sentinel is reachable only from the Pass-layer join.
 export type PurityPoint = boolean | "contested" | undefined;
 
 const purityLattice: Lattice<PurityPoint> = {
@@ -85,8 +59,7 @@ const purityLattice: Lattice<PurityPoint> = {
   },
 };
 
-// Key is the owning FunctionDef.id. Initial converge is primed from
-// worklist.processTransform.
+// Key is the owning FunctionDef.id.
 export const purityScopePass: Pass<number, PurityPoint> = {
   id: Symbol("purityScopePass"),
   debugName: "purityScopePass",
@@ -102,15 +75,8 @@ export const purityScopePass: Pass<number, PurityPoint> = {
     return [];
   },
   transfer(ctx: PassCtx, key: number): PurityPoint {
-    const units = ctx.readAll(structuralPass);
-    for (const unit of units.keys()) {
-      const u = unit as FunctionUnit;
-      const fd = u.funcAst;
-      if (fd instanceof StmtNS.FunctionDef && fd.id === key) {
-        return computePurity(u);
-      }
-    }
-    return undefined;
+    const unit = ctx.unitForFdId(key);
+    return unit === undefined ? undefined : computePurity(unit);
   },
 };
 

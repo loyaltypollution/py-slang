@@ -12,9 +12,7 @@ import {
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
-  ConstAnalysisPass,
   Worklist,
-  TypeAnalysisPass,
   runtimeCallPass,
   runtimeWritePass,
 } from "../specialization";

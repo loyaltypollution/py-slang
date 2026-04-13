@@ -1,35 +1,30 @@
 // src/specialization/framework/runtime-passes.ts
 //
-// Stub runtime source passes. PR-4 introduces these as placeholders so
-// analyses can declare `reads: [runtimeWritePass, structuralPass]` /
-// `reads: [runtimeCallPass]` today. PR-5 wires the interpreter to write
-// into them via `Worklist.observe(pass, key, value)`; until then these
-// passes carry no facts and their `transfer` is never invoked.
+// Runtime observation source passes. The interpreter writes into these
+// via `Worklist.observe(pass, key, value)` on every tracked event:
+//   - `runtimeWritePass`: per-node RHS observation (assign, etc.)
+//   - `runtimeCallPass`:  per-scope call count
 //
-// `tier: "runtime"` — they are never `drain`-dispatched; they are source
-// passes whose values are supplied externally. The fields exist so the
-// drain policy sorts passes that read them behind `"analysis"` tier.
+// `tier: "runtime"` — never drain-dispatched; their values are supplied
+// externally. The tier exists so the drain scheduler sorts readers
+// (callCountPass, analyses) behind them.
 
 import type { Lattice, Pass, PassCtx } from "./pass";
 
 // ── runtimeWritePass: NodeId → ObservedValue (raw JS value) ─────────────
 
+// Reference equality: the interpreter re-emits raw values, downstream
+// analyses do their own widening. Right-biased join: latest wins.
 const rawValueLattice: Lattice<unknown> = {
   bottom: undefined,
-  // Raw-observation values are widened by downstream analyses; at the
-  // framework layer we only need to know whether a new observation is
-  // distinguishable from the last one. Reference equality suffices — the
-  // interpreter re-emits the raw value on each write.
   equals: (a, b) => a === b,
-  // Right-biased join: the latest observation wins at this layer.
-  // Analyses supply their own lattice join via their own pass.
   join: (_a, b) => b,
 };
 
 /**
  * Runtime observation source for per-node value writes (assign RHS, etc.).
- * Stub in PR-4: key is `NodeId` (number), value is the raw JS value.
- * `transfer` is a no-op — externally written by the interpreter in PR-5.
+ * Key is `NodeId` (number); value is the raw JS value. `transfer` is a
+ * no-op — the interpreter writes via `Worklist.observe`.
  */
 export const runtimeWritePass: Pass<number, unknown> = {
   id: Symbol("runtimeWritePass"),
@@ -52,9 +47,10 @@ const countLattice: Lattice<number> = {
 };
 
 /**
- * Runtime observation source for function-entry counts. Stub in PR-4:
- * key is the callee scope AST node. `transfer` is a no-op — externally
- * written by the interpreter in PR-5.
+ * Runtime observation source for function-entry counts. Key is the
+ * callee `FunctionDef.id`; value is a monotonically-increasing call
+ * count. `transfer` is a no-op — the interpreter writes via
+ * `Worklist.observe`.
  */
 export const runtimeCallPass: Pass<number, number> = {
   id: Symbol("runtimeCallPass"),
