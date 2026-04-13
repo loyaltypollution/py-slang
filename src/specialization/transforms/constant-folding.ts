@@ -210,9 +210,8 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
  * Sweep `unit.body` for Binary/Compare expressions whose `constVal` hint
  * has collapsed to a statically-known constant and rewrite them in place
  * to `Literal` nodes. Returns `true` iff a mutation occurred. Called from
- * `constantFoldingRule.transfer`; the worklist bumps
- * `unit.structuralVersion` and marks the scope structurally dirty when
- * this returns `true`.
+ * `constantFoldingRule.transfer`; the worklist marks the scope structurally
+ * dirty and bumps the `structuralPass` version when this returns `true`.
  */
 export function applyConstantFoldingSweep(unit: FunctionUnit): boolean {
   const v = new ConstFoldStmtVisitor(unit.hints);

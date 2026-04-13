@@ -163,8 +163,7 @@ const firedLattice: Lattice<Fired> = {
 };
 
 // Unit-keyed sweep rule factory. Dead-branch and constant-folding share
-// the same shape: run a sweep over `unit.body`, bump structuralVersion on
-// fire so `processTransform` rebuilds the CFG, return the fired marker.
+// the same shape: run a sweep over `unit.body`, return the fired marker.
 // The `constAnalysisPass` read is node-keyed; without a node→unit map in
 // ctx, affectedKeys defers to the explicit seed from `processTransform`.
 function unitSweepRule(
@@ -185,7 +184,6 @@ function unitSweepRule(
     },
     transfer(_ctx: PassCtx, key: FunctionUnit): Fired {
       if (!sweep(key)) return undefined;
-      key.structuralVersion++;
       return "fired";
     },
   };
@@ -216,7 +214,6 @@ export const memoizationRule: Pass<FunctionUnit, Fired> = {
     if (count === undefined || count < MEMOIZATION_THRESHOLD) return undefined;
     if (ctx.read(purityScopePass, fd.id) !== true) return undefined;
     if (!applyMemoizationWrap(key)) return undefined;
-    key.structuralVersion++;
     return "fired";
   },
 };

@@ -16,14 +16,14 @@ import { buildSlotTable } from "./slot-table";
  * getter onto the AST's statement array, which non-monotone transforms
  * splice in place. `analysisOuts[i]` entries are `null` for blocks never
  * processed (unreachable blocks stay `null`). `callCount` persists across
- * CFG rebuilds.
+ * CFG rebuilds. The structural version is tracked by `structuralPass` in
+ * the fact store; read it via `Worklist.structuralVersionOf(unit)`.
  */
 export interface FunctionUnit {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly hints: HintStore;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
-  structuralVersion: number;
   cfg: CFG;
   blockMap: Map<BlockId, BasicBlock>;
   analysisOuts: Map<BlockId, MutableEnv<any> | null>[];
@@ -64,7 +64,6 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       funcAst,
       hints: new HintStore(this.factStore, this.fieldEq),
       slotLookup: buildSlotTable(env, paramNames),
-      structuralVersion: 0,
       cfg,
       blockMap,
       analysisOuts,

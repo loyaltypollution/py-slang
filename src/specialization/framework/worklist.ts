@@ -287,6 +287,14 @@ export class Worklist implements ObservationSink {
   private readonly passQueueSet = new Set<string>();
   private draining = false;
 
+  /**
+   * Units whose transform rules (`deadBranchRule`, `constantFoldingRule`,
+   * `memoizationRule`) wrote `"fired"` during the current `processTransform`
+   * drain. Populated by `handleFactChange`; cleared at the top of each
+   * `processTransform` call.
+   */
+  private readonly _transformFiredUnits = new Set<FunctionUnit>();
+
   // Perf counters
   private _itemsProcessed = 0;
   private _analysisItemsProcessed = 0;
@@ -458,6 +466,15 @@ export class Worklist implements ObservationSink {
         const toEvict = p.prune(this.passCtx, unit, prev.keys());
         for (const k of toEvict) this.factStore.evict(p, k);
       }
+    }
+    // Track when a transform rule fires so processTransform can detect it
+    // without a field on FunctionUnit.
+    const transformRules: Pass<any, any>[] = [deadBranchRule, constantFoldingRule, memoizationRule];
+    if (
+      transformRules.some(r => (r as Pass<any, any>) === (change.pass as Pass<any, any>)) &&
+      change.newValue === "fired"
+    ) {
+      this._transformFiredUnits.add(change.key as FunctionUnit);
     }
     if (readers === undefined || readers.length === 0) return;
     for (const reader of readers) {
@@ -665,6 +682,11 @@ export class Worklist implements ObservationSink {
     return s;
   }
 
+  /** Current structural version for `unit` — the value of `structuralPass` in the fact store. */
+  structuralVersionOf(unit: FunctionUnit): number {
+    return this.factStore.read(structuralPass, unit);
+  }
+
   get idle(): boolean {
     return this.findActiveQueue() === -1;
   }
@@ -754,15 +776,14 @@ export class Worklist implements ObservationSink {
     const unit = this.units.get(item.scopeKey);
     if (!unit || item.generation !== unit.generation) return false;
 
-    // Capture up-front: purity/deadBranch/constFolding/memoization all read
-    // `structuralPass`, so any of them may fire during the first drain below.
-    // A single delta check after the second drain catches either case.
-    const preTransformVersion = unit.structuralVersion;
+    // Capture up-front so we can detect a first-fire on this round.
+    this._transformFiredUnits.delete(unit);
 
     // Prime structuralPass so purity's transfer can resolve the unit via
     // `ctx.readAll(structuralPass)`. Same-version rewrites are suppressed by
     // the fact-store equality gate.
-    this.factStore.write(structuralPass, unit, unit.structuralVersion);
+    const preVersion = this.factStore.read(structuralPass, unit);
+    this.factStore.write(structuralPass, unit, preVersion);
     if (unit.funcAst instanceof StmtNS.FunctionDef) {
       this.enqueue(purityScopePass, unit.funcAst.id);
       this.drainPasses();
@@ -773,9 +794,9 @@ export class Worklist implements ObservationSink {
     this.enqueue(memoizationRule, unit);
     this.drainPasses();
 
-    if (unit.structuralVersion !== preTransformVersion) {
+    if (this._transformFiredUnits.has(unit)) {
       this._transformRounds++;
-      unit.structuralVersion++;
+      this.factStore.write(structuralPass, unit, preVersion + 1);
       changed.add(item.scopeKey);
       this.markDirty(item.scopeKey, "structural");
     }
@@ -833,7 +854,9 @@ export class Worklist implements ObservationSink {
 
     this.seedAnalysis(key, unit);
     this.enqueueTransform(key, unit.generation);
-    this.factStore.write(structuralPass, unit, unit.structuralVersion);
+    // Re-prime structuralPass with the current version so downstream readers
+    // that joined since the last processTransform see a consistent value.
+    this.factStore.write(structuralPass, unit, this.factStore.read(structuralPass, unit));
   }
 
   /**
