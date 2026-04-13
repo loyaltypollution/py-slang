@@ -1,25 +1,9 @@
 // src/specialization/index.ts — public API barrel
 
-// ── FunctionUnit (per-scope optimization grouping) ──────────────────────────
+// ── FunctionUnit (per-scope structural grouping) ───────────────────────────
 
 export type { FunctionUnit } from "./framework/function-unit";
 export { buildFunctionUnits } from "./framework/function-unit";
-
-// ── Persistent worklist ─────────────────────────────────────────────────────
-
-export { Worklist } from "./framework/worklist";
-export type { WorklistStats } from "./framework/worklist";
-
-// ── Pass-graph framework (PR-5: runtime-tier exports for evaluator wiring) ─
-
-export type { Pass, PassCtx, Lattice } from "./framework/pass";
-export { runtimeWritePass, runtimeCallPass } from "./framework/runtime-passes";
-export { callCountPass, purityScopePass } from "./framework/migrated-passes";
-export { structuralPass } from "./framework/structural-pass";
-
-// ── Framework (for manual wiring / tests) ────────────────────────────────────
-
-export type { AnalysisPass } from "./framework/interfaces";
 
 // ── Type lattice (codegen reads kind bits + refinements from hints) ──────────
 
@@ -56,17 +40,14 @@ export {
   closureValue,
 } from "./type-analysis/lattice";
 
-// ── Concrete analyses ────────────────────────────────────────────────────────
+// ── Const lattice ────────────────────────────────────────────────────────────
 
-export { TypeAnalysisPass } from "./type-analysis/analysis";
-export { ConstAnalysisPass, constLeq, constJoin, constMeet } from "./const-analysis/analysis";
+export { constLeq, constJoin, constMeet } from "./const-analysis/analysis";
 export type { ConstLattice, ConstValue } from "./const-analysis/lattice";
 export { CONST_BOTTOM, CONST_TOP, constOf } from "./const-analysis/lattice";
 
-// ── Concrete transforms ──────────────────────────────────────────────────────
+// ── Memoization runtime helpers ──────────────────────────────────────────────
 
-export { applyMemoizationWrap } from "./transforms/memoization";
-export { memoizationRule } from "./framework/migrated-passes";
 export { MEMOIZATION_THRESHOLD } from "./memoization-analysis/call-count";
 export { PURE_FIELD } from "./purity-analysis/lattice";
 export { memoLookup, memoPut, clearMemoCache, memoCacheSnapshot, MEMO_MISS } from "../runtime/memo";

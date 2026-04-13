@@ -14,20 +14,29 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import OpCodes from "../engines/svml/opcodes";
-import { buildTestWorklist, seedDb } from "./utils";
+import { optimizedAstOf } from "../specialization/runtime/queries/lowering";
+import { buildTestUnits } from "./utils";
+import { seedDb } from "./utils";
 import type { SVMLProgram } from "../engines/svml/types";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+// Compile the *lowered* AST: pull `optimizedAstOf` from the query runtime
+// (constant folding + dead-branch elimination + memoization), then compile
+// the resulting AST via a fresh resolver/Db pair so its synthesized node
+// ids resolve cleanly. Mirrors `PySvmlJitEvaluator.recompileAndPatch`.
 function compileOptimized(code: string): SVMLProgram {
   const script = code + "\n";
   const ast = parse(script);
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
-  const engine = buildTestWorklist(ast, environments);
-  engine.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, seedDb(ast, environments));
-  return compiler.compileProgram(ast);
+  const { db } = buildTestUnits(ast, environments);
+  const lowered = db.get(optimizedAstOf, 0) ?? ast;
+  const { errors: errors2, environments: loweredEnvs } = analyzeWithEnvironments(lowered, "", 4);
+  if (errors2.length > 0) throw errors2[0];
+  const loweredDb = seedDb(lowered, loweredEnvs);
+  const compiler = SVMLCompiler.fromProgram(lowered, loweredDb, loweredEnvs);
+  return compiler.compileProgram(lowered);
 }
 
 

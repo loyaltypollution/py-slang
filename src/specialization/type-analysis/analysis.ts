@@ -1,11 +1,10 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { BasicBlock } from "../framework/cfg";
-import { FactStore } from "../framework/fact-store";
-import { typeAnalysisPass } from "../framework/migrated-passes";
-import { runtimeWritePass } from "../framework/runtime-passes";
-import type { AnalysisPass } from "../framework/interfaces";
-import { transferBlock } from "../framework/block-transfer";
+import {
+  type BlockTransferSpec,
+  transferBlock,
+} from "../framework/block-transfer";
 import type { MutableEnv } from "../framework/mutable-env";
 import type { SlotLookup } from "../framework/slot-table";
 import {
@@ -19,8 +18,6 @@ import {
   falseValue,
   floatValue,
   join,
-  leq,
-  meet,
   negativeFloat,
   negativeInteger,
   nullValue,
@@ -56,27 +53,28 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
   [TokenType.NOTEQUAL, "!="],
 ]);
 
-export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
+/**
+ * Expression visitor for forward type analysis. Each `annotate` site
+ * widens the static value with any matching runtime observation
+ * (`observations.get(node.id)`) and emits to the optional `tap`.
+ *
+ * Pure with respect to its inputs: the observations map is read-only
+ * and the tap is the only way per-node facts escape the visitor.
+ */
+class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
-    private readonly factStore: FactStore,
     private readonly slotTypes: { get(slot: number): TypeLattice | undefined },
     private readonly slotLookup: SlotLookup,
-    /**
-     * Per-node tap. When supplied (e.g. by `nodeFactView.get`'s replay), the
-     * visitor emits to the tap and skips the fact-store write — the View
-     * gates publication itself. When absent (legacy driver), `annotate`
-     * publishes to the fact store as before.
-     */
+    private readonly observations: ReadonlyMap<number, unknown>,
     private readonly tap?: (id: number, val: TypeLattice) => void,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
-    const observed = this.factStore.tryRead(runtimeWritePass, node.id);
+    const observed = this.observations.get(node.id);
     const widened = observed !== undefined
       ? join(val, liftType(observed) ?? BOTTOM)
       : val;
     if (this.tap) this.tap(node.id, widened);
-    else this.factStore.write(typeAnalysisPass, node.id, widened);
     return widened;
   }
 
@@ -236,91 +234,40 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   }
 }
 
-/**
- * Type analysis AnalysisPass: wraps TypeAnalysisVisitor transfer functions
- * in the AnalysisPass interface. Lattice operations delegate to lattice.ts.
- *
- * This is a forward May analysis: merge = join (least upper bound).
- * At join points (if/else, loop headers) the env takes the union of possible types,
- * so we specialize only when the type is known to be numeric on ALL incoming paths.
- */
-export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
-  readonly name = "type";
-  latticeEquals(a: unknown, b: unknown): boolean {
-    const ta = a as TypeLattice;
-    const tb = b as TypeLattice;
-    return (
-      ta === tb ||
-      (ta.kinds === tb.kinds &&
-        ta.intRef === tb.intRef &&
-        ta.boolRef === tb.boolRef &&
-        ta.floatRef === tb.floatRef)
-    );
-  }
-  readonly mergeKind = "may" as const;
-  readonly direction = "forward" as const;
-  top(): TypeLattice {
-    return TOP;
-  }
-  bottom(): TypeLattice {
-    return BOTTOM;
-  }
-  join(a: TypeLattice, b: TypeLattice): TypeLattice {
-    return join(a, b);
-  }
-  meet(a: TypeLattice, b: TypeLattice): TypeLattice {
-    return meet(a, b);
-  }
-  leq(a: TypeLattice, b: TypeLattice): boolean {
-    return leq(a, b);
-  }
-
-  makeExprVisitor(
-    factStore: FactStore,
-    env: { get(slot: number): TypeLattice | undefined },
-    slotLookup: SlotLookup,
-    tap?: (id: number, val: TypeLattice) => void,
-  ): ExprNS.Visitor<TypeLattice> {
-    return new TypeAnalysisVisitor(factStore, env, slotLookup, tap);
-  }
-
+function typeSpec(
+  observations: ReadonlyMap<number, unknown>,
+  slotLookup: SlotLookup,
+): BlockTransferSpec<TypeLattice> {
+  return {
+    top: TOP,
+    direction: "forward",
+    makeVisitor(env, tap) {
+      return new TypeAnalysisVisitor(env, slotLookup, observations, tap);
+    },
+  };
 }
 
 /**
- * Pure block transfer for the runtime Query world (Phase 3b).
- *
- * Unlike the legacy path — which reads `runtimeWritePass` from a shared
- * `FactStore` and writes facts back into it — this helper takes observations
- * as an explicit `ReadonlyMap<NodeId, unknown>` and discards the visitor's
- * per-node tap output. The query runtime records dep edges by pulling
- * `runtimeWrite` entries for reachable NodeIds before invoking this.
- *
- * Implemented by constructing an ephemeral FactStore pre-seeded with the
- * observations under `runtimeWritePass`, then delegating to `transferBlock`
- * with a no-op tap so no `typeAnalysisPass` writes leak into the store.
- * Additive — does not alter behavior of existing exports.
+ * Pure block transfer for the runtime Query world. Takes runtime
+ * observations as an explicit `ReadonlyMap<NodeId, unknown>` — no
+ * FactStore, no Pass tokens — and returns the exit env. The query
+ * runtime preregisters dep edges on `runtimeWrite` for every reachable
+ * NodeId before invoking this so observations invalidate the DFA.
  */
-export function transferBlockPureType(
+export function transferBlockWithObservations(
   block: BasicBlock,
   inEnv: MutableEnv<TypeLattice>,
   slotLookup: SlotLookup,
   observations: ReadonlyMap<number, unknown>,
 ): MutableEnv<TypeLattice> {
-  const factStore = new FactStore();
-  for (const [id, val] of observations) {
-    factStore.write(runtimeWritePass, id, val);
-  }
-  const pass = new TypeAnalysisPass();
-  return transferBlock(block, inEnv, pass, factStore, slotLookup, () => {
-    // tap swallows per-node facts; the query returns exit env only
-  });
+  return transferBlock(block, inEnv, typeSpec(observations, slotLookup), slotLookup);
 }
 
 /**
- * Replay a block's transfer with a tap that captures per-node facts. Used by
- * runtime `typeOf` to project lattice values at node granularity. Mirrors
- * `transferBlockPureType` but returns the tapped (nodeId → value) map
- * instead of the exit env. Additive.
+ * Replay a block's transfer with a tap that captures per-node facts.
+ * Used by the runtime `typeOf` query to project lattice values at node
+ * granularity. Returns the tapped (nodeId → value) map; later writes
+ * within the same block supersede earlier ones (last-write-wins).
  */
 export function nodeTypeFactsForBlock(
   block: BasicBlock,
@@ -328,17 +275,16 @@ export function nodeTypeFactsForBlock(
   slotLookup: SlotLookup,
   observations: ReadonlyMap<number, unknown>,
 ): ReadonlyMap<number, TypeLattice> {
-  const factStore = new FactStore();
-  for (const [id, val] of observations) {
-    factStore.write(runtimeWritePass, id, val);
-  }
-  const pass = new TypeAnalysisPass();
   const out = new Map<number, TypeLattice>();
-  transferBlock(block, inEnv, pass, factStore, slotLookup, (id, val) => {
-    // Later writes in the same block supersede earlier ones for the same id;
-    // this matches the visitor's last-write-wins annotate semantics.
-    out.set(id, val);
-  });
+  transferBlock(
+    block,
+    inEnv,
+    typeSpec(observations, slotLookup),
+    slotLookup,
+    (id, val) => {
+      out.set(id, val);
+    },
+  );
   return out;
 }
 

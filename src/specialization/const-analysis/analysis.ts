@@ -1,16 +1,14 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { BasicBlock } from "../framework/cfg";
-import { FactStore } from "../framework/fact-store";
-import { constAnalysisPass } from "../framework/migrated-passes";
-import { runtimeWritePass } from "../framework/runtime-passes";
-import type { AnalysisPass } from "../framework/interfaces";
-import { transferBlock } from "../framework/block-transfer";
+import {
+  type BlockTransferSpec,
+  transferBlock,
+} from "../framework/block-transfer";
 import type { MutableEnv } from "../framework/mutable-env";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
-  CONST_BOTTOM,
   CONST_TOP,
   constJoin,
   constLeq,
@@ -24,18 +22,17 @@ export { constJoin, constLeq, constMeet };
 
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
-    private readonly factStore: FactStore,
     private readonly constEnv: { get(slot: number): ConstLattice | undefined },
     private readonly slotLookup: SlotLookup,
+    private readonly observations: ReadonlyMap<number, unknown>,
     private readonly tap?: (id: number, val: ConstLattice) => void,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
-    const observed = this.factStore.tryRead(runtimeWritePass, node.id);
+    const observed = this.observations.get(node.id);
     const lifted = observed !== undefined ? liftConst(observed) : undefined;
     const widened = lifted !== undefined ? constJoin(val, lifted) : val;
     if (this.tap) this.tap(node.id, widened);
-    else this.factStore.write(constAnalysisPass, node.id, widened);
     return widened;
   }
 
@@ -208,90 +205,49 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 }
 
-// ── AnalysisPass ────────────────────────────────────────────────────────────
-
-/**
- * Constant-propagation AnalysisPass.
- *
- * Tracks whether each expression evaluates to a statically known constant.
- * mergeKind = "may" (join at control-flow merge points).
- */
-export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
-  readonly name = "constVal";
-  latticeEquals(a: unknown, b: unknown): boolean {
-    const ca = a as ConstLattice;
-    const cb = b as ConstLattice;
-    return (
-      ca === cb ||
-      (ca.tag !== "const" ? ca.tag === cb.tag : cb.tag === "const" && ca.value === cb.value)
-    );
-  }
-  readonly mergeKind = "may" as const;
-  readonly direction = "forward" as const;
-  top(): ConstLattice {
-    return CONST_TOP;
-  }
-  bottom(): ConstLattice {
-    return CONST_BOTTOM;
-  }
-  join(a: ConstLattice, b: ConstLattice): ConstLattice {
-    return constJoin(a, b);
-  }
-  meet(a: ConstLattice, b: ConstLattice): ConstLattice {
-    return constMeet(a, b);
-  }
-  leq(a: ConstLattice, b: ConstLattice): boolean {
-    return constLeq(a, b);
-  }
-
-  makeExprVisitor(
-    factStore: FactStore,
-    env: { get(slot: number): ConstLattice | undefined },
-    slotLookup: SlotLookup,
-    tap?: (id: number, val: ConstLattice) => void,
-  ): ExprNS.Visitor<ConstLattice> {
-    return new ConstAnalysisVisitor(factStore, env, slotLookup, tap);
-  }
-
+function constSpec(
+  observations: ReadonlyMap<number, unknown>,
+  slotLookup: SlotLookup,
+): BlockTransferSpec<ConstLattice> {
+  return {
+    top: CONST_TOP,
+    direction: "forward",
+    makeVisitor(env, tap) {
+      return new ConstAnalysisVisitor(env, slotLookup, observations, tap);
+    },
+  };
 }
 
 /**
- * Pure block transfer for the runtime Query world (Phase 3b). See the
- * matching helper in type-analysis/analysis.ts for the full rationale.
- * Additive — does not alter behavior of existing exports.
+ * Pure block transfer for the runtime Query world. See the matching
+ * helper in type-analysis/analysis.ts for the full rationale.
  */
-export function transferBlockPureConst(
+export function transferBlockWithObservations(
   block: BasicBlock,
   inEnv: MutableEnv<ConstLattice>,
   slotLookup: SlotLookup,
   observations: ReadonlyMap<number, unknown>,
 ): MutableEnv<ConstLattice> {
-  const factStore = new FactStore();
-  for (const [id, val] of observations) {
-    factStore.write(runtimeWritePass, id, val);
-  }
-  const pass = new ConstAnalysisPass();
-  return transferBlock(block, inEnv, pass, factStore, slotLookup, () => {
-    // tap swallows per-node facts; the query returns exit env only
-  });
+  return transferBlock(block, inEnv, constSpec(observations, slotLookup), slotLookup);
 }
 
-/** Const-lattice analogue of `nodeTypeFactsForBlock`. Additive. */
+/** Const-lattice analogue of `nodeTypeFactsForBlock`. */
 export function nodeConstFactsForBlock(
   block: BasicBlock,
   inEnv: MutableEnv<ConstLattice>,
   slotLookup: SlotLookup,
   observations: ReadonlyMap<number, unknown>,
 ): ReadonlyMap<number, ConstLattice> {
-  const factStore = new FactStore();
-  for (const [id, val] of observations) {
-    factStore.write(runtimeWritePass, id, val);
-  }
-  const pass = new ConstAnalysisPass();
   const out = new Map<number, ConstLattice>();
-  transferBlock(block, inEnv, pass, factStore, slotLookup, (id, val) => {
-    out.set(id, val);
-  });
+  transferBlock(
+    block,
+    inEnv,
+    constSpec(observations, slotLookup),
+    slotLookup,
+    (id, val) => {
+      out.set(id, val);
+    },
+  );
   return out;
 }
 

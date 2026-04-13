@@ -10,11 +10,7 @@ import { RuntimeSourceError } from "../errors";
 import { parse } from "../parser/parser-adapter";
 import { Resolver } from "../resolver";
 import type { FunctionEnvironments } from "../resolver";
-import {
-  ConstAnalysisPass,
-  Worklist,
-  TypeAnalysisPass,
-} from "../specialization";
+import { buildFunctionUnits, type FunctionUnit } from "../specialization";
 import { Db, astOf, environmentsOf } from "../specialization/runtime";
 import { Group } from "../stdlib/utils";
 import { RecursivePartial, Result } from "../types";
@@ -22,12 +18,6 @@ import { PyComplexNumber } from "../types";
 import { makeValidatorsForChapter } from "../validator";
 import Stmt = StmtNS.Stmt;
 
-/**
- * Test-only helper. Builds a `Worklist` preloaded with the
- * standard analyses and transforms. Replaces the deleted
- * `createReactiveOptimization` / `SpecializationEngine` production
- * factories — do not introduce new callers in production code.
- */
 /**
  * Construct a throwaway `Db` seeded with the driver Inputs
  * (`astOf`, `environmentsOf`) that the query-runtime analyses depend on.
@@ -55,15 +45,19 @@ export function seedDbFromAst(
   return { db: seedDb(ast, environments), environments };
 }
 
-export function buildTestWorklist(
+/**
+ * Test-only helper for SVML integration tests that need to compile
+ * via `SVMLCompiler.fromProgramUnit`. Returns the inputs the compiler
+ * expects: a seeded `Db`, the FunctionUnit map, and the environments.
+ */
+export function buildTestUnits(
   ast: StmtNS.FileInput,
-  functionEnvironments: FunctionEnvironments,
-): Worklist {
-  const worklist = new Worklist(ast, functionEnvironments, [
-    new TypeAnalysisPass(),
-    new ConstAnalysisPass(),
-  ]);
-  return worklist;
+  environments: FunctionEnvironments,
+): {
+  db: Db;
+  units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
+} {
+  return { db: seedDb(ast, environments), units: buildFunctionUnits(ast, environments) };
 }
 
 /**

@@ -1,24 +1,26 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "./cfg";
-import type { FactStore } from "./fact-store";
-import type { AnalysisPass } from "./interfaces";
 import type { MutableEnv } from "./mutable-env";
 import type { SlotLookup } from "./slot-table";
+
+/**
+ * Direction of a CFG transfer pass over a block's statements.
+ */
+export type TransferDirection = "forward" | "backward";
 
 /**
  * Statement-level transfer. Updates `env` in place. Control-flow stmts
  * (If/While/For) appear as headers in their own block; only the
  * condition/iter is evaluated here — bodies live in successor blocks.
  *
- * Returns true if the visitor's tap (if any) signaled the requested node
- * was reached during this stmt, so the caller can stop early when running
- * a `projectNode` replay.
+ * `top` is the lattice element written into the For-loop target slot
+ * (its iteration value cannot be statically narrowed).
  */
 export function transferStmt<L>(
   stmt: StmtNS.Stmt,
   env: MutableEnv<L>,
   visitor: ExprNS.Visitor<L>,
-  module: AnalysisPass<L>,
+  top: L,
   slotLookup: SlotLookup,
 ): void {
   switch (stmt.kind) {
@@ -47,7 +49,7 @@ export function transferStmt<L>(
       const f = stmt as StmtNS.For;
       f.iter.accept(visitor);
       const info = slotLookup(f.target);
-      if (!info.isPrimitive && info.envLevel === 0) env.set(info.slot, module.top());
+      if (!info.isPrimitive && info.envLevel === 0) env.set(info.slot, top);
       return;
     }
     case "Return": {
@@ -73,24 +75,46 @@ export function transferStmt<L>(
   }
 }
 
+/**
+ * Spec describing how to drive a single block's transfer:
+ *   - `top`: lattice top (used for For-loop target widening).
+ *   - `direction`: forward or backward statement iteration order.
+ *   - `makeVisitor`: build the per-statement expression visitor for the
+ *     block, given the in-place env and an optional per-node tap. The
+ *     visitor closes over any analysis-specific inputs (e.g. observations).
+ */
+export interface BlockTransferSpec<L> {
+  readonly top: L;
+  readonly direction: TransferDirection;
+  makeVisitor(
+    env: { get(slot: number): L | undefined },
+    tap: ((id: number, val: L) => void) | undefined,
+  ): ExprNS.Visitor<L>;
+}
+
+/**
+ * Run a block's transfer. Returns the snapshot exit env. If `tap` is
+ * provided the visitor emits per-node lattice values to it (used by the
+ * runtime per-node projection queries); otherwise no per-node fact
+ * publication occurs.
+ */
 export function transferBlock<L>(
   block: BasicBlock,
   inEnv: MutableEnv<L>,
-  module: AnalysisPass<L>,
-  factStore: FactStore,
+  spec: BlockTransferSpec<L>,
   slotLookup: SlotLookup,
   tap?: (id: number, val: L) => void,
 ): MutableEnv<L> {
   const env = inEnv.snapshot();
-  const visitor = module.makeExprVisitor(factStore, env, slotLookup, tap);
+  const visitor = spec.makeVisitor(env, tap);
   const stmts = block.stmts;
-  if (module.direction === "backward") {
+  if (spec.direction === "backward") {
     for (let i = stmts.length - 1; i >= 0; i--) {
-      transferStmt(stmts[i], env, visitor, module, slotLookup);
+      transferStmt(stmts[i], env, visitor, spec.top, slotLookup);
     }
   } else {
     for (const stmt of stmts) {
-      transferStmt(stmt, env, visitor, module, slotLookup);
+      transferStmt(stmt, env, visitor, spec.top, slotLookup);
     }
   }
   return env;

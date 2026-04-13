@@ -12,18 +12,16 @@ import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { INT_BIT, BOOL_BIT, BoolRef } from "../specialization";
-import { typeAnalysisPass } from "../specialization/framework/migrated-passes";
-import { buildTestWorklist, seedDb } from "./utils";
+import { typeOf } from "../specialization/runtime/queries/type-of";
+import { buildTestUnits } from "./utils";
 
 function compileAndRun(code: string): unknown {
   const script = code + "\n";
   const ast = parse(script);
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
-  const engine = buildTestWorklist(ast, environments);
-  engine.converge();
-  const units = engine.units;
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, seedDb(ast, environments));
+  const { db, units } = buildTestUnits(ast, environments);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, db);
   const program = compiler.compileProgram(ast);
   return SVMLInterpreter.toJSValue(new SVMLInterpreter(program).execute());
 }
@@ -31,9 +29,6 @@ function compileAndRun(code: string): unknown {
 // ── [P1] and / or with non-boolean left operand ───────────────────────────────
 
 describe("[P1] and/or with non-boolean left operand", () => {
-  // Python: x and y returns x when x is falsy, else y.
-  // SVML BRF throws UnsupportedOperandTypeError for non-boolean operands.
-
   test("boolean and/or: True and False = False (baseline — must pass)", () => {
     expect(compileAndRun("True and False")).toBe(false);
   });
@@ -50,10 +45,7 @@ describe("[P1] and/or with non-boolean left operand", () => {
     expect(compileAndRun("False or False")).toBe(false);
   });
 
-  // Non-boolean short-circuit: Python says 0 and 1 == 0 (returns the falsy operand).
-  // SVML currently throws because BRF requires a boolean on the stack.
   test("int and: 0 and 1 should return 0 (Python semantics)", () => {
-    // If this throws, the issue is real: non-boolean and/or is not supported.
     expect(compileAndRun("0 and 1")).toBe(0);
   });
 
@@ -69,10 +61,6 @@ describe("[P1] and/or with non-boolean left operand", () => {
 // ── [P2] Ternary result type: TOP loses downstream specialisation ──────────────
 
 describe("[P2] Ternary result type annotation", () => {
-  // visitTernaryExpr annotates result as TOP instead of join(consequent, alternative).
-  // Correctness is unaffected (generic opcode gives the same value); only
-  // specialisation of downstream ops is lost. These tests confirm correctness.
-
   test("ternary result is correct: 5 if True else -3 = 5", () => {
     expect(compileAndRun("5 if True else -3")).toBe(5);
   });
@@ -85,33 +73,23 @@ describe("[P2] Ternary result type annotation", () => {
     expect(compileAndRun("(5 if True else -3) > 0")).toBe(true);
   });
 
-  // Verify that type hints on the ternary node reflect TOP (current behaviour),
-  // not join(INT, INT). This confirms the precision gap — not a correctness bug.
   test("ternary node is annotated as TOP (precision gap, not a bug)", () => {
     const script = "(5 if True else -3)\n";
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const engine = buildTestWorklist(ast, environments);
-    engine.converge();
+    const { db } = buildTestUnits(ast, environments);
 
     const simpleExpr = ast.statements[0] as any;
     const ternary = simpleExpr.expression;
-    const type = engine.factStore.tryRead(typeAnalysisPass,ternary.id);
+    const type = db.get(typeOf, ternary.id);
     // Currently TOP (all kinds set). Should be INT_BIT once fixed.
-    // Flip this expectation to INT_BIT after the fix lands.
-    expect(type?.kinds).not.toBe(INT_BIT);
+    expect(type.kinds).not.toBe(INT_BIT);
   });
 });
 
 // ── [P3] For-loop single-pass body analysis ────────────────────────────────────
 
 describe("[P3] For-loop body type analysis precision", () => {
-  // The for-loop DFA visits the body once with loop-target = TOP.
-  // Variables updated only inside the body may receive imprecise boolRef annotations.
-  // Currently harmless because: (a) transforms not wired, (b) opcode selection gates
-  // only on kind bits (INT/FLOAT/BOOL), not on boolRef refinements.
-  // These tests confirm correctness (not precision) of for-loop output.
-
   test("for-loop accumulator result is correct", () => {
     const code = `
 total = 0
@@ -133,32 +111,22 @@ acc
     expect(compileAndRun(code)).toBe(7);
   });
 
-  // This test checks the boolRef annotation on a comparison inside a for-loop body.
-  // With single-pass analysis: acc starts as INT(Zero), so acc > 0 annotates as BOOL(False).
-  // That is imprecise (after first iteration acc is positive, acc > 0 is True).
-  // Currently no transform uses this annotation, so correctness is unaffected.
   test("comparison inside for-loop body annotates as BOOL (precision may be imprecise)", () => {
     const script = "acc = 0\nfor i in [1, 2, 3]:\n    acc = acc + i\n    acc > 0\n";
     const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const engine = buildTestWorklist(ast, environments);
-    engine.converge();
+    const { db } = buildTestUnits(ast, environments);
 
     // The for-loop is stmt[1]. Its body[1] is `acc > 0` (a SimpleExpr).
     const forStmt = ast.statements[1] as any;
     const cmpExpr = forStmt.body[1].expression; // acc > 0
-    const type = engine.factStore.tryRead(typeAnalysisPass,cmpExpr.id);
+    const type = db.get(typeOf, cmpExpr.id);
 
     // The comparison should be annotated as BOOL (kind = BOOL_BIT).
-    expect(type?.kinds).toBe(BOOL_BIT);
+    expect(type.kinds).toBe(BOOL_BIT);
 
-    // With single-pass: acc=INT(Zero) at body entry, so acc > 0 may annotate as False.
-    // Document current behaviour — boolRef is False (imprecise but harmless today).
-    // If this starts being used for branch elimination, this test will catch the regression.
-    const boolRef = type?.boolRef;
     // The loop variable i = TOP propagates through acc + i → INT(Top),
     // so acc > 0 correctly annotates as BOOL(Top) even in a single pass.
-    // P3 is moot: the one-pass analysis is precise enough here.
-    expect(boolRef).toBe(BoolRef.Top);
+    expect(type.boolRef).toBe(BoolRef.Top);
   });
 });

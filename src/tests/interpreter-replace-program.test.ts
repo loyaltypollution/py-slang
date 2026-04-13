@@ -2,7 +2,7 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import { buildTestWorklist, seedDb, seedDbFromAst } from "./utils";
+import { buildTestUnits, seedDbFromAst } from "./utils";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -19,22 +19,14 @@ function compileWithOptimization(code: string) {
   const script = code + "\n";
   const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const engine = buildTestWorklist(ast, environments);
-  engine.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, seedDb(ast, environments));
+  const { db, units } = buildTestUnits(ast, environments);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, db);
   const program = compiler.compileProgram(ast);
   return { ast, environments, compiler, program };
 }
 
 function compileWithReactive(code: string) {
-  const script = code + "\n";
-  const ast = parse(script);
-  const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const reactive = buildTestWorklist(ast, environments);
-  reactive.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, seedDb(ast, environments));
-  const program = compiler.compileProgram(ast);
-  return { ast, environments, reactive, compiler, program };
+  return compileWithOptimization(code);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

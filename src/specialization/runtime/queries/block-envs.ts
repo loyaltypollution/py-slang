@@ -15,13 +15,13 @@ import {
   constJoin,
   constLeq,
 } from "../../const-analysis/lattice";
-import { transferBlockPureConst } from "../../const-analysis/analysis";
+import { transferBlockWithObservations as transferBlockWithObservationsConst } from "../../const-analysis/analysis";
 import {
   type TypeLattice,
   join as typeJoin,
   leq as typeLeq,
 } from "../../type-analysis/lattice";
-import { transferBlockPureType } from "../../type-analysis/analysis";
+import { transferBlockWithObservations as transferBlockWithObservationsType } from "../../type-analysis/analysis";
 import type { Db } from "../db";
 import { astOf, environmentsOf, runtimeWrite } from "../inputs";
 import type { Lattice } from "../lattice";
@@ -171,7 +171,7 @@ export const typeBlockEnvs: QueryHandle<
       cfg,
       typeEnvLattice,
       initial,
-      (env, block) => transferBlockPureType(block, env, slotLookup, observations),
+      (env, block) => transferBlockWithObservationsType(block, env, slotLookup, observations),
     );
   },
 });
@@ -201,7 +201,7 @@ export const constBlockEnvs: QueryHandle<
       cfg,
       constEnvLattice,
       initial,
-      (env, block) => transferBlockPureConst(block, env, slotLookup, observations),
+      (env, block) => transferBlockWithObservationsConst(block, env, slotLookup, observations),
     );
   },
 });

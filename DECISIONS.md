@@ -144,3 +144,96 @@ appear; Phase 5b is the real architectural cut.
 ## Phase 2 — Db lifecycle
 
 `Db` lives as `protected db: Db` on `PyCseEvaluatorBase`, re-instantiated per `evaluateChunk`. No module-level singleton. Phase 3+ queries reach it via the evaluator class.
+
+## Phase 6 — framework dissolution (collapsed)
+
+Sub-phases 6-i…6-iv merged into a single commit. The plan's incremental
+boundaries don't survive a hidden coupling it missed: the pure helpers
+`transferBlockPureType` / `transferBlockPureConst` (the very entry points
+the runtime queries call) internally allocated a throwaway `FactStore` and
+used `runtimeWritePass` as an opaque key to seed observations. Deleting
+`FactStore` / the `Pass` token cannot happen *after* deleting `dfa-factory`
+without first removing this coupling — and once removed, every other
+deletion follows mechanically with no test-bisectable midpoint.
+
+### What got refactored
+
+`framework/block-transfer.ts` lost the `AnalysisPass<L>` parameter and
+gained a `BlockTransferSpec<L> = { top, direction, makeVisitor }`
+descriptor. The two analysis modules now expose
+`transferBlockWithObservations(block, inEnv, slotLookup, observations)`
+plus the `nodeXFactsForBlock` projector — both take a
+`ReadonlyMap<NodeId, unknown>` directly. No `FactStore`, no Pass tokens,
+no AnalysisPass interface implementation. The visitor classes consult
+`observations.get(node.id)` instead of `factStore.tryRead(runtimeWritePass, node.id)`.
+
+`block-envs.ts` (the only caller of the per-pure helpers) was renamed to
+match. All other call paths to the legacy framework went away with the
+deleted files.
+
+`function-unit.ts` lost the `analyses` parameter and the per-analysis
+`analysisOuts: Map[]` field — `FunctionUnit` is now a pure structural
+record (`funcAst`, `slotLookup`, `body`, `cfg`, `blockMap`, `blockOfNode`).
+
+### Files deleted
+
+```
+src/specialization/framework/migrated-passes.ts
+src/specialization/framework/runtime-passes.ts
+src/specialization/framework/dfa-factory.ts
+src/specialization/framework/dfa-passes.ts
+src/specialization/framework/pass.ts
+src/specialization/framework/fact-store.ts
+src/specialization/framework/worklist.ts
+src/specialization/framework/interfaces.ts
+src/specialization/framework/structural-pass.ts
+src/specialization/framework/view.ts
+src/specialization/framework/block-of-node.ts
+src/specialization/transforms/dead-branch.ts
+src/specialization/transforms/constant-folding.ts
+src/specialization/transforms/memoization.ts
+scripts/dump-ast.ts                                     (already broken; HintStore deleted long ago)
+```
+
+`structural-pass`, `view`, and `block-of-node` were not in the plan's
+explicit delete list but had no remaining consumers after the others were
+gone. Kept (pure helpers): `cfg.ts`, `mutable-env.ts`, `slot-table.ts`,
+`block-transfer.ts`, `function-unit.ts`.
+
+`TypeAnalysisPass` / `ConstAnalysisPass` *class* exports also went away
+— their only consumers were tests using `buildTestWorklist`, and the new
+`transferBlockWithObservations` factory function makes the visitor lifecycle
+internal.
+
+### Test decisions
+
+| Test                                  | Decision         | Rationale                                                      |
+|---------------------------------------|------------------|----------------------------------------------------------------|
+| `fact-store.test.ts`                  | deleted          | exercises a deleted primitive in isolation                     |
+| `pass-graph-dispatch.test.ts`         | deleted          | exercises Worklist dispatch graph (deleted)                    |
+| `convergence-benchmark.test.ts`       | deleted          | benchmarks Worklist `WorklistStats` (deleted)                  |
+| `observe-loop.test.ts`                | deleted          | observe→type widening covered by `runtime/type-of.test.ts`     |
+| `reactive-optimization.test.ts`       | deleted          | folding/dead-branch behavior covered by `runtime/lowering`     |
+| `cse-hint-visualization.test.ts`      | deleted          | visualization pathway dead; FactStore-coupled                  |
+| `memoization.test.ts`                 | deleted          | wrap behavior covered via `runtime/lowering` + `memo-lookup`   |
+| `jit-recompile-trigger.test.ts`       | deleted          | saturation in `runtime/scope-queries`; recompile in `svml-jit` |
+| `purity-analysis.test.ts`             | deleted          | now covered by `runtime/scope-queries.test.ts purityOf`        |
+| `svml-jit-end-to-end.test.ts`         | rewritten        | first test (patchFunction wiring) preserved against new arch   |
+| `svml-observation.test.ts`            | rewritten        | now exercises `runtimeWrite.set` → `db.get(typeOf, …)`         |
+| `review-findings.test.ts`             | rewritten        | hint readers retargeted to `db.get(typeOf, …)`                 |
+| `interpreter-replace-program.test.ts` | mech. update     | `buildTestWorklist().converge()` → `buildTestUnits()`          |
+| `specialization-opcodes.test.ts`      | mech. update     | additionally rewired through `optimizedAstOf` for fold tests   |
+| `specialized-opcodes.test.ts`         | mech. update     | same swap                                                      |
+| `svml-stable-indices.test.ts`         | mech. update     | same swap                                                      |
+| `memoization-svml.test.ts`            | mech. update     | same swap                                                      |
+
+`buildTestWorklist` was deleted from `tests/utils.ts` and replaced by
+`buildTestUnits(ast, environments) → { db, units }`, the minimum surface
+the new SVMLCompiler integration tests need.
+
+### Result
+
+`yarn test`: 36/36 suites, 2572 tests passing. Down from 45/45 (×2628 tests)
+in the last green Phase 5b commit; the 9 deleted suites were either
+exercising deleted primitives directly or were redundant with the 13-suite
+`runtime/` test directory that pins the new architecture.

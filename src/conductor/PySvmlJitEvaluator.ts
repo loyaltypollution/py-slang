@@ -46,7 +46,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       environmentsOf.set(this.db, 0, environments);
 
       // unitMap is a pure structural helper; no Worklist needed.
-      const units = buildFunctionUnits(ast, environments, []);
+      const units = buildFunctionUnits(ast, environments);
 
       const compiler = SVMLCompiler.fromProgramUnit(
         ast,

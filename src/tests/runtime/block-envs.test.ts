@@ -103,7 +103,7 @@ describe("runtime/queries/typeBlockEnvs", () => {
   });
 
   test("invalidation: runtimeWrite.set on a reachable node triggers recompute", () => {
-    const spy = jest.spyOn(typeAnalysisModule, "transferBlockPureType");
+    const spy = jest.spyOn(typeAnalysisModule, "transferBlockWithObservations");
     const { db, ast } = setupUnit("x = 1");
     db.get(typeBlockEnvs, 0);
     const baseline = spy.mock.calls.length;
@@ -116,7 +116,7 @@ describe("runtime/queries/typeBlockEnvs", () => {
   });
 
   test("early cutoff: re-asserting the same observation is a no-op", () => {
-    const spy = jest.spyOn(typeAnalysisModule, "transferBlockPureType");
+    const spy = jest.spyOn(typeAnalysisModule, "transferBlockWithObservations");
     const { db, ast } = setupUnit("x = 1");
     const id = firstStmtId(ast);
     runtimeWrite.set(db, id, 42);

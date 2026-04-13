@@ -19,7 +19,7 @@ import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { clearMemoCache, memoCacheSnapshot } from "../specialization";
-import { buildTestWorklist, seedDb } from "./utils";
+import { buildTestUnits } from "./utils";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 
@@ -27,12 +27,11 @@ function run(code: string) {
   const script = code + "\n";
   const ast = parse(script) as StmtNS.FileInput;
   const { environments } = analyzeWithEnvironments(ast, script, 4);
-  const reactive = buildTestWorklist(ast, environments);
-  reactive.converge();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, reactive.units, seedDb(ast, environments));
+  const { db, units } = buildTestUnits(ast, environments);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, db);
   const program = compiler.compileProgram(ast);
-  const interpreter = new SVMLInterpreter(program, { observationSink: reactive });
-  return { ast, reactive, interpreter };
+  const interpreter = new SVMLInterpreter(program);
+  return { ast, interpreter };
 }
 
 describe("SVML memoization wiring", () => {
@@ -42,9 +41,9 @@ describe("SVML memoization wiring", () => {
     // Bare top-level call — the resolver must recognise __memo_put, the
     // compiler must resolve it to a primitive, and the interpreter must
     // dispatch to the runtime helper.
-    const { ast, reactive, interpreter } = run(`__memo_put("k@L1", 5, 42)`);
+    const { ast, interpreter } = run(`__memo_put("k@L1", 5, 42)`);
     await interpreter.execute();
-    reactive.tick();
+    
 
     const bucket = memoCacheSnapshot().get("k@L1");
     expect(bucket).toBeDefined();
@@ -53,13 +52,13 @@ describe("SVML memoization wiring", () => {
   });
 
   test("__memo_has returns true after a put, false before", async () => {
-    const { ast, reactive, interpreter } = run(`
+    const { ast, interpreter } = run(`
 x = __memo_has("k@L1", 5)
 __memo_put("k@L1", 5, 99)
 y = __memo_has("k@L1", 5)
 `);
     await interpreter.execute();
-    reactive.tick();
+    
 
     // We cannot easily read SVML locals, but the runtime side-table proves
     // the put reached the shared cache. The has() call above, if it had
@@ -71,12 +70,12 @@ y = __memo_has("k@L1", 5)
 
   test("__memo_get returns the stored value under SVML", async () => {
     // Put first, then get into a cache we can re-observe externally.
-    const { ast, reactive, interpreter } = run(`
+    const { ast, interpreter } = run(`
 __memo_put("k@L1", 1, 7)
 __memo_put("k@L1", 2, __memo_get("k@L1", 1))
 `);
     await interpreter.execute();
-    reactive.tick();
+    
 
     const bucket = memoCacheSnapshot().get("k@L1")!;
     expect(bucket.get("number:1")).toBe(7);

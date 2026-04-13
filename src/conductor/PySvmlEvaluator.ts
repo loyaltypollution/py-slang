@@ -22,7 +22,7 @@ export class PySvmlEvaluator extends BasicEvaluator {
       const db = new Db();
       astOf.set(db, 0, ast);
       environmentsOf.set(db, 0, environments);
-      const units = buildFunctionUnits(ast, environments, []);
+      const units = buildFunctionUnits(ast, environments);
       const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, db);
       const program = compiler.compileProgram(ast);
       const interpreter = new SVMLInterpreter(program, {
