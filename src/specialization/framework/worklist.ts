@@ -1,15 +1,8 @@
-// src/specialization/framework/worklist.ts — unified priority-scheduled worklist
+// Unified priority-scheduled worklist.
 //
 // Two-tier priority: analysis blocks process before transforms. Within analysis,
 // earlier modules (e.g. type before const) complete before later ones, so
 // transforms only fire at local fixpoint.
-//
-// This file hosts both the CFG-based Kildall DFA primitives (direction
-// helpers, IN-merge, block transfer) and the scheduler class that drives
-// them. The class also acts as the push-side for runtime observations and
-// the publish-side for reactive consumers: construct with (ast,
-// environments, analyses, transforms), then call `converge()`, `tick()`,
-// `observeWrite()`, `subscribe()`.
 
 import { Queue } from "@datastructures-js/queue";
 
@@ -260,18 +253,10 @@ export interface WorklistStats {
  */
 type DirtyReason = "data" | "structural";
 
-// ── Push-side interface ─────────────────────────────────────────────────────
-//
-// `ObservationSink` is the nominal synchronous surface interpreters call on
-// the worklist during execution; see `./observation-sink.ts`. `Worklist
-// implements ObservationSink` below. Synchrony is enforced in-constructor
-// (see the `AsyncFunction` check at the bottom of the Worklist
-// constructor) because TypeScript accepts `() => Promise<void>` where
-// `() => void` is expected.
-
+// `Worklist implements ObservationSink` — the synchronous surface interpreters
+// call during execution. Synchrony is enforced in-constructor (AsyncFunction
+// check) because TS accepts `() => Promise<void>` where `() => void` is declared.
 export type { ObservationSink } from "./observation-sink";
-
-// ── Observation-capable analysis (narrowed subtype) ────────────────────────
 
 type ObservingAnalysis = AnalysisPass<any> & {
   observeWrite: NonNullable<AnalysisPass<any>["observeWrite"]>;
@@ -284,44 +269,22 @@ export class Worklist implements ObservationSink {
   private readonly analysisQueues: Queue<QueuedBlock>[];
   private readonly transformQueue = new Queue<QueuedTransform>();
 
-  /**
-   * Pre-filtered subset of `analyses` that implement the runtime-observation
-   * hook. Observation handling iterates this list rather than re-checking
-   * `observeWrite` on every analysis per write. The type narrows the hook to
-   * required so the loop body needs no non-null asserts.
-   */
+  /** Analyses with an `observeWrite` hook, pre-filtered and type-narrowed. */
   private readonly observers: readonly ObservingAnalysis[];
 
-  /**
-   * Internal per-scope dirty channel. `observeWrite`, `observeCall`, transform
-   * completion, and cross-scope invalidation all publish here; `drain` flushes
-   * at the top of each iteration. One idiom, nested inside the external
-   * `onScopeChanged` subscriber contract.
-   */
+  /** Per-scope dirty channel; flushed at the top of each drain iteration. */
   private readonly dirty = new Map<StmtNS.FileInput | StmtNS.FunctionDef, DirtyReason>();
 
-  // ── Pass-graph dispatch (PR-2a) ────────────────────────────────────────
-  //
-  // Single fact store + subscription graph layered alongside the legacy
-  // analysisQueue/transformQueue drain. PR-2a wires `structuralPass` as the
-  // sole producer — `rebuildStructural` writes through. Fan-out uses
-  // `FactStore.onChange`: on a lattice-change write to pass `p`, every
-  // registered pass `p'` whose `reads` contains `p` is enqueued for every
-  // key in `p'.affectedKeys?.(p, k)` (or all previously-written keys if
-  // `p'.coarse === true`).
-  //
-  // The legacy dirty/flushDirty/analysis/transform queues are preserved
-  // verbatim for existing callers; this layer only serves passes registered
-  // through the new `register()` API (no existing caller uses it yet, but
-  // tests do, and PR-3+ will migrate consumers incrementally).
+  // Pass-graph dispatch: FactStore + subscription graph. On a lattice-change
+  // write to pass `p`, every registered reader `p'` whose `reads` contains
+  // `p` is enqueued for every key in `p'.affectedKeys?.(p, k)` (or all
+  // previously-written keys if `p'.coarse === true`).
   readonly factStore = new FactStore();
   private readonly registeredPasses: Pass<any, any>[] = [];
   private readonly passReaders = new Map<Pass<any, any>, Pass<any, any>[]>();
-  /** FIFO queue of pending (pass, key) re-transfers. */
   private readonly passQueue: Array<{ pass: Pass<any, any>; key: unknown }> = [];
-  /** Deduper for passQueue — keep at most one pending entry per (pass, key). */
+  /** Deduper for passQueue — at most one pending entry per (pass, key). */
   private readonly passQueueSet = new Set<string>();
-  private passFactStoreOff: (() => void) | null = null;
   private draining = false;
 
   // Perf counters
@@ -356,19 +319,7 @@ export class Worklist implements ObservationSink {
       this.enqueueTransform(key, unit.generation);
     }
 
-    // Pass-graph dispatch: register the singleton structuralPass as a
-    // baseline producer and subscribe the dispatch graph to factStore
-    // onChange events. Every write that produces a lattice change wakes
-    // readers via `handleFactChange`.
     this.register(structuralPass);
-    // PR-4: register migrated source / analysis / transform passes so the
-    // dispatch graph has visibility. `transfer` bodies are no-ops in this
-    // PR — legacy dispatch still drives production analyses and
-    // transforms, while the migrated passes back the `OptimizationHint`
-    // fields via `HintStore` (so writes through `updateField` land in the
-    // migrated passes' fact cells). PR-5 wires the interpreter to write
-    // into `runtimeWritePass` / `runtimeCallPass`, at which point the
-    // `transfer` bodies become live.
     this.register(runtimeWritePass);
     this.register(runtimeCallPass);
     this.register(typeAnalysisPass);
@@ -378,12 +329,11 @@ export class Worklist implements ObservationSink {
     this.register(deadBranchRule);
     this.register(constantFoldingRule);
     this.register(memoizationRule);
-    this.passFactStoreOff = this.factStore.onChange(c => this.handleFactChange(c));
+    this.factStore.onChange(c => this.handleFactChange(c));
 
-    // Synchrony tripwire — TS accepts `() => Promise<void>` where `() => void`
-    // is declared. Catch the `async`-declared case at construction rather than
-    // at first observation. `satisfies` checks each entry is a valid key of
-    // ObservationSink; completeness is maintained by hand.
+    // Synchrony tripwire: reject `async`-declared ObservationSink methods at
+    // construction. TS accepts `() => Promise<void>` where `() => void` is
+    // declared, so this must be checked at runtime.
     const SINK_METHODS = [
       "observeWrite",
       "observeCall",
@@ -393,7 +343,7 @@ export class Worklist implements ObservationSink {
       if (typeof fn !== "function") {
         throw new Error(`ObservationSink.${name} was replaced with a non-function value`);
       }
-      if ((fn as { constructor?: { name?: string } }).constructor?.name === "AsyncFunction") {
+      if ((fn as Function).constructor.name === "AsyncFunction") {
         throw new Error(`ObservationSink.${name} must be synchronous`);
       }
     }
@@ -408,23 +358,15 @@ export class Worklist implements ObservationSink {
 
   /**
    * Process pending work incrementally. Returns true if any units changed.
-   *
-   * Evaluators call `tick()` after execution completes to drain any work
-   * queued during the run. External callers (tests, advanced consumers
-   * driving the reactive loop manually) may invoke it directly; the return
-   * value is a drain-progress signal for those flows.
+   * Evaluators call this after execution to drain work queued during the run.
    */
   tick(limit?: number): boolean {
     return this.drain(limit).size > 0;
   }
 
-  // ── Pass-graph dispatch (register / enqueue / drain) ──────────────────
-
   /**
-   * Register a pass with the dispatch graph. Idempotent: re-registering
-   * the same pass is a no-op. Every pass must either declare
-   * `affectedKeys` or set `coarse: true`; this is enforced here (plan
-   * item: "Framework fails fast at register() if neither is declared").
+   * Register a pass with the dispatch graph. Idempotent. Every pass must
+   * either declare `affectedKeys` or set `coarse: true` — fail fast otherwise.
    */
   register<K, V>(pass: Pass<K, V>): void {
     if (this.registeredPasses.indexOf(pass as Pass<any, any>) !== -1) return;
@@ -434,7 +376,6 @@ export class Worklist implements ObservationSink {
       );
     }
     this.registeredPasses.push(pass as Pass<any, any>);
-    // Index by each read so handleFactChange can fan out in O(1).
     for (const reader of pass.reads) {
       const list = this.passReaders.get(reader) ?? [];
       list.push(pass as Pass<any, any>);
@@ -443,16 +384,10 @@ export class Worklist implements ObservationSink {
   }
 
   /**
-   * Public runtime-observation API (PR-5). Writes `(pass, key) → value`
-   * directly into the fact store, then drains any consumers the write
-   * woke. Intended for `runtime`-tier source passes (`runtimeWritePass`,
-   * `runtimeCallPass`) whose values come from the interpreter, not from
-   * a `transfer`. Equality-gated like every other write — a same-value
-   * write is a no-op and wakes nothing.
-   *
-   * Drain is invoked synchronously so transform side-effects (e.g.
-   * memoization AST splice, JIT `patchFunction`) land before the next
-   * interpreter instruction. Re-entry is guarded by `drainPasses`.
+   * Runtime-observation API for `runtime`-tier source passes. Writes
+   * `(pass, key) → value` into the fact store, then drains synchronously
+   * so transform side-effects land before the next interpreter instruction.
+   * Re-entry is guarded by `drainPasses`.
    */
   observe<K, V>(pass: Pass<K, V>, key: K, value: V): void {
     this.factStore.write(pass, key, value);
@@ -471,11 +406,9 @@ export class Worklist implements ObservationSink {
   }
 
   /**
-   * Drain the pass-graph queue to fixpoint. Drain order: topological over
-   * `reads` (depth from source passes) with tier tiebreaker
-   * (runtime < analysis < transform < jit) and FIFO within tier.
-   * Transforms defer while analysis items are pending for the same unit
-   * (plan item (d)).
+   * Drain the pass-graph queue to fixpoint. Order: tier (runtime < analysis
+   * < transform < jit), FIFO within tier. Transforms defer while analysis
+   * items are pending for the same unit.
    */
   drainPasses(): void {
     if (this.draining) return;
@@ -498,10 +431,8 @@ export class Worklist implements ObservationSink {
   }
 
   private passItemTag(pass: Pass<any, any>, key: unknown): string {
-    // Symbol identity — unique per pass instance. Key is coerced to string
-    // for dedup only; collisions across distinct keys with equal toString
-    // (unlikely for NodeId/BlockId/Unit values used today) are absorbed by
-    // the lattice.equals gate in `FactStore.write`.
+    // toString collisions across distinct keys are absorbed by the
+    // lattice.equals gate in `FactStore.write`.
     const passTag = (pass.id as symbol).toString();
     const keyTag =
       typeof key === "object" && key !== null
@@ -518,8 +449,7 @@ export class Worklist implements ObservationSink {
 
   private handleFactChange(change: FactChange<unknown, unknown>): void {
     const readers = this.passReaders.get(change.pass as Pass<any, any>);
-    // Prune-hook: on a structuralPass write, walk every pass and give it
-    // the chance to evict stale keys (plan item (c)).
+    // On a structural change, let every pass evict stale keys.
     if ((change.pass as Pass<any, any>) === (structuralPass as Pass<any, any>)) {
       const unit = change.key as FunctionUnit;
       for (const p of this.registeredPasses) {
@@ -547,12 +477,6 @@ export class Worklist implements ObservationSink {
     return Array.from(this.factStore.readAll(reader).keys());
   }
 
-  /**
-   * Drain selection: pick the queue index that should fire next.
-   * Policy: lowest tier (runtime < analysis < transform < jit), then
-   * FIFO. Transforms defer while any analysis item is queued for the
-   * same unit (plan item (d) — unit-scoped predicate).
-   */
   private pickNextPassItem(): number {
     const tierOrder: Record<string, number> = {
       runtime: 0,
@@ -580,15 +504,10 @@ export class Worklist implements ObservationSink {
   }
 
   private unitOfKey(key: unknown): FunctionUnit | undefined {
-    // Heuristic unit-extractor. FunctionUnit itself is passed by unit-keyed
-    // passes (structuralPass, jitPass). Other key shapes (NodeId, BlockId,
-    // Scope) land in PR-4+; this PR only needs unit-keyed resolution for
-    // the deferral predicate.
     if (key && typeof key === "object" && "funcAst" in (key as object)) {
       return key as FunctionUnit;
     }
     if (key && typeof key === "object" && "kind" in (key as object)) {
-      // AST Scope key
       return this.units.get(key as StmtNS.FileInput | StmtNS.FunctionDef);
     }
     return undefined;
@@ -598,30 +517,18 @@ export class Worklist implements ObservationSink {
     for (let i = 0; i < this.passQueue.length; i++) {
       if (i === selfIdx) continue;
       const { pass, key } = this.passQueue[i];
-      if (pass.tier !== "analysis" && pass.tier !== undefined) continue;
-      if (pass.tier === undefined) {
-        // default tier is "analysis"
-      }
-      const u = this.unitOfKey(key);
-      if (u === unit) return true;
+      // Default tier is "analysis".
+      if (pass.tier !== undefined && pass.tier !== "analysis") continue;
+      if (this.unitOfKey(key) === unit) return true;
     }
     return false;
   }
 
-  /**
-   * nodeId → owning FunctionUnit cache for `hintsFor`. Ownership is
-   * structural (set by AST scope) and immutable across the worklist's
-   * lifetime, so positive hits can be cached permanently. A miss may become
-   * a hit later (hint populated by a transform), so misses are not cached.
-   */
+  // Positive hits cached permanently (ownership is structural & immutable).
+  // Misses are not cached — a hint may be populated later by a transform.
   private readonly nodeUnitCache = new Map<number, FunctionUnit>();
 
-  /**
-   * Look up the hint for an AST node by routing to the owning FunctionUnit.
-   * Node IDs are globally unique, so a linear scan across units suffices —
-   * every unit's HintStore keys on the same id space and at most one owns
-   * any given id. Repeated lookups for the same node are O(1) via cache.
-   */
+  /** Look up the hint for an AST node by routing to the owning FunctionUnit. */
   hintsFor(node: ExprNS.Expr | StmtNS.Stmt): OptimizationHint | undefined {
     const id = node.id;
     const cached = this.nodeUnitCache.get(id);
@@ -660,10 +567,8 @@ export class Worklist implements ObservationSink {
     if (!calleeUnit) return;
     calleeUnit.callCount++;
     this.markDirty(calleeKey, "data");
-    // Only FunctionDef callees can be memoization callees — matches the
-    // legacy gate. Engine paths that also call `observe(runtimeCallPass, …)`
-    // from the interpreter remain a no-op idempotent second write under
-    // the lattice equality gate.
+    // Only FunctionDef callees can be memoization callees. Redundant writes
+    // from interpreter paths are absorbed by the lattice equality gate.
     if (calleeKey instanceof StmtNS.FunctionDef) {
       this.observe(runtimeCallPass, calleeKey.id, calleeUnit.callCount);
     }
@@ -849,68 +754,30 @@ export class Worklist implements ObservationSink {
     const unit = this.units.get(item.scopeKey);
     if (!unit || item.generation !== unit.generation) return false;
 
-    // Capture the unit's structural version up-front. Several pass-graph
-    // events below (the `structuralPass` write that primes purity, the
-    // dead-branch / constant-folding seeds) all wake transforms whose
-    // `reads` include `structuralPass` — so by the time we reach the
-    // dedicated transform-drain section those transforms may have *already*
-    // fired during purity's drain. A single capture here lets the
-    // post-drain delta detect any fire regardless of which drain scheduled
-    // it.
+    // Capture up-front: purity/deadBranch/constFolding/memoization all read
+    // `structuralPass`, so any of them may fire during the first drain below.
+    // A single delta check after the second drain catches either case.
     const preTransformVersion = unit.structuralVersion;
 
-    // PR-6a: purity is no longer a legacy ScopePass. Drive it through the
-    // pass-graph — prime structuralPass so `purityScopePass.transfer` can
-    // resolve the unit via `ctx.readAll(structuralPass)`, then enqueue &
-    // drain. Idempotent under the lattice: same-version rewrites of
-    // structuralPass suppress the fact-store listener, so this does not
-    // spuriously wake other structuralPass readers on re-drain.
+    // Prime structuralPass so purity's transfer can resolve the unit via
+    // `ctx.readAll(structuralPass)`. Same-version rewrites are suppressed by
+    // the fact-store equality gate.
     this.factStore.write(structuralPass, unit, unit.structuralVersion);
     if (unit.funcAst instanceof StmtNS.FunctionDef) {
       this.enqueue(purityScopePass, unit.funcAst.id);
       this.drainPasses();
     }
 
-    // PR-6c/6d: dead-branch elimination + constant folding are both
-    // pass-graph-driven, sharing reads `[constAnalysisPass, structuralPass]`.
-    // Each transfer sweeps `unit.body` (splicing const-bool `If`s and
-    // rewriting Binary/Compare into Literal respectively) and bumps
-    // `unit.structuralVersion` iff it mutated. Enqueue both seeds and
-    // drain once; either may already have fired during the purity drain
-    // above (woken by the `structuralPass` write priming purity), so the
-    // version-delta capture lives at the top of `processTransform` —
-    // see `preTransformVersion`.
     this.enqueue(deadBranchRule, unit);
     this.enqueue(constantFoldingRule, unit);
-    // PR-6e: memoization is pass-graph-driven. Its transfer gates on
-    // callCountPass >= threshold && purityScopePass === true; top-only
-    // lattice means the first fire writes "fired" and subsequent
-    // re-enqueues no-op via lattice equality. Legacy `appliedTransforms`
-    // Set write preserved inside the wrap for test observability until
-    // the final PR-6 demolition slice deletes the field.
     this.enqueue(memoizationRule, unit);
     this.drainPasses();
-    const transformsFired = unit.structuralVersion !== preTransformVersion;
 
-    if (transformsFired) {
+    if (unit.structuralVersion !== preTransformVersion) {
       this._transformRounds++;
       unit.structuralVersion++;
       changed.add(item.scopeKey);
       this.markDirty(item.scopeKey, "structural");
-    }
-    // Legacy node-level transforms produced an `extraInvalidate` set for
-    // child-unit invalidation; they're all migrated to Pass<K,V> now and
-    // any cross-unit mutation (e.g. memoization wrapping a child) bumps
-    // the child's structuralVersion directly inside the transfer.
-    const extraInvalidate = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
-    for (const scope of extraInvalidate) {
-      if (scope === item.scopeKey) continue;
-      const childUnit = this.units.get(scope);
-      if (childUnit) {
-        childUnit.structuralVersion++;
-        changed.add(scope);
-        this.markDirty(scope, "structural");
-      }
     }
 
     return true;
@@ -966,12 +833,6 @@ export class Worklist implements ObservationSink {
 
     this.seedAnalysis(key, unit);
     this.enqueueTransform(key, unit.generation);
-
-    // Pass-graph write-through: bump the unit's AstVersion fact. Lockstep
-    // with `unit.structuralVersion++` (which lives in `processTransform`)
-    // — this is the single place both sources are advanced together in
-    // PR-2a. PR-2b removes the legacy field and this pair collapses to
-    // one write.
     this.factStore.write(structuralPass, unit, unit.structuralVersion);
   }
 

@@ -10,31 +10,13 @@ import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
 /**
- * Per-scope optimization unit. Aggregates scope-keyed state: the AST node
- * identity (immutable), the mutable runtime state the framework maintains
- * alongside it, and the scheduler's per-scope DFA working memory (CFG,
- * block index, per-analysis OUT maps, generation counter).
- *
- * The scheduler-owned fields (`cfg`, `blockMap`, `analysisOuts`,
- * `generation`) are replaced wholesale on every body-level invalidation —
- * see `Worklist.rebuildAndReseed`. Collapsing them onto the unit removes
- * a parallel `scopes` map that used to mirror `units` 1:1.
- *
- * Mutability split:
- *   - Immutable identity / wiring: `funcAst`, `slotLookup`. Set at
- *     construction, never rewritten.
- *   - Mutable runtime state:
- *     - `hints` — readonly reference but `HintStore.set` mutates contents.
- *     - `body` — readonly reference (read-through getter onto the AST's
- *       statement array); array contents are spliced in place by
- *       non-monotone transforms (memoization, dead-branch elimination).
- *     - `structuralVersion` — bumped by every successful transform.
- *   - Mutable scheduler state (owned by `Worklist`):
- *     - `cfg`, `blockMap` — rebuilt on every body invalidation.
- *     - `analysisOuts[i]` — per-analysis OUT environment per block.
- *       `null` means "never processed"; unreachable blocks stay `null`.
- *     - `generation` — bumped on every reseed; stale queue items that
- *       mention an older generation are dropped.
+ * Per-scope optimization unit. `cfg`, `blockMap`, `analysisOuts`, and
+ * `generation` are scheduler-owned and replaced wholesale on body-level
+ * invalidation (see `Worklist.rebuildAndReseed`). `body` is a read-through
+ * getter onto the AST's statement array, which non-monotone transforms
+ * splice in place. `analysisOuts[i]` entries are `null` for blocks never
+ * processed (unreachable blocks stay `null`). `callCount` persists across
+ * CFG rebuilds.
  */
 export interface FunctionUnit {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
@@ -46,23 +28,15 @@ export interface FunctionUnit {
   blockMap: Map<BlockId, BasicBlock>;
   analysisOuts: Map<BlockId, MutableEnv<any> | null>[];
   generation: number;
-  /**
-   * Monotone call counter incremented by `observeCall` when this unit is
-   * the callee. Mirrored into `runtimeCallPass` for `callCountPass` to
-   * read; persists across CFG rebuilds (call counts don't reset).
-   */
   callCount: number;
 }
 
 /**
- * Walks every statement subtree through a `StmtNS.Visitor<void>` and
- * registers each `FunctionDef` as its own unit. The visitor dispatch (vs
- * a hand-rolled `instanceof` chain) means any new control-flow form added
- * to `StmtNS.Visitor` forces a compile-time decision here — important for
- * future constructs (try/with/class/method) that introduce blocks.
- *
- * Lambda bodies are a separate scope and not analyzed here (DFA does not
- * analyze single-expression lambda bodies).
+ * The `StmtNS.Visitor<void>` dispatch (vs a hand-rolled `instanceof` chain)
+ * means any new control-flow form added to `StmtNS.Visitor` forces a
+ * compile-time decision here — important for future constructs
+ * (try/with/class/method) that introduce blocks. Lambda bodies are a
+ * separate scope and not analyzed here.
  */
 class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   constructor(
@@ -135,11 +109,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-/**
- * Fresh per-analysis OUT map for a CFG: every block mapped to `null`
- * (never processed). The scheduler overwrites entries as it transfers
- * blocks.
- */
+/** Fresh OUT map: every block mapped to `null` (never processed). */
 export function makeOut<L>(cfg: CFG): Map<BlockId, MutableEnv<L> | null> {
   const out = new Map<BlockId, MutableEnv<L> | null>();
   for (const block of cfg.blocks) out.set(block.id, null);
