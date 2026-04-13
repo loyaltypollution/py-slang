@@ -7,11 +7,7 @@
 import { ConstAnalysisPass } from "../specialization/const-analysis/analysis";
 import { TypeAnalysisPass } from "../specialization/type-analysis/analysis";
 import { FactStore } from "../specialization/framework/fact-store";
-import {
-  readConstFact,
-  readTypeFact,
-  writeConstFact,
-} from "../specialization/framework/fact-accessors";
+import { constAnalysisPass, typeAnalysisPass } from "../specialization/framework/migrated-passes";
 import {
   BOOL_BIT,
   INT_BIT,
@@ -42,7 +38,7 @@ describe("TypeAnalysisPass.observeWrite", () => {
     const fs = new FactStore();
     const id = freshId();
     m.observeWrite!(fs, id, raw);
-    const t = readTypeFact(fs, id);
+    const t = fs.tryRead(typeAnalysisPass,id);
     expect(t).toBeDefined();
     expect(t!.kinds & expectedBit).toBeTruthy();
   });
@@ -59,7 +55,7 @@ describe("TypeAnalysisPass.observeWrite", () => {
     const fs = new FactStore();
     const id = freshId();
     m.observeWrite!(fs, id, raw);
-    const t = readTypeFact(fs, id);
+    const t = fs.tryRead(typeAnalysisPass,id);
     expect(t).toBeDefined();
     expect(t!.kinds & expectedBit).toBeTruthy();
   });
@@ -68,9 +64,9 @@ describe("TypeAnalysisPass.observeWrite", () => {
     const fs = new FactStore();
     const id = freshId();
     m.observeWrite!(fs, id, { foo: "bar" });
-    expect(readTypeFact(fs, id)).toBeUndefined();
+    expect(fs.tryRead(typeAnalysisPass,id)).toBeUndefined();
     m.observeWrite!(fs, id, Symbol("x"));
-    expect(readTypeFact(fs, id)).toBeUndefined();
+    expect(fs.tryRead(typeAnalysisPass,id)).toBeUndefined();
   });
 
   test("widens (join) when fact already has a type", () => {
@@ -78,7 +74,7 @@ describe("TypeAnalysisPass.observeWrite", () => {
     const id = freshId();
     m.observeWrite!(fs, id, 42);
     m.observeWrite!(fs, id, "hello");
-    const t = readTypeFact(fs, id)!;
+    const t = fs.tryRead(typeAnalysisPass,id)!;
     expect(t.kinds & INT_BIT).toBeTruthy();
     expect(t.kinds & STR_BIT).toBeTruthy();
   });
@@ -86,10 +82,10 @@ describe("TypeAnalysisPass.observeWrite", () => {
   test("preserves other fact fields (distinct pass cells)", () => {
     const fs = new FactStore();
     const id = freshId();
-    writeConstFact(fs, id, constOf(42));
+    fs.write(constAnalysisPass,id, constOf(42));
     m.observeWrite!(fs, id, 42);
-    expect(readConstFact(fs, id)).toEqual(constOf(42));
-    expect(readTypeFact(fs, id)).toBeDefined();
+    expect(fs.tryRead(constAnalysisPass,id)).toEqual(constOf(42));
+    expect(fs.tryRead(typeAnalysisPass,id)).toBeDefined();
   });
 });
 
@@ -100,63 +96,63 @@ describe("ConstAnalysisPass.observeWrite", () => {
     const fs = new FactStore();
     const id = freshId();
     m.observeWrite!(fs, id, 42);
-    expect(readConstFact(fs, id)).toEqual(constOf(42));
+    expect(fs.tryRead(constAnalysisPass,id)).toEqual(constOf(42));
   });
 
   test("primitive string → constVal set", () => {
     const fs = new FactStore();
     const id = freshId();
     m.observeWrite!(fs, id, "hello");
-    expect(readConstFact(fs, id)).toEqual(constOf("hello"));
+    expect(fs.tryRead(constAnalysisPass,id)).toEqual(constOf("hello"));
   });
 
   test("primitive bool → constVal set", () => {
     const fs = new FactStore();
     const id = freshId();
     m.observeWrite!(fs, id, true);
-    expect(readConstFact(fs, id)).toEqual(constOf(true));
+    expect(fs.tryRead(constAnalysisPass,id)).toEqual(constOf(true));
   });
 
   test("tagged number → constVal set", () => {
     const fs = new FactStore();
     const id = freshId();
     m.observeWrite!(fs, id, { type: "number", value: 42 });
-    expect(readConstFact(fs, id)).toEqual(constOf(42));
+    expect(fs.tryRead(constAnalysisPass,id)).toEqual(constOf(42));
   });
 
   test("non-primitive leaves fact unchanged (does not widen to CONST_TOP)", () => {
     // Critical: widening to CONST_TOP would erase existing constants.
     const fs = new FactStore();
     const id = freshId();
-    writeConstFact(fs, id, constOf(42));
+    fs.write(constAnalysisPass,id, constOf(42));
     m.observeWrite!(fs, id, { type: "closure" });
-    expect(readConstFact(fs, id)).toEqual(constOf(42));
+    expect(fs.tryRead(constAnalysisPass,id)).toEqual(constOf(42));
     m.observeWrite!(fs, id, { type: "list", value: [] });
-    expect(readConstFact(fs, id)).toEqual(constOf(42));
+    expect(fs.tryRead(constAnalysisPass,id)).toEqual(constOf(42));
     m.observeWrite!(fs, id, null);
-    expect(readConstFact(fs, id)).toEqual(constOf(42));
+    expect(fs.tryRead(constAnalysisPass,id)).toEqual(constOf(42));
   });
 
   test("same value twice → unchanged constVal", () => {
     const fs = new FactStore();
     const id = freshId();
-    writeConstFact(fs, id, constOf(42));
+    fs.write(constAnalysisPass,id, constOf(42));
     m.observeWrite!(fs, id, 42);
-    expect(readConstFact(fs, id)).toEqual(constOf(42));
+    expect(fs.tryRead(constAnalysisPass,id)).toEqual(constOf(42));
   });
 
   test("different values → widens to CONST_TOP", () => {
     const fs = new FactStore();
     const id = freshId();
-    writeConstFact(fs, id, constOf(42));
+    fs.write(constAnalysisPass,id, constOf(42));
     m.observeWrite!(fs, id, 99);
-    expect(readConstFact(fs, id)).toEqual(CONST_TOP);
+    expect(fs.tryRead(constAnalysisPass,id)).toEqual(CONST_TOP);
   });
 
   test("preserves other fact fields (distinct pass cells)", () => {
     const fs = new FactStore();
     const id = freshId();
     m.observeWrite!(fs, id, 42);
-    expect(readConstFact(fs, id)).toEqual(constOf(42));
+    expect(fs.tryRead(constAnalysisPass,id)).toEqual(constOf(42));
   });
 });

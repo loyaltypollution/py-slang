@@ -15,10 +15,7 @@ import { generateCSEMachineStateStream } from "../engines/cse/interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import type { FactStore } from "../specialization/framework/fact-store";
-import {
-  readConstFact,
-  readTypeFact,
-} from "../specialization/framework/fact-accessors";
+import { constAnalysisPass, typeAnalysisPass } from "../specialization/framework/migrated-passes";
 import { buildTestWorklist } from "./utils";
 
 function parseOptimizeAndMerge(code: string): {
@@ -40,8 +37,8 @@ function parseOptimizeAndMerge(code: string): {
 
 function hasAnyFact(factStore: FactStore, id: number): boolean {
   return (
-    readTypeFact(factStore, id) !== undefined ||
-    readConstFact(factStore, id) !== undefined
+    factStore.tryRead(typeAnalysisPass,id) !== undefined ||
+    factStore.tryRead(constAnalysisPass,id) !== undefined
   );
 }
 
@@ -60,7 +57,7 @@ describe("CSE hint visualization: facts in store", () => {
     const assignStmt = ast.statements[0] as StmtNS.Assign;
     const valueExpr = assignStmt.value;
 
-    expect(readTypeFact(factStore, valueExpr.id)).toBeDefined();
+    expect(factStore.tryRead(typeAnalysisPass,valueExpr.id)).toBeDefined();
   });
 
   test("facts contain const info for known constant", () => {
@@ -69,7 +66,7 @@ describe("CSE hint visualization: facts in store", () => {
     const assignStmt = ast.statements[0] as StmtNS.Assign;
     const valueExpr = assignStmt.value;
 
-    expect(readConstFact(factStore, valueExpr.id)).toBeDefined();
+    expect(factStore.tryRead(constAnalysisPass,valueExpr.id)).toBeDefined();
   });
 
   test("optimization runs without error on multi-statement programs", () => {
@@ -89,7 +86,7 @@ describe("CSE hint visualization: nested function scopes", () => {
     const returnStmt = funcDef.body[0] as StmtNS.Return;
     const binOp = returnStmt.value!;
 
-    expect(readTypeFact(factStore, binOp.id)).toBeDefined();
+    expect(factStore.tryRead(typeAnalysisPass,binOp.id)).toBeDefined();
   });
 
   test("merged facts include both root and function scope entries", () => {
@@ -155,8 +152,8 @@ describe("CSE hint visualization: external lookup during stepping", () => {
     for await (const _state of gen) {
       const currentNode = context.runtime.nodes[0];
       if (currentNode && "id" in currentNode && typeof currentNode.id === "number") {
-        const type = readTypeFact(factStore, currentNode.id);
-        const constVal = readConstFact(factStore, currentNode.id);
+        const type = factStore.tryRead(typeAnalysisPass,currentNode.id);
+        const constVal = factStore.tryRead(constAnalysisPass,currentNode.id);
         if (type !== undefined || constVal !== undefined) {
           hits.push({ type, constVal });
         }

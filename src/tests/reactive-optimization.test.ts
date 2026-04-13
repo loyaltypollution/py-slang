@@ -13,7 +13,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import { buildTestWorklist } from "./utils";
 import type { FunctionUnit } from "../specialization/framework/function-unit";
 import type { FactStore } from "../specialization/framework/fact-store";
-import { readConstFact } from "../specialization/framework/fact-accessors";
+import { constAnalysisPass } from "../specialization/framework/migrated-passes";
 
 function parseAndResolve(code: string) {
   const script = code + "\n";
@@ -202,7 +202,7 @@ describe("Worklist: post-optimization hints", () => {
   test("x = 3 + 4: BinOp (pre-fold) or Literal(7) (post-fold) has constVal const(7)", () => {
     const { factStore, body } = analyse("x = 3 + 4");
     const assign = body[0] as StmtNS.Assign;
-    const cv = readConstFact(factStore, assign.value.id);
+    const cv = factStore.tryRead(constAnalysisPass, assign.value.id);
     expect(cv?.tag).toBe("const");
     expect((cv as any)?.value).toBe(7);
   });
@@ -210,7 +210,7 @@ describe("Worklist: post-optimization hints", () => {
   test("variable propagation: x = 5; y = x + 2 → x+2 has constVal const(7)", () => {
     const { factStore, body } = analyse("x = 5\ny = x + 2");
     const assignY = body[1] as StmtNS.Assign;
-    const cv = readConstFact(factStore, assignY.value.id);
+    const cv = factStore.tryRead(constAnalysisPass, assignY.value.id);
     expect(cv?.tag).toBe("const");
     expect((cv as any)?.value).toBe(7);
   });

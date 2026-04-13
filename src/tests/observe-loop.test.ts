@@ -12,7 +12,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import { buildTestWorklist } from "./utils";
 import { Context } from "../engines/cse/context";
 import { evaluate } from "../engines/cse/interpreter";
-import { readTypeFact } from "../specialization/framework/fact-accessors";
+import { typeAnalysisPass } from "../specialization/framework/migrated-passes";
 import { STR_BIT, INT_BIT } from "../specialization/type-analysis/lattice";
 
 function setupReactive(code: string) {
@@ -54,8 +54,8 @@ x = "hello"
     const firstAssign = ast.statements[0] as StmtNS.Assign;
     const secondAssign = ast.statements[1] as StmtNS.Assign;
 
-    const firstType = readTypeFact(reactive.factStore, firstAssign.value.id);
-    const secondType = readTypeFact(reactive.factStore, secondAssign.value.id);
+    const firstType = reactive.factStore.tryRead(typeAnalysisPass,firstAssign.value.id);
+    const secondType = reactive.factStore.tryRead(typeAnalysisPass,secondAssign.value.id);
 
     // First assign's RHS is a literal 1 — static analysis gave INT.
     expect(firstType).toBeDefined();
@@ -71,10 +71,10 @@ x = "hello"
     const { ast, reactive } = setupReactive("x = 1");
     reactive.converge();
     const assign = ast.statements[0] as StmtNS.Assign;
-    const before = readTypeFact(reactive.factStore, assign.value.id);
+    const before = reactive.factStore.tryRead(typeAnalysisPass,assign.value.id);
 
     reactive.observeWrite(ast, assign.value, 1);
-    const after = readTypeFact(reactive.factStore, assign.value.id);
+    const after = reactive.factStore.tryRead(typeAnalysisPass,assign.value.id);
 
     expect(after).toEqual(before);
   });
@@ -87,9 +87,9 @@ describe("OBSERVE loop: regression guard", () => {
     reactive.converge();
 
     const assign = ast.statements[0] as StmtNS.Assign;
-    const before = readTypeFact(reactive.factStore, assign.value.id);
+    const before = reactive.factStore.tryRead(typeAnalysisPass,assign.value.id);
     reactive.observeWrite(ast, assign.value, 42);
-    const after = readTypeFact(reactive.factStore, assign.value.id);
+    const after = reactive.factStore.tryRead(typeAnalysisPass,assign.value.id);
 
     expect(after).toEqual(before);
   });

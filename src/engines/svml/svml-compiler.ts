@@ -2,8 +2,8 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { ConstLattice } from "../../specialization/const-analysis/lattice";
 import type { TypeLattice } from "../../specialization/type-analysis/lattice";
-import { readTypeFact, readConstFact } from "../../specialization/framework/fact-accessors";
 import type { FactStore } from "../../specialization/framework/fact-store";
+import { typeAnalysisPass, constAnalysisPass } from "../../specialization/framework/migrated-passes";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import { ScopeIndexMap } from "./scope-index-map";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
@@ -101,11 +101,11 @@ export class SVMLCompiler
   }
 
   private getType(node: ExprNS.Expr | StmtNS.Stmt): TypeLattice | undefined {
-    return this.factStore ? readTypeFact(this.factStore, node.id) : undefined;
+    return this.factStore ? this.factStore.tryRead(typeAnalysisPass, node.id) : undefined;
   }
 
   private getConst(node: ExprNS.Expr | StmtNS.Stmt): ConstLattice | undefined {
-    return this.factStore ? readConstFact(this.factStore, node.id) : undefined;
+    return this.factStore ? this.factStore.tryRead(constAnalysisPass, node.id) : undefined;
   }
 
   /**

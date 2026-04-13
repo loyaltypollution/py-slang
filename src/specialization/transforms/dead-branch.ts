@@ -17,21 +17,21 @@
 // no downstream consumer wakes spuriously.
 
 import { StmtNS } from "../../ast-types";
-import { readConstFact } from "../framework/fact-accessors";
 import type { FactStore } from "../framework/fact-store";
 import type { ConstLattice } from "../const-analysis/lattice";
 import type { FunctionUnit } from "../framework/function-unit";
+import { constAnalysisPass } from "../framework/migrated-passes";
 
 /** Does this `if`-stmt have a statically-known boolean condition? */
 function matchesIf(stmt: StmtNS.Stmt, factStore: FactStore): stmt is StmtNS.If {
   if (!(stmt instanceof StmtNS.If)) return false;
-  const cv = readConstFact(factStore, stmt.condition.id);
+  const cv = factStore.tryRead(constAnalysisPass,stmt.condition.id);
   return cv?.tag === "const" && typeof cv.value === "boolean";
 }
 
 /** Replace an `if <const bool>:` with the taken branch body. */
 function applyIf(ifStmt: StmtNS.If, factStore: FactStore): StmtNS.Stmt[] {
-  const cv = readConstFact(factStore, ifStmt.condition.id) as ConstLattice & { tag: "const" };
+  const cv = factStore.tryRead(constAnalysisPass,ifStmt.condition.id) as ConstLattice & { tag: "const" };
   return cv.value ? ifStmt.body : (ifStmt.elseBlock ?? []);
 }
 

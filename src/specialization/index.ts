@@ -20,14 +20,6 @@ export { structuralPass } from "./framework/structural-pass";
 // ── Framework (for manual wiring / tests) ────────────────────────────────────
 
 export type { AnalysisPass } from "./framework/interfaces";
-export {
-  readTypeFact,
-  writeTypeFact,
-  readConstFact,
-  writeConstFact,
-  readPurityFact,
-  readCallCountFact,
-} from "./framework/fact-accessors";
 
 // ── Type lattice (codegen reads kind bits + refinements from hints) ──────────
 

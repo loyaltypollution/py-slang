@@ -24,7 +24,7 @@ import {
   MEMO_MISS,
   memoPut,
 } from "../specialization";
-import { readCallCountFact } from "../specialization/framework/fact-accessors";
+import { callCountPass } from "../specialization/framework/migrated-passes";
 import type { FunctionUnit } from "../specialization/framework/function-unit";
 import type { Worklist } from "../specialization";
 import { buildTestWorklist } from "./utils";
@@ -56,10 +56,10 @@ describe("CallCountScopePass + transform", () => {
     reactive.converge();
     const fd = findFunctionDef(ast, "f");
 
-    expect(readCallCountFact(reactive.factStore, fd.id)).toBeUndefined();
+    expect(reactive.factStore.tryRead(callCountPass, fd.id)).toBeUndefined();
 
     for (let i = 0; i < 3; i++) reactive.observeCall(ast, fd);
-    expect(readCallCountFact(reactive.factStore, fd.id)).toBe(3);
+    expect(reactive.factStore.tryRead(callCountPass, fd.id)).toBe(3);
   });
 
   test("below threshold: no transform", () => {

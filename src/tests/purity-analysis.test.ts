@@ -17,7 +17,7 @@ import {
   TypeAnalysisPass,
   Worklist,
 } from "../specialization";
-import { readPurityFact } from "../specialization/framework/fact-accessors";
+import { purityScopePass } from "../specialization/framework/migrated-passes";
 
 function purityOf(code: string, fnName: string): boolean | undefined {
   const script = code + "\n";
@@ -28,7 +28,7 @@ function purityOf(code: string, fnName: string): boolean | undefined {
 
   for (const stmt of ast.statements) {
     if (stmt instanceof StmtNS.FunctionDef && stmt.name.lexeme === fnName) {
-      const p = readPurityFact(worklist.factStore, stmt.id);
+      const p = worklist.factStore.tryRead(purityScopePass, stmt.id);
       return p === "contested" ? undefined : p;
     }
   }

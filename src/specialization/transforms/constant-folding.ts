@@ -19,20 +19,20 @@
 // wakes spuriously.
 
 import { ExprNS, StmtNS } from "../../ast-types";
-import { readConstFact } from "../framework/fact-accessors";
 import type { FactStore } from "../framework/fact-store";
 import type { ConstLattice } from "../const-analysis/lattice";
 import type { FunctionUnit } from "../framework/function-unit";
+import { constAnalysisPass } from "../framework/migrated-passes";
 
 /** Does this expression have a statically-known constant value that we can fold? */
 function matchesExpr(expr: ExprNS.Expr, factStore: FactStore): boolean {
   if (!(expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare)) return false;
-  return readConstFact(factStore, expr.id)?.tag === "const";
+  return factStore.tryRead(constAnalysisPass,expr.id)?.tag === "const";
 }
 
 /** Replace a folded Binary/Compare with the corresponding Literal. */
 function applyExpr(expr: ExprNS.Expr, factStore: FactStore): ExprNS.Expr {
-  const cv = readConstFact(factStore, expr.id) as ConstLattice & { tag: "const" };
+  const cv = factStore.tryRead(constAnalysisPass,expr.id) as ConstLattice & { tag: "const" };
   return new ExprNS.Literal(
     expr.startToken,
     expr.endToken,

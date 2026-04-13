@@ -31,16 +31,8 @@ export interface AnalysisPass<L> {
     factStore: FactStore,
     env: { get(slot: number): L | undefined },
     slotLookup: SlotLookup,
-    /** When supplied, visitor emits via tap; the legacy fact-store write is skipped. */
+    /** Per-node tap for `nodeFactView.get`'s replay. When supplied, the
+     *  visitor emits here and skips fact-store writes. */
     tap?: (id: number, val: L) => void,
   ): ExprNS.Visitor<L>;
-
-  /**
-   * Fold a raw runtime value (pushed by an interpreter on a slot write) into
-   * the corresponding fact cell. Must use `join` semantics — observations
-   * widen the set of seen values, they never narrow static facts. No-op when
-   * the value is not useful for this analysis (e.g. ConstAnalysisPass ignores
-   * non-primitive JS values rather than widening to TOP).
-   */
-  observeWrite?(factStore: FactStore, id: number, rawValue: unknown): void;
 }

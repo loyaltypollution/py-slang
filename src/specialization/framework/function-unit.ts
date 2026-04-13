@@ -1,6 +1,5 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
-import { buildBlockOfNode } from "./block-of-node";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import type { AnalysisPass } from "./interfaces";
@@ -24,6 +23,8 @@ export interface FunctionUnit {
   readonly body: StmtNS.Stmt[];
   cfg: CFG;
   blockMap: Map<BlockId, BasicBlock>;
+  /** NodeId → containing BasicBlock. Populated at CFG build; used by
+   *  `nodeFactView` to locate the block owning a node for replay. */
   blockOfNode: Map<number, BasicBlock>;
   analysisOuts: Map<BlockId, MutableEnv<any> | null>[];
   generation: number;
@@ -56,13 +57,17 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     const cfg = buildCFG(body);
     const blockMap = new Map<BlockId, BasicBlock>();
     for (const block of cfg.blocks) blockMap.set(block.id, block);
+    const blockOfNode = new Map<number, BasicBlock>();
+    for (const block of cfg.blocks) {
+      for (const stmt of block.stmts) populateBlockOfNode(stmt, block, blockOfNode);
+    }
     const analysisOuts = this.analyses.map(() => makeOut(cfg));
     const unit: FunctionUnit = {
       funcAst,
       slotLookup: buildSlotTable(env, paramNames),
       cfg,
       blockMap,
-      blockOfNode: buildBlockOfNode(cfg),
+      blockOfNode,
       analysisOuts,
       generation: 0,
       callCount: 0,
@@ -103,6 +108,34 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   visitGlobalStmt(_stmt: StmtNS.Global): void {}
   visitNonLocalStmt(_stmt: StmtNS.NonLocal): void {}
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
+}
+
+/**
+ * Walk all AST nodes reachable from `node` and record their containing block.
+ * Generic via runtime reflection: any object with a numeric `.id` is a node,
+ * and we recurse into arrays and plain-object children. Tokens have no `.id`
+ * and are ignored. One-shot at CFG-build time.
+ */
+function populateBlockOfNode(
+  node: unknown,
+  block: BasicBlock,
+  out: Map<number, BasicBlock>,
+  seen: WeakSet<object> = new WeakSet(),
+): void {
+  if (node === null || typeof node !== "object") return;
+  if (seen.has(node as object)) return;
+  seen.add(node as object);
+  const obj = node as Record<string, unknown>;
+  const id = obj.id;
+  if (typeof id === "number") out.set(id, block);
+  for (const key of Object.keys(obj)) {
+    const child = obj[key];
+    if (Array.isArray(child)) {
+      for (const item of child) populateBlockOfNode(item, block, out, seen);
+    } else if (typeof child === "object" && child !== null) {
+      populateBlockOfNode(child, block, out, seen);
+    }
+  }
 }
 
 /** Fresh OUT map: every block mapped to `null` (never processed). */

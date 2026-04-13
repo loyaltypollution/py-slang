@@ -12,7 +12,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { INT_BIT, BOOL_BIT, BoolRef } from "../specialization";
-import { readTypeFact } from "../specialization/framework/fact-accessors";
+import { typeAnalysisPass } from "../specialization/framework/migrated-passes";
 import { buildTestWorklist } from "./utils";
 
 function compileAndRun(code: string): unknown {
@@ -96,7 +96,7 @@ describe("[P2] Ternary result type annotation", () => {
 
     const simpleExpr = ast.statements[0] as any;
     const ternary = simpleExpr.expression;
-    const type = readTypeFact(engine.factStore, ternary.id);
+    const type = engine.factStore.tryRead(typeAnalysisPass,ternary.id);
     // Currently TOP (all kinds set). Should be INT_BIT once fixed.
     // Flip this expectation to INT_BIT after the fix lands.
     expect(type?.kinds).not.toBe(INT_BIT);
@@ -147,7 +147,7 @@ acc
     // The for-loop is stmt[1]. Its body[1] is `acc > 0` (a SimpleExpr).
     const forStmt = ast.statements[1] as any;
     const cmpExpr = forStmt.body[1].expression; // acc > 0
-    const type = readTypeFact(engine.factStore, cmpExpr.id);
+    const type = engine.factStore.tryRead(typeAnalysisPass,cmpExpr.id);
 
     // The comparison should be annotated as BOOL (kind = BOOL_BIT).
     expect(type?.kinds).toBe(BOOL_BIT);

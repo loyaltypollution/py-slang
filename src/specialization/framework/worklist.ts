@@ -10,7 +10,6 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
-import { buildBlockOfNode } from "./block-of-node";
 import { FactStore, type FactChange } from "./fact-store";
 import { buildFunctionUnits, makeOut, type FunctionUnit } from "./function-unit";
 import type { AnalysisPass } from "./interfaces";
@@ -253,25 +252,12 @@ export interface WorklistStats {
  */
 type DirtyReason = "data" | "structural";
 
-// Interpreters call `observeWrite` / `observeCall` during execution — the
-// synchronous runtime surface. Synchrony is enforced in-constructor
-// (AsyncFunction check) because TS accepts `() => Promise<void>` where
-// `() => void` is declared. The former `ObservationSink` nominal interface
-// was dropped in PR-D; engines type their `sink` parameter against the
-// structural shape locally.
-type ObservingAnalysis = AnalysisPass<any> & {
-  observeWrite: NonNullable<AnalysisPass<any>["observeWrite"]>;
-};
-
 // ── Worklist ────────────────────────────────────────────────────────────────
 
 export class Worklist {
   readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
   private readonly analysisQueues: Queue<QueuedBlock>[];
   private readonly transformQueue = new Queue<QueuedTransform>();
-
-  /** Analyses with an `observeWrite` hook, pre-filtered and type-narrowed. */
-  private readonly observers: readonly ObservingAnalysis[];
 
   /** Per-scope dirty channel; flushed at the top of each drain iteration. */
   private readonly dirty = new Map<StmtNS.FileInput | StmtNS.FunctionDef, DirtyReason>();
@@ -296,12 +282,6 @@ export class Worklist {
    */
   private readonly _transformFiredUnits = new Set<FunctionUnit>();
 
-  /**
-   * Reverse map for `PassCtx.unitForBlock`. Built from `units` at construction
-   * and refreshed in `rebuildStructural` when a unit's CFG is replaced.
-   */
-  private readonly blockToUnit = new WeakMap<BasicBlock, FunctionUnit>();
-
   // Perf counters
   private _itemsProcessed = 0;
   private _analysisItemsProcessed = 0;
@@ -318,13 +298,9 @@ export class Worklist {
     private readonly analyses: readonly AnalysisPass<any>[],
   ) {
     this.analysisQueues = analyses.map(() => new Queue<QueuedBlock>());
-    this.observers = analyses.filter(
-      (m): m is ObservingAnalysis => m.observeWrite !== undefined,
-    );
 
     this.units = buildFunctionUnits(ast, functionEnvironments, analyses);
     for (const [key, unit] of this.units) {
-      for (const block of unit.cfg.blocks) this.blockToUnit.set(block, unit);
       this.seedAnalysis(key, unit);
       this.enqueueTransform(key, unit.generation);
     }
@@ -343,19 +319,39 @@ export class Worklist {
     this.register(memoizationRule);
     this.factStore.onChange(c => this.handleFactChange(c));
 
-    // Synchrony tripwire: reject `async`-declared sink methods at
+    // Synchrony tripwire: reject `async`-declared observe method at
     // construction. TS accepts `() => Promise<void>` where `() => void` is
-    // declared, so this must be checked at runtime. Verified by typeof at
-    // runtime (no compile-time interface dependency after PR-D).
-    const SYNC_ENFORCED_METHODS = ["observeWrite", "observeCall"] as const;
-    for (const name of SYNC_ENFORCED_METHODS) {
-      const fn = (this as unknown as Record<string, unknown>)[name];
-      if (typeof fn !== "function") {
-        throw new Error(`Worklist.${name} was replaced with a non-function value`);
-      }
-      if ((fn as Function).constructor.name === "AsyncFunction") {
-        throw new Error(`Worklist.${name} must be synchronous`);
-      }
+    // declared, so this must be checked at runtime.
+    const fn = (this as unknown as Record<string, unknown>)["observe"];
+    if (typeof fn !== "function") {
+      throw new Error(`Worklist.observe was replaced with a non-function value`);
+    }
+    if ((fn as Function).constructor.name === "AsyncFunction") {
+      throw new Error(`Worklist.observe must be synchronous`);
+    }
+  }
+
+  // Legacy sink-interface-compat stubs (removed in Chunk 3).
+  observeWrite(
+    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
+    _rhsNode: ExprNS.Expr,
+    _rawValue: unknown,
+  ): void {
+    const unit = this.units.get(scopeKey);
+    if (!unit) return;
+    this.markDirty(scopeKey, "data");
+  }
+
+  observeCall(
+    _scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
+    calleeKey: StmtNS.FileInput | StmtNS.FunctionDef,
+  ): void {
+    const calleeUnit = this.units.get(calleeKey);
+    if (!calleeUnit) return;
+    calleeUnit.callCount++;
+    this.markDirty(calleeKey, "data");
+    if (calleeKey instanceof StmtNS.FunctionDef) {
+      this.observe(runtimeCallPass, calleeKey.id, calleeUnit.callCount);
     }
   }
 
@@ -455,7 +451,12 @@ export class Worklist {
     read: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.read(p, key),
     readAll: <K2, V2>(p: Pass<K2, V2>) => this.factStore.readAll(p),
     unitFor: (scope: StmtNS.FileInput | StmtNS.FunctionDef) => this.units.get(scope),
-    unitForBlock: (block: BasicBlock) => this.blockToUnit.get(block),
+    unitForBlock: (block) => {
+      for (const unit of this.units.values()) {
+        if (unit.blockMap.get(block.id) === block) return unit;
+      }
+      return undefined;
+    },
     factStore: this.factStore,
   };
 
@@ -545,33 +546,6 @@ export class Worklist {
     return false;
   }
 
-  observeWrite(
-    scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
-    rhsNode: ExprNS.Expr,
-    rawValue: unknown,
-  ): void {
-    const unit = this.units.get(scopeKey);
-    if (!unit) return;
-    for (const observer of this.observers) {
-      observer.observeWrite(this.factStore, rhsNode.id, rawValue);
-    }
-    this.markDirty(scopeKey, "data");
-  }
-
-  observeCall(
-    _scopeKey: StmtNS.FileInput | StmtNS.FunctionDef,
-    calleeKey: StmtNS.FileInput | StmtNS.FunctionDef,
-  ): void {
-    const calleeUnit = this.units.get(calleeKey);
-    if (!calleeUnit) return;
-    calleeUnit.callCount++;
-    this.markDirty(calleeKey, "data");
-    // Only FunctionDef callees can be memoization callees. Redundant writes
-    // from interpreter paths are absorbed by the lattice equality gate.
-    if (calleeKey instanceof StmtNS.FunctionDef) {
-      this.observe(runtimeCallPass, calleeKey.id, calleeUnit.callCount);
-    }
-  }
 
   // ── Drain ────────────────────────────────────────────────────────────────
 
@@ -831,11 +805,7 @@ export class Worklist {
     unit.generation++;
     unit.cfg = buildCFG(unit.body);
     unit.blockMap = new Map<BlockId, BasicBlock>();
-    for (const block of unit.cfg.blocks) {
-      unit.blockMap.set(block.id, block);
-      this.blockToUnit.set(block, unit);
-    }
-    unit.blockOfNode = buildBlockOfNode(unit.cfg);
+    for (const block of unit.cfg.blocks) unit.blockMap.set(block.id, block);
     unit.analysisOuts = this.analyses.map(() => makeOut(unit.cfg));
 
     this.seedAnalysis(key, unit);

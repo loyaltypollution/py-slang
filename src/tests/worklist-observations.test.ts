@@ -8,7 +8,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import { Worklist } from "../specialization/framework/worklist";
 import { ConstAnalysisPass } from "../specialization/const-analysis/analysis";
 import { TypeAnalysisPass } from "../specialization/type-analysis/analysis";
-import { readTypeFact } from "../specialization/framework/fact-accessors";
+import { typeAnalysisPass } from "../specialization/framework/migrated-passes";
 import type { StmtNS } from "../ast-types";
 
 function setup(code: string) {
@@ -29,11 +29,11 @@ describe("Worklist.observeWrite", () => {
 
     const assign = ast.statements[0] as StmtNS.Assign;
 
-    const typeBefore = readTypeFact(worklist.factStore, assign.value.id);
+    const typeBefore = worklist.factStore.tryRead(typeAnalysisPass,assign.value.id);
     worklist.observeWrite(ast, assign.value, "hello-string");
 
     // Observation should have merged a string lattice fact into the existing fact.
-    const typeAfter = readTypeFact(worklist.factStore, assign.value.id);
+    const typeAfter = worklist.factStore.tryRead(typeAnalysisPass,assign.value.id);
     expect(typeAfter).toBeDefined();
     expect(typeAfter).not.toEqual(typeBefore);
   });
@@ -49,12 +49,12 @@ describe("Worklist.observeWrite", () => {
     const { ast, worklist } = setup("x = 1");
     worklist.drain();
     const assign = ast.statements[0] as StmtNS.Assign;
-    const typeBefore = readTypeFact(worklist.factStore, assign.value.id);
+    const typeBefore = worklist.factStore.tryRead(typeAnalysisPass,assign.value.id);
 
     worklist.observeWrite(ast, assign.value, Symbol("weird"));
 
     // Neither module returned a lattice delta — fact unchanged.
-    expect(readTypeFact(worklist.factStore, assign.value.id)).toEqual(typeBefore);
+    expect(worklist.factStore.tryRead(typeAnalysisPass,assign.value.id)).toEqual(typeBefore);
   });
 });
 

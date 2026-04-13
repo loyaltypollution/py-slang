@@ -1,7 +1,8 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import { readConstFact, writeConstFact } from "../framework/fact-accessors";
 import type { FactStore } from "../framework/fact-store";
+import { constAnalysisPass } from "../framework/migrated-passes";
+import { runtimeWritePass } from "../framework/runtime-passes";
 import type { AnalysisPass } from "../framework/interfaces";
 import type { SlotLookup } from "../framework/slot-table";
 import {
@@ -27,9 +28,12 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   ) {}
 
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
-    if (this.tap) this.tap(node.id, val);
-    else writeConstFact(this.factStore, node.id, val);
-    return val;
+    const observed = this.factStore.tryRead(runtimeWritePass, node.id);
+    const lifted = observed !== undefined ? liftConst(observed) : undefined;
+    const widened = lifted !== undefined ? constJoin(val, lifted) : val;
+    if (this.tap) this.tap(node.id, widened);
+    else this.factStore.write(constAnalysisPass, node.id, widened);
+    return widened;
   }
 
   visitLiteralExpr(expr: ExprNS.Literal): ConstLattice {
@@ -246,16 +250,6 @@ export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
     return new ConstAnalysisVisitor(factStore, env, slotLookup, tap);
   }
 
-  observeWrite(factStore: FactStore, id: number, rawValue: unknown): void {
-    // No-op (don't widen to CONST_TOP) when there is no useful constant —
-    // widening would erase existing static constants.
-    const value = liftConst(rawValue);
-    if (value === undefined) return;
-    // Widen via constJoin — two different observed constants collapse to CONST_TOP.
-    const prev = readConstFact(factStore, id);
-    const next = prev ? constJoin(prev, value) : value;
-    writeConstFact(factStore, id, next);
-  }
 }
 
 function liftConst(rawValue: unknown): ConstLattice | undefined {

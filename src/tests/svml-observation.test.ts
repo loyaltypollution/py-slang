@@ -7,7 +7,7 @@
 import { StmtNS } from "../ast-types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { readTypeFact } from "../specialization/framework/fact-accessors";
+import { typeAnalysisPass } from "../specialization/framework/migrated-passes";
 import { buildTestWorklist } from "./utils";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
@@ -39,7 +39,7 @@ x = "hello"
     reactive.tick();
 
     const secondAssign = ast.statements[1] as StmtNS.Assign;
-    const type = readTypeFact(reactive.factStore, secondAssign.value.id);
+    const type = reactive.factStore.tryRead(typeAnalysisPass, secondAssign.value.id);
     expect(type).toBeDefined();
     // String literal RHS: either static analysis or the runtime observation
     // should have recorded STR_BIT.

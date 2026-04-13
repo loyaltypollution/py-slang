@@ -38,6 +38,12 @@ export class FactStore {
     return inner.get(key) as V;
   }
 
+  tryRead<K, V>(pass: Pass<K, V>, key: K): V | undefined {
+    const inner = this.cells.get(pass as Pass<unknown, unknown>);
+    if (inner === undefined || !inner.has(key)) return undefined;
+    return inner.get(key) as V;
+  }
+
   has<K, V>(pass: Pass<K, V>, key: K): boolean {
     return this.cells.get(pass as Pass<unknown, unknown>)?.has(key) ?? false;
   }

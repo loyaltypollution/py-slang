@@ -1,7 +1,8 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import { readTypeFact, writeTypeFact } from "../framework/fact-accessors";
 import type { FactStore } from "../framework/fact-store";
+import { typeAnalysisPass } from "../framework/migrated-passes";
+import { runtimeWritePass } from "../framework/runtime-passes";
 import type { AnalysisPass } from "../framework/interfaces";
 import type { SlotLookup } from "../framework/slot-table";
 import {
@@ -67,9 +68,13 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   ) {}
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
-    if (this.tap) this.tap(node.id, val);
-    else writeTypeFact(this.factStore, node.id, val);
-    return val;
+    const observed = this.factStore.tryRead(runtimeWritePass, node.id);
+    const widened = observed !== undefined
+      ? join(val, liftType(observed) ?? BOTTOM)
+      : val;
+    if (this.tap) this.tap(node.id, widened);
+    else this.factStore.write(typeAnalysisPass, node.id, widened);
+    return widened;
   }
 
   visitLiteralExpr(expr: ExprNS.Literal): TypeLattice {
@@ -276,14 +281,6 @@ export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
     return new TypeAnalysisVisitor(factStore, env, slotLookup, tap);
   }
 
-  observeWrite(factStore: FactStore, id: number, rawValue: unknown): void {
-    const value = liftType(rawValue);
-    if (value === undefined) return;
-    // Widen (join) — observations add seen values, never narrow static facts.
-    const prev = readTypeFact(factStore, id);
-    const next = prev ? join(prev, value) : value;
-    writeTypeFact(factStore, id, next);
-  }
 }
 
 // CSE stack values are tagged objects with `.type` discriminator.

@@ -84,7 +84,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         // FunctionDef unit. Without this the coarse fallback (re-run on
         // previously-written keys) would never wake jitPass before its
         // first own write, breaking the priming order.
-        affectedKeys(_ctx, _triggerPass, _triggerKey) {
+        affectedKeys(_triggerPass, _triggerKey) {
           return Array.from(worklist.units.values());
         },
         transfer(_ctx: PassCtx, unit: FunctionUnit): number | undefined {
