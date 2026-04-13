@@ -88,12 +88,10 @@ export class SVMLInterpreter {
   private observationSink: RuntimeObservationSink = NULL_SINK;
 
   /**
-   * PR-5 fact-store observers — called alongside `observationSink` at
-   * STORE / CALL sites. `observeNodeWrite(nodeId, value)` feeds
-   * `runtimeWritePass`; `observeScopeCall(scopeId)` feeds
-   * `runtimeCallPass`. Defaults are no-ops; `PySvmlJitEvaluator` wires
-   * them to `worklist.observe(...)` calls. The legacy observationSink
-   * callback pair stays live alongside until PR-B inlines it.
+   * Runtime-observation hooks fed into the Db `runtimeWrite` / `runtimeCall`
+   * Inputs by `PySvmlJitEvaluator`. Called alongside `observationSink` at
+   * STORE / CALL sites. Defaults are no-ops so the interpreter runs without
+   * a Db attached.
    */
   private observeNodeWrite: (nodeId: number, value: unknown) => void = () => {};
   private observeScopeCall: (scopeId: number) => void = () => {};
@@ -795,7 +793,6 @@ export class SVMLInterpreter {
     const site = ir.observationSites.get(pc);
     if (!site || site.kind !== "write") return;
     this.observationSink.observeWrite(ir.scopeKey, site.node, value);
-    // PR-5: parallel write into runtimeWritePass. Legacy stays live.
     this.observeNodeWrite(site.node.id, value);
   }
 

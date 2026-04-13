@@ -335,3 +335,41 @@ not a regression vs status quo. The SCC engine is implementable and
 testable in isolation (see the deleted four tests for the spec); the
 hard part is integrating it with Kildall-grade DFA precision. That
 integration deserves a deliberate design pass, not a time-boxed spike.
+
+---
+
+## Round 2 Phase A — independent audit (HEAD = e2f1e26)
+
+Second overnight agent run. Audited round 1's self-report without trusting it.
+
+### Verified
+
+- **Test state: 36 suites / 2572 tests passing.** Exact match to round 1's claim. `yarn test` clean, 16s wall time.
+- **Deleted files.** All 15 paths in §"Files deleted" are absent from the tree. Three additional files were also deleted and correctly disclosed (`structural-pass.ts`, `view.ts`, `block-of-node.ts`).
+- **Query purity.** All 12 named queries (`typeOf`, `constOf`, `optimizedAstOf`, `astAfterDeadBranch`, `astAfterConstFold`, `astAfterMemoize`, `callCountOf`, `purityOf`, `shouldMemoize`, `cfgOf`, `typeBlockEnvs`, `constBlockEnvs`) exist under `src/specialization/runtime/queries/`, read only via `db.get`, and contain zero `.set(db, …)` calls inside their bodies. Grep confirmed.
+- **No resurrected primitives.** Zero live-code references to `FactStore`, `class Worklist`, `AnalysisPass<`, `affectedKeys`, `coarse: true`, `runtimeWritePass`. Surviving mentions are all in comments.
+
+### Findings to address
+
+1. **DECISIONS §end-of-run is stale.** The note "The Phase 5a fallback `db === undefined` in `svml-compiler.ts` is a deliberate staging shim; it goes away in 5b" refers to a shim that Phase 5b already removed (`e0f22a6 — drop factStore from SVMLCompiler`). The claim in the phase table that 5b/6 are done is correct; the §end-of-run note was written at Phase 5a time and never retracted. Doc-rot, not code-rot. Will clean as part of round 2.
+
+2. **Stale `runtimeWritePass` comments in interpreters.** `src/engines/svml/svml-interpreter.ts:93,798` and `src/engines/cse/interpreter.ts:844` reference a symbol that no longer exists. The code underneath correctly calls the new `observeNodeWrite` hook. Comments are misleading; will fix.
+
+3. **`optimizedAstOf` is an unnecessary pass-through.** `queries/lowering.ts` defines it as `defineQuery(..., (db, unit) => db.get(astAfterMemoize, unit))`. Creates an extra cell + dep edge for no semantic gain — `optimizedAstOf` could be `astAfterMemoize` itself (re-export or alias). Minor complexity; worth a cleanup commit during round 2 review pass.
+
+4. **`purityOf` scope walk is O(n) AST scan, uncached per cell.** `queries/scope.ts:73-96` re-walks the entire `FileInput` on every `purityOf(scopeId)` invocation to locate the matching `FunctionDef`. Correctness is fine; performance debt the plan didn't flag. On a program with N top-level functions, `purityOf` × N = O(N²) walks on a cold Db. A `functionDefByScope: Unit → Map<ScopeId, FunctionDef>` query would flatten this. Not blocking; noting for a future perf pass.
+
+5. **Partial coverage gaps vs. deleted suites.**
+   - `reactive-optimization.test.ts` tested while-loop const propagation convergence through the Worklist. `runtime/lowering.test.ts` tests the rewrite output (`x = 2 + 3` → literal 5, dead branch removal) but the while-loop DFA-fixpoint-under-const-propagation case isn't exercised end-to-end in the replacement suite. `runtime/const-of.test.ts` tests `constOf` individual projection; `runtime/block-envs.test.ts` tests Kildall convergence separately; the *composition* (const propagation through a back-edge-stable loop, surfacing in a fold) is not covered.
+   - `purity-analysis.test.ts` likely covered nested functions and lambdas; `runtime/scope-queries.test.ts` has only two purity cases (pure literal, impure `global`). No nested-function or lambda coverage.
+   - Not regressions (the underlying machinery is tested in isolation), but round 1's claim of full replacement is optimistic. Round 2 may add the missing composition tests if time permits after Phase D.
+
+### Not found
+
+- No live shim, no sanctioned-only fallback, no `// TODO: remove later` that masks an incomplete migration. The migration is actually complete at the symbol level.
+
+### Action items for round 2
+
+- Phase A-fix (this commit): remove stale comments in interpreters, fix `§end-of-run` note, collapse `optimizedAstOf` to a re-export (or leave with a brief note justifying the extra cell). Add coverage for while-loop const propagation and nested-function purity only if Phase D leaves time.
+- Proceed to Phase B.
+

@@ -841,7 +841,6 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
         const scopeKey = currentScopeKey(context);
         if (scopeKey) {
           context.runtime.observationSink.observeWrite(scopeKey, instr.srcNode.value, value);
-          // PR-5: parallel push into runtimeWritePass.
           context.runtime.observeNodeWrite?.(instr.srcNode.value.id, value);
         }
       }

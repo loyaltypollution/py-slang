@@ -78,15 +78,11 @@ export const astAfterMemoize: QueryHandle<
   },
 });
 
-// Consumer-facing alias. Keeps callers decoupled from which stage is the
-// terminal one — adding a further lowering stage only requires updating
-// this definition.
+// Consumer-facing alias for the terminal lowering stage. Re-exporting the
+// handle (rather than wrapping it in a new query) shares the underlying
+// cell with astAfterMemoize — no extra dep edge, no extra recompute.
+// Adding a further lowering stage only requires repointing this binding.
 export const optimizedAstOf: QueryHandle<
   number,
   StmtNS.FileInput | undefined
-> = defineQuery<number, StmtNS.FileInput | undefined>({
-  name: "optimizedAstOf",
-  lattice: astLattice,
-  serialize: String,
-  fn: (db, unitId) => db.get(astAfterMemoize, unitId),
-});
+> = astAfterMemoize;
