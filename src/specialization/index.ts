@@ -69,10 +69,10 @@ export {
   MEMOIZATION_THRESHOLD,
   CALL_COUNT_FIELD,
 } from "./memoization-analysis/call-count";
+export { PurityEffectAnalysis, PurityScopePass } from "./purity-analysis/analysis";
 export {
-  PurityEffectAnalysis,
   PURE_EFFECT_FIELD,
+  PURE_FIELD,
   type PureEffect,
-} from "./memoization-analysis/purity-effect";
-export { PurityScopePass, PURE_FIELD } from "./memoization-analysis/purity-summary";
+} from "./purity-analysis/lattice";
 export { memoLookup, memoPut, clearMemoCache, memoCacheSnapshot, MEMO_MISS } from "../runtime/memo";

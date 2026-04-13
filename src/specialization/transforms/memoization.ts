@@ -27,7 +27,7 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { ScopeTransformRule } from "../framework/interfaces";
 import type { FunctionUnit } from "../framework/function-unit";
 import { CALL_COUNT_FIELD, MEMOIZATION_THRESHOLD } from "../memoization-analysis/call-count";
-import { PURE_FIELD } from "../memoization-analysis/purity-summary";
+import { PURE_FIELD } from "../purity-analysis/lattice";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokens";
 
