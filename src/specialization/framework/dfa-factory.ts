@@ -12,6 +12,22 @@ import { latticeEquals, type BoundedLattice, type EdgeSpec, type Lattice, type P
  *  per-key via the value lattice, so the sentinel participates in the
  *  usual monotone propagation without a separate summary channel. */
 
+/** Edge projector: map a node-keyed upstream key to its containing block.
+ *  Exported so callers of `makeBlockFixpointPass` declare node-fact
+ *  upstreams via `addEdge(pass, {on:"fact", pass: upstream, wake: nodeIdToBlock})`
+ *  rather than a dedicated factory-level `reads` channel. Returns an empty
+ *  iterable when the key isn't a number or the node isn't indexed in any
+ *  unit's `blockOfNode`. */
+export const nodeIdToBlock = (
+  ctx: PassCtx,
+  key: unknown,
+): Iterable<BasicBlock> => {
+  if (typeof key !== "number") return [];
+  const u = ctx.unitForNode(key);
+  const block = u?.blockOfNode.get(key);
+  return block === undefined ? [] : [block];
+};
+
 /** Output fact for one block under an analysis pass. */
 export interface DfaBlockFact<L> {
   /** Slot-keyed OUT env for forward successor / backward predecessor merging. */
@@ -34,7 +50,6 @@ interface DfaConfigBase<L> {
   ) => DfaBlockFact<L>;
   /** Seed the entry (forward) / exit (backward) block's IN env. */
   readonly seedEnv: (unit: FunctionUnit) => MutableEnv<L>;
-  readonly reads: ReadonlyArray<Pass<any, any>>;
   /** Per-edge env refinement. See `BlockDfaSpec.refineOnEdge` for the contract.
    *  Mandatory so forgotten implementations surface at compile time; passes
    *  that don't narrow return `env` unchanged. */
@@ -164,28 +179,13 @@ export function makeBlockFixpointPass<L>(
     return env ?? config.seedEnv(unit);
   }
 
-  // NodeId-keyed upstream → containing block in this unit.
-  const nodeIdToBlock = (ctx: PassCtx, key: unknown): Iterable<BasicBlock> => {
-    if (typeof key !== "number") return [];
-    const u = ctx.unitForNode(key);
-    const block = u?.blockOfNode.get(key);
-    return block === undefined ? [] : [block];
-  };
-
-  // Config-supplied upstreams are node-fact sources (runtime observations,
-  // node-keyed analyses). Project each to its containing block.
-  const configEdges: EdgeSpec<BasicBlock>[] = config.reads.map(p => ({
-    on: "fact",
-    pass: p,
-    wake: nodeIdToBlock,
-  }));
-
   // `edges` is a live array passed to the pass; construct the pass first,
   // then push the self-edge referring to `blockKeyedPass` directly. Callers
-  // with cross-pass cycles (e.g. purity block ↔ scope) amend `edges`
-  // post-construction via `addEdge` for the same reason — the array stays
-  // unfrozen to make that safe.
-  const edgesArr: EdgeSpec<BasicBlock>[] = [...configEdges];
+  // that need node-keyed upstreams add them via `addEdge` after construction
+  // using the exported `nodeIdToBlock` projector. The array stays unfrozen
+  // to make both self-wake and post-hoc amendments (e.g. purity block ↔
+  // scope cycles) safe.
+  const edgesArr: EdgeSpec<BasicBlock>[] = [];
 
   const seedKey = (unit: FunctionUnit): BasicBlock =>
     config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;

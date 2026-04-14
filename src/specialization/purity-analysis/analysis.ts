@@ -410,7 +410,6 @@ export const purityBlockPass: Pass<
   direction: "forward",
   valueLattice: absValLattice,
   mergeKind: "may",
-  reads: [],
   seedEnv,
   transferBlock: (ctx, block, inEnv, unit) => {
     const state = new BlockState(inEnv, unit.slotLookup, selfNameOf(unit), ctx);
