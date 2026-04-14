@@ -38,15 +38,17 @@ interface DfaConfig<L, S = void> {
   /** Lattice for the per-block summary. Use `VOID_SUMMARY` for analyses that
    *  don't need one — it treats all values as equal and has `undefined` bottom. */
   readonly summaryLattice: Lattice<S>;
-  /** Pure: IN env + IN summary → OUT env + per-node exprFacts + OUT summary.
-   *  `inSummary` is the join of predecessor OUT summaries (or the lattice
-   *  bottom at the seeded block) — transfers that accumulate sticky state
-   *  should fold their local effects into it. No fact-store writes. */
+  /** Pure: IN env → OUT env + per-node exprFacts + per-block summary.
+   *  The summary is *local* to this block — it is not seeded from predecessor
+   *  OUT summaries. Consumers that want a whole-unit view (e.g. "any reachable
+   *  block impure?") aggregate across `unit.cfg.blocks` in their own pass.
+   *  For summaries that genuinely need flow-sensitivity, encode the relevant
+   *  state inside `L` where the env's slot-wise join handles it. No
+   *  fact-store writes. */
   readonly transferBlock: (
     ctx: PassCtx,
     block: BasicBlock,
     inEnv: MutableEnv<L>,
-    inSummary: S,
     unit: FunctionUnit,
   ) => DfaBlockFact<L, S>;
   /** Seed the entry (forward) / exit (backward) block's IN env. */
@@ -143,23 +145,15 @@ export function makeBlockFixpointPass<L, S = void>(
 
   const blockPassId = Symbol(`${config.debugName}:blocks`);
 
-  function inFactFor(
-    ctx: PassCtx,
-    block: BasicBlock,
-    unit: FunctionUnit,
-  ): { env: MutableEnv<L>; summary: S } {
+  function inEnvFor(ctx: PassCtx, block: BasicBlock, unit: FunctionUnit): MutableEnv<L> {
     const preds = config.direction === "forward" ? block.predecessors : block.successors;
-    if (preds.length === 0) {
-      return { env: config.seedEnv(unit), summary: config.summaryLattice.bottom };
-    }
+    if (preds.length === 0) return config.seedEnv(unit);
     let env: MutableEnv<L> | undefined;
-    let summary: S = config.summaryLattice.bottom;
     for (const pred of preds) {
       // `ctx.read` returns the (frozen) bottomFact for unwritten cells. We
       // always `snapshot()` before mutating — never touch the shared outEnv
       // directly.
-      const predFact = ctx.read(blockKeyedPass, pred);
-      const predOut = predFact.outEnv;
+      const predOut = ctx.read(blockKeyedPass, pred).outEnv;
       if (env === undefined) {
         env = predOut.snapshot();
       } else {
@@ -169,12 +163,8 @@ export function makeBlockFixpointPass<L, S = void>(
           env.joinWith(predOut, config.join);
         }
       }
-      summary = config.summaryLattice.join(summary, predFact.summary);
     }
-    return {
-      env: env ?? config.seedEnv(unit),
-      summary,
-    };
+    return env ?? config.seedEnv(unit);
   }
 
   // Self-reference appended below so block-OUT changes wake CFG-successors.
@@ -190,8 +180,8 @@ export function makeBlockFixpointPass<L, S = void>(
     coarse: false,
     transfer(ctx: PassCtx, block: BasicBlock): DfaBlockFact<L, S> | undefined {
       const unit = block.unit;
-      const { env, summary } = inFactFor(ctx, block, unit);
-      return config.transferBlock(ctx, block, env, summary, unit);
+      const inEnv = inEnvFor(ctx, block, unit);
+      return config.transferBlock(ctx, block, inEnv, unit);
     },
     affectedKeys(ctx, triggerPass, triggerKey) {
       // Self-wake: block OUT change → CFG successors recompute IN.

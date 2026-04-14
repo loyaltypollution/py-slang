@@ -25,8 +25,8 @@ function dfaPass<L>(
     summaryLattice: VOID_SUMMARY,
     reads: [runtimeWritePass],
     seedEnv: () => new MutableEnv<L>(),
-    transferBlock: (ctx, block, inEnv, inSummary, unit) =>
-      transferBlock(block, inEnv, inSummary, spec, ctx.factStore, unit.slotLookup),
+    transferBlock: (ctx, block, inEnv, unit) =>
+      transferBlock(block, inEnv, spec, ctx.factStore, unit.slotLookup),
   });
 }
 

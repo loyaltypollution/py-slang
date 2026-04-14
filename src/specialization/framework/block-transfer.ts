@@ -69,7 +69,6 @@ function transferStmt<L>(
 export function transferBlock<L>(
   block: BasicBlock,
   inEnv: MutableEnv<L>,
-  _inSummary: void,
   module: AnalysisPass<L>,
   factStore: FactStore,
   slotLookup: SlotLookup,

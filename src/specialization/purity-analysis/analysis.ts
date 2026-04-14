@@ -68,15 +68,12 @@ const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
 // impure flag. A single mutable holder lets the expression walker downgrade
 // slots at escape points without plumbing extra return channels.
 class BlockState {
-  impure: boolean;
+  impure = false;
   constructor(
     readonly env: MutableEnv<AbsVal>,
     readonly slotLookup: SlotLookup,
     readonly selfName: string | undefined,
-    inImpure: boolean,
-  ) {
-    this.impure = inImpure;
-  }
+  ) {}
 
   markImpure(): void {
     this.impure = true;
@@ -334,13 +331,8 @@ export const purityBlockPass: Pass<
   summaryLattice,
   reads: [],
   seedEnv,
-  transferBlock: (_ctx, block, inEnv, inSummary, unit) => {
-    const state = new BlockState(
-      inEnv,
-      unit.slotLookup,
-      selfNameOf(unit),
-      inSummary.impure,
-    );
+  transferBlock: (_ctx, block, inEnv, unit) => {
+    const state = new BlockState(inEnv, unit.slotLookup, selfNameOf(unit));
     for (const stmt of block.stmts) transferStmt(stmt, state);
     return {
       outEnv: state.env,
@@ -391,8 +383,18 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
     if (unit === undefined) return undefined;
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
-    const exitFact = ctx.tryRead(purityBlockPass, unit.cfg.exit);
-    if (exitFact === undefined) return undefined;
-    return !exitFact.summary.impure;
+    // Purity is a whole-function property: "does any reachable block have a
+    // local impure effect?" The block DFA only writes facts for reachable
+    // blocks (worklist walks CFG successors from entry), so OR'ing the
+    // summaries of all visited blocks is the right aggregation. If no block
+    // has been visited yet, defer until the inner pass has run.
+    let anyVisited = false;
+    for (const block of unit.cfg.blocks) {
+      const fact = ctx.tryRead(purityBlockPass, block);
+      if (fact === undefined) continue;
+      anyVisited = true;
+      if (fact.summary.impure) return false;
+    }
+    return anyVisited ? true : undefined;
   },
 };
