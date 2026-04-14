@@ -21,6 +21,11 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     private readonly recordExprFact: (nodeId: number, val: ConstLattice) => void,
   ) {}
 
+  /** Canonical block-DFA visitor pattern: widen `val` with any
+   *  `runtimeWritePass` observation on this node, then record the per-node
+   *  fact via the factory's `recordExprFact`. Every visitor method routes
+   *  through here; skipping it yields stale per-node facts. Parallels
+   *  `TypeAnalysisVisitor.annotate` in `../type-analysis/analysis.ts`. */
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
     const observed = this.factStore.tryRead(runtimeWritePass, node.id);
     let lifted: ConstLattice | undefined;

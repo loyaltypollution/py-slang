@@ -83,6 +83,11 @@ function rewriteReturns(
 // Replaces the old `firedLattice` cell that was kept sticky by having no
 // `prune`. Units are identified by reference; re-minted units (same AST
 // node, fresh FunctionUnit) fall outside the set and may be re-wrapped.
+// Constructed inline rather than via `unitSweepRule`: this rule needs an
+// instance-scoped WeakSet<FunctionUnit> to track already-wrapped units, and
+// `unitSweepRule` has no hook for that idempotency state. Dead-branch and
+// const-folding are naturally idempotent (the rewrite removes its own
+// precondition), so they use the helper; memoization can't.
 export const memoizationRule: TransformRule = (() => {
   const wrapped = new WeakSet<FunctionUnit>();
   return {
