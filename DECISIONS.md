@@ -754,3 +754,179 @@ RETROSPECTIVE.md finding on substrate fit.
 
 
 
+
+---
+
+## Round 4 Phase 9-A — evaluator surface + integration shim (architecture note)
+
+Two `feature-dev:code-architect` subagents ran in parallel — one on the
+evaluator's TypeScript surface, one on how it plugs behind the existing
+`typeBlockEnvs`/`constBlockEnvs` Salsa cells. Both converged on the same
+shape. Synthesis below.
+
+### Honest framing up front
+
+Under the plan's stated non-goals (monotone join only, single lattice,
+TypeScript closure transfer, no rule DSL, no negation), the "semi-naive
+Datalog evaluator" is **algorithmically identical to the existing Kildall
+worklist**. Bottom-init everywhere, leq-gated re-enqueue on predecessor
+change, same iteration cap. Calling the replacement "Datalog" is
+marketing at the level of the scoped non-goals — there are no rules, no
+atoms, no aggregation other than the per-slot lattice join the env map
+already does.
+
+What the Round 3 / round-4 path Y refactor actually buys, on this scope:
+
+1. **Module boundary.** A dedicated `src/specialization/runtime/datalog/`
+   home for the iteration engine, separate from the `kildall.ts` helper.
+   Makes future extensions (e.g. multi-lattice cross-analysis, true
+   delete-rederive incrementality) have an obvious landing zone.
+2. **`changedBlocks` return value.** The evaluator surfaces its
+   termination dirty-set to the caller. Today's `kildall` discards it.
+   This is the concrete enabler for 9-E (per-block invalidation
+   downstream) — without it, the Query cell can't know which blocks
+   actually moved.
+3. **Naming + comments that match published literature.** IncA / DRedL
+   precedent is real; the shape we land on is recognisably semi-naive
+   even if on this scope it collapses to Kildall. Future maintainers
+   reading the plan + DECISIONS can join the thread faster.
+
+Not buying, on this scope: different iteration complexity, different
+precision, different dep-tracking. 9-C/9-D are largely a rename + module
+move + wiring the `changedBlocks` pipe.
+
+### Chosen evaluator surface
+
+Single public function. Stateless. Returns `{ envs, changedBlocks }`
+where `envs` matches today's `kildall` return type exactly.
+
+```ts
+// src/specialization/runtime/datalog/semi-naive.ts
+
+import type { BasicBlock, BlockId, CFG } from "../../framework/cfg";
+import type { MutableEnv } from "../../framework/mutable-env";
+import type { Lattice } from "../lattice";
+
+export type BlockTransfer<L> = (
+  env: MutableEnv<L>,
+  block: BasicBlock,
+) => MutableEnv<L>;
+
+export interface SemiNaiveResult<L> {
+  readonly envs: ReadonlyMap<BlockId, MutableEnv<L>>;
+  readonly changedBlocks: ReadonlySet<BlockId>;
+}
+
+export function semiNaive<L>(
+  cfg: CFG,
+  lattice: Lattice<MutableEnv<L>>,
+  initial: MutableEnv<L>,
+  transferBlock: BlockTransfer<L>,
+  opts?: { iterationCap?: number },
+): SemiNaiveResult<L>;
+```
+
+Notes:
+- Keeps `kildall`'s existing "transfer is a closure; caller pre-binds
+  slotLookup + observations" contract. No parameter lifting. The tests
+  in `runtime/block-envs.test.ts` + all `transferBlockWithObservations`
+  call sites stay identical.
+- `changedBlocks` accumulates across the whole fixpoint loop, not just
+  the final pass. It's the set of every block whose OUT strictly
+  increased at least once during this run. Empty iff the call was a
+  no-op from the given initial state.
+
+### Eval loop (pseudocode; mirrors `kildall.ts` with minor differences)
+
+```
+function semiNaive(cfg, lattice, initial, transferBlock, opts):
+  outEnv = Map<BlockId, Env>
+  for block in cfg.blocks: outEnv[block.id] = lattice.bottom
+  // entry IN is `initial`; entry OUT still starts at bottom and is
+  // computed by the first transfer pass like every other block.
+
+  worklist = ordered set of all block ids (cfg declaration order)
+  changedBlocks = new Set
+  iters = 0
+  cap = opts?.iterationCap ?? 10000
+
+  while worklist is not empty:
+    if iters++ > cap: throw
+    blockId = worklist.shift(); block = cfg.blockById(blockId)
+
+    if block === cfg.entry:
+      inEnv = initial
+    else:
+      inEnv = lattice.bottom
+      for pred in block.predecessors:
+        inEnv = lattice.join(inEnv, outEnv[pred.id])
+
+    newOut = transferBlock(inEnv, block)
+    if not lattice.equals(outEnv[blockId], newOut):
+      outEnv[blockId] = newOut
+      changedBlocks.add(blockId)
+      for succ in block.successors:
+        if succ.id not in worklist: worklist.add(succ.id)
+
+  return { envs: outEnv, changedBlocks }
+```
+
+Structural differences vs `kildall.ts`:
+- Tracks `changedBlocks` across the whole run.
+- No other semantic differences.
+
+### Why this resolves Phase 8's DFS-bottom trap
+
+Phase 8's per-block `cycle_fn` cells were *demand-driven*: mid-recursion
+a cell would return its provisional `bottom` to satisfy a recursive
+`db.get` call, and the pessimistic transfer over empty env widened to
+TOP. The semi-naive loop structurally cannot reproduce that: every
+`outEnv[b]` is initialized to `lattice.bottom` before the first
+`transferBlock` call, so every predecessor read during any iteration
+returns a value monotonically ≥ bottom. The loop is the same Kildall
+worklist that `kildall.ts` already ships — Phase 8's bug was never in
+the iteration strategy; it was in letting `cycle_fn` run pure cells
+with provisional reads instead of bottom-initialized stored values.
+
+### Integration shim (Phase 9-C/9-D)
+
+- Cell keys stay `unitId`-level. Returned shape stays
+  `ReadonlyMap<BlockId, MutableEnv<L>>` (destructure `envs` from the
+  evaluator result and discard `changedBlocks` for 9-C/9-D). This is a
+  one-line swap at each call site in `block-envs.ts`.
+- Dep edges unchanged: `astOf(unit)`, `cfgOf(unit)` (transitively), and
+  one `runtimeWrite.get` per node in the CFG via `gatherObservations`.
+- Stateless: no state persists across `db.get` calls; the dirty-set
+  lives only within one invocation.
+- `kildall.ts` gets deleted in 9-D after both queries are migrated.
+
+### 9-E hook (scouting note only)
+
+Per-block invalidation (plan §"Phase 9 success criteria" item 2) is not
+deliverable by swapping `kildall` for `semiNaive` alone. The Salsa cell
+is still keyed at unit level; any read of `runtimeWriteInput(n)` for
+any `n` in the unit reds the whole cell. `changedBlocks` is the input
+the Query layer would need to *expose* per-block invalidation — but
+doing so requires either (a) splitting the cell into per-block cells
+(which re-opens Phase 8's question 4 — never-read blocks' dep
+recording), or (b) a new Db primitive that lets a cell selectively
+red its dependents based on a per-block predicate.
+
+Neither is small. Flagged for 9-E:
+- Recommended path for 9-E: option (a) with the evaluator's
+  `changedBlocks` driving a prewarm-with-deps pass that registers
+  `runtimeWrite` edges even for never-read blocks (precisely the gap
+  question 4 names). Research-adjacent but the evaluator's dirty-set
+  gives us the signal question 4 was asking for.
+- If (a) blocks on the same reason Phase 8 did, stop at 9-D with a
+  documented gap and the refactor is still a net win: module boundary,
+  change-signal surfaced, Kildall-precision preserved.
+
+### What to ship in 9-B
+
+- `src/specialization/runtime/datalog/semi-naive.ts` — the evaluator
+  as specified above.
+- `src/specialization/runtime/datalog/semi-naive.test.ts` — unit
+  tests for: monotone join convergence, idempotence, change-propagation,
+  bottom-init discipline, iteration-cap throw. No integration yet.
+
