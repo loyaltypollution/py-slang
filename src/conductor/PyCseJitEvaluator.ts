@@ -1,6 +1,7 @@
 import { ErrorType } from "@sourceacademy/conductor/common";
 import { BasicEvaluator, IRunnerPlugin } from "@sourceacademy/conductor/runner";
-import { Context } from "../engines/cse/context";
+import { StmtNS } from "../ast-types";
+import { Context, NULL_SINK } from "../engines/cse/context";
 import { evaluate } from "../engines/cse/interpreter";
 import {
   createErrorStream,
@@ -10,7 +11,16 @@ import {
   displayError,
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
-import { analyze } from "../resolver/analysis";
+import { analyzeWithEnvironments } from "../resolver";
+import {
+  Db,
+  astOf,
+  environmentsOf,
+  runtimeCall,
+  runtimeWrite,
+  shouldMemoize,
+} from "../specialization/runtime";
+import { applyMemoizeInPlace } from "../specialization/transforms/mutate-memoize";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import pairmutator from "../stdlib/pairmutator";
@@ -23,8 +33,9 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
   return () => (promise ??= fn());
 }
 
-abstract class PyCseEvaluatorBase extends BasicEvaluator {
+abstract class PyCseJitEvaluatorBase extends BasicEvaluator {
   private context = new Context();
+  protected db: Db = new Db();
   private readonly variant: number;
   private readonly groups: Group[];
   private readonly ensurePreludesLoaded: () => Promise<void>;
@@ -67,7 +78,14 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
 
       const script = chunk + "\n";
       const ast = parse(script);
-      const errors = analyze(ast, script, this.variant, this.groups);
+      this.db = new Db();
+      astOf.set(this.db, 0, ast);
+      const { errors, environments } = analyzeWithEnvironments(
+        ast,
+        script,
+        this.variant,
+        this.groups,
+      );
 
       if (errors.length > 0) {
         for (const error of errors.slice(0, -1)) {
@@ -76,10 +94,49 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         throw errors[errors.length - 1];
       }
 
-      await evaluate("", ast, this.context, {
-        variant: this.variant,
-        groups: this.groups,
-      });
+      environmentsOf.set(this.db, 0, environments);
+
+      // scopeId → FunctionDef lookup for tier-up. Rebuilt per chunk since
+      // env identities are chunk-scoped. Lambda/MultiLambda are skipped:
+      // memoize only wraps FunctionDef (see mutate-memoize.ts).
+      const fdByScope = new Map<number, StmtNS.FunctionDef>();
+      for (const key of environments.keys()) {
+        if (key instanceof StmtNS.FunctionDef) fdByScope.set(key.id, key);
+      }
+      const memoized = new WeakSet<StmtNS.FunctionDef>();
+
+      this.context.runtime.rootScope = ast;
+      const callCounts = new Map<number, number>();
+      const db = this.db;
+      this.context.runtime.observeNodeWrite = (nodeId, value) => {
+        runtimeWrite.set(db, nodeId, value);
+      };
+      this.context.runtime.observeScopeCall = (scopeId) => {
+        const next = (callCounts.get(scopeId) ?? 0) + 1;
+        callCounts.set(scopeId, next);
+        runtimeCall.set(db, scopeId, next);
+
+        // Tier-up: if the call-count / purity facts now say this scope
+        // should memoize, wrap its body in place. Safe mid-run because
+        // CSE re-reads `fd.body` at every call-entry (LBD contract,
+        // src/engines/cse/interpreter.ts:1105). `applyMemoizeInPlace`
+        // is idempotent via the `memoized` WeakSet.
+        const fd = fdByScope.get(scopeId);
+        if (fd !== undefined && !memoized.has(fd) && db.get(shouldMemoize, scopeId)) {
+          applyMemoizeInPlace(fd, memoized);
+        }
+      };
+
+      try {
+        await evaluate("", ast, this.context, {
+          variant: this.variant,
+          groups: this.groups,
+        });
+      } finally {
+        this.context.runtime.observationSink = NULL_SINK;
+        this.context.runtime.observeNodeWrite = undefined;
+        this.context.runtime.observeScopeCall = undefined;
+      }
     } catch (e) {
       if (e instanceof SyntaxError) {
         await displayError(this.context, e, ErrorType.EVALUATOR_SYNTAX);
@@ -92,25 +149,25 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
   }
 }
 
-export class PyCseEvaluator1 extends PyCseEvaluatorBase {
+export class PyCseJitEvaluator1 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
     super(conductor, 1, []);
   }
 }
 
-export class PyCseEvaluator2 extends PyCseEvaluatorBase {
+export class PyCseJitEvaluator2 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
     super(conductor, 2, [linkedList]);
   }
 }
 
-export class PyCseEvaluator3 extends PyCseEvaluatorBase {
+export class PyCseJitEvaluator3 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
     super(conductor, 3, [linkedList, list, pairmutator, stream]);
   }
 }
 
-export class PyCseEvaluator4 extends PyCseEvaluatorBase {
+export class PyCseJitEvaluator4 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
     super(conductor, 4, [linkedList, list, pairmutator, stream, parser]);
   }
