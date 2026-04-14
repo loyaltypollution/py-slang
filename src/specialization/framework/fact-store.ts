@@ -1,4 +1,4 @@
-import { latticeEquals, type Pass } from "./pass";
+import type { Pass } from "./pass";
 
 /** Fired on value-changing `(pass, key)` writes. `oldValue` is `undefined` if the cell was empty. */
 export interface FactChange<K, V> {
@@ -57,11 +57,13 @@ export class FactStore {
     // Fast path: if `value ⊑ prev`, the join is `prev` and no cell advance can
     // happen. Skips allocating a join result for the common monotone-no-op
     // case (e.g. re-transfer producing the same fact). Correct under the
-    // lattice contract: `leq(v, prev) ⇒ join(prev, v) = prev`.
+    // lattice contract: `leq(v, prev) ⇒ join(prev, v) = prev`. Under a
+    // well-formed monotone lattice this also subsumes the old
+    // `latticeEquals(prev, joined)` check: if `leq(value, prev)` returned
+    // false then `join(prev, value) ⊐ prev`, so the extra equals call was
+    // always false on the post-fast-path branch.
     if (hadPrev && pass.lattice.leq(value, prev as V)) return false;
     const joined = hadPrev ? pass.lattice.join(prev as V, value) : value;
-
-    if (hadPrev && latticeEquals(pass.lattice, prev as V, joined)) return false;
 
     inner.set(key, joined);
     const change: FactChange<K, V> = {
