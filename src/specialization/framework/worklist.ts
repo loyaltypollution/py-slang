@@ -24,6 +24,15 @@ import { constantFoldingRule } from "../transforms/constant-folding";
 import { deadBranchRule } from "../transforms/dead-branch";
 import { memoizationRule } from "../transforms/memoization";
 import { typeAnalysisPass, constAnalysisPass } from "./dfa-passes";
+import { readExprFact } from "./dfa-factory";
+import type { TypeLattice } from "../type-analysis/lattice";
+import type { ConstLattice } from "../const-analysis/lattice";
+
+/** Per-node read-only projection of the DFA fact-store. */
+export interface DfaQuery {
+  typeOf(nodeId: number): TypeLattice | undefined;
+  constOf(nodeId: number): ConstLattice | undefined;
+}
 
 type QItem = { pass: Pass<any, any>; key: unknown; seq: number };
 
@@ -175,6 +184,23 @@ export class Worklist {
 
   get nodeIndex(): ReadonlyMap<number, FunctionUnit> {
     return this.nodeToUnit;
+  }
+
+  /** Memoized read-only projection of the DFA fact-store. Built once on
+   *  first access; the closure captures `this.factStore` and `this.nodeToUnit`
+   *  by reference so later cell writes and index rebuilds are reflected
+   *  without invalidation. Replaces the per-compile `makeDfaQuery(worklist.factStore, worklist.nodeIndex)`
+   *  construction at conductor/test call sites. */
+  private _dfaQuery: DfaQuery | undefined;
+  get dfaQuery(): DfaQuery {
+    if (this._dfaQuery === undefined) {
+      const blockFor = (id: number) => this.nodeToUnit.get(id)?.blockOfNode.get(id);
+      this._dfaQuery = {
+        typeOf: id => readExprFact(this.factStore, typeAnalysisPass, blockFor(id), id),
+        constOf: id => readExprFact(this.factStore, constAnalysisPass, blockFor(id), id),
+      };
+    }
+    return this._dfaQuery;
   }
 
   /** Subscribe `fn` to writes against `upstream`. Called via `register` /
