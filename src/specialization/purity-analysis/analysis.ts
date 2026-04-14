@@ -476,6 +476,15 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
         return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
       },
     },
+    {
+      on: "retire",
+      effect: (ctx, unit) => {
+        const fd = unit.funcAst;
+        if (fd instanceof StmtNS.FunctionDef) {
+          ctx.factStore.evict(purityScopePass, fd.id);
+        }
+      },
+    },
   ],
   tier: "analysis",
   transfer(ctx: PassCtx, fdId: number): boolean | undefined {

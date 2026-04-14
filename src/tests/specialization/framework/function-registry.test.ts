@@ -172,6 +172,43 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
     expect(() => worklist.registry.slotOf(g.id)).toThrow(/not registered/);
   });
 
+  it("retire evicts fact-store cells for number-keyed passes", async () => {
+    const { runtimeWritePass, runtimeCallPass } = await import(
+      "../../../specialization/framework/runtime-passes"
+    );
+    const { callCountPass } = await import(
+      "../../../specialization/memoization-analysis/call-count"
+    );
+    const { purityScopePass } = await import(
+      "../../../specialization/purity-analysis/analysis"
+    );
+    const { ast, worklist } = build(
+      ["def f():", "    return 1", "def g():", "    x = 2", "    return x"].join("\n"),
+      [runtimeWritePass, runtimeCallPass, callCountPass, purityScopePass],
+    );
+    const g = ast.statements[1] as StmtNS.FunctionDef;
+    const gUnit = worklist.units.get(g)!;
+
+    // Seed cells for g's fdId and one of g's node ids.
+    const someNodeId = gUnit.blockOfNode.keys().next().value as number;
+    worklist.factStore.write(runtimeWritePass, someNodeId, { kind: "number", value: 7 });
+    worklist.factStore.write(runtimeCallPass, g.id, 3);
+    worklist.factStore.write(callCountPass, g.id, 3);
+    worklist.factStore.write(purityScopePass, g.id, true);
+
+    expect(worklist.factStore.tryRead(runtimeWritePass, someNodeId)).toBeDefined();
+    expect(worklist.factStore.tryRead(runtimeCallPass, g.id)).toBeDefined();
+    expect(worklist.factStore.tryRead(callCountPass, g.id)).toBeDefined();
+    expect(worklist.factStore.tryRead(purityScopePass, g.id)).toBeDefined();
+
+    worklist.registry.retire(g.id);
+
+    expect(worklist.factStore.tryRead(runtimeWritePass, someNodeId)).toBeUndefined();
+    expect(worklist.factStore.tryRead(runtimeCallPass, g.id)).toBeUndefined();
+    expect(worklist.factStore.tryRead(callCountPass, g.id)).toBeUndefined();
+    expect(worklist.factStore.tryRead(purityScopePass, g.id)).toBeUndefined();
+  });
+
   it("mint after retire re-materializes a unit and fires onUnitMinted again", () => {
     const obs = makeLifecycleObserver();
     const { ast, worklist } = build(

@@ -1,5 +1,6 @@
 // Call-count gate for memoization; saturating fold over runtimeCallPass writes.
 
+import { StmtNS } from "../../ast-types";
 import type { Pass, PassCtx } from "../framework/pass";
 import { runtimeCallPass, RUNTIME_CALL_COUNT_SAT, saturatingCountLattice } from "../framework/runtime-passes";
 
@@ -12,6 +13,15 @@ export const callCountPass: Pass<number, number> = {
   lattice: saturatingCountLattice,
   edges: [
     { on: "fact", pass: runtimeCallPass, wake: (_ctx, key) => [key as number] },
+    {
+      on: "retire",
+      effect: (ctx, unit) => {
+        const fd = unit.funcAst;
+        if (fd instanceof StmtNS.FunctionDef) {
+          ctx.factStore.evict(callCountPass, fd.id);
+        }
+      },
+    },
   ],
   tier: "analysis",
   transfer(ctx: PassCtx, key: number): number | undefined {

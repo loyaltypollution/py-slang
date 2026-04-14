@@ -134,12 +134,12 @@ export class Worklist {
     this._units.delete(node as StmtNS.FileInput | StmtNS.FunctionDef);
     this.pendingRebuilds.delete(unit);
     for (const s of this.transformDirty.values()) s.delete(unit);
-    // Unit-keyed passes: the blanket evict below drops the cell. Block-keyed
-    // DFA passes attach their own `{ on: "retire", effect }` via
-    // `makeBlockFixpointPass` and are handled by `fireLifecycle`.
-    // TODO: number-keyed passes (runtimeCall/Write, callCount, purityScope)
-    // leak cells for retired fdIds — they declare no retire edge, and the
-    // blanket evict below silently no-ops against their keyspace.
+    // Unit-keyed passes (e.g. makeJitPass): the blanket evict drops the cell.
+    // Harmless no-op for other keyspaces — Map.delete on a missing key is
+    // cheap. Block-keyed DFA passes attach their own `{on:"retire", effect}`
+    // via `makeBlockFixpointPass`; number-keyed passes (runtimeCall/Write,
+    // callCount, purityScope) now declare explicit retire edges that iterate
+    // their keyspace. Both kinds fire via `fireLifecycle("retire", ...)` below.
     for (const p of this.registeredPasses) {
       this.factStore.evict(p, unit);
     }

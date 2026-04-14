@@ -1,5 +1,6 @@
 // Runtime observation passes. Written via `Worklist.observe`; tier "runtime".
 
+import { StmtNS } from "../../ast-types";
 import type { FactStore } from "./fact-store";
 import type { Lattice, Pass, PassCtx } from "./pass";
 import { classifyRawValue, type RawKind } from "./raw-value";
@@ -41,7 +42,16 @@ export const runtimeWritePass: Pass<number, RawKind> = {
   id: Symbol("runtimeWritePass"),
   debugName: "runtimeWritePass",
   lattice: rawValueLattice,
-  edges: [],
+  edges: [
+    {
+      on: "retire",
+      effect: (ctx, unit) => {
+        for (const nodeId of unit.blockOfNode.keys()) {
+          ctx.factStore.evict(runtimeWritePass, nodeId);
+        }
+      },
+    },
+  ],
   tier: "runtime",
   transfer(_ctx: PassCtx, _key: number): RawKind | undefined {
     return undefined;
@@ -81,7 +91,17 @@ export const runtimeCallPass: Pass<number, number> = {
   id: Symbol("runtimeCallPass"),
   debugName: "runtimeCallPass",
   lattice: saturatingCountLattice,
-  edges: [],
+  edges: [
+    {
+      on: "retire",
+      effect: (ctx, unit) => {
+        const fd = unit.funcAst;
+        if (fd instanceof StmtNS.FunctionDef) {
+          ctx.factStore.evict(runtimeCallPass, fd.id);
+        }
+      },
+    },
+  ],
   tier: "runtime",
   transfer(_ctx: PassCtx, _key: number): number | undefined {
     return undefined;
