@@ -24,7 +24,7 @@ function buildUnit(code: string) {
   const ast = parse(script) as StmtNS.FileInput;
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const reactive = buildTestWorklist(ast, environments);
-  reactive.converge();
+  reactive.drain();
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
@@ -103,7 +103,7 @@ f()
     };
     worklist.register(jitPass);
     worklist.enqueue(jitPass, unit);
-    worklist.drainPasses();
+    worklist.drain();
     expect(patchCalls).toBe(0);
 
     for (let i = 1; i <= MEMOIZATION_THRESHOLD * 3; i++) {
@@ -172,7 +172,7 @@ g()
     };
     reactive.register(jitPass);
     await interpreter.execute();
-    reactive.tick();
+    reactive.drain();
 
     for (const [index] of patchSpy.mock.calls) {
       expect(index).toBe(compiler.indexOf(gDef));
@@ -260,7 +260,7 @@ f(1)
 
     const enqueue = () => {
       reactive.enqueue(jitPass, unit);
-      reactive.drainPasses();
+      reactive.drain();
     };
     return {
       worklist: reactive,

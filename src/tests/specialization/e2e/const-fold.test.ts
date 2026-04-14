@@ -62,7 +62,7 @@ describe("const fold: factStore carries constVal", () => {
     const ast = parse(script) as StmtNS.FileInput;
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const reactive = buildTestWorklist(ast, environments);
-    reactive.converge();
+    reactive.drain();
     return { ast, factStore: reactive.factStore };
   }
 

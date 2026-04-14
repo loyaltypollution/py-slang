@@ -18,31 +18,34 @@ import {
   notBoolRef,
 } from "../../../specialization/type-analysis/transfer";
 import {
-  positiveInteger,
-  negativeInteger,
-  zeroInteger,
-  trueValue,
-  falseValue,
-  positiveFloat,
-  negativeFloat,
-  zeroFloat,
-  complexValue,
-  stringValue,
+  INT_POS,
+  INT_NEG,
+  INT_ZERO,
+  BOOL_TRUE,
+  BOOL_FALSE,
+  FLOAT_POS,
+  FLOAT_NEG,
+  FLOAT_ZERO,
+  COMPLEX,
+  STRING,
   TOP,
   IntRef,
   BoolRef,
-} from "../../../specialization";
-import { INT_BIT, BOOL_BIT, FLOAT_BIT, COMPLEX_BIT } from "../../../specialization";
+  INT_BIT,
+  BOOL_BIT,
+  FLOAT_BIT,
+  COMPLEX_BIT,
+} from "../../../specialization/type-analysis/lattice";
 
 describe("transferBinaryOp", () => {
   test("pos + pos = pos", () => {
-    const result = transferBinaryOp("+", positiveInteger(), positiveInteger());
+    const result = transferBinaryOp("+", INT_POS, INT_POS);
     expect(result.kinds).toBe(INT_BIT);
     expect(result.intRef).toBe(IntRef.Pos);
   });
 
   test("pos + neg = int (top refinement)", () => {
-    const result = transferBinaryOp("+", positiveInteger(), negativeInteger());
+    const result = transferBinaryOp("+", INT_POS, INT_NEG);
     expect(result.kinds).toBe(INT_BIT);
     expect(result.intRef).toBe(IntRef.Top);
   });
@@ -55,13 +58,13 @@ describe("transferBinaryOp", () => {
 
 describe("transferCompare", () => {
   test("pos > zero = true", () => {
-    const result = transferCompare(">", positiveInteger(), zeroInteger());
+    const result = transferCompare(">", INT_POS, INT_ZERO);
     expect(result.kinds).toBe(BOOL_BIT);
     expect(result.boolRef).toBe(BoolRef.True);
   });
 
   test("pos > pos = bool (unknown)", () => {
-    const result = transferCompare(">", positiveInteger(), positiveInteger());
+    const result = transferCompare(">", INT_POS, INT_POS);
     expect(result.kinds).toBe(BOOL_BIT);
     expect(result.boolRef).toBe(BoolRef.Top);
   });
@@ -69,24 +72,24 @@ describe("transferCompare", () => {
 
 describe("transferNot", () => {
   test("not True = False", () => {
-    const result = transferNot(trueValue());
+    const result = transferNot(BOOL_TRUE);
     expect(result.boolRef).toBe(BoolRef.False);
   });
 
   test("not False = True", () => {
-    const result = transferNot(falseValue());
+    const result = transferNot(BOOL_FALSE);
     expect(result.boolRef).toBe(BoolRef.True);
   });
 });
 
 describe("transferUnaryNeg", () => {
   test("-pos = neg", () => {
-    const result = transferUnaryNeg(positiveInteger());
+    const result = transferUnaryNeg(INT_POS);
     expect(result.intRef).toBe(IntRef.Neg);
   });
 
   test("-zero = zero", () => {
-    const result = transferUnaryNeg(zeroInteger());
+    const result = transferUnaryNeg(INT_ZERO);
     expect(result.intRef).toBe(IntRef.Zero);
   });
 });
@@ -250,85 +253,85 @@ describe("Comparison edge cases", () => {
 
 describe("transferBinaryOp with floats", () => {
   test("float + float = float (sign top)", () => {
-    const result = transferBinaryOp("+", positiveFloat(), negativeFloat());
+    const result = transferBinaryOp("+", FLOAT_POS, FLOAT_NEG);
     expect(result.kinds).toBe(FLOAT_BIT);
     expect(result.floatRef).toBe(IntRef.Top);
   });
 
   test("posFloat + posFloat = posFloat", () => {
-    const result = transferBinaryOp("+", positiveFloat(), positiveFloat());
+    const result = transferBinaryOp("+", FLOAT_POS, FLOAT_POS);
     expect(result.kinds).toBe(FLOAT_BIT);
     expect(result.floatRef).toBe(IntRef.Pos);
   });
 
   test("int + float = float (per spec: promotion)", () => {
-    const result = transferBinaryOp("+", positiveInteger(), positiveFloat());
+    const result = transferBinaryOp("+", INT_POS, FLOAT_POS);
     expect(result.kinds).toBe(FLOAT_BIT);
   });
 
   test("float / float = float", () => {
-    const result = transferBinaryOp("/", positiveFloat(), positiveFloat());
+    const result = transferBinaryOp("/", FLOAT_POS, FLOAT_POS);
     expect(result.kinds).toBe(FLOAT_BIT);
   });
 
   test("int / int = float (per spec: true division)", () => {
-    const result = transferBinaryOp("/", positiveInteger(), positiveInteger());
+    const result = transferBinaryOp("/", INT_POS, INT_POS);
     expect(result.kinds).toBe(FLOAT_BIT);
   });
 });
 
 describe("transferBinaryOp with complex", () => {
   test("complex + anything numeric = complex", () => {
-    const result = transferBinaryOp("+", complexValue(), positiveInteger());
+    const result = transferBinaryOp("+", COMPLEX, INT_POS);
     expect(result.kinds).toBe(COMPLEX_BIT);
   });
 
   test("int + complex = complex", () => {
-    const result = transferBinaryOp("+", positiveInteger(), complexValue());
+    const result = transferBinaryOp("+", INT_POS, COMPLEX);
     expect(result.kinds).toBe(COMPLEX_BIT);
   });
 
   test("float + complex = complex", () => {
-    const result = transferBinaryOp("+", positiveFloat(), complexValue());
+    const result = transferBinaryOp("+", FLOAT_POS, COMPLEX);
     expect(result.kinds).toBe(COMPLEX_BIT);
   });
 
   test("complex // int = TOP (not valid per spec)", () => {
-    const result = transferBinaryOp("//", complexValue(), positiveInteger());
+    const result = transferBinaryOp("//", COMPLEX, INT_POS);
     expect(result).toBe(TOP);
   });
 
   test("complex % int = TOP (not valid per spec)", () => {
-    const result = transferBinaryOp("%", complexValue(), positiveInteger());
+    const result = transferBinaryOp("%", COMPLEX, INT_POS);
     expect(result).toBe(TOP);
   });
 
   test("complex + string = TOP (non-numeric)", () => {
-    const result = transferBinaryOp("+", complexValue(), stringValue());
+    const result = transferBinaryOp("+", COMPLEX, STRING);
     expect(result).toBe(TOP);
   });
 });
 
 describe("transferCompare with floats", () => {
   test("posFloat > zeroFloat = true", () => {
-    const result = transferCompare(">", positiveFloat(), zeroFloat());
+    const result = transferCompare(">", FLOAT_POS, FLOAT_ZERO);
     expect(result.boolRef).toBe(BoolRef.True);
   });
 
   test("posInt > posFloat = top (both positive, could be either)", () => {
-    const result = transferCompare(">", positiveInteger(), positiveFloat());
+    const result = transferCompare(">", INT_POS, FLOAT_POS);
     expect(result.kinds).toBe(BOOL_BIT);
     expect(result.boolRef).toBe(BoolRef.Top);
   });
 
   test("posInt > zeroFloat = true (mixed int/float sign analysis)", () => {
-    const result = transferCompare(">", positiveInteger(), zeroFloat());
+    const result = transferCompare(">", INT_POS, FLOAT_ZERO);
     expect(result.kinds).toBe(BOOL_BIT);
     expect(result.boolRef).toBe(BoolRef.True);
   });
 
   test("posInt == negFloat = false (mixed int/float sign analysis)", () => {
-    const result = transferCompare("==", positiveInteger(), negativeFloat());
+    const result = transferCompare("==", INT_POS, FLOAT_NEG);
     expect(result.kinds).toBe(BOOL_BIT);
     expect(result.boolRef).toBe(BoolRef.False);
   });
@@ -336,7 +339,7 @@ describe("transferCompare with floats", () => {
 
 describe("transferUnaryNeg with float", () => {
   test("-posFloat = negFloat", () => {
-    const result = transferUnaryNeg(positiveFloat());
+    const result = transferUnaryNeg(FLOAT_POS);
     expect(result.kinds).toBe(FLOAT_BIT);
     expect(result.floatRef).toBe(IntRef.Neg);
   });

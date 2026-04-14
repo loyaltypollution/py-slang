@@ -36,50 +36,42 @@ export interface TypeLattice {
   readonly floatRef: IntRef; // reuses IntRef enum for sign refinement
 }
 
-export function joinIntRef(a: IntRef, b: IntRef): IntRef {
-  return a | b;
+// IntRef/BoolRef are bit-subset lattices: join=OR, meet=AND, leq=subset.
+// All three operations are bitwise and type-agnostic over the const enums.
+function joinBits<T extends number>(a: T, b: T): T {
+  return (a | b) as T;
 }
-export function meetIntRef(a: IntRef, b: IntRef): IntRef {
-  return a & b;
+function meetBits<T extends number>(a: T, b: T): T {
+  return (a & b) as T;
 }
-export function leqIntRef(a: IntRef, b: IntRef): boolean {
-  return (a & b) === a;
-}
-
-export function joinBoolRef(a: BoolRef, b: BoolRef): BoolRef {
-  return a | b;
-}
-export function meetBoolRef(a: BoolRef, b: BoolRef): BoolRef {
-  return a & b;
-}
-export function leqBoolRef(a: BoolRef, b: BoolRef): boolean {
+function leqBits<T extends number>(a: T, b: T): boolean {
   return (a & b) === a;
 }
 
 export function join(a: TypeLattice, b: TypeLattice): TypeLattice {
   if (a === b) return a;
   const kinds = a.kinds | b.kinds;
-  const intRef = kinds & INT_BIT ? joinIntRef(a.intRef, b.intRef) : (0 as IntRef);
-  const boolRef = kinds & BOOL_BIT ? joinBoolRef(a.boolRef, b.boolRef) : (0 as BoolRef);
-  const floatRef = kinds & FLOAT_BIT ? joinIntRef(a.floatRef, b.floatRef) : (0 as IntRef);
+  const intRef = kinds & INT_BIT ? joinBits(a.intRef, b.intRef) : (0 as IntRef);
+  const boolRef = kinds & BOOL_BIT ? joinBits(a.boolRef, b.boolRef) : (0 as BoolRef);
+  const floatRef = kinds & FLOAT_BIT ? joinBits(a.floatRef, b.floatRef) : (0 as IntRef);
   return { kinds, intRef, boolRef, floatRef };
 }
 
 export function meet(a: TypeLattice, b: TypeLattice): TypeLattice {
   if (a === b) return a;
   const kinds = a.kinds & b.kinds;
-  const intRef = kinds & INT_BIT ? meetIntRef(a.intRef, b.intRef) : (0 as IntRef);
-  const boolRef = kinds & BOOL_BIT ? meetBoolRef(a.boolRef, b.boolRef) : (0 as BoolRef);
-  const floatRef = kinds & FLOAT_BIT ? meetIntRef(a.floatRef, b.floatRef) : (0 as IntRef);
+  const intRef = kinds & INT_BIT ? meetBits(a.intRef, b.intRef) : (0 as IntRef);
+  const boolRef = kinds & BOOL_BIT ? meetBits(a.boolRef, b.boolRef) : (0 as BoolRef);
+  const floatRef = kinds & FLOAT_BIT ? meetBits(a.floatRef, b.floatRef) : (0 as IntRef);
   return { kinds, intRef, boolRef, floatRef };
 }
 
 export function leq(a: TypeLattice, b: TypeLattice): boolean {
   if (a === b) return true;
   if ((a.kinds & ~b.kinds) !== 0) return false;
-  if (a.kinds & INT_BIT && !leqIntRef(a.intRef, b.intRef)) return false;
-  if (a.kinds & BOOL_BIT && !leqBoolRef(a.boolRef, b.boolRef)) return false;
-  if (a.kinds & FLOAT_BIT && !leqIntRef(a.floatRef, b.floatRef)) return false;
+  if (a.kinds & INT_BIT && !leqBits(a.intRef, b.intRef)) return false;
+  if (a.kinds & BOOL_BIT && !leqBits(a.boolRef, b.boolRef)) return false;
+  if (a.kinds & FLOAT_BIT && !leqBits(a.floatRef, b.floatRef)) return false;
   return true;
 }
 
@@ -114,60 +106,34 @@ export const TOP: TypeLattice = makeSingleton(
   7 as IntRef,
 );
 export const BOTTOM: TypeLattice = makeSingleton(0, 0 as IntRef, 0 as BoolRef);
-export const STRING_VAL: TypeLattice = makeSingleton(STR_BIT, 0 as IntRef, 0 as BoolRef);
-export const NULL_VAL: TypeLattice = makeSingleton(NULL_BIT, 0 as IntRef, 0 as BoolRef);
-export const CLOSURE_VAL: TypeLattice = makeSingleton(CLOSURE_BIT, 0 as IntRef, 0 as BoolRef);
-export const COMPLEX_VAL: TypeLattice = makeSingleton(COMPLEX_BIT, 0 as IntRef, 0 as BoolRef);
 
-// Constructors return frozen singletons (zero allocation).
+// Exported frozen singletons (zero allocation at call sites).
+export const STRING: TypeLattice = makeSingleton(STR_BIT, 0 as IntRef, 0 as BoolRef);
+export const NULL: TypeLattice = makeSingleton(NULL_BIT, 0 as IntRef, 0 as BoolRef);
+export const CLOSURE: TypeLattice = makeSingleton(CLOSURE_BIT, 0 as IntRef, 0 as BoolRef);
+export const COMPLEX: TypeLattice = makeSingleton(COMPLEX_BIT, 0 as IntRef, 0 as BoolRef);
 
+export const INT_NEG: TypeLattice = INT_SINGLETONS[1]; // IntRef.Neg
+export const INT_ZERO: TypeLattice = INT_SINGLETONS[2]; // IntRef.Zero
+export const INT_POS: TypeLattice = INT_SINGLETONS[4]; // IntRef.Pos
+
+export const BOOL_TRUE: TypeLattice = BOOL_SINGLETONS[1]; // BoolRef.True
+export const BOOL_FALSE: TypeLattice = BOOL_SINGLETONS[2]; // BoolRef.False
+
+export const FLOAT_NEG: TypeLattice = FLOAT_SINGLETONS[1]; // IntRef.Neg
+export const FLOAT_ZERO: TypeLattice = FLOAT_SINGLETONS[2]; // IntRef.Zero
+export const FLOAT_POS: TypeLattice = FLOAT_SINGLETONS[4]; // IntRef.Pos
+
+// Parameterized constructors retained (take refinement args).
 export function integer(intRef: IntRef = 7 as IntRef): TypeLattice {
   return INT_SINGLETONS[intRef];
 }
-export function positiveInteger(): TypeLattice {
-  return INT_SINGLETONS[4];
-} // IntRef.Pos
-export function negativeInteger(): TypeLattice {
-  return INT_SINGLETONS[1];
-} // IntRef.Neg
-export function zeroInteger(): TypeLattice {
-  return INT_SINGLETONS[2];
-} // IntRef.Zero
 
 export function boolean(boolRef: BoolRef = 3 as BoolRef): TypeLattice {
   return BOOL_SINGLETONS[boolRef];
 }
-export function trueValue(): TypeLattice {
-  return BOOL_SINGLETONS[1];
-} // BoolRef.True
-export function falseValue(): TypeLattice {
-  return BOOL_SINGLETONS[2];
-} // BoolRef.False
 
 /** Default IntRef.Top covers NaN (no meaningful sign). */
 export function floatValue(floatRef: IntRef = 7 as IntRef): TypeLattice {
   return FLOAT_SINGLETONS[floatRef];
-}
-export function positiveFloat(): TypeLattice {
-  return FLOAT_SINGLETONS[4]; // IntRef.Pos
-}
-export function negativeFloat(): TypeLattice {
-  return FLOAT_SINGLETONS[1]; // IntRef.Neg
-}
-export function zeroFloat(): TypeLattice {
-  return FLOAT_SINGLETONS[2]; // IntRef.Zero
-}
-
-export function complexValue(): TypeLattice {
-  return COMPLEX_VAL;
-}
-
-export function stringValue(): TypeLattice {
-  return STRING_VAL;
-}
-export function nullValue(): TypeLattice {
-  return NULL_VAL;
-}
-export function closureValue(): TypeLattice {
-  return CLOSURE_VAL;
 }

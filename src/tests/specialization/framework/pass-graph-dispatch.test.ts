@@ -1,7 +1,7 @@
 /**
  * PR-2a tests: Worklist's pass-graph dispatch layer.
  *
- * These tests exercise `register` / `enqueue` / `drainPasses` without
+ * These tests exercise `register` / `enqueue` / `drain` without
  * touching any production analysis / transform. Every pass is constructed
  * inline with minimal lattices so the test isolates the dispatch rule —
  * "a lattice-change write fans out to declared readers only".
@@ -106,20 +106,20 @@ describe("Worklist pass-graph dispatch", () => {
     consumerRuns = 0;
 
     wl.factStore.write(producer, "k", 1);
-    wl.drainPasses();
+    wl.drain();
     const runsAfterFirst = consumerRuns;
     expect(runsAfterFirst).toBeGreaterThan(0);
 
     // Push bucket to ceiling.
     wl.factStore.write(producer, "k", 3);
-    wl.drainPasses();
+    wl.drain();
     const runsAtCeiling = consumerRuns;
 
     // Further writes at ceiling must be no-ops (equal under lattice.equals);
     // no onChange fires → consumer not re-enqueued.
     wl.factStore.write(producer, "k", 3); // equal under lattice → suppressed
     wl.factStore.write(producer, "k", 3); // still equal → suppressed
-    wl.drainPasses();
+    wl.drain();
     expect(consumerRuns).toBe(runsAtCeiling);
   });
 
@@ -155,7 +155,7 @@ describe("Worklist pass-graph dispatch", () => {
 
     // Fire a write to `unread` — `consumer` doesn't read it, `observer` does.
     wl.factStore.write(unread, "k", 5);
-    wl.drainPasses();
+    wl.drain();
     expect(enqueued).toBe(true);
 
     // But consumer (reads nothing) must never have been woken.
@@ -172,7 +172,7 @@ describe("Worklist pass-graph dispatch", () => {
     });
     wl.register(consumer2);
     wl.factStore.write(unread, "k", 6);
-    wl.drainPasses();
+    wl.drain();
     expect(consumerRan).toBe(false);
   });
 
@@ -227,7 +227,7 @@ describe("Worklist pass-graph dispatch", () => {
     wl.factStore.write(nonReaderSpy, unit, 1);
 
     wl.factStore.write(structuralPass, unit, 42);
-    wl.drainPasses();
+    wl.drain();
 
     expect(readerRuns).toBeGreaterThan(0);
     expect(nonReaderRuns).toBe(0);
@@ -266,7 +266,7 @@ describe("Worklist pass-graph dispatch", () => {
     wl.factStore.write(transform, unit, 1);
 
     wl.factStore.write(structuralPass, unit, 7);
-    wl.drainPasses();
+    wl.drain();
 
     // analysis must precede transform for the same unit.
     const a = order.indexOf("analysis");
@@ -337,12 +337,93 @@ describe("Worklist pass-graph dispatch", () => {
     wl.factStore.write(reader, "k", 1);
 
     wl.factStore.write(rule, "n1", "fired");
-    wl.drainPasses();
+    wl.drain();
     const firstReads = reads;
     expect(firstReads).toBeGreaterThan(0);
 
     wl.factStore.write(rule, "n1", "fired"); // equal → suppressed
-    wl.drainPasses();
+    wl.drain();
     expect(reads).toBe(firstReads);
+  });
+
+  test("identity-key reader: runtime write at nodeId X wakes only key X", () => {
+    const wl = buildWorklist();
+    const producer = makePass<number, number>({
+      name: "producer",
+      lattice: intMax,
+    });
+    const seenKeys: number[] = [];
+    const reader = makePass<number, number>({
+      name: "reader",
+      lattice: intMax,
+      reads: [producer],
+      coarse: false,
+      affectedKeys: (_trig, key) => [key as number],
+      transfer: (k) => {
+        seenKeys.push(k);
+        return undefined;
+      },
+    });
+    wl.register(producer);
+    wl.register(reader);
+
+    // Pre-populate the reader at many keys so a coarse re-fan would wake all of them.
+    for (let i = 0; i < 10; i++) wl.factStore.write(reader, i, 1);
+    seenKeys.length = 0;
+
+    // A single producer write at key=3 must wake reader at key=3 only.
+    wl.factStore.write(producer, 3, 1);
+    wl.drain();
+
+    expect(seenKeys).toEqual([3]);
+  });
+
+  test("beginBatch/endBatch: processQueue deferred until outermost endBatch, same fixed point as unbatched", () => {
+    const runs: Array<{ batched: boolean; order: number[] }> = [];
+
+    for (const batched of [false, true]) {
+      const wl = buildWorklist();
+      const producer = makePass<number, number>({
+        name: "producer",
+        lattice: intMax,
+      });
+      const order: number[] = [];
+      const reader = makePass<number, number>({
+        name: "reader",
+        lattice: intMax,
+        reads: [producer],
+        coarse: false,
+        affectedKeys: (_trig, key) => [key as number],
+        transfer: (k) => {
+          order.push(k);
+          return undefined;
+        },
+      });
+      wl.register(producer);
+      wl.register(reader);
+      for (let i = 0; i < 5; i++) wl.factStore.write(reader, i, 1);
+      order.length = 0;
+
+      if (batched) wl.beginBatch();
+      let midOrderLen = -1;
+      for (let i = 0; i < 5; i++) {
+        wl.observe(producer, i, 1);
+        if (i === 2) midOrderLen = order.length;
+      }
+      if (batched) {
+        // No transfers should have run mid-batch.
+        expect(midOrderLen).toBe(0);
+        wl.endBatch();
+      }
+      wl.drain();
+      runs.push({ batched, order: order.slice() });
+    }
+
+    // Same post-drain sequence of (pass,key) events either way.
+    expect(runs[0].order).toEqual(runs[1].order);
+
+    // Tripwire: endBatch without matching beginBatch throws.
+    const wl = buildWorklist();
+    expect(() => wl.endBatch()).toThrow(/matching beginBatch/);
   });
 });

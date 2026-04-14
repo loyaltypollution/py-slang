@@ -49,7 +49,7 @@ shape: an `If` whose condition is a Call to `MEMO_HAS`.
 
 **`src/specialization/framework/worklist.ts`** — Units with a
 transform-tier "fired" write that have not yet had their CFG rebuilt.
-Populated by `handleFactChange`; drained after `drainPasses` finishes so
+Populated by `handleFactChange`; drained after `processQueue` finishes so
 pruning doesn't clear fired markers mid-drain.
 
 ## Fact-store evict is silent

@@ -4,7 +4,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { RUNTIME_CALL_COUNT_SAT, Worklist, runtimeCallPass, runtimeWritePass } from "../specialization";
+import { RUNTIME_CALL_COUNT_SAT, Worklist, observeRuntimeWrite, runtimeCallPass } from "../specialization";
 import { EvaluatorError } from "./errors";
 
 /**
@@ -22,7 +22,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       if (errors.length > 0) throw errors[0];
 
       const worklist = new Worklist(ast, environments);
-      worklist.converge();
+      worklist.drain();
 
       const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units, worklist.factStore);
       const program = compiler.compileProgram(ast);
@@ -32,7 +32,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const interpreter = new SVMLInterpreter(program, {
         sendOutput: this.conductor.sendOutput,
         observeNodeWrite: (nodeId, value) => {
-          worklist.observe(runtimeWritePass, nodeId, value);
+          observeRuntimeWrite(worklist, nodeId, value);
         },
         observeScopeCall: (scopeId) => {
           const cur = callCounts.get(scopeId) ?? 0;
@@ -40,6 +40,10 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           const next = cur + 1;
           callCounts.set(scopeId, next);
           worklist.observe(runtimeCallPass, scopeId, next);
+          // Scope-call boundary: drain any writes buffered since the last call
+          // so memoization / tier-up transforms (jitPass) can fire before the
+          // next invocation uses the unspecialized body.
+          worklist.drain();
         },
       });
 
@@ -49,8 +53,13 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         unitsOf: () => worklist.units.values(),
       }));
 
-      const returnValue = await interpreter.execute();
-      this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
+      worklist.beginBatch();
+      try {
+        const returnValue = await interpreter.execute();
+        this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
+      } finally {
+        worklist.endBatch();
+      }
     } catch (e) {
       this.conductor.sendError(new EvaluatorError(e));
     }

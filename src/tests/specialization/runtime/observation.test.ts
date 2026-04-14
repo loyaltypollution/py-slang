@@ -7,8 +7,8 @@ import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import { typeAnalysisPass } from "../../../specialization/type-analysis/analysis";
 import {
+  observeRuntimeWrite,
   runtimeCallPass,
-  runtimeWritePass,
 } from "../../../specialization/framework/runtime-passes";
 import { STR_BIT } from "../../../specialization/type-analysis/lattice";
 import { Worklist } from "../../../specialization";
@@ -30,13 +30,13 @@ describe.each([
     engine: "CSE",
     async observe(code: string) {
       const { ast, reactive } = build(code);
-      reactive.converge();
+      reactive.drain();
       const context = new Context();
       context.runtime.observeNodeWrite = (nodeId, value) =>
-        reactive.observe(runtimeWritePass, nodeId, value);
+        observeRuntimeWrite(reactive, nodeId, value);
       context.runtime.rootScope = ast;
       await evaluate("", ast, context, { variant: 4, groups: [] });
-      reactive.tick();
+      reactive.drain();
       return { ast, reactive };
     },
   },
@@ -44,7 +44,7 @@ describe.each([
     engine: "SVML",
     async observe(code: string) {
       const { ast, environments, reactive } = build(code);
-      reactive.converge();
+      reactive.drain();
       const compiler = SVMLCompiler.fromProgramUnit(
         ast,
         environments,
@@ -52,10 +52,10 @@ describe.each([
         reactive.factStore,
       );
       const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
-        observeNodeWrite: (nodeId, value) => reactive.observe(runtimeWritePass, nodeId, value),
+        observeNodeWrite: (nodeId, value) => observeRuntimeWrite(reactive, nodeId, value),
       });
       await interpreter.execute();
-      reactive.tick();
+      reactive.drain();
       return { ast, reactive };
     },
   },
@@ -78,10 +78,10 @@ x = "hello"
 describe("observation: idempotence", () => {
   test("re-observing a known value leaves the fact equal", () => {
     const { ast, reactive } = build("x = 42");
-    reactive.converge();
+    reactive.drain();
     const assign = ast.statements[0] as StmtNS.Assign;
     const before = reactive.factStore.tryRead(typeAnalysisPass, assign.value.id);
-    reactive.observe(runtimeWritePass, assign.value.id, 42);
+    observeRuntimeWrite(reactive, assign.value.id, 42);
     const after = reactive.factStore.tryRead(typeAnalysisPass, assign.value.id);
     expect(after).toEqual(before);
   });
@@ -96,7 +96,7 @@ def f():
     return 1
 f()
 `);
-    reactive.converge();
+    reactive.drain();
     const fDef = ast.statements[0] as StmtNS.FunctionDef;
     const calls: number[] = [];
     const callCounts = new Map<number, number>();
@@ -117,7 +117,7 @@ f()
     });
 
     await interpreter.execute();
-    reactive.tick();
+    reactive.drain();
     expect(calls).toContain(fDef.id);
   });
 });

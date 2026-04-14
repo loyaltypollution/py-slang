@@ -15,7 +15,7 @@ import {
   factEquals,
   joinFact,
   markImpure,
-  type PurityFact,
+  type PurityRecord,
 } from "./lattice";
 
 // Memo-safe builtins (deterministic, no I/O). __memo_* keep rewritten bodies pure.
@@ -36,9 +36,11 @@ const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
 ]);
 
 // 3-point lattice: ⊥ = undefined, true/false, ⊤ = "contested".
-type PurityPoint = boolean | "contested" | undefined;
+export type PurityLattice = boolean | "contested" | undefined;
 
-const purityLattice: Lattice<PurityPoint> = {
+const isLocal = (info: SlotInfo) => !info.isPrimitive && info.envLevel === 0;
+
+const purityLattice: Lattice<PurityLattice> = {
   bottom: undefined,
   equals: (a, b) => a === b,
   join: (a, b) => {
@@ -51,7 +53,7 @@ const purityLattice: Lattice<PurityPoint> = {
 };
 
 // Keyed by the owning FunctionDef.id.
-export const purityScopePass: Pass<number, PurityPoint> = {
+export const purityScopePass: Pass<number, PurityLattice> = {
   id: Symbol("purityScopePass"),
   debugName: "purityScopePass",
   lattice: purityLattice,
@@ -65,7 +67,7 @@ export const purityScopePass: Pass<number, PurityPoint> = {
     }
     return [];
   },
-  transfer(ctx: PassCtx, key: number): PurityPoint {
+  transfer(ctx: PassCtx, key: number): PurityLattice {
     const unit = ctx.unitForFdId(key);
     if (unit === undefined) return undefined;
     const fd = unit.funcAst;
@@ -75,25 +77,25 @@ export const purityScopePass: Pass<number, PurityPoint> = {
   },
 };
 
-function solveCfg(unit: FunctionUnit, selfName: string): PurityFact {
-  const outByBlock = new Map<number, PurityFact>();
+function solveCfg(unit: FunctionUnit, selfName: string): PurityRecord {
+  const outByBlock = new Map<number, PurityRecord>();
   for (const block of unit.cfg.blocks) outByBlock.set(block.id, BOTTOM_FACT);
 
   const queue: BasicBlock[] = [unit.cfg.entry];
   const inQueue = new Set<number>([unit.cfg.entry.id]);
 
-  const transfer = makeBlockTransfer(unit.slotLookup, selfName);
+  const step = makeBlockStep(unit.slotLookup, selfName);
 
   while (queue.length > 0) {
     const block = queue.shift()!;
     inQueue.delete(block.id);
 
-    let inFact: PurityFact = BOTTOM_FACT;
+    let inFact: PurityRecord = BOTTOM_FACT;
     for (const pred of block.predecessors) {
       inFact = joinFact(inFact, outByBlock.get(pred.id) ?? BOTTOM_FACT);
     }
 
-    const outFact = transfer(block, inFact);
+    const outFact = step(block, inFact);
     const prev = outByBlock.get(block.id) ?? BOTTOM_FACT;
     if (factEquals(prev, outFact)) continue;
 
@@ -109,25 +111,23 @@ function solveCfg(unit: FunctionUnit, selfName: string): PurityFact {
   return outByBlock.get(unit.cfg.exit.id) ?? BOTTOM_FACT;
 }
 
-type StmtTransfer = (stmt: StmtNS.Stmt, fact: PurityFact) => PurityFact;
-type ExprTransfer = (expr: ExprNS.Expr, fact: PurityFact) => PurityFact;
+type StmtStep = (stmt: StmtNS.Stmt, fact: PurityRecord) => PurityRecord;
+type ExprStep = (expr: ExprNS.Expr, fact: PurityRecord) => PurityRecord;
 
-function makeBlockTransfer(
+function makeBlockStep(
   slotLookup: SlotLookup,
   selfName: string,
-): (block: BasicBlock, inFact: PurityFact) => PurityFact {
-  const exprTransfer = makeExprTransfer(slotLookup, selfName);
-  const stmtTransfer = makeStmtTransfer(slotLookup, exprTransfer);
+): (block: BasicBlock, inFact: PurityRecord) => PurityRecord {
+  const exprStep = makeExprStep(slotLookup, selfName);
+  const stmtStep = makeStmtStep(slotLookup, exprStep);
   return (block, inFact) => {
     let fact = inFact;
-    for (const stmt of block.stmts) fact = stmtTransfer(stmt, fact);
+    for (const stmt of block.stmts) fact = stmtStep(stmt, fact);
     return fact;
   };
 }
 
-function makeStmtTransfer(slotLookup: SlotLookup, exprT: ExprTransfer): StmtTransfer {
-  const isLocal = (info: SlotInfo) => !info.isPrimitive && info.envLevel === 0;
-
+function makeStmtStep(slotLookup: SlotLookup, exprT: ExprStep): StmtStep {
   return (stmt, fact) => {
     switch (stmt.kind) {
       case "Pass":
@@ -199,10 +199,8 @@ function makeStmtTransfer(slotLookup: SlotLookup, exprT: ExprTransfer): StmtTran
   };
 }
 
-function makeExprTransfer(slotLookup: SlotLookup, selfName: string): ExprTransfer {
-  const isLocal = (info: SlotInfo) => !info.isPrimitive && info.envLevel === 0;
-
-  const walk: ExprTransfer = (expr, fact) => {
+function makeExprStep(slotLookup: SlotLookup, selfName: string): ExprStep {
+  const walk: ExprStep = (expr, fact) => {
     if (expr instanceof ExprNS.Literal) return fact;
     if (expr instanceof ExprNS.BigIntLiteral) return fact;
     if (expr instanceof ExprNS.Complex) return fact;

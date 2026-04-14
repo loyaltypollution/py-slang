@@ -19,19 +19,20 @@ Cite as `SPEC-NN` in PR discussions, code comments, and reviews.
 
 Reactive evaluators (`PyCseJitEvaluator`, `PySvmlJitEvaluator`):
 (1) construct one `Worklist` (using `DEFAULT_PASSES`), (2) call
-`worklist.converge()` for the static fixpoint, (3) wire the
+`worklist.drain()` for the static fixpoint, (3) wire the
 interpreter with `observeNodeWrite` / `observeScopeCall` callbacks
 that call `worklist.observe(pass, key, value)`, (4) run execution,
-(5) call `worklist.tick()` afterwards (CSE JIT) or rely on
-mid-execution cascades (SVML JIT). `PySvmlJitEvaluator` additionally
-registers a `makeJitPass(...)` via `worklist.register(...)` before
-execution; that pass is the install seam. Non-reactive evaluators
-(`PyCseEvaluator`, `PySvmlEvaluator`, `PySvmlSinterEvaluator`) omit
-steps (3)–(5) and either skip the worklist entirely (plain CSE) or
-build one and only converge statically (SVML one-shot). Evaluators
-must not introduce a facade between themselves and the worklist.
-*Location*: `src/specialization/framework/worklist.ts` (`converge`,
-`tick`, `register`, `observe`); construction sites in
+(5) call `worklist.drain()` afterwards (CSE JIT) to flush any
+deferred CFG rebuilds, or rely on mid-execution cascades (SVML JIT).
+`PySvmlJitEvaluator` additionally registers a `makeJitPass(...)` via
+`worklist.register(...)` before execution; that pass is the install
+seam. Non-reactive evaluators (`PyCseEvaluator`, `PySvmlEvaluator`,
+`PySvmlSinterEvaluator`) omit steps (3)–(5) and either skip the
+worklist entirely (plain CSE) or build one and only drain statically
+(SVML one-shot). Evaluators must not introduce a facade between
+themselves and the worklist.
+*Location*: `src/specialization/framework/worklist.ts` (`drain`,
+`register`, `observe`); construction sites in
 `src/conductor/PyCseEvaluator.ts` (plain, no worklist),
 `PyCseJitEvaluator.ts`, `PySvmlEvaluator.ts`,
 `PySvmlJitEvaluator.ts`, `PySvmlSinterEvaluator.ts`.
@@ -75,7 +76,7 @@ precise map is available. `tier` (`runtime` < `analysis` <
 complete before any transform that reads them. The JIT install
 pass is `tier: "transform"` — there is no separate "jit" tier.
 *Location*: `src/specialization/framework/worklist.ts` (drain policy,
-`processPass`).
+`processQueue`).
 *Principle*: P-04.
 
 ### SPEC-05 — Side effects in `transfer` must be idempotent under `lattice.equals`
@@ -175,9 +176,10 @@ facts into the dispatch graph:
   integer bumped by the worklist when a unit's CFG is rebuilt.
 
 All three have `tier: "runtime"` and a no-op `transfer`; they are
-written externally (the first two by `Worklist.observe`, the third
-by `Worklist.rebuildStructural`). Every derived pass declares what
-source(s) it reads.
+written externally: the first two by `Worklist.observe`, the third
+by the worklist's CFG-rebuild flush inside `drain` (a write to
+`structuralPass` with a bumped generation per rebuilt unit). Every
+derived pass declares what source(s) it reads.
 *Location*: `src/specialization/framework/runtime-passes.ts`,
 `src/specialization/framework/structural-pass.ts`.
 *Principle*: P-02.
@@ -288,7 +290,7 @@ equality-gated write + the pass's lattice — a structural property.
 Spurious re-transfers are harmless because equal writes are no-ops,
 so side effects in `transfer` must be idempotent under
 `lattice.equals` (SPEC-05). Similarly, "convergence before execution"
-is enforced by the evaluator calling `converge()` before wiring
+is enforced by the evaluator calling `drain()` before wiring
 callbacks; the `observe` callbacks are typed `void` so an
 interpreter cannot dispatch before the rewrite lands.
 
@@ -345,8 +347,8 @@ Three primitives. No facade, no coordinator, no strategy object.
 
 ```mermaid
 flowchart TB
-    EV["Evaluator (conductor/*)<br/>parse → resolve → new Worklist →<br/>converge → register(jitPass)? → wire callbacks → execute → tick"]
-    WL["Worklist<br/>register · observe · converge/tick<br/>drain policy over tiers (runtime < analysis < transform)"]
+    EV["Evaluator (conductor/*)<br/>parse → resolve → new Worklist →<br/>drain → register(jitPass)? → wire callbacks → execute → drain"]
+    WL["Worklist<br/>register · observe · drain<br/>drain policy over tiers (runtime < analysis < transform)"]
     FS["FactStore<br/>(pass, key) → V<br/>equality-gated writes + onChange listeners"]
     INT["Interpreter (CSE / SVML / Sinter)<br/>LBD: re-resolve callee body at every CALL<br/>calls observeNodeWrite / observeScopeCall"]
     JITP["jitPass (SVML only, tier: transform)<br/>reads callCount · purity · structural · type · const<br/>transfer: snapshot-gate + compile + structural-equals + patchFunction"]
@@ -370,8 +372,8 @@ flowchart TB
   the system lives here, keyed on the pass that produced it.
 - **`Worklist`** (SPEC-04). Drain-order policy by `tier`,
   re-enqueue by `affectedKeys` on fact change, coarse fallback for
-  passes without a precise map. Public surface: `converge`, `tick`,
-  `register`, `observe`, `units`, `factStore`.
+  passes without a precise map. Public surface: `drain`, `observe`,
+  `register`, `enqueue`, `units`, `factStore`.
 
 ### What's built on them
 
@@ -502,7 +504,7 @@ Most recent first.
   `memoizationRule`, `deadBranchRule`, `constantFoldingRule`
   (object-literal passes in their respective
   `memoization-analysis/`, `purity-analysis/`, and `transforms/`
-  directories). The memoization AST rewrite is now the exported
+  directories). The memoization AST rewrite is the module-local
   helper `applyMemoizationWrap` in `transforms/memoization.ts`,
   called from `memoizationRule.transfer`.
 - **`HintStore` + `OptimizationHint` deleted.** Replaced by
@@ -540,7 +542,7 @@ Most recent first.
   `context.runtime.pinSet`, `safeOnStack` rule flag, `runPinned`
   wrapper, `SpecializationEngine` facade.** All dissolved once LBD
   (SPEC-07) was identified as the safety contract. Evaluators call
-  `converge` + `tick` directly with no wrapper.
+  `drain` directly with no wrapper.
 - **`InPlaceASTStrategy` + `needsInstall` + `OSRStats`.** Deleted —
   CSE omits `jitPass` registration entirely (P-08).
 - **`MEMO_INTRINSIC_NAMES` duplicated across 5 sites.**

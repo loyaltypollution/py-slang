@@ -4,20 +4,34 @@ import type { FactStore } from "../framework/fact-store";
 import type { Lattice, Pass, PassCtx } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
 import { structuralPass } from "../framework/structural-pass";
-import type { AnalysisPass } from "../framework/interfaces";
+import type { AnalysisPass, SlotEnv } from "../framework/interfaces";
+import type { RawKind } from "../framework/raw-value";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
-  CONST_BOTTOM,
   CONST_TOP,
+  constBottom,
   constJoin,
-  constLeq,
-  constMeet,
   constOf,
 } from "./lattice";
 
+function constLeq(a: ConstLattice, b: ConstLattice): boolean {
+  if (a.tag === "bottom") return true;
+  if (b.tag === "top") return true;
+  if (a.tag === "top") return false;
+  if (b.tag === "bottom") return false;
+  return a.value === b.value;
+}
+
+function constMeet(a: ConstLattice, b: ConstLattice): ConstLattice {
+  if (a.tag === "top") return b;
+  if (b.tag === "top") return a;
+  if (a.tag === "bottom" || b.tag === "bottom") return constBottom();
+  return a.value === b.value ? a : constBottom();
+}
+
 const constLattice: Lattice<ConstLattice> = {
-  bottom: CONST_BOTTOM,
+  bottom: constBottom(),
   equals: (a, b) =>
     a === b ||
     (a.tag !== "const"
@@ -26,13 +40,23 @@ const constLattice: Lattice<ConstLattice> = {
   join: constJoin,
 };
 
+// Identity-key pass: `transfer → undefined` is intentional. Writes are performed
+// directly by `ConstAnalysisVisitor.annotate` via `factStore.write(constAnalysisPass, ...)`;
+// this Pass exists only as the FactStore namespace key and as a `reads` invalidation
+// target for downstream consumers. `affectedKeys` narrows fan-out to the single
+// observed nodeId: a runtime write at node X can only invalidate this pass's fact
+// at node X. Structural triggers carry a `FunctionUnit` key, not a nodeId — forward
+// nothing in that case; the DFA pass re-runs the visitor on rebuild and re-writes
+// facts directly.
 export const constAnalysisPass: Pass<number, ConstLattice> = {
   id: Symbol("constAnalysisPass"),
   debugName: "constAnalysisPass",
   lattice: constLattice,
   reads: [runtimeWritePass, structuralPass],
   tier: "analysis",
-  coarse: true,
+  affectedKeys(_ctx: PassCtx, triggerPass: Pass<any, any>, triggerKey: unknown): Iterable<number> {
+    return triggerPass === runtimeWritePass ? [triggerKey as number] : [];
+  },
   transfer(_ctx: PassCtx, _key: number): ConstLattice | undefined {
     return undefined;
   },
@@ -41,7 +65,7 @@ export const constAnalysisPass: Pass<number, ConstLattice> = {
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
     private readonly factStore: FactStore,
-    private readonly constEnv: { get(slot: number): ConstLattice | undefined },
+    private readonly constEnv: SlotEnv<ConstLattice>,
     private readonly slotLookup: SlotLookup,
   ) {}
 
@@ -222,57 +246,32 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 }
 
-export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
-  readonly name = "constVal";
-  readonly mergeKind = "may" as const;
-  readonly direction = "forward" as const;
-  top(): ConstLattice {
-    return CONST_TOP;
-  }
-  bottom(): ConstLattice {
-    return CONST_BOTTOM;
-  }
-  join(a: ConstLattice, b: ConstLattice): ConstLattice {
-    return constJoin(a, b);
-  }
-  meet(a: ConstLattice, b: ConstLattice): ConstLattice {
-    return constMeet(a, b);
-  }
-  leq(a: ConstLattice, b: ConstLattice): boolean {
-    return constLeq(a, b);
-  }
-
+export const constAnalysisModule: AnalysisPass<ConstLattice> = {
+  name: "constVal",
+  mergeKind: "may",
+  direction: "forward",
+  top: () => CONST_TOP,
+  bottom: constBottom,
+  join: constJoin,
+  meet: constMeet,
+  leq: constLeq,
   makeExprVisitor(
     factStore: FactStore,
-    env: { get(slot: number): ConstLattice | undefined },
+    env: SlotEnv<ConstLattice>,
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<ConstLattice> {
     return new ConstAnalysisVisitor(factStore, env, slotLookup);
-  }
-}
+  },
+};
 
-function liftConst(rawValue: unknown): ConstLattice | undefined {
-  if (
-    typeof rawValue === "number" ||
-    typeof rawValue === "boolean" ||
-    typeof rawValue === "string"
-  ) {
-    return constOf(rawValue);
-  }
-  if (typeof rawValue === "bigint") return constOf(Number(rawValue));
-  if (typeof rawValue !== "object" || rawValue === null) return undefined;
-
-  const tagged = rawValue as { type?: string; value?: unknown };
-  switch (tagged.type) {
+function liftConst(rawKind: RawKind): ConstLattice | undefined {
+  switch (rawKind.kind) {
     case "number":
-    case "string":
-      return typeof tagged.value === "number" || typeof tagged.value === "string"
-        ? constOf(tagged.value)
-        : undefined;
+      return constOf(rawKind.value);
     case "bool":
-      return typeof tagged.value === "boolean" ? constOf(tagged.value) : undefined;
-    case "bigint":
-      return typeof tagged.value === "bigint" ? constOf(Number(tagged.value)) : undefined;
+      return constOf(rawKind.value);
+    case "string":
+      return rawKind.value !== undefined ? constOf(rawKind.value) : undefined;
     default:
       return undefined;
   }

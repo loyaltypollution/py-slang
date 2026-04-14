@@ -388,6 +388,22 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@datastructures-js/heap@npm:^4.3.7":
+  version: 4.3.7
+  resolution: "@datastructures-js/heap@npm:4.3.7"
+  checksum: 10c0/0f81ffedf443ee1f1070a368e2b6068cfca681c183fa95a1800743d0f7413e8be2822e47f659c45634523748eb918b46af07e68c243d6103d69c3ce244a9b6d3
+  languageName: node
+  linkType: hard
+
+"@datastructures-js/priority-queue@npm:^6.3.5":
+  version: 6.3.5
+  resolution: "@datastructures-js/priority-queue@npm:6.3.5"
+  dependencies:
+    "@datastructures-js/heap": "npm:^4.3.7"
+  checksum: 10c0/fd97115c9f4c26af175942c5a3b8dc286704691bd9180678d9ed44400a1ec4dedb04f9bfffc102784c15876b01a6978be0c21508f01577690f16762e033eb69e
+  languageName: node
+  linkType: hard
+
 "@datastructures-js/queue@npm:^4.3.0":
   version: 4.3.0
   resolution: "@datastructures-js/queue@npm:4.3.0"
@@ -4766,6 +4782,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "py-slang@workspace:."
   dependencies:
+    "@datastructures-js/priority-queue": "npm:^6.3.5"
     "@datastructures-js/queue": "npm:^4.3.0"
     "@inquirer/prompts": "npm:^8.3.2"
     "@rollup/plugin-commonjs": "npm:^28.0.3"

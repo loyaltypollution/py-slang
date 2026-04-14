@@ -5,11 +5,14 @@ import type { Lattice, Pass, PassCtx } from "./pass";
 import { structuralPass } from "./structural-pass";
 
 /** Packages a Kildall block DFA as a `Pass<BasicBlock, MutableEnv<L>>` over block OUT envs.
- *  `transferBlock` MUST be pure — any factStore.write bypasses the equality gate. */
+ *  `transferBlock` MUST be pure — block outputs flow through `processQueue`,
+ *  not via side-channel `factStore.write` calls. FactStore now enforces
+ *  monotonicity on writes, so a stray write won't corrupt the lattice; but it
+ *  would still bypass the worklist's scheduling and dedup. */
 
-export type DfaDirection = "forward" | "backward";
+type DfaDirection = "forward" | "backward";
 
-export interface DfaConfig<L> {
+interface DfaConfig<L> {
   readonly debugName: string;
   readonly direction: DfaDirection;
   readonly top: L;
@@ -29,19 +32,7 @@ export interface DfaConfig<L> {
   readonly reads: ReadonlyArray<Pass<any, any>>;
 }
 
-export interface DfaPasses<L> {
-  readonly blockKeyedPass: Pass<BasicBlock, MutableEnv<L>>;
-}
-
-function predecessors(block: BasicBlock, direction: DfaDirection): BasicBlock[] {
-  return direction === "forward" ? block.predecessors : block.successors;
-}
-
-function successors(block: BasicBlock, direction: DfaDirection): BasicBlock[] {
-  return direction === "forward" ? block.successors : block.predecessors;
-}
-
-export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
+export function makeBlockFixpointPass<L>(config: DfaConfig<L>): Pass<BasicBlock, MutableEnv<L>> {
   const envLattice: Lattice<MutableEnv<L>> = {
     bottom: new MutableEnv<L>(),
     equals: (a, b) => a.equals(b, config.leq),
@@ -59,7 +50,7 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
   const blockPassId = Symbol(`${config.debugName}:blocks`);
 
   function inEnvFor(ctx: PassCtx, block: BasicBlock, unit: FunctionUnit): MutableEnv<L> {
-    const preds = predecessors(block, config.direction);
+    const preds = config.direction === "forward" ? block.predecessors : block.successors;
     if (preds.length === 0) return config.seedEnv(unit);
     let env: MutableEnv<L> | undefined;
     for (const pred of preds) {
@@ -88,7 +79,8 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
     affectedKeys(ctx, triggerPass, triggerKey) {
       // Self-wake: block OUT change → CFG successors recompute IN.
       if ((triggerPass as Pass<any, any>) === (blockKeyedPass as Pass<any, any>)) {
-        return successors(triggerKey as BasicBlock, config.direction);
+        const b = triggerKey as BasicBlock;
+        return config.direction === "forward" ? b.successors : b.predecessors;
       }
       // Structural: seed entry/exit; self-wake walks the CFG.
       if ((triggerPass as Pass<any, any>) === (structuralPass as Pass<any, any>)) {
@@ -112,5 +104,5 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
   readsArr.push(blockKeyedPass);
   Object.freeze(readsArr);
 
-  return { blockKeyedPass };
+  return blockKeyedPass;
 }

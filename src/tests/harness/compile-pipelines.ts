@@ -13,7 +13,7 @@ export function compileOptimized(code: string): SVMLProgram {
   const { errors, environments } = analyzeWithEnvironments(ast, script, CHAPTER);
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
-  engine.converge();
+  engine.drain();
   const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, engine.factStore);
   return compiler.compileProgram(ast);
 }

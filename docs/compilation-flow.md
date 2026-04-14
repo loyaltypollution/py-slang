@@ -1,9 +1,8 @@
-# py-slang compilation & execution flow
+# py-slang specialization & execution flow
 
-Traces a Python source string from ingestion to execution across the
-available evaluators and the specialization framework they share. Each
-phase has its own mermaid diagram; a consolidated diagram sits at the
-end.
+Traces how a resolved AST becomes running, optimized code. Parsing and
+resolution are assumed; this document starts from `(ast, environments)`
+and ends at a JS return value.
 
 For the contract/stability view, see `docs/optimization-roadmap.md`.
 
@@ -13,431 +12,263 @@ For a hands-on view of what specialization produces:
 npx tsx scripts/dump-ast.ts <file.py> -o out.dot
 ```
 
-`dump-ast` writes a DOT graph of the AST before and after the static
-optimization pipeline, plus per-unit summaries of pass outputs.
-
 ---
 
-## Phase 1 — Frontend: source → AST
+## The primitives
 
-Entry points:
+Three types carry the entire framework. Everything else is written in
+terms of these.
 
-- `parse(source: string)` (`src/parser/parser-adapter.ts`) — wraps a
-  Nearley-generated grammar (`src/parser/python-grammar.ts`) driven by
-  a hand-written lexer (`src/parser/lexer.ts`) via `token-bridge.ts`.
-- Produces a `StmtNS.FileInput` (AST root), using the class-based node
-  hierarchy in `src/ast-types.ts`. Every node has a stable `id`.
+### `Pass<K, V>`
+A scheduled computation. One shape for every analysis, every derived
+fact, every transform, every codegen install. Fields that matter:
 
-```mermaid
-flowchart LR
-    SRC["Python source string"]
-    LEX["lexer.ts<br/>tokens + lexer errors"]
-    BRIDGE["token-bridge.ts<br/>Token → Nearley tokens"]
-    NEARLEY["python-grammar.ts<br/>(generated from python.ne)"]
-    ADAPT["parser-adapter.ts<br/>parse(source)"]
-    AST["StmtNS.FileInput<br/>(AST root, node.id assigned)"]
-    SRC --> LEX --> BRIDGE --> NEARLEY --> ADAPT --> AST
+- `lattice: Lattice<V>` — `bottom`, `equals`, `join`. `equals` gates
+  every fan-out; `join` is rarely used outside Kildall DFA.
+- `reads: Pass[]` — upstream dependencies. Declared, not discovered.
+- `transfer(ctx, key) → V | undefined` — pure function of upstream
+  facts. Returning `undefined` means "no write" (distinct from writing
+  `bottom`, which is an explicit reset).
+- `affectedKeys(ctx, triggerPass, triggerKey) → K[]` — on an upstream
+  write, names the exact subset of this pass's keyspace to re-enqueue.
+  Passes without a precise mapping set `coarse: true` and re-run every
+  previously-written key.
+- `tier: "runtime" | "analysis" | "transform"` — drain-order
+  tiebreaker. Analysis drains before any transform that reads it.
+
+There is no separate `AnalysisPass` / `ScopePass` / `TransformRule`.
+Granularity is encoded in `K` — a node, a scope id, a `FunctionUnit`,
+whatever this pass is keyed on.
+
+### `FactStore`
+The sole storage substrate. Two-level map keyed by `(pass, key)`.
+`write` compares against the stored value under `pass.lattice.equals`:
+an equal write is a no-op and fires no listener. This equality gate is
+the *one* mechanism that suppresses redundant downstream work. Every
+"did this change" question in the system reduces to it.
+
+### `Worklist`
+The scheduler. Owns a `FactStore`, a registered pass set, and one
+priority queue ordered by tier (runtime < analysis < transform) with
+FIFO-within-tier via a monotonic sequence number. Public surface:
+
+- `new Worklist(ast, environments, passes? = DEFAULT_PASSES)`
+- `drain(limit?)` — run to fixpoint. Loop of: pop PQ to empty, then
+  flush any CFG rebuilds that transforms scheduled, repeat until no
+  rebuilds remain. Returns the set of units that rebuilt (callers
+  needing a boolean use `.size > 0`).
+- `observe(pass, key, value)` — runtime-observation entry; writes the
+  fact and pops the PQ to empty synchronously. Does **not** flush CFG
+  rebuilds — see "Transform-safety invariant" below.
+- `register(pass)` — add a pass post-construction (the SVML JIT uses
+  this to register `jitPass` after it has an interpreter in hand)
+- `enqueue(pass, key)` — deduped enqueue, mostly for pass authors who
+  need to self-schedule
+- `units`, `factStore` — read-only handles
+
+### Transform-safety invariant
+Transforms can fire during `observe`, mutating the AST mid-execution.
+This is load-bearing: memoization, dead-branch, and constant-folding
+would be useless if they only fired at program exit. CFG rebuilds are
+batched — `observe` populates `pendingRebuilds` but flushes only on
+`drain`. That is safe because the interpreter (CSE or SVML) never
+reads the CFG directly; only analysis passes do, and analyses run
+only inside `drain`, which rebuilds first.
+
+The unwritten contract every `tier: "transform"` pass must honour:
+**`transfer` runs between interpreter steps and may rewrite the AST
+it receives, but must not invalidate any pointer the interpreter
+holds across the enclosing `observe` call.** In practice this means:
+mutate `FunctionDef.body` in place (memoization swaps the body array;
+the currently-executing call frame holds the old body and exits
+cleanly, the next call reads the new one), patch function-table slots
+(SVML `jitPass`), or rewrite expression nodes that no active frame
+captured by reference. Do not free/replace nodes that a running frame
+still points into.
+
+`DEFAULT_PASSES`: `structuralPass`, `runtimeWritePass`, `runtimeCallPass`,
+`typeAnalysisPass`, `constAnalysisPass`, two block-keyed DFA passes,
+`purityScopePass`, `callCountPass`, `deadBranchRule`,
+`constantFoldingRule`, `memoizationRule`.
+
+## How dispatch works
+
+1. Something writes a fact — a pass's `transfer` returns a value, or the
+   driver calls `observe` with a runtime value.
+2. `FactStore.write` compares against the stored value. Equal → done.
+3. On a real change, every pass whose `reads` contains the writer
+   becomes candidate work. Each candidate's `affectedKeys` names the
+   keys to enqueue.
+4. The worklist pops items from the PQ in priority order: runtime →
+   analysis → transform, FIFO within tier. Each popped item is one
+   `transfer(ctx, key)` → one `write`.
+
+Side effects in `transfer` (`patchFunction`, AST mutation) must be
+idempotent under `lattice.equals`: if the returned value equals the
+stored one, the side effect must be a no-op. That is how the framework
+prevents re-fire — no `fireOnce`, no `appliedTransforms` set, no
+bookkeeping. The lattice *is* the idempotence.
+
+## Vocabulary
+
+- **Unit** — `FunctionUnit`, one per `FileInput`/`FunctionDef`. Owns
+  the body getter and the block index.
+- **Fact** — a `(pass, key) → value` entry in the `FactStore`.
+- **Fact change** — a `write` that was not suppressed by `equals`.
+- **Tier** — PQ priority bucket; runtime < analysis < transform.
+- **Source pass** — no `reads`; fed by `observe` (runtime) or the
+  worklist itself (structural).
+- **LBD (Late-Bound Dispatch)** — interpreters re-resolve callee bodies
+  at every CALL: CSE reads `closure.node.body` fresh; SVML re-reads the
+  function-table slot and captures the IR into `CallFrame.ir`. Under
+  LBD, any body-local ABI-preserving rewrite is safe at any time. The
+  framework therefore tracks no pin counts, no active-scope set.
+
+## The pass graph
+
+```
+  runtime tier                 analysis tier                 transform tier
+  ────────────                 ─────────────                 ──────────────
+  runtimeCallPass  ──────────→ callCountPass   ──┐
+                                                 ├──────────→ memoizationRule ──┐
+  (purity has no runtime dep)  purityScopePass ──┘                              │
+                                                                                │
+  runtimeWritePass ──────────→ typeAnalysisPass  ───────────→ constantFoldingRule
+                               constAnalysisPass ───────────→ deadBranchRule
+
+  structuralPass   ──────────────────────────────────────────→ (all transforms,
+                                                                 jitPass)
+
+                               (SVML JIT only)                 jitPass
+                                                               reads: callCount,
+                                                                 purity, structural,
+                                                                 type, const
+                                                               writes: SVMLIR
+                                                               side effect:
+                                                                 patchFunction
 ```
 
-Failure mode: syntax errors surface as thrown `SyntaxError` /
-`LexerError` from `parse`. Evaluators route them through the conductor.
+## fib, end to end
 
----
-
-## Phase 2 — Resolver: AST → environments
-
-`analyzeWithEnvironments(ast, source, variant, groups?)`
-(`src/resolver`) walks the AST and returns:
-
-- `errors`: scope / binding / variant-rule violations. Stdlib groups
-  gate name visibility per variant.
-- `environments`: `FunctionEnvironments` keyed by
-  `FileInput | FunctionDef`. Input to both the specialization
-  framework and the SVML compiler.
-
-```mermaid
-flowchart LR
-    AST["FileInput AST"]
-    VARIANT["variant: 1..4<br/>groups: stdlib Group[]"]
-    RESOLVE["analyzeWithEnvironments<br/>(resolver/index.ts)"]
-    ENV["FunctionEnvironments<br/>Map&lt;ScopeKey, Env&gt;"]
-    ERR["resolver errors"]
-    AST --> RESOLVE
-    VARIANT --> RESOLVE
-    RESOLVE --> ENV
-    RESOLVE --> ERR
+```python
+def fib(n):
+    return n if n < 2 else fib(n-1) + fib(n-2)
+fib(20)
 ```
 
----
+### Build
+`new Worklist(ast, environments)` constructs units, registers
+`DEFAULT_PASSES`, seeds `structuralPass` for every unit.
+`worklist.drain()` runs the initial wave to fixpoint.
 
-## Phase 3 — Specialization framework
+- `typeAnalysisPass` / `constAnalysisPass` populate per-node facts.
+- `purityScopePass` writes `true` for fib (no side effects).
+- `callCountPass` reads `runtimeCallPass(fib) = 0`, writes 0.
+- `memoizationRule.transfer` runs: `count = 0 < MEMOIZATION_THRESHOLD`,
+  returns `undefined`. No write. No fan-out.
 
-Lives in `src/specialization/`. Single dispatch graph built around
-three primitives:
+### Compile (SVML only)
+`SVMLCompiler.fromProgramUnit(ast, environments, units, factStore)`
+reads analysis facts directly from the store at emit time — specialized
+opcodes (`ADDF`/`NOTB` vs. `ADDG`/`NOTG`), observation-metadata
+elision, and so on are pure functions of the current fact state.
 
-- **`Pass<K, V>`** (`framework/pass.ts`) — one shape for every
-  scheduled computation. Fields: `id`, `debugName`, `lattice: Lattice<V>`,
-  `reads: Pass[]`, `tier`, optional `coarse`, `affectedKeys(ctx, triggerPass, triggerKey)`,
-  `transfer(ctx, key): V | undefined`, optional `prune`.
-  There is no separate `AnalysisPass` / `ScopePass` / `TransformRule` /
-  `ScopeTransformRule` — granularity is encoded in `K`.
-- **`FactStore`** (`framework/fact-store.ts`) — two-level map
-  keyed by `(pass, key)`. `write` is equality-gated via
-  `pass.lattice.equals`; an equal write is a no-op and fires no
-  listener. This is the sole mechanism that suppresses redundant
-  downstream work.
-- **`Worklist`** (`framework/worklist.ts`) — scheduler. Constructor
-  takes `(ast, environments, passes?)`; `passes` defaults to
-  `DEFAULT_PASSES` (exported from `worklist.ts`), which registers
-  `structuralPass`, `runtimeWritePass`, `runtimeCallPass`,
-  `typeAnalysisPass`, `constAnalysisPass`, the two block-keyed DFA
-  passes, `purityScopePass`, `callCountPass`, `deadBranchRule`,
-  `constantFoldingRule`, `memoizationRule`. Tests can pass `[]` or a
-  subset to exercise dispatch in isolation. Public surface:
-  `converge()`, `tick()`, `register(pass)`, `observe(pass, key, value)`,
-  `units`, `factStore`.
+### Wire
+The evaluator constructs the interpreter with two plain callbacks:
 
 ```ts
-// Typical evaluator shape (SVML JIT — richest path):
-const worklist = new Worklist(ast, environments);   // DEFAULT_PASSES
-worklist.converge();                                // static fixpoint
-
-const compiler = SVMLCompiler.fromProgramUnit(
-  ast, environments, worklist.units, worklist.factStore,
-);
-const program     = compiler.compileProgram(ast);
-const callCounts  = new Map<number, number>();
-const interpreter = new SVMLInterpreter(program, {
-  sendOutput:       conductor.sendOutput,
-  observeNodeWrite: (nodeId, v) => worklist.observe(runtimeWritePass, nodeId, v),
-  observeScopeCall: (scopeId) => {
-    const cur = callCounts.get(scopeId) ?? 0;
-    if (cur >= RUNTIME_CALL_COUNT_SAT) return;  // source-cap: skip observe entirely
-    const next = cur + 1;
-    callCounts.set(scopeId, next);
-    worklist.observe(runtimeCallPass, scopeId, Math.min(RUNTIME_CALL_COUNT_SAT, next));
-  },
-});
-
-worklist.register(makeJitPass({ compiler, interpreter, unitsOf: () => worklist.units.values() }));
-await interpreter.execute();
+observeNodeWrite: (nodeId, v) => worklist.observe(runtimeWritePass, nodeId, v)
+observeScopeCall: (scopeId)   => { /* saturating bump, then observe */ }
 ```
 
-CSE is identical minus the compile step and minus `jitPass`: its
-materialized form *is* the AST, so a transform's in-place mutation is
-the install.
+`observeScopeCall` keeps a closure-local counter and short-circuits
+once the count hits `RUNTIME_CALL_COUNT_SAT`. Post-saturation CALLs
+never reach `worklist.observe` — the hot path is a counter compare.
 
-### How dispatch works
+The SVML JIT additionally registers `jitPass` (`engines/svml/jit-pass.ts`):
+a `Pass<FunctionUnit, SVMLIR>` whose lattice value is the compiled IR,
+whose `equals` is a field-wise structural compare, and whose transfer
+recompiles and calls `patchFunction` only when the new IR differs from
+the stored one.
 
-1. A pass's `transfer(ctx, key)` produces a `V`. Returning `undefined`
-   means "no write for this key" — distinct from writing
-   `lattice.bottom` (explicit reset).
-2. `FactStore.write(pass, key, value)` compares against the stored
-   value under `pass.lattice.equals`. Unchanged → no event.
-3. On a change, every pass whose `reads` contains the writer is
-   candidate work. `p.affectedKeys(ctx, writer, writtenKey)` names the
-   precise subset of `p`'s keyspace to re-enqueue. Passes with no
-   precise mapping set `coarse: true` to opt into "re-run every
-   previously written key".
-4. `tier` gives a drain-order tiebreaker: `runtime` < `analysis` <
-   `transform`. Analysis always drains before any transform that
-   reads its output. The JIT install pass is `tier: "transform"` —
-   there is no separate "jit" tier; it sits after the AST-mutating
-   transforms so `compileFunction` sees post-rewrite bodies.
-5. Side effects in `transfer` (`patchFunction`, AST mutation) must be
-   idempotent under `lattice.equals`: if the returned value equals the
-   stored one, the side effect must be a no-op. That is how the
-   framework prevents re-fire — no `fireOnce` flag, no
-   `appliedTransforms` set, no bookkeeping.
+### Run
+`interpreter.execute()` starts. Each CALL fires `observeScopeCall`.
 
-```mermaid
-flowchart TB
-    RESOLVE["environments + AST"]
-    WL["Worklist<br/>register(pass) · observe(pass,k,v) · converge/tick"]
-    FS[("FactStore<br/>Map&lt;(Pass, K), V&gt;<br/>equality-gated writes")]
-    ANA["Analyses (tier: analysis)<br/>TypeAnalysisPass · ConstAnalysisPass"]
-    SRC_RT["Runtime sources (tier: runtime)<br/>runtimeWritePass · runtimeCallPass<br/>structuralPass"]
-    DERIVED["Derived passes (tier: analysis)<br/>callCountPass · purityScopePass"]
-    XF["Transforms (tier: transform)<br/>deadBranchRule · constantFoldingRule · memoizationRule"]
-    JIT["jitPass (tier: transform, SVML-only)<br/>compileFunction + patchFunction<br/>writes SVMLIR; idempotent by structural equality"]
+- Calls 1..9: each `observe` writes a new count, `callCountPass`
+  re-executes and writes `min(sat, count)`. The value changed, so the
+  change cascades to `memoizationRule`. Its transfer reads
+  `count < threshold` and returns `undefined` — no write, no further
+  fan-out. Per-call cost: one counter bump, one pass re-execution,
+  one equality-suppressed write attempt on `memoizationRule`.
 
-    RESOLVE --> WL
-    WL <--> FS
-    ANA --> FS
-    SRC_RT --> FS
-    DERIVED --> FS
-    XF --> FS
-    JIT --> FS
-    FS -- "fact change" --> WL
+- **Call 10**: `callCountPass` writes 10. `memoizationRule.transfer`
+  now reads `count ≥ threshold` and `purity = true`. It calls
+  `applyMemoizationWrap(unit)`, which splices a `__memo_has/get/put`
+  prelude into `fd.body` and returns `"fired"`. The write propagates.
+  - AST mutation bumps `structuralPass` for the unit.
+  - `structuralPass` fans out to `jitPass`.
+  - `jitPass.transfer` recompiles fib, structurally compares the new
+    `SVMLIR` against the stored one, and calls
+    `interpreter.patchFunction(index, newIR)`.
 
-    EXT["interpreter callbacks<br/>observeNodeWrite / observeScopeCall"]
-    EXT --> WL
-```
+- **Call 11**: dispatches the memoized IR. `__memo_has/get/put` route
+  through SVML primitives 40/41/42 into `runtime/memo.ts`.
 
-### LBD — the on-stack-safety contract
+- Calls 12..N: `observeScopeCall` sees the counter already at sat and
+  returns before touching the worklist. **O(1) per call** in the
+  steady state — the property the framework is designed for.
 
-Interpreters must late-bind callee bodies at CALL time: CSE reads
-`closure.node.body` fresh every call; SVML re-resolves the
-function-table slot at CALL and captures the IR into `CallFrame.ir`.
-Under LBD, any body-local ABI-preserving AST or IR rewrite is safe at
-any time — in-flight frames drain on the pre-rewrite body; later
-CALLs dispatch to the new form. The framework therefore tracks no
-pin counts, no active-scope set, no `safeOnStack` flag.
+### Live frames
+Frames currently executing fib continue on the pre-patch IR captured
+in `CallFrame.ir`. Only new CALLs pick up the patched slot. This is
+the LBD contract, not framework state.
 
-### Runtime observations → transforms (fib trace)
+## CSE
 
-For `def fib(n): …; fib(20)`:
+Two evaluator families wrap the CSE stepper.
 
-1. Interpreter CALLs `fib`. Its callback fires
-   `worklist.observe(runtimeCallPass, scopeId, nextCount)`.
-2. `runtimeCallPass` writes `nextCount`. `callCountPass.affectedKeys`
-   on that trigger returns `[scopeId]`; its `transfer` writes
-   `min(sat, nextCount)` back into the store.
-3. `callCountPass`'s change cascades (via `memoizationRule.reads =
-   [callCountPass, purityScopePass, structuralPass]`) to
-   `memoizationRule`. On call 10, `count ≥ MEMOIZATION_THRESHOLD` and
-   `purityScopePass` says `true` → `transfer` invokes
-   `applyMemoizationWrap(unit)`, which splices the cache prelude into
-   `fd.body` (idempotent via `isAlreadyWrapped`) and returns `"fired"`.
-4. The fact change on `memoizationRule` propagates to `jitPass`
-   (registered by the SVML JIT evaluator). Its `transfer` recompiles
-   the unit into a new `SVMLIR`, structurally compares it against
-   the previously-stored IR, and calls `patchFunction` only if they
-   differ.
-5. Next CALL to fib dispatches the memoized IR. Intrinsics
-   `__memo_has/get/put` route through `runtime/memo.ts`.
+| Evaluator | Role |
+|---|---|
+| `PyCseEvaluator{1..4}` | Plain: parse → `analyze` → `evaluate`. No `Worklist`. Runtime observation callbacks are left `undefined`; the `context.runtime.observe*?.(…)` sites short-circuit. No transforms. |
+| `PyCseJitEvaluator{1..4}` | Reactive: parse → `analyzeWithEnvironments` → `new Worklist` → `drain` → wire callbacks on `context.runtime` → `evaluate` → final `worklist.drain()` to flush any deferred CFG rebuilds. |
 
-CSE: identical up through step 3. No `jitPass`; the AST mutation *is*
-the install. Next CALL re-reads `closure.node.body`, sees the
-prelude, routes `__memo_*` as ordinary builtin calls.
+CSE's materialized form *is* the AST. The next CALL re-reads
+`closure.node.body`, which now includes whatever prelude
+`memoizationRule` spliced in. There is no `jitPass`, no `patchFunction`,
+no compile step — the AST mutation *is* the install.
 
-### Public surface (`src/specialization/index.ts`)
+CSE JIT does not use `RUNTIME_CALL_COUNT_SAT` in the callback. Per-call
+cost is high enough that the extra `observe` is in the noise; the
+lattice equality gate at `runtimeCallPass` / `callCountPass` suppresses
+post-saturation cascade on the framework side.
 
-- `Worklist` (plus `DEFAULT_PASSES` re-exported from
-  `framework/worklist.ts` if a test wants to inspect it).
-- Source passes: `runtimeWritePass`, `runtimeCallPass`,
-  `structuralPass`, plus `RUNTIME_CALL_COUNT_SAT`.
-- Derived passes: `callCountPass` (+ `MEMOIZATION_THRESHOLD`),
-  `purityScopePass`.
-- Transforms: `memoizationRule` (the `deadBranchRule` /
-  `constantFoldingRule` passes are internal — registered by
-  `DEFAULT_PASSES` but not exported from `src/specialization/index.ts`).
-- Analyses: `TypeAnalysisPass`, `ConstAnalysisPass` (constructable
-  shims; the actual pass objects are `typeAnalysisPass` /
-  `constAnalysisPass` and live in their respective modules) + the
-  type and const lattice helpers (`INT_BIT` … `COMPLEX_BIT`,
-  `IntRef`, `BoolRef`, `TOP`, `CONST_BOTTOM`, `CONST_TOP`,
-  `constOf`, `constJoin`, `constMeet`, `constLeq`).
-- Memo runtime: `memoLookup`, `memoPut`, `clearMemoCache`,
-  `memoCacheSnapshot`, `MEMO_MISS` (re-exported from
-  `src/runtime/memo.ts`). `MEMO_INTRINSIC_NAMES` is imported
-  directly from `src/runtime/memo.ts` by its three consumers.
+## What dissolved in the refactor
 
----
+| Before | After |
+|---|---|
+| `AnalysisPass` / `ScopePass` / `TransformRule` / `ScopeTransformRule` | Single `Pass<K, V>` shape; granularity encoded in `K` |
+| `HintStore`, `OptimizationHint` | `FactStore` keyed by `(pass, key)` |
+| `ObservationSink` interface | Two plain callbacks: `observeNodeWrite`, `observeScopeCall` |
+| `callObservations[]`, `onScopeChanged`, subscribers/notify | Fact changes drive cascade; listeners live on the `FactStore` |
+| `fireOnce`, `appliedTransforms`, `hasNonMonotoneRule`, `forbiddenScopeFields` | Lattice `equals` gates re-fire |
+| `structuralVersion` on units | `structuralPass` as a source pass |
+| Scheduler tick on every `observeCall` | Cascade only when a lattice value actually changes |
 
-## Phase 4a — SVML evaluators
-
-| Evaluator | File | Role |
-|---|---|---|
-| `PySvmlEvaluator` | `PySvmlEvaluator.ts` | One-shot: converge, compile, run. No runtime feedback. |
-| `PySvmlJitEvaluator` | `PySvmlJitEvaluator.ts` | Reactive JIT: runtime callbacks push facts; `jitPass` recompiles + patches when the new `SVMLIR` is structurally unequal to the stored one. |
-| `PySvmlSinterEvaluator` | `PySvmlSinterEvaluator.ts` | Compiles to SVML bytecode and executes on the Sinter WebAssembly VM. No reactive loop. |
-
-JIT flow:
-
-1. `parse` → `analyzeWithEnvironments` → errors guard.
-2. `worklist = new Worklist(ast, environments)` (DEFAULT_PASSES) +
-   `worklist.converge()`.
-3. `SVMLCompiler.fromProgramUnit(ast, environments, worklist.units,
-   worklist.factStore)` — compiler reads facts directly from the
-   store (no per-unit hint record).
-4. `program = compiler.compileProgram(ast)`. At emit time, facts
-   drive specialized-opcode selection (`ADDF` / `NOTB` vs
-   `ADDG` / `NOTG`) and call-site observation-metadata elision.
-5. `interpreter = new SVMLInterpreter(program, { sendOutput,
-   observeNodeWrite, observeScopeCall })`. The `observeScopeCall`
-   callback closes over a local `callCounts: Map<scopeId, number>`,
-   increments it, and short-circuits once the per-callee count hits
-   `RUNTIME_CALL_COUNT_SAT` — post-saturation CALLs never reach
-   `worklist.observe`, so there's no per-call work in the steady
-   state.
-6. `makeJitPass({ compiler, interpreter, unitsOf })` produces the
-   install pass (defined in `src/engines/svml/jit-pass.ts`). It is a
-   `Pass<FunctionUnit, SVMLIR>` with `tier: "transform"` and
-   `reads: [callCountPass, purityScopePass, structuralPass,
-   typeAnalysisPass, constAnalysisPass]` — type/const are in the
-   read set because `compileFunction` consults those facts per-node
-   at emit time. Its lattice carries the compiled `SVMLIR` itself;
-   `equals` is a field-wise structural compare (NaN-safe on the
-   `Float64Array` constants), `join` is right-biased. `affectedKeys`
-   narrows per trigger: `callCountPass` / `purityScopePass` →
-   single unit via `ctx.unitForFdId`; `structuralPass` → the
-   triggering unit directly; `typeAnalysisPass` / `constAnalysisPass`
-   → every unit whose `blockOfNode` contains the node, with a
-   per-unit `analysisGen` counter bumped as a side effect (FileInput
-   units are filtered out of the enqueue list since jitPass only
-   produces IR for `FunctionDef`s). Transfer gates on a per-unit
-   `(structuralGen, callCount, purity, analysisGen)` snapshot before
-   calling `compiler.compileFunction(unit)`, and calls
-   `interpreter.patchFunction(index, ir)` only when the new IR
-   differs structurally from the previously-stored one. The
-   evaluator registers it via `worklist.register(...)`.
-7. `await interpreter.execute()`. Runtime observations flow back
-   through the callbacks; `callCountPass` / `memoizationRule` /
-   `jitPass` cascade mid-run, and `patchFunction` swaps the
-   function-table slot. Live frames continue on the IR captured in
-   `CallFrame.ir` (LBD).
-
-```mermaid
-flowchart LR
-    AST["FileInput AST"]
-    ENV["environments"]
-    WL["new Worklist<br/>+ converge()"]
-    UNITS["worklist.units"]
-    FS[("FactStore")]
-    COMP["SVMLCompiler.fromProgramUnit"]
-    EMIT["compileProgram<br/>specialized opcodes"]
-    INT["new SVMLInterpreter<br/>observeNodeWrite / observeScopeCall"]
-    JITP["worklist.register(makeJitPass(...))<br/>reads: callCount · purity · structural · type · const<br/>transfer: snapshot-gate + compile + structural-equals + patchFunction"]
-    RUN["interpreter.execute()"]
-    OUT["JS value → conductor.sendResult"]
-
-    AST --> WL
-    ENV --> WL
-    WL --> UNITS --> COMP --> EMIT --> INT --> JITP --> RUN --> OUT
-    WL <--> FS
-    FS -. "facts" .-> COMP
-    AST --> COMP
-    ENV --> COMP
-    INT -- "observe*" --> WL
-```
-
----
-
-## Phase 4b — CSE evaluators
-
-The CSE (control-stash-environment) machine
-(`src/engines/cse/interpreter.ts`) is a stepper. Two evaluator
-families wrap it:
-
-| Evaluator | File | Role |
-|---|---|---|
-| `PyCseEvaluator{1..4}` | `PyCseEvaluator.ts` | Plain CSE. Parse → `analyze` (scope/variant errors only; no `FunctionEnvironments`) → `evaluate`. No `Worklist`, no runtime feedback, no transforms. |
-| `PyCseJitEvaluator{1..4}` | `PyCseJitEvaluator.ts` | Reactive CSE JIT. Parse → `analyzeWithEnvironments` → `new Worklist` → `converge` → wire callbacks → `evaluate` → `worklist.tick()`. AST mutation *is* the install (no `jitPass`). |
-
-Plain CSE interpreter still calls `context.runtime.observeNodeWrite?.(…)`
-/ `observeScopeCall?.(…)` at the same sites — the callbacks are just
-left `undefined`, so the `?.` short-circuits and the interpreter
-proceeds unchanged.
-
-CSE JIT flow:
-
-1. `parse` + `analyzeWithEnvironments`.
-2. `worklist = new Worklist(ast, environments)` (DEFAULT_PASSES) +
-   `converge()`.
-3. `context.runtime.rootScope = ast`.
-4. `context.runtime.observeNodeWrite` / `observeScopeCall` wired as
-   plain closures over a local `callCounts` map; each closure calls
-   `worklist.observe(runtimeWritePass | runtimeCallPass, …)`. Unlike
-   the SVML JIT, there is no source-side `RUNTIME_CALL_COUNT_SAT`
-   cap — equality-gated writes at `callCountPass` / `runtimeCallPass`
-   lattices handle post-saturation cascade suppression, and CSE's
-   per-call cost is high enough that the extra observe is in the
-   noise.
-5. `await evaluate(...)`, then `worklist.tick()` to drain residual
-   work. No `jitPass`; the AST mutation performed by
-   `memoizationRule`'s transfer is the install. Callbacks cleared in
-   `finally`.
-6. Inside `evaluate`: the interpreter reads no facts on the hot path.
-   It pushes observations on each APPLICATION instruction and each
-   relevant assign. The next CALL re-reads `closure.node.body`, which
-   now includes any injected prelude.
-
-```mermaid
-flowchart TB
-    AST["FileInput AST"]
-    ENV["environments"]
-    WL["new Worklist<br/>+ converge()"]
-    WIRE["context.runtime.rootScope = ast<br/>observeNodeWrite / observeScopeCall"]
-    EXEC["evaluate(ast, context)<br/>control/stash stepper"]
-    OBS["worklist.observe(runtime*Pass, ...)"]
-    TICK["worklist.tick()"]
-    FIN["finally: callbacks cleared"]
-
-    AST --> WL
-    ENV --> WL
-    WL --> WIRE --> EXEC
-    EXEC -- "runtime feedback" --> OBS --> WL
-    EXEC --> TICK --> FIN
-```
-
----
-
-## Consolidated diagram
-
-```mermaid
-flowchart TB
-    SRC["Python source"]
-    PARSE["parse"]
-    RESOLVE["analyzeWithEnvironments"]
-    SRC --> PARSE --> RESOLVE
-
-    subgraph SPEC["Specialization framework"]
-      direction TB
-      WL["Worklist<br/>register · observe · converge/tick"]
-      FS["FactStore<br/>(pass, key) → V<br/>equality-gated writes"]
-      UNITS["FunctionUnit<br/>body getter + slot table"]
-      WL <--> FS
-      WL --> UNITS
-    end
-    RESOLVE --> WL
-
-    subgraph SVML["SVML JIT backend"]
-      direction TB
-      COMP["SVMLCompiler.fromProgramUnit<br/>(reads FactStore)"]
-      INT["SVMLInterpreter.execute<br/>patchFunction (dispatch patch)"]
-      JITP["jitPass<br/>recompile + structural-equals + patch"]
-      COMP --> INT
-      JITP -- "patchFunction" --> INT
-    end
-    FS -. "facts at compile time" .-> COMP
-    INT -- "observeNodeWrite / observeScopeCall" --> WL
-    FS -- "fact change" --> JITP
-
-    subgraph CSE["CSE backend (plain + JIT variants)"]
-      direction TB
-      EXEC["evaluate<br/>(control/stash stepper)"]
-    end
-    WL -. "CSE JIT only: AST mutation is the install" .-> EXEC
-    EXEC -- "CSE JIT only: observeNodeWrite / observeScopeCall" --> WL
-
-    classDef engine fill:#fff3cd,stroke:#b58900,color:#000;
-    classDef backend fill:#e0f7fa,stroke:#0097a7,color:#000;
-    class SPEC engine;
-    class SVML,CSE backend;
-```
-
----
-
-## Quick reference: files and interfaces
+## File index
 
 | Concern | File | Key symbols |
 |---|---|---|
-| Parse | `src/parser/parser-adapter.ts` | `parse` |
-| Resolve | `src/resolver/index.ts` | `analyzeWithEnvironments`, `FunctionEnvironments` |
-| Worklist | `src/specialization/framework/worklist.ts` | `Worklist`, `converge`, `tick`, `register`, `observe`, `units`, `factStore`, `DEFAULT_PASSES` |
 | Pass shape | `src/specialization/framework/pass.ts` | `Pass<K,V>`, `PassCtx`, `Lattice<V>` |
 | Fact store | `src/specialization/framework/fact-store.ts` | `FactStore.read/write/readAll/onChange` |
+| Worklist | `src/specialization/framework/worklist.ts` | `Worklist`, `DEFAULT_PASSES` |
 | Units | `src/specialization/framework/function-unit.ts` | `FunctionUnit`, `buildFunctionUnits` |
-| Runtime sources | `src/specialization/framework/runtime-passes.ts` | `runtimeWritePass`, `runtimeCallPass` |
+| Runtime sources | `src/specialization/framework/runtime-passes.ts` | `runtimeWritePass`, `runtimeCallPass`, `RUNTIME_CALL_COUNT_SAT` |
 | Structural source | `src/specialization/framework/structural-pass.ts` | `structuralPass` |
 | Derived passes | `memoization-analysis/call-count.ts`, `purity-analysis/analysis.ts` | `callCountPass`, `purityScopePass` |
-| Transform rules | `transforms/{memoization,dead-branch,constant-folding}.ts` | `memoizationRule`, `deadBranchRule`, `constantFoldingRule` |
-| Unit-sweep helper | `src/specialization/framework/transform-rule.ts` | `unitSweepRule` (used by dead-branch + const-folding) |
-| Memoization rewrite | `src/specialization/transforms/memoization.ts` | `applyMemoizationWrap`, `isAlreadyWrapped`, `memoizationRule` |
-| SVML compile | `src/engines/svml/svml-compiler.ts` | `SVMLCompiler.fromProgramUnit`, `compileProgram`, `compileFunction`, `indexOf` |
-| SVML run | `src/engines/svml/svml-interpreter.ts` | `SVMLInterpreter.execute`, `patchFunction`, `toJSValue` |
-| JIT install pass | `src/engines/svml/jit-pass.ts` | `makeJitPass`, `JitPassDeps`; registered by `PySvmlJitEvaluator` |
-| CSE run | `src/engines/cse/interpreter.ts` | `evaluate` (calls `context.runtime.observe*`) |
+| Transforms | `transforms/{memoization,dead-branch,constant-folding}.ts` | `memoizationRule`, `deadBranchRule`, `constantFoldingRule` |
+| SVML compile | `src/engines/svml/svml-compiler.ts` | `SVMLCompiler.fromProgramUnit`, `compileProgram`, `compileFunction` |
+| SVML run | `src/engines/svml/svml-interpreter.ts` | `SVMLInterpreter.execute`, `patchFunction` |
+| JIT install pass | `src/engines/svml/jit-pass.ts` | `makeJitPass` |
+| CSE run | `src/engines/cse/interpreter.ts` | `evaluate` |
 | Memo runtime | `src/runtime/memo.ts` | `memoLookup`, `memoPut`, `MEMO_MISS`, `MEMO_INTRINSIC_NAMES` |
 | Evaluators | `src/conductor/Py*Evaluator.ts` | `evaluateChunk` |

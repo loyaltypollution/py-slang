@@ -12,7 +12,7 @@ import {
   integer,
   boolean,
   floatValue,
-  complexValue as complexVal,
+  COMPLEX,
 } from "./lattice";
 
 // Sign arithmetic tables (IntRef × IntRef → IntRef).
@@ -169,7 +169,7 @@ export function transferBinaryOp(op: string, left: TypeLattice, right: TypeLatti
     const otherKinds = lk === COMPLEX_BIT ? rk : lk;
     // complex op numeric = complex; complex op non-numeric = TOP
     if (otherKinds & ~(INT_BIT | FLOAT_BIT | COMPLEX_BIT)) return TOP;
-    return complexVal();
+    return COMPLEX;
   }
 
   const lIsFloat = lk === FLOAT_BIT;
@@ -294,7 +294,7 @@ export function transferCompare(op: string, left: TypeLattice, right: TypeLattic
 }
 
 export function transferUnaryNeg(operand: TypeLattice): TypeLattice {
-  if (operand.kinds === COMPLEX_BIT) return complexVal();
+  if (operand.kinds === COMPLEX_BIT) return COMPLEX;
   if (operand.kinds === FLOAT_BIT) return floatValue(negSign(operand.floatRef));
   if (operand.kinds === INT_BIT) return integer(negSign(operand.intRef));
   return TOP;

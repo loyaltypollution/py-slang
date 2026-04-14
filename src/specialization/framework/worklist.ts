@@ -1,5 +1,6 @@
 // Priority-scheduled worklist for pass-graph dispatch.
 
+import { PriorityQueue } from "@datastructures-js/priority-queue";
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock } from "./cfg";
@@ -18,18 +19,15 @@ import { memoizationRule } from "../transforms/memoization";
 import { typeAnalysisPass } from "../type-analysis/analysis";
 import { typeAnalysisDfa, constAnalysisDfa } from "./dfa-passes";
 
-export interface WorklistStats {
-  readonly itemsProcessed: number;
-  readonly analysisItemsProcessed: number;
-  readonly transformItemsProcessed: number;
-  readonly transformRounds: number;
-  readonly drainCalls: number;
-  readonly wallClockMs: number;
-  /** Max combined depth across tier queues, sampled on enqueue. */
-  readonly peakQueueDepth: number;
-}
+type QItem = { pass: Pass<any, any>; key: unknown; seq: number };
 
-type QItem = { pass: Pass<any, any>; key: unknown };
+const TIER_RANK = { runtime: 0, analysis: 1, transform: 2 } as const;
+
+const compareItems = (a: QItem, b: QItem): number => {
+  const ta = TIER_RANK[a.pass.tier ?? "analysis"];
+  const tb = TIER_RANK[b.pass.tier ?? "analysis"];
+  return ta - tb || a.seq - b.seq;
+};
 
 export class Worklist {
   readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
@@ -47,25 +45,13 @@ export class Worklist {
   readonly factStore = new FactStore();
   private readonly registeredPasses: Pass<any, any>[] = [];
   private readonly passReaders = new Map<Pass<any, any>, Pass<any, any>[]>();
-  // Tier-indexed FIFO queues.
-  private readonly runtimeQ: QItem[] = [];
-  private readonly analysisQ: QItem[] = [];
-  private readonly transformQ: QItem[] = [];
+  /** Global priority queue: tier rank (runtime < analysis < transform), FIFO within tier. */
+  private readonly queue = new PriorityQueue<QItem>(compareItems);
+  private seqCounter = 0;
   /** Dedup — at most one pending entry per (pass, key). */
   private readonly pendingKeysByPass = new Map<Pass<any, any>, Set<unknown>>();
-  private draining = false;
-
-  /** Count of pending analysis items per unit. */
-  private readonly analysisPendingByUnit = new Map<FunctionUnit, number>();
-
-  // Perf counters
-  private _itemsProcessed = 0;
-  private _analysisItemsProcessed = 0;
-  private _transformItemsProcessed = 0;
-  private _transformRounds = 0;
-  private _drainCalls = 0;
-  private _wallClockMs = 0;
-  private _peakQueueDepth = 0;
+  /** Re-entrant batch depth. While >0, `observe` skips `processQueue`. */
+  private batchDepth = 0;
 
   constructor(
     ast: StmtNS.FileInput,
@@ -95,16 +81,6 @@ export class Worklist {
     }
   }
 
-  /** Drain to fixpoint. */
-  converge(): void {
-    this.drain();
-  }
-
-  /** Incremental drain; returns true if any units changed. */
-  tick(limit?: number): boolean {
-    return this.drain(limit).size > 0;
-  }
-
   /** Register a pass. Idempotent. Requires `affectedKeys` or `coarse: true`. */
   register<K, V>(pass: Pass<K, V>): void {
     if (this.registeredPasses.indexOf(pass as Pass<any, any>) !== -1) return;
@@ -126,10 +102,29 @@ export class Worklist {
     }
   }
 
-  /** Runtime-observation entry: write and drain synchronously. Re-entry guarded. */
+  /** Runtime-observation entry: write and process queue synchronously. While a
+   *  batch is open (`beginBatch`/`endBatch`), the drain is deferred to the
+   *  outermost `endBatch`. Monotone lattices reach the same fixed point either
+   *  way — this only suppresses per-write fan-out churn. */
   observe<K, V>(pass: Pass<K, V>, key: K, value: V): void {
     this.factStore.write(pass, key, value);
-    this.drainPasses();
+    if (this.batchDepth === 0) this.processQueue();
+  }
+
+  /** Open a batch. Re-entrant: nested begin/endBatch pairs compose via a counter;
+   *  only the outermost `endBatch` drains. */
+  beginBatch(): void {
+    this.batchDepth++;
+  }
+
+  /** Close a batch. Drains the queue iff this closes the outermost batch.
+   *  Throws if called without a matching `beginBatch`. */
+  endBatch(): void {
+    if (this.batchDepth === 0) {
+      throw new Error("[Worklist] endBatch called without matching beginBatch");
+    }
+    this.batchDepth--;
+    if (this.batchDepth === 0) this.processQueue();
   }
 
   /** Enqueue `(pass, key)` for re-transfer. Deduped per pair. */
@@ -142,68 +137,19 @@ export class Worklist {
     }
     if (pending.has(key)) return;
     pending.add(key);
-    const item: QItem = { pass: p, key };
-
-    const tier = p.tier ?? "analysis";
-    if (tier === "runtime") {
-      this.runtimeQ.push(item);
-    } else if (tier === "transform") {
-      this.transformQ.push(item);
-    } else {
-      this.analysisQ.push(item);
-      const unit = this.unitOfKey(key);
-      if (unit !== undefined) {
-        this.analysisPendingByUnit.set(unit, (this.analysisPendingByUnit.get(unit) ?? 0) + 1);
-      }
-    }
-    const depth = this.runtimeQ.length + this.analysisQ.length + this.transformQ.length;
-    if (depth > this._peakQueueDepth) this._peakQueueDepth = depth;
+    this.queue.enqueue({ pass: p, key, seq: this.seqCounter++ });
   }
 
-  /** Drain one pass-dispatch round. Tier order: runtime < analysis < transform;
-   *  transforms defer while analysis is pending for the same unit. */
-  drainPasses(): void {
-    if (this.draining) return;
-    this.draining = true;
-    try {
-      while (true) {
-        const item = this.popNextItem();
-        if (item === undefined) break;
-        this.pendingKeysByPass.get(item.pass)?.delete(item.key);
-        const itemTier = item.pass.tier ?? "analysis";
-        if (itemTier === "analysis") {
-          const unit = this.unitOfKey(item.key);
-          if (unit !== undefined) {
-            const n = (this.analysisPendingByUnit.get(unit) ?? 0) - 1;
-            if (n <= 0) this.analysisPendingByUnit.delete(unit);
-            else this.analysisPendingByUnit.set(unit, n);
-          }
-        }
-        const value = item.pass.transfer(this.passCtx, item.key);
-        if (value !== undefined) {
-          this.factStore.write(item.pass, item.key, value);
-        }
-        this._itemsProcessed++;
-        if (itemTier === "analysis") this._analysisItemsProcessed++;
-        else if (itemTier === "transform") this._transformItemsProcessed++;
+  /** Pop the PQ to empty. Tier order: runtime < analysis < transform. Does not rebuild CFGs. */
+  private processQueue(): void {
+    while (!this.queue.isEmpty()) {
+      const item = this.queue.dequeue()!;
+      this.pendingKeysByPass.get(item.pass)?.delete(item.key);
+      const value = item.pass.transfer(this.passCtx, item.key);
+      if (value !== undefined) {
+        this.factStore.write(item.pass, item.key, value);
       }
-    } finally {
-      this.draining = false;
     }
-  }
-
-  /** Pop in tier order; skips transform items with pending analysis on same unit. */
-  private popNextItem(): QItem | undefined {
-    if (this.runtimeQ.length > 0) return this.runtimeQ.shift();
-    if (this.analysisQ.length > 0) return this.analysisQ.shift();
-    for (let i = 0; i < this.transformQ.length; i++) {
-      const item = this.transformQ[i];
-      const unit = this.unitOfKey(item.key);
-      if (unit !== undefined && this.analysisPendingForUnit(unit)) continue;
-      this.transformQ.splice(i, 1);
-      return item;
-    }
-    return undefined;
   }
 
   private readonly passCtx: PassCtx = {
@@ -288,78 +234,24 @@ export class Worklist {
     return Array.from(this.factStore.readAll(reader).keys());
   }
 
-  private unitOfKey(key: unknown): FunctionUnit | undefined {
-    if (typeof key !== "object" || key === null) return undefined;
-    if ("funcAst" in key) return key as unknown as FunctionUnit;
-    if ("kind" in key) return this.units.get(key as StmtNS.FileInput | StmtNS.FunctionDef);
-    return undefined;
-  }
-
-  private analysisPendingForUnit(unit: FunctionUnit): boolean {
-    return (this.analysisPendingByUnit.get(unit) ?? 0) > 0;
-  }
-
   drain(limit = Infinity): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
-    const t0 = performance.now();
-    this._drainCalls++;
     const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     let processed = 0;
 
     while (processed < limit) {
-      this.drainPasses();
+      this.processQueue();
       // CFG rebuilds bump structuralPass, re-enqueuing downstream work.
       const rebuilt = this.flushPendingRebuilds();
 
       if (rebuilt.length === 0) break;
 
-      this._transformRounds++;
       for (const unit of rebuilt) {
         changed.add(unit.funcAst);
         processed++;
       }
     }
 
-    this._wallClockMs += performance.now() - t0;
     return changed;
-  }
-
-  /** Current structural version for `unit` (value of `structuralPass`). */
-  structuralVersionOf(unit: FunctionUnit): number {
-    return this.factStore.read(structuralPass, unit);
-  }
-
-  private get queueDepth(): number {
-    return this.runtimeQ.length + this.analysisQ.length + this.transformQ.length;
-  }
-
-  get idle(): boolean {
-    return this.queueDepth === 0 && this.pendingRebuilds.size === 0;
-  }
-
-  get pending(): number {
-    return this.queueDepth + this.pendingRebuilds.size;
-  }
-
-  get stats(): WorklistStats {
-    return Object.freeze({
-      itemsProcessed: this._itemsProcessed,
-      analysisItemsProcessed: this._analysisItemsProcessed,
-      transformItemsProcessed: this._transformItemsProcessed,
-      transformRounds: this._transformRounds,
-      drainCalls: this._drainCalls,
-      wallClockMs: this._wallClockMs,
-      peakQueueDepth: this._peakQueueDepth,
-    });
-  }
-
-  resetStats(): void {
-    this._itemsProcessed = 0;
-    this._analysisItemsProcessed = 0;
-    this._transformItemsProcessed = 0;
-    this._transformRounds = 0;
-    this._drainCalls = 0;
-    this._wallClockMs = 0;
-    this._peakQueueDepth = 0;
   }
 
 }
@@ -371,8 +263,8 @@ export const DEFAULT_PASSES: ReadonlyArray<Pass<any, any>> = [
   runtimeCallPass,
   typeAnalysisPass,
   constAnalysisPass,
-  typeAnalysisDfa.blockKeyedPass,
-  constAnalysisDfa.blockKeyedPass,
+  typeAnalysisDfa,
+  constAnalysisDfa,
   purityScopePass,
   callCountPass,
   deadBranchRule,

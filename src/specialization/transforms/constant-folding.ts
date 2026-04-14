@@ -40,65 +40,65 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   visitBoolOpExpr(expr: ExprNS.BoolOp): ExprNS.Expr {
     expr.left = expr.left.accept(this);
     expr.right = expr.right.accept(this);
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitUnaryExpr(expr: ExprNS.Unary): ExprNS.Expr {
     expr.right = expr.right.accept(this);
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitTernaryExpr(expr: ExprNS.Ternary): ExprNS.Expr {
     expr.predicate = expr.predicate.accept(this);
     expr.consequent = expr.consequent.accept(this);
     expr.alternative = expr.alternative.accept(this);
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitCallExpr(expr: ExprNS.Call): ExprNS.Expr {
     expr.callee = expr.callee.accept(this);
     for (let i = 0; i < expr.args.length; i++) {
       expr.args[i] = expr.args[i].accept(this);
     }
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitListExpr(expr: ExprNS.List): ExprNS.Expr {
     for (let i = 0; i < expr.elements.length; i++) {
       expr.elements[i] = expr.elements[i].accept(this);
     }
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitSubscriptExpr(expr: ExprNS.Subscript): ExprNS.Expr {
     expr.value = expr.value.accept(this);
     expr.index = expr.index.accept(this);
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitGroupingExpr(expr: ExprNS.Grouping): ExprNS.Expr {
     expr.expression = expr.expression.accept(this);
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitStarredExpr(expr: ExprNS.Starred): ExprNS.Expr {
     expr.value = expr.value.accept(this);
-    return this.tryRewrite(expr);
+    return expr;
   }
   // Lambda bodies: separate scope, do not descend.
   visitLambdaExpr(expr: ExprNS.Lambda): ExprNS.Expr {
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExprNS.Expr {
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitLiteralExpr(expr: ExprNS.Literal): ExprNS.Expr {
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ExprNS.Expr {
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitComplexExpr(expr: ExprNS.Complex): ExprNS.Expr {
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitVariableExpr(expr: ExprNS.Variable): ExprNS.Expr {
-    return this.tryRewrite(expr);
+    return expr;
   }
   visitNoneExpr(expr: ExprNS.None): ExprNS.Expr {
-    return this.tryRewrite(expr);
+    return expr;
   }
 }
 
@@ -164,14 +164,12 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-function constantFoldingSweep(unit: FunctionUnit, factStore: FactStore): boolean {
-  const v = new ConstFoldStmtVisitor(factStore);
-  v.sweep(unit.body);
-  return v.changed;
-}
-
 export const constantFoldingRule = unitSweepRule(
   "constantFoldingRule",
   [constAnalysisPass],
-  constantFoldingSweep,
+  (unit: FunctionUnit, factStore: FactStore) => {
+    const v = new ConstFoldStmtVisitor(factStore);
+    v.sweep(unit.body);
+    return v.changed;
+  },
 );

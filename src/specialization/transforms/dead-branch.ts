@@ -62,14 +62,12 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-function deadBranchSweep(unit: FunctionUnit, factStore: FactStore): boolean {
-  const v = new DeadBranchVisitor(factStore);
-  v.sweep(unit.body);
-  return v.changed;
-}
-
 export const deadBranchRule = unitSweepRule(
   "deadBranchRule",
   [constAnalysisPass],
-  deadBranchSweep,
+  (unit: FunctionUnit, factStore: FactStore) => {
+    const v = new DeadBranchVisitor(factStore);
+    v.sweep(unit.body);
+    return v.changed;
+  },
 );

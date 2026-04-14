@@ -1,15 +1,15 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
+import { MEMOIZATION_THRESHOLD } from "../../../specialization";
+import { memoizationRule } from "../../../specialization/transforms/memoization";
 import {
   clearMemoCache,
-  MEMOIZATION_THRESHOLD,
   memoCacheSnapshot,
-  memoizationRule,
   memoLookup,
   MEMO_MISS,
   memoPut,
-} from "../../../specialization";
+} from "../../../runtime/memo";
 import { runtimeCallPass } from "../../../specialization/framework/runtime-passes";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
 import type { Worklist } from "../../../specialization";
@@ -46,7 +46,7 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
 
   test("observeCall increments callCount hint", () => {
     const { ast, reactive } = setup("def f(x):\n    return x + 1");
-    reactive.converge();
+    reactive.drain();
     const fd = findFunctionDef(ast, "f");
     expect(reactive.factStore.tryRead(callCountPass, fd.id)).toBeUndefined();
     observeCallsTo(reactive, fd, 3);
@@ -55,10 +55,10 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
 
   test("below threshold: body unchanged", () => {
     const { ast, reactive } = setup("def f(x):\n    return x + 1");
-    reactive.converge();
+    reactive.drain();
     const fd = findFunctionDef(ast, "f");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD - 1);
-    reactive.tick();
+    reactive.drain();
     expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(false);
     expect(fd.body).toHaveLength(1);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.Return);
@@ -66,10 +66,10 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
 
   test("at threshold + pure: body is wrapped with __memo_has / __memo_put", () => {
     const { ast, reactive } = setup("def f(x):\n    return x + 1");
-    reactive.converge();
+    reactive.drain();
     const fd = findFunctionDef(ast, "f");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
-    reactive.tick();
+    reactive.drain();
 
     expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(true);
     expect(fd.body).toHaveLength(2);
@@ -85,13 +85,13 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
 
   test("idempotent: second observation past threshold does not re-wrap", () => {
     const { ast, reactive } = setup("def f(x):\n    return x + 1");
-    reactive.converge();
+    reactive.drain();
     const fd = findFunctionDef(ast, "f");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
-    reactive.tick();
+    reactive.drain();
     const bodyLen = fd.body.length;
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
-    reactive.tick();
+    reactive.drain();
     expect(fd.body.length).toBe(bodyLen);
   });
 
@@ -104,10 +104,10 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
       "    return 0",
     ].join("\n");
     const { ast, reactive } = setup(code);
-    reactive.converge();
+    reactive.drain();
     const fd = findFunctionDef(ast, "f");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
-    reactive.tick();
+    reactive.drain();
 
     const returns: StmtNS.Return[] = [];
     const walk = (stmts: StmtNS.Stmt[]) => {
@@ -136,20 +136,20 @@ describe("memoization: purity gate", () => {
 
   test("free-name read (global) stays unwrapped past threshold", () => {
     const { ast, reactive } = setup("x = 0\ndef g():\n    return x");
-    reactive.converge();
+    reactive.drain();
     const fd = findFunctionDef(ast, "g");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD * 2);
-    reactive.tick();
+    reactive.drain();
     expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(false);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.Return);
   });
 
   test("I/O call (print) stays unwrapped past threshold", () => {
     const { ast, reactive } = setup("def f(x):\n    print(x)\n    return x");
-    reactive.converge();
+    reactive.drain();
     const fd = findFunctionDef(ast, "f");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD * 2);
-    reactive.tick();
+    reactive.drain();
     expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(false);
     expect(fd.body).toHaveLength(2);
   });
@@ -190,10 +190,10 @@ describe("memoization: runtime cache contract", () => {
 
   test("zero-arg wrap puts under empty-string key", () => {
     const { ast, reactive } = setup("def answer():\n    return 42");
-    reactive.converge();
+    reactive.drain();
     const fd = findFunctionDef(ast, "answer");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
-    reactive.tick();
+    reactive.drain();
 
     memoPut("answer@L1", [], 42);
     expect(memoLookup("answer@L1", [])).not.toBe(MEMO_MISS);
@@ -211,7 +211,7 @@ describe("memoization: SVML wiring", () => {
     const ast = parse(script) as StmtNS.FileInput;
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const reactive = buildTestWorklist(ast, environments);
-    reactive.converge();
+    reactive.drain();
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
@@ -225,7 +225,7 @@ describe("memoization: SVML wiring", () => {
   test("__memo_put writes to the shared slab", async () => {
     const { reactive, interpreter } = runSvml(`__memo_put("k@L1", 5, 42)`);
     await interpreter.execute();
-    reactive.tick();
+    reactive.drain();
     expect(memoCacheSnapshot().get("k@L1")!.get("number:5")).toBe(42);
   });
 
@@ -240,12 +240,12 @@ f(5)
     const ast = parse(script) as StmtNS.FileInput;
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const reactive = buildTestWorklist(ast, environments);
-    reactive.converge();
+    reactive.drain();
 
     // Trip the memoization rewrite before compilation.
     const fd = findFunctionDef(ast, "f");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
-    reactive.tick();
+    reactive.drain();
     expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(true);
 
     const compiler = SVMLCompiler.fromProgramUnit(
@@ -274,7 +274,7 @@ __memo_put("k@L1", 1, 7)
 __memo_put("k@L1", 2, __memo_get("k@L1", 1))
 `);
     await interpreter.execute();
-    reactive.tick();
+    reactive.drain();
     const bucket = memoCacheSnapshot().get("k@L1")!;
     expect(bucket.get("number:1")).toBe(7);
     expect(bucket.get("number:2")).toBe(7);

@@ -6,7 +6,7 @@ import type { MutableEnv } from "./mutable-env";
 import type { SlotLookup } from "./slot-table";
 
 /** Statement-level transfer; updates `env` in place. If/While/For headers evaluate condition/iter only. */
-export function transferStmt<L>(
+function transferStmt<L>(
   stmt: StmtNS.Stmt,
   env: MutableEnv<L>,
   visitor: ExprNS.Visitor<L>,

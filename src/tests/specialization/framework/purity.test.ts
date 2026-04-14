@@ -1,7 +1,7 @@
 /**
  * Tests for the intraprocedural MOD-dataflow purity pass (PurityScopePass).
  *
- * The pass runs a fixpoint CFG walk with a block-level `PurityFact`
+ * The pass runs a fixpoint CFG walk with a block-level `PurityRecord`
  * (mod-set, call-purity, sticky impure flag) and derives `hint.pure` at
  * the exit block. These tests cover parity with the previous syntactic
  * fold plus the capability gains introduced by:
@@ -12,11 +12,7 @@
 import { StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import {
-  ConstAnalysisPass,
-  TypeAnalysisPass,
-  Worklist,
-} from "../../../specialization";
+import { Worklist } from "../../../specialization";
 import { purityScopePass } from "../../../specialization/purity-analysis/analysis";
 
 function purityOf(code: string, fnName: string): boolean | undefined {
@@ -24,7 +20,7 @@ function purityOf(code: string, fnName: string): boolean | undefined {
   const ast = parse(script) as StmtNS.FileInput;
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const worklist = new Worklist(ast, environments);
-  worklist.converge();
+  worklist.drain();
 
   for (const stmt of ast.statements) {
     if (stmt instanceof StmtNS.FunctionDef && stmt.name.lexeme === fnName) {

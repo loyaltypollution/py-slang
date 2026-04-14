@@ -88,7 +88,11 @@ export function makeChapter2Validators(): FeatureValidator[] {
 }
 
 export function makeChapter3Validators(): FeatureValidator[] {
-    return []; // unrestricted
+    return [ForRangeOnlyValidator, createBreakContinueValidator(), NoAnnAssignValidator];
+}
+
+export function makeChapter4Validators(): FeatureValidator[] {
+    return [createBreakContinueValidator(), NoAnnAssignValidator]; // otherwise unrestricted
 }
 
 export function makeValidatorsForChapter(chapter: number): FeatureValidator[] {
@@ -96,7 +100,8 @@ export function makeValidatorsForChapter(chapter: number): FeatureValidator[] {
         case 1: return makeChapter1Validators();
         case 2: return makeChapter2Validators();
         case 3: return makeChapter3Validators();
-        default: return [];
+        case 4: return makeChapter4Validators();
+        default: return makeChapter4Validators();
     }
 }
 ```
@@ -104,8 +109,14 @@ export function makeValidatorsForChapter(chapter: number): FeatureValidator[] {
 The entry point `analyze(ast, source, chapter)` in `src/resolver/analysis.ts` wires it all together:
 
 ```typescript
-export function analyze(ast: StmtNS.FileInput, source: string, chapter: number = 4): void {
-    new Resolver(source, ast, makeValidatorsForChapter(chapter)).resolve(ast);
+export function analyze(
+    ast: StmtNS.FileInput,
+    source: string,
+    chapter: number = 4,
+    groups: Group[] = [],
+    preludeNames: string[] = [],
+): Error[] {
+    return new Resolver(source, ast, makeValidatorsForChapter(chapter), groups, preludeNames).resolve(ast);
 }
 ```
 

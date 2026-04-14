@@ -2,6 +2,7 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import OpCodes from "../../../engines/svml/opcodes";
+import { structuralPass } from "../../../specialization/framework/structural-pass";
 import { buildTestWorklist } from "../../utils";
 import { runSpecCase } from "../../harness/spec-e2e";
 
@@ -16,7 +17,7 @@ function optimise(code: string): StmtNS.Stmt[] {
   const ast = parse(script) as StmtNS.FileInput;
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const reactive = buildTestWorklist(ast, environments);
-  reactive.converge();
+  reactive.drain();
   return reactive.units.get(ast)!.body;
 }
 
@@ -68,9 +69,9 @@ describe("worklist stability", () => {
     const ast = parse(script) as StmtNS.FileInput;
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const reactive = buildTestWorklist(ast, environments);
-    reactive.converge();
+    reactive.drain();
     for (const unit of reactive.units.values()) {
-      expect(reactive.structuralVersionOf(unit)).toBe(0);
+      expect(reactive.factStore.read(structuralPass, unit)).toBe(0);
     }
   });
 
@@ -79,17 +80,19 @@ describe("worklist stability", () => {
     const ast = parse(script) as StmtNS.FileInput;
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const reactive = buildTestWorklist(ast, environments);
-    reactive.converge();
-    expect(reactive.structuralVersionOf(reactive.units.get(ast)!)).toBeGreaterThan(0);
+    reactive.drain();
+    expect(
+      reactive.factStore.read(structuralPass, reactive.units.get(ast)!),
+    ).toBeGreaterThan(0);
   });
 
-  test("tick() returns false at idle, true when work is pending", () => {
+  test("drain() size reports pending work", () => {
     const script = "x = 1 + 2\n";
     const ast = parse(script) as StmtNS.FileInput;
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const reactive = buildTestWorklist(ast, environments);
-    expect(reactive.tick(100)).toBe(true);
-    reactive.converge();
-    expect(reactive.tick()).toBe(false);
+    expect(reactive.drain(100).size > 0).toBe(true);
+    reactive.drain();
+    expect(reactive.drain().size > 0).toBe(false);
   });
 });

@@ -18,7 +18,7 @@ function build(code: string) {
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
-  engine.converge();
+  engine.drain();
   const units = engine.units;
   const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, engine.factStore);
   return { ast, environments, units, compiler };

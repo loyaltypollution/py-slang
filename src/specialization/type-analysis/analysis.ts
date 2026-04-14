@@ -4,32 +4,33 @@ import type { FactStore } from "../framework/fact-store";
 import type { Lattice, Pass, PassCtx } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
 import { structuralPass } from "../framework/structural-pass";
-import type { AnalysisPass } from "../framework/interfaces";
+import type { AnalysisPass, SlotEnv } from "../framework/interfaces";
+import type { RawKind } from "../framework/raw-value";
 import type { SlotLookup } from "../framework/slot-table";
 import {
   type TypeLattice,
   BOOL_BIT,
   boolean as booleanValue,
+  BOOL_FALSE,
+  BOOL_TRUE,
   BoolRef,
   BOTTOM,
-  closureValue,
-  complexValue,
-  falseValue,
+  CLOSURE,
+  COMPLEX,
+  FLOAT_NEG,
+  FLOAT_POS,
+  FLOAT_ZERO,
   floatValue,
+  INT_NEG,
+  INT_POS,
+  INT_ZERO,
   join,
   leq,
   meet,
-  negativeFloat,
-  negativeInteger,
-  nullValue,
-  positiveFloat,
-  positiveInteger,
+  NULL,
   STR_BIT,
-  stringValue,
+  STRING,
   TOP,
-  trueValue,
-  zeroFloat,
-  zeroInteger,
 } from "./lattice";
 import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
 
@@ -44,13 +45,23 @@ const typeLattice: Lattice<TypeLattice> = {
   join,
 };
 
+// Identity-key pass: `transfer → undefined` is intentional. Writes are performed
+// directly by `TypeAnalysisVisitor.annotate` via `factStore.write(typeAnalysisPass, ...)`;
+// this Pass exists only as the FactStore namespace key and as a `reads` invalidation
+// target for downstream consumers. `affectedKeys` narrows fan-out to the single
+// observed nodeId: a runtime write at node X can only invalidate this pass's fact
+// at node X. Structural triggers carry a `FunctionUnit` key, not a nodeId — forward
+// nothing in that case; the DFA pass re-runs the visitor on rebuild and re-writes
+// facts directly.
 export const typeAnalysisPass: Pass<number, TypeLattice> = {
   id: Symbol("typeAnalysisPass"),
   debugName: "typeAnalysisPass",
   lattice: typeLattice,
   reads: [runtimeWritePass, structuralPass],
   tier: "analysis",
-  coarse: true,
+  affectedKeys(_ctx: PassCtx, triggerPass: Pass<any, any>, triggerKey: unknown): Iterable<number> {
+    return triggerPass === runtimeWritePass ? [triggerKey as number] : [];
+  },
   transfer(_ctx: PassCtx, _key: number): TypeLattice | undefined {
     return undefined;
   },
@@ -77,7 +88,7 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
 class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
     private readonly factStore: FactStore,
-    private readonly slotTypes: { get(slot: number): TypeLattice | undefined },
+    private readonly slotTypes: SlotEnv<TypeLattice>,
     private readonly slotLookup: SlotLookup,
   ) {}
 
@@ -94,23 +105,23 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     const value = expr.value;
     if (typeof value === "number") {
       if (Number.isInteger(value) && Number.isFinite(value)) {
-        const info = value > 0 ? positiveInteger() : value < 0 ? negativeInteger() : zeroInteger();
+        const info = value > 0 ? INT_POS : value < 0 ? INT_NEG : INT_ZERO;
         return this.annotate(expr, info);
       }
       if (Number.isNaN(value)) return this.annotate(expr, floatValue());
-      const info = value > 0 ? positiveFloat() : value < 0 ? negativeFloat() : zeroFloat();
+      const info = value > 0 ? FLOAT_POS : value < 0 ? FLOAT_NEG : FLOAT_ZERO;
       return this.annotate(expr, info);
     } else if (typeof value === "boolean") {
-      return this.annotate(expr, value ? trueValue() : falseValue());
+      return this.annotate(expr, value ? BOOL_TRUE : BOOL_FALSE);
     } else if (typeof value === "string") {
-      return this.annotate(expr, stringValue());
+      return this.annotate(expr, STRING);
     }
     return this.annotate(expr, TOP);
   }
 
   visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): TypeLattice {
     const n = Number(expr.value);
-    const info = n > 0 ? positiveInteger() : n < 0 ? negativeInteger() : zeroInteger();
+    const info = n > 0 ? INT_POS : n < 0 ? INT_NEG : INT_ZERO;
     return this.annotate(expr, info);
   }
 
@@ -134,7 +145,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
       left.kinds === STR_BIT &&
       right.kinds === STR_BIT
     ) {
-      return this.annotate(expr, stringValue());
+      return this.annotate(expr, STRING);
     }
 
     const opStr = BINARY_OP_MAP.get(expr.operator.type);
@@ -164,11 +175,11 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     const leftIsBool = left.kinds === BOOL_BIT;
 
     if (expr.operator.type === TokenType.AND) {
-      if (leftIsBool && left.boolRef === BoolRef.False) return this.annotate(expr, falseValue());
+      if (leftIsBool && left.boolRef === BoolRef.False) return this.annotate(expr, BOOL_FALSE);
       if (leftIsBool && left.boolRef === BoolRef.True) return this.annotate(expr, right);
       return this.annotate(expr, booleanValue(BoolRef.Top));
     } else if (expr.operator.type === TokenType.OR) {
-      if (leftIsBool && left.boolRef === BoolRef.True) return this.annotate(expr, trueValue());
+      if (leftIsBool && left.boolRef === BoolRef.True) return this.annotate(expr, BOOL_TRUE);
       if (leftIsBool && left.boolRef === BoolRef.False) return this.annotate(expr, right);
       return this.annotate(expr, booleanValue(BoolRef.Top));
     }
@@ -212,15 +223,15 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   }
 
   visitLambdaExpr(expr: ExprNS.Lambda): TypeLattice {
-    return this.annotate(expr, closureValue());
+    return this.annotate(expr, CLOSURE);
   }
 
   visitMultiLambdaExpr(expr: ExprNS.MultiLambda): TypeLattice {
-    return this.annotate(expr, closureValue());
+    return this.annotate(expr, CLOSURE);
   }
 
   visitNoneExpr(expr: ExprNS.None): TypeLattice {
-    return this.annotate(expr, nullValue());
+    return this.annotate(expr, NULL);
   }
 
   visitListExpr(expr: ExprNS.List): TypeLattice {
@@ -242,83 +253,52 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   }
 
   visitComplexExpr(expr: ExprNS.Complex): TypeLattice {
-    return this.annotate(expr, complexValue());
+    return this.annotate(expr, COMPLEX);
   }
 }
 
 // Forward may-analysis: env join = union; specialize only when numeric on all paths.
-export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
-  readonly name = "type";
-  readonly mergeKind = "may" as const;
-  readonly direction = "forward" as const;
-  top(): TypeLattice {
-    return TOP;
-  }
-  bottom(): TypeLattice {
-    return BOTTOM;
-  }
-  join(a: TypeLattice, b: TypeLattice): TypeLattice {
-    return join(a, b);
-  }
-  meet(a: TypeLattice, b: TypeLattice): TypeLattice {
-    return meet(a, b);
-  }
-  leq(a: TypeLattice, b: TypeLattice): boolean {
-    return leq(a, b);
-  }
-
+export const typeAnalysisModule: AnalysisPass<TypeLattice> = {
+  name: "type",
+  mergeKind: "may",
+  direction: "forward",
+  top: () => TOP,
+  bottom: () => BOTTOM,
+  join,
+  meet,
+  leq,
   makeExprVisitor(
     factStore: FactStore,
-    env: { get(slot: number): TypeLattice | undefined },
+    env: SlotEnv<TypeLattice>,
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<TypeLattice> {
     return new TypeAnalysisVisitor(factStore, env, slotLookup);
-  }
-}
+  },
+};
 
-// Duck-type CSE stack values via `.type` discriminator (avoids engine→framework import).
-function liftType(rawValue: unknown): TypeLattice | undefined {
-  if (rawValue === null || rawValue === undefined) return nullValue();
-  if (typeof rawValue === "number") return rawToNumberLattice(rawValue);
-  if (typeof rawValue === "boolean") return rawValue ? trueValue() : falseValue();
-  if (typeof rawValue === "string") return stringValue();
-  if (typeof rawValue === "bigint") return rawToNumberLattice(Number(rawValue));
-  if (typeof rawValue !== "object") return undefined;
-
-  const tagged = rawValue as { type?: string; value?: unknown };
-  switch (tagged.type) {
+function liftType(rawKind: RawKind): TypeLattice | undefined {
+  switch (rawKind.kind) {
     case "number":
-      return typeof tagged.value === "number" ? rawToNumberLattice(tagged.value) : undefined;
-    case "bigint":
-      return typeof tagged.value === "bigint"
-        ? rawToNumberLattice(Number(tagged.value))
-        : undefined;
+      return rawToNumberLattice(rawKind.value);
     case "bool":
-      return tagged.value === true
-        ? trueValue()
-        : tagged.value === false
-          ? falseValue()
-          : undefined;
+      return rawKind.value ? BOOL_TRUE : BOOL_FALSE;
     case "string":
-      return stringValue();
+      return STRING;
     case "none":
-      return nullValue();
+      return NULL;
     case "closure":
-    case "function":
-    case "multi_lambda":
-    case "builtin":
-      return closureValue();
+      return CLOSURE;
     case "complex":
-      return complexValue();
-    default:
+      return COMPLEX;
+    case "unknown":
       return undefined;
   }
 }
 
 function rawToNumberLattice(value: number): TypeLattice {
   if (Number.isInteger(value) && Number.isFinite(value)) {
-    return value > 0 ? positiveInteger() : value < 0 ? negativeInteger() : zeroInteger();
+    return value > 0 ? INT_POS : value < 0 ? INT_NEG : INT_ZERO;
   }
   if (Number.isNaN(value)) return floatValue();
-  return value > 0 ? positiveFloat() : value < 0 ? negativeFloat() : zeroFloat();
+  return value > 0 ? FLOAT_POS : value < 0 ? FLOAT_NEG : FLOAT_ZERO;
 }

@@ -1,39 +1,36 @@
-import { ConstAnalysisPass } from "../const-analysis/analysis";
+import { constAnalysisModule } from "../const-analysis/analysis";
 import type { ConstLattice } from "../const-analysis/lattice";
-import { TypeAnalysisPass } from "../type-analysis/analysis";
+import { typeAnalysisModule } from "../type-analysis/analysis";
 import type { TypeLattice } from "../type-analysis/lattice";
 import { transferBlock } from "./block-transfer";
-import { makeBlockFixpointPass, type DfaPasses } from "./dfa-factory";
+import type { BasicBlock } from "./cfg";
+import { makeBlockFixpointPass } from "./dfa-factory";
+import type { AnalysisPass } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
+import type { Pass } from "./pass";
 import { runtimeWritePass } from "./runtime-passes";
 
-const TYPE_MODULE = new TypeAnalysisPass();
-const CONST_MODULE = new ConstAnalysisPass();
+function makeDfa<L>(debugName: string, spec: AnalysisPass<L>): Pass<BasicBlock, MutableEnv<L>> {
+  return makeBlockFixpointPass<L>({
+    debugName,
+    direction: spec.direction,
+    top: spec.top(),
+    leq: spec.leq,
+    join: spec.join,
+    meet: spec.meet,
+    mergeKind: spec.mergeKind,
+    reads: [runtimeWritePass],
+    seedEnv: () => new MutableEnv<L>(),
+    transferBlock: (ctx, block, inEnv, unit) =>
+      transferBlock(block, inEnv, spec, ctx.factStore, unit.slotLookup),
+  });
+}
 
-export const typeAnalysisDfa: DfaPasses<TypeLattice> = makeBlockFixpointPass<TypeLattice>({
-  debugName: "typeAnalysis",
-  direction: TYPE_MODULE.direction,
-  top: TYPE_MODULE.top(),
-  leq: (a, b) => TYPE_MODULE.leq(a, b),
-  join: (a, b) => TYPE_MODULE.join(a, b),
-  meet: (a, b) => TYPE_MODULE.meet(a, b),
-  mergeKind: TYPE_MODULE.mergeKind,
-  reads: [runtimeWritePass],
-  seedEnv: () => new MutableEnv<TypeLattice>(),
-  transferBlock: (ctx, block, inEnv, unit) =>
-    transferBlock(block, inEnv, TYPE_MODULE, ctx.factStore, unit.slotLookup),
-});
-
-export const constAnalysisDfa: DfaPasses<ConstLattice> = makeBlockFixpointPass<ConstLattice>({
-  debugName: "constAnalysis",
-  direction: CONST_MODULE.direction,
-  top: CONST_MODULE.top(),
-  leq: (a, b) => CONST_MODULE.leq(a, b),
-  join: (a, b) => CONST_MODULE.join(a, b),
-  meet: (a, b) => CONST_MODULE.meet(a, b),
-  mergeKind: CONST_MODULE.mergeKind,
-  reads: [runtimeWritePass],
-  seedEnv: () => new MutableEnv<ConstLattice>(),
-  transferBlock: (ctx, block, inEnv, unit) =>
-    transferBlock(block, inEnv, CONST_MODULE, ctx.factStore, unit.slotLookup),
-});
+export const typeAnalysisDfa: Pass<BasicBlock, MutableEnv<TypeLattice>> = makeDfa(
+  "typeAnalysis",
+  typeAnalysisModule,
+);
+export const constAnalysisDfa: Pass<BasicBlock, MutableEnv<ConstLattice>> = makeDfa(
+  "constAnalysis",
+  constAnalysisModule,
+);

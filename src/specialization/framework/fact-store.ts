@@ -8,10 +8,14 @@ export interface FactChange<K, V> {
   readonly newValue: V;
 }
 
-export type FactChangeListener = (change: FactChange<unknown, unknown>) => void;
+type FactChangeListener = (change: FactChange<unknown, unknown>) => void;
 
-/** Fact storage keyed by `(pass, key)`. Writes are gated by `pass.lattice.equals`;
- *  no-op writes suppress listener fan-out. */
+/** Fact storage keyed by `(pass, key)`. Writes are lattice-monotone: the stored
+ *  cell is `join(prev, value)`, never `value` alone. A write that produces no
+ *  change under `lattice.equals` suppresses listener fan-out. This turns the
+ *  lattice's monotonicity promise into a framework-level invariant — callers
+ *  can pass raw transfer output without hand-joining, and regressive writes
+ *  (value ⊏ prev) collapse to no-ops instead of silently corrupting state. */
 export class FactStore {
   private readonly cells = new Map<Pass<unknown, unknown>, Map<unknown, unknown>>();
   private readonly listeners = new Set<FactChangeListener>();
@@ -33,7 +37,9 @@ export class FactStore {
     return (inner ?? new Map()) as ReadonlyMap<K, V>;
   }
 
-  /** Write a fact. Returns `true` iff the value changed and a listener event fired. */
+  /** Write a fact. The stored value is `join(prev, value)`; a write that does
+   *  not advance the lattice is a no-op. Returns `true` iff the cell advanced
+   *  and a listener event fired. */
   write<K, V>(pass: Pass<K, V>, key: K, value: V): boolean {
     let inner = this.cells.get(pass as Pass<unknown, unknown>);
     if (inner === undefined) {
@@ -43,15 +49,16 @@ export class FactStore {
 
     const hadPrev = inner.has(key);
     const prev = hadPrev ? (inner.get(key) as V) : null;
+    const joined = hadPrev ? pass.lattice.join(prev as V, value) : value;
 
-    if (hadPrev && pass.lattice.equals(prev as V, value)) return false;
+    if (hadPrev && pass.lattice.equals(prev as V, joined)) return false;
 
-    inner.set(key, value);
+    inner.set(key, joined);
     const change: FactChange<K, V> = {
       pass,
       key,
       oldValue: prev,
-      newValue: value,
+      newValue: joined,
     };
     for (const listener of this.listeners) {
       listener(change as FactChange<unknown, unknown>);

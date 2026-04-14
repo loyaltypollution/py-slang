@@ -2,6 +2,11 @@ import type { ExprNS } from "../../ast-types";
 import type { FactStore } from "./fact-store";
 import type { SlotLookup } from "./slot-table";
 
+/** Read-only slot → lattice-value view (the minimum a visitor needs from `MutableEnv<L>`). */
+export interface SlotEnv<L> {
+  get(slot: number): L | undefined;
+}
+
 /** Expression-level DFA module for block-fixpoint analyses. */
 export interface AnalysisPass<L> {
   readonly name: string;
@@ -16,7 +21,7 @@ export interface AnalysisPass<L> {
   /** Per-subtree visitor: reads from `env`, writes facts via `factStore`. */
   makeExprVisitor(
     factStore: FactStore,
-    env: { get(slot: number): L | undefined },
+    env: SlotEnv<L>,
     slotLookup: SlotLookup,
   ): ExprNS.Visitor<L>;
 }

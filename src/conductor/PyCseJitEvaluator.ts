@@ -12,9 +12,10 @@ import {
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
+  RUNTIME_CALL_COUNT_SAT,
   Worklist,
+  observeRuntimeWrite,
   runtimeCallPass,
-  runtimeWritePass,
 } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
@@ -87,27 +88,34 @@ abstract class PyCseJitEvaluatorBase extends BasicEvaluator {
       }
 
       const worklist = new Worklist(ast, environments);
-      worklist.converge();
+      worklist.drain();
 
       this.context.runtime.rootScope = ast;
       // Per-callee raw counters live in the closure for this evaluation.
       const callCounts = new Map<number, number>();
       this.context.runtime.observeNodeWrite = (nodeId, value) => {
-        worklist.observe(runtimeWritePass, nodeId, value);
+        observeRuntimeWrite(worklist, nodeId, value);
       };
       this.context.runtime.observeScopeCall = (scopeId) => {
-        const next = (callCounts.get(scopeId) ?? 0) + 1;
+        const cur = callCounts.get(scopeId) ?? 0;
+        if (cur >= RUNTIME_CALL_COUNT_SAT) return;
+        const next = cur + 1;
         callCounts.set(scopeId, next);
         worklist.observe(runtimeCallPass, scopeId, next);
+        // Scope-call boundary: drain any writes buffered since the last call so
+        // memoization / tier-up transforms can fire before the next invocation.
+        worklist.drain();
       };
 
+      worklist.beginBatch();
       try {
         await evaluate("", ast, this.context, {
           variant: this.variant,
           groups: this.groups,
         });
-        worklist.tick();
       } finally {
+        worklist.endBatch();
+        worklist.drain();
         this.context.runtime.observeNodeWrite = undefined;
         this.context.runtime.observeScopeCall = undefined;
       }

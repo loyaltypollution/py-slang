@@ -1,5 +1,4 @@
-// Memoization: wraps a hot, pure FunctionDef body in place using the
-// __memo_has / __memo_get / __memo_put runtime intrinsics.
+// Memoization: wraps a hot, pure FunctionDef body using __memo_has / __memo_get / __memo_put.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "../framework/function-unit";

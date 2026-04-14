@@ -20,7 +20,7 @@ function optimise(code: string) {
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
-  engine.converge();
+  engine.drain();
   return { ast, factStore: engine.factStore, context: new Context(ast) };
 }
 
