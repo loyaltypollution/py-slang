@@ -68,12 +68,15 @@ const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
 // impure flag. A single mutable holder lets the expression walker downgrade
 // slots at escape points without plumbing extra return channels.
 class BlockState {
-  impure = false;
+  impure: boolean;
   constructor(
     readonly env: MutableEnv<AbsVal>,
     readonly slotLookup: SlotLookup,
     readonly selfName: string | undefined,
-  ) {}
+    inImpure: boolean,
+  ) {
+    this.impure = inImpure;
+  }
 
   markImpure(): void {
     this.impure = true;
@@ -331,8 +334,13 @@ export const purityBlockPass: Pass<
   summaryLattice,
   reads: [],
   seedEnv,
-  transferBlock: (_ctx, block, inEnv, unit) => {
-    const state = new BlockState(inEnv, unit.slotLookup, selfNameOf(unit));
+  transferBlock: (_ctx, block, inEnv, inSummary, unit) => {
+    const state = new BlockState(
+      inEnv,
+      unit.slotLookup,
+      selfNameOf(unit),
+      inSummary.impure,
+    );
     for (const stmt of block.stmts) transferStmt(stmt, state);
     return {
       outEnv: state.env,

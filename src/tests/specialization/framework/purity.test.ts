@@ -24,8 +24,7 @@ function purityOf(code: string, fnName: string): boolean | undefined {
 
   for (const stmt of ast.statements) {
     if (stmt instanceof StmtNS.FunctionDef && stmt.name.lexeme === fnName) {
-      const p = worklist.factStore.tryRead(purityScopePass, stmt.id);
-      return p === "contested" ? undefined : p;
+      return worklist.factStore.tryRead(purityScopePass, stmt.id);
     }
   }
   throw new Error(`FunctionDef ${fnName} not found`);
@@ -95,8 +94,14 @@ describe("PurityScopePass — parity with prior syntactic fold", () => {
     expect(purityOf("def f(x):\n    global g\n    return x", "f")).toBe(false);
   });
 
-  test("impure: bare SimpleExpr statement", () => {
-    expect(purityOf("def f(x):\n    x + 1\n    return x", "f")).toBe(false);
+  test("pure: bare SimpleExpr of a side-effect-free expression", () => {
+    // A bare expression-statement is pure iff the contained expression is.
+    // `x + 1;` is arithmetic on a param — no effect, so the function stays pure.
+    expect(purityOf("def f(x):\n    x + 1\n    return x", "f")).toBe(true);
+  });
+
+  test("impure: bare SimpleExpr of an impure call", () => {
+    expect(purityOf("def f(x):\n    print(x)\n    return x", "f")).toBe(false);
   });
 
   test("impure: assert statement", () => {

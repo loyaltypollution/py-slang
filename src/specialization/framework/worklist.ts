@@ -10,7 +10,7 @@ import type { Pass, PassCtx } from "./pass";
 import { structuralPass } from "./structural-pass";
 import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
 import { callCountPass } from "../memoization-analysis/call-count";
-import { purityScopePass } from "../purity-analysis/analysis";
+import { purityBlockPass, purityScopePass } from "../purity-analysis/analysis";
 import { constantFoldingRule } from "../transforms/constant-folding";
 import { deadBranchRule } from "../transforms/dead-branch";
 import { memoizationRule } from "../transforms/memoization";
@@ -292,6 +292,7 @@ export const DEFAULT_PASSES: ReadonlyArray<Pass<any, any>> = [
   runtimeCallPass,
   typeAnalysisPass,
   constAnalysisPass,
+  purityBlockPass,
   purityScopePass,
   callCountPass,
   deadBranchRule,
