@@ -230,7 +230,10 @@ export function makeBlockFixpointPass<L>(
     pass: blockKeyedPass as Pass<any, any>,
     wake: (_ctx, key) => {
       const b = key as BasicBlock;
-      return config.direction === "forward" ? b.successors : b.predecessors;
+      const edges = config.direction === "forward" ? b.successorEdges : b.predecessorEdges;
+      // Forward: successor blocks recompute their IN from our OUT.
+      // Backward: predecessor blocks recompute from our OUT.
+      return edges.map(e => (config.direction === "forward" ? e.to : e.from));
     },
   });
 
