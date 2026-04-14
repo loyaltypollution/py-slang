@@ -63,14 +63,32 @@ export function makeBlockFixpointPass<L>(
     return true;
   };
 
+  const exprFactsJoin = (
+    a: ReadonlyMap<number, L>,
+    b: ReadonlyMap<number, L>,
+  ): ReadonlyMap<number, L> => {
+    if (a === b || a.size === 0) return b;
+    if (b.size === 0) return a;
+    const merged = new Map<number, L>(a);
+    for (const [k, vb] of b) {
+      const va = merged.get(k);
+      merged.set(k, va === undefined ? vb : config.join(va, vb));
+    }
+    return merged;
+  };
+
   const envLattice: Lattice<DfaBlockFact<L>> = {
     bottom: bottomFact,
-    // exprFacts must be compared too: a block whose stmts produce no slot
-    // writes (e.g. bare `return e`) has an invariant outEnv, but runtime
-    // observations widen the per-expression lattice inside `e` — readers of
-    // the per-node projection must wake on those.
+    // Both parts of the fact participate in equality: a block whose stmts
+    // produce no slot writes (e.g. bare `return e`) has an invariant outEnv,
+    // but runtime observations widen the per-expression lattice inside `e` —
+    // readers of the per-node projection must wake on those.
     equals: (a, b) =>
       a.outEnv.equals(b.outEnv, config.leq) && exprFactsEqual(a.exprFacts, b.exprFacts),
+    // Commutative monotone join: outEnv merges slot-wise, exprFacts merge
+    // per-nodeId. Under the DFA's expected monotone transfer, FactStore.write's
+    // join(prev, new) collapses to `new`; commutativity makes that independent
+    // of operand order.
     join: (a, b) => {
       const merged = a.outEnv.snapshot();
       if (config.mergeKind === "must") {
@@ -78,12 +96,7 @@ export function makeBlockFixpointPass<L>(
       } else {
         merged.joinWith(b.outEnv, config.join);
       }
-      // exprFacts of a joined fact are only ever re-consumed as an IN env seed
-      // by transferBlock, which produces fresh exprFacts from scratch — so the
-      // merged exprFacts value is never observed. Pass `b`'s through for
-      // monotonicity of reference equality; downstream readers always key by
-      // the specific block, not by a joined aggregate.
-      return { outEnv: merged, exprFacts: b.exprFacts };
+      return { outEnv: merged, exprFacts: exprFactsJoin(a.exprFacts, b.exprFacts) };
     },
   };
 

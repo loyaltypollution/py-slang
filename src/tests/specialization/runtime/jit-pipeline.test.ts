@@ -9,11 +9,16 @@ import {
   MEMOIZATION_THRESHOLD,
   RUNTIME_CALL_COUNT_SAT,
   callCountPass,
+  constAnalysisPass,
   observeRuntimeWrite,
   purityScopePass,
   runtimeCallPass,
   structuralPass,
+  typeAnalysisPass,
 } from "../../../specialization";
+import { CONST_TOP } from "../../../specialization/const-analysis/lattice";
+import { TOP as TYPE_TOP } from "../../../specialization/type-analysis/lattice";
+import { MutableEnv } from "../../../specialization/framework/mutable-env";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
 import type { Pass, PassCtx } from "../../../specialization/framework/pass";
 import { buildTestWorklist } from "../../utils";
@@ -291,6 +296,34 @@ f(1)
     // from const(1) → TOP and type fact from INT_POS → join with STRING,
     // advancing the DFA block fact and forcing a jitPass recompile.
     observeRuntimeWrite(worklist, literal.id, "force-change");
+
+    expect(counters.compiles).toBeGreaterThan(baseline);
+  });
+
+  // Direct per-pass wake-up: bypasses the shared runtimeWritePass upstream so
+  // each analysis pass's reader edge is exercised independently. A regression
+  // that broke jitPass's wake on only one of the two analyses would be caught
+  // here even though the `runtime-observation` test above still fires both.
+  test.each([
+    { name: "typeAnalysisPass", pass: typeAnalysisPass, top: TYPE_TOP },
+    { name: "constAnalysisPass", pass: constAnalysisPass, top: CONST_TOP },
+  ])("$name change forces recompile", ({ pass, top }) => {
+    const { worklist, unit, enqueue, counters } = setup();
+    enqueue();
+    const baseline = counters.compiles;
+
+    // Write a synthesized block fact that strictly advances outEnv by
+    // populating a fresh slot. Equality on the block lattice flags the
+    // change, jitPass wakes via its `reads` on this pass, analysisGen bumps
+    // and the memo invalidates for the owning unit.
+    const block = unit.cfg.entry;
+    const outEnv = new MutableEnv<unknown>();
+    outEnv.set(9999, top);
+    worklist.observe(
+      pass as unknown as Pass<unknown, unknown>,
+      block,
+      { outEnv, exprFacts: new Map() } as never,
+    );
 
     expect(counters.compiles).toBeGreaterThan(baseline);
   });
