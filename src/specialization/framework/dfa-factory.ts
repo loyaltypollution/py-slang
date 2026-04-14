@@ -44,10 +44,17 @@ interface DfaConfig<L> {
 export function makeBlockFixpointPass<L>(
   config: DfaConfig<L>,
 ): Pass<BasicBlock, DfaBlockFact<L>> {
-  const bottomFact: DfaBlockFact<L> = {
+  // Frozen singleton: `FactStore.read` returns this for unwritten cells. Any
+  // caller that mutates `outEnv` or `exprFacts` in place corrupts every other
+  // unwritten read through the same pass. `Object.freeze` prevents
+  // re-assignment of the outer fields; `MutableEnv`'s internal slot array is
+  // still mutable (its contract needs it), so callers MUST `snapshot()`
+  // before mutation. `inEnvFor` does exactly that; `readExprFact` only reads
+  // via `tryRead`/`.get`, which never touches the bottom object.
+  const bottomFact: DfaBlockFact<L> = Object.freeze({
     outEnv: new MutableEnv<L>(),
     exprFacts: new Map<number, L>(),
-  };
+  });
 
   const exprFactsEqual = (
     a: ReadonlyMap<number, L>,
@@ -83,6 +90,12 @@ export function makeBlockFixpointPass<L>(
     // produce no slot writes (e.g. bare `return e`) has an invariant outEnv,
     // but runtime observations widen the per-expression lattice inside `e` —
     // readers of the per-node projection must wake on those.
+    //
+    // Ripple cost: a change to `exprFacts` alone still wakes CFG successors
+    // via the self-reader edge on `blockKeyedPass`. Each successor's
+    // `transfer` recomputes IN from the same (unchanged) predecessor OUT envs
+    // and produces an unchanged OUT, so the ripple dies after one extra hop
+    // per successor. Bounded at O(|CFG|) per runtime observation.
     equals: (a, b) =>
       a.outEnv.equals(b.outEnv, config.leq) && exprFactsEqual(a.exprFacts, b.exprFacts),
     // Commutative monotone join: outEnv merges slot-wise, exprFacts merge
@@ -107,6 +120,9 @@ export function makeBlockFixpointPass<L>(
     if (preds.length === 0) return config.seedEnv(unit);
     let env: MutableEnv<L> | undefined;
     for (const pred of preds) {
+      // `ctx.read` returns the (frozen) bottomFact for unwritten cells. We
+      // always `snapshot()` before mutating — never touch the shared outEnv
+      // directly.
       const predOut = ctx.read(blockKeyedPass, pred).outEnv;
       if (env === undefined) {
         env = predOut.snapshot();
