@@ -2,18 +2,28 @@
 // value held in each slot so that a subscript-store is pure iff it targets a
 // freshly-allocated object that has not escaped this frame.
 //
-// The lattice is flat above ⊥ with one top element (Unknown):
+// Top-level lattice (flat above ⊥ with Unknown at top):
 //
 //             Unknown
-//           /    |    \
-//       Fresh  Param  Global   (peers; all above Bottom)
-//           \    |    /
+//           /  /  \  \
+//       Fresh Param Global Closure   (peers above Bottom)
+//           \  \  /  /
 //             Bottom
 //
 // `Fresh(origin)` carries the node id of the allocation site so joining two
 // Fresh values from the *same* site stays Fresh; different sites widen to
 // Unknown. `Param(slot)` likewise tags the param identity. Global needs no
 // discriminant. Any cross-kind join widens to Unknown.
+//
+// Closure carries a sub-lattice on its `pure` field so that refinement from
+// "inner not yet analyzed" to a definite verdict propagates monotonically:
+//
+//     Closure(fd, true)       Closure(fd, false)
+//            \                        /
+//             Closure(fd, undefined)          (pending, bottom of sub-lattice)
+//
+// Same `fdId`, `undefined` ⊑ `true|false`; `true` vs `false` at same fdId
+// widens to Unknown (contested); different `fdId` widens to Unknown.
 
 export type AbsVal =
   | { readonly kind: "bottom" }
@@ -64,6 +74,12 @@ export function absEquals(a: AbsVal, b: AbsVal): boolean {
 export function absLeq(a: AbsVal, b: AbsVal): boolean {
   if (a.kind === "bottom") return true;
   if (b.kind === "unknown") return true;
+  // Closure sub-lattice: same-fdId `undefined` is below `defined`; defined
+  // peers (true vs false) are incomparable. Different fdIds fall through.
+  if (a.kind === "closure" && b.kind === "closure" && a.fdId === b.fdId) {
+    if (a.pure === b.pure) return true;
+    return a.pure === undefined;
+  }
   return absEquals(a, b);
 }
 
@@ -71,6 +87,16 @@ export function absJoin(a: AbsVal, b: AbsVal): AbsVal {
   if (a.kind === "bottom") return b;
   if (b.kind === "bottom") return a;
   if (a.kind === "unknown" || b.kind === "unknown") return UNKNOWN;
+  // Closure sub-lattice: monotonically refine `undefined` → `defined`, so
+  // the `pending → pure` transition from `purityScopePass` survives the
+  // fact-store's monotone join. `true` vs `false` at the same fdId is a
+  // genuine contestation → Unknown. Different fdIds → Unknown.
+  if (a.kind === "closure" && b.kind === "closure" && a.fdId === b.fdId) {
+    if (a.pure === b.pure) return a;
+    if (a.pure === undefined) return b;
+    if (b.pure === undefined) return a;
+    return UNKNOWN;
+  }
   if (absEquals(a, b)) return a;
   return UNKNOWN;
 }

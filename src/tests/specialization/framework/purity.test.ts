@@ -49,6 +49,19 @@ describe("PurityScopePass — parity with prior syntactic fold", () => {
     ).toBe(true);
   });
 
+  test("pure: fibonacci-style double self-recursion stays pure", () => {
+    // Regression guard: self-recursion with non-Variable args (here `n-1`,
+    // `n-2` — both Binary) must not taint. Args are not bare Variables, so
+    // the conservative arg-escape doesn't fire.
+    const code = [
+      "def fib(n):",
+      "    if n < 2:",
+      "        return n",
+      "    return fib(n - 1) + fib(n - 2)",
+    ].join("\n");
+    expect(purityOf(code, "fib")).toBe(true);
+  });
+
   test("pure with conditional branches", () => {
     expect(
       purityOf("def f(x):\n    if x > 0:\n        return x\n    else:\n        return -x", "f"),
@@ -212,6 +225,33 @@ describe("PurityScopePass — freshness / escape tracking", () => {
       "    a = xs",
       "    a[0] = n",
       "    return a[0]",
+    ].join("\n");
+    expect(purityOf(code, "f")).toBe(true);
+  });
+
+  test("pure: fresh list mutated inside a for-loop body", () => {
+    // The loop back-edge joins `xs: Fresh` with itself from the loop body.
+    // Same allocation site → stays Fresh across iterations, so `xs[0] = i`
+    // remains a store-to-Fresh and the function stays pure.
+    const code = [
+      "def f(n):",
+      "    xs = [0, 0]",
+      "    for i in range(n):",
+      "        xs[0] = i",
+      "    return xs[0]",
+    ].join("\n");
+    expect(purityOf(code, "f")).toBe(true);
+  });
+
+  test("pure: fresh list populated from a param read", () => {
+    // `ys` is Fresh; `xs[0]` reads a Param-owned container (pure read).
+    // Storing the read result into the Fresh `ys` is pure. This guards the
+    // case where a "bare" Fresh mutation is populated from outside data.
+    const code = [
+      "def f(xs):",
+      "    ys = [0]",
+      "    ys[0] = xs[0]",
+      "    return ys[0]",
     ].join("\n");
     expect(purityOf(code, "f")).toBe(true);
   });

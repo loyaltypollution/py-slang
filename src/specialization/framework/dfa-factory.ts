@@ -69,12 +69,12 @@ export function makeBlockFixpointPass<L, S = void>(
   // Frozen singleton: `FactStore.read` returns this for unwritten cells. Any
   // caller that mutates `outEnv` or `exprFacts` in place corrupts every other
   // unwritten read through the same pass. `Object.freeze` prevents
-  // re-assignment of the outer fields; `MutableEnv`'s internal slot array is
-  // still mutable (its contract needs it), so callers MUST `snapshot()`
-  // before mutation. `inEnvFor` does exactly that; `readExprFact` only reads
-  // via `tryRead`/`.get`, which never touches the bottom object.
+  // re-assignment of the outer fields; `outEnv.freeze()` makes the internal
+  // slot array mutators throw — callers MUST `snapshot()` before mutation.
+  // `inEnvFor` does exactly that; `readExprFact` only reads via `tryRead`/
+  // `.get`, which never touches the bottom object.
   const bottomFact: DfaBlockFact<L, S> = Object.freeze({
-    outEnv: new MutableEnv<L>(),
+    outEnv: new MutableEnv<L>().freeze(),
     exprFacts: new Map<number, L>(),
     summary: config.summaryLattice.bottom,
   });

@@ -36,6 +36,16 @@ export function readSpecPass(spec: ReadSpec<any>): Pass<any, any> {
   return isProjectorRead(spec) ? spec.pass : spec;
 }
 
+/** Append a `ReadSpec` to a pass's `reads` after construction. Encapsulates
+ *  the readonly-cast that would otherwise leak at every call site. Intended
+ *  for passes with mutually-recursive read edges that can't be declared at
+ *  literal-construction time (e.g. purity block ↔ scope). MUST be called
+ *  before the pass is registered with a worklist — the worklist snapshots
+ *  `reads` during `register`, and later amendments will not take effect. */
+export function addRead<K>(pass: Pass<K, any>, spec: ReadSpec<K>): void {
+  (pass.reads as ReadSpec<K>[]).push(spec);
+}
+
 /** A computation over the fact store. `transfer` returning `undefined` means "no write". */
 export interface Pass<K, V> {
   readonly id: symbol;

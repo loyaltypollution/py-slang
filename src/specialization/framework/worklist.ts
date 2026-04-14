@@ -67,6 +67,12 @@ export class Worklist {
   private readonly pendingKeysByPass = new Map<Pass<any, any>, Set<unknown>>();
   /** Re-entrant batch depth. While >0, `observe` skips `processQueue`. */
   private batchDepth = 0;
+  /** Evictions queued from inside listener dispatch. Drained at the top of
+   *  `processQueue`, outside any `FactStore.write` frame. Keeps listeners
+   *  strictly read-only w.r.t. the fact store even though `evict` itself is
+   *  event-free — future evict implementations that emit events won't silently
+   *  break the no-reentry contract. */
+  private readonly pendingEvictions: Array<[Pass<any, any>, unknown]> = [];
 
   readonly registry: FunctionRegistry;
   private readonly functionEnvironments: FunctionEnvironments;
@@ -112,6 +118,7 @@ export class Worklist {
 
     for (const p of passes) this.register(p);
     this.factStore.onChange(c => this.handleFactChange(c));
+    this.factStore.onPostDispatch(() => this.drainPendingEvictions());
 
     // Seed structuralPass for every unit to wake downstream passes.
     for (const unit of this._units.values()) {
@@ -284,6 +291,12 @@ export class Worklist {
     }
   }
 
+  private drainPendingEvictions(): void {
+    if (this.pendingEvictions.length === 0) return;
+    const batch = this.pendingEvictions.splice(0);
+    for (const [p, k] of batch) this.factStore.evict(p, k);
+  }
+
   private readonly passCtx: PassCtx = {
     read: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.read(p, key),
     tryRead: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.tryRead(p, key),
@@ -300,10 +313,11 @@ export class Worklist {
    *  `factStore.write` — re-entrant writes would let listener fan-out observe
    *  mid-iteration state and break the "one event per value-changing write"
    *  contract that `affectedKeys` single-call consumers (e.g. jit-pass's
-   *  `analysisGen` bump) rely on. `factStore.evict` is permitted: it is a
-   *  silent, event-free, non-lattice escape hatch used here for prune. New
-   *  writes triggered by a change belong in `enqueue` → `processQueue`, not
-   *  in this handler. `FactStore.write` throws on re-entry to enforce this. */
+   *  `analysisGen` bump) rely on. Evictions needed by prune are queued into
+   *  `pendingEvictions` and drained at the top of `processQueue`, keeping
+   *  listeners strictly read-only w.r.t. the fact store. New writes triggered
+   *  by a change belong in `enqueue` → `processQueue`, not in this handler.
+   *  `FactStore.write` throws on re-entry to enforce this. */
   private handleFactChange(change: FactChange<unknown, unknown>): void {
     const readers = this.passReaders.get(change.pass as Pass<any, any>);
     // Structural change: let every pass evict stale keys.
@@ -313,7 +327,7 @@ export class Worklist {
         if (p.prune === undefined) continue;
         const prev = this.factStore.readAll(p);
         const toEvict = p.prune(this.passCtx, unit, prev.keys());
-        for (const k of toEvict) this.factStore.evict(p, k);
+        for (const k of toEvict) this.pendingEvictions.push([p, k]);
       }
     }
     // Defer CFG rebuild until the current drain completes.

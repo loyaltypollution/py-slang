@@ -13,9 +13,15 @@
 // `xs = [] / xs = param` joins to `Unknown`, so subsequent mutation widens to
 // impure — flow-sensitivity that a linear scan can't express.
 //
-// Lambda / MultiLambda / nested FunctionDef currently stay sticky-impure; a
-// later phase will consume nested `purityScopePass` results for proper closure
-// analysis.
+// Nested `FunctionDef` statements are analyzed as their own `FunctionUnit`s;
+// the enclosing block reads the nested `purityScopePass` verdict via a
+// cross-pass reads-edge and binds the name's slot to a `Closure(fdId, pure)`
+// value. Call sites consult the `pure` field: a resolved-pure closure call is
+// pure, a resolved-impure closure call taints, and a pending closure (inner
+// not yet analyzed) defers judgment until the scope-pass refinement arrives.
+//
+// `Lambda` and `MultiLambda` expressions currently stay sticky-impure — out
+// of scope for this phase.
 //
 // Consumer: `memoizationRule`.
 
@@ -28,6 +34,7 @@ import {
 import type { FunctionUnit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
 import type { Lattice, Pass, PassCtx, ReadSpec } from "../framework/pass";
+import { addRead } from "../framework/pass";
 import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
 import { structuralPass } from "../framework/structural-pass";
 import {
@@ -65,6 +72,27 @@ const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
   "__memo_put",
 ]);
 
+// Why a bespoke transfer instead of `framework/block-transfer.ts` +
+// `makeExprVisitor`:
+//
+//   1. Side-effect channel — we thread a mutable `impure` bit; const/type
+//      lattices have no orthogonal summary state.
+//   2. Subscript-store semantics — purity must inspect the target's abstract
+//      value (Fresh vs. not) and evaluate `target.value`/`target.index`.
+//      `block-transfer.ts` returns early on non-Variable assign targets.
+//   3. Capture distinction — reading a capture is a dependency (returns
+//      Unknown, no taint); reading a plain nonlocal is impure. Const/type
+//      collapse both to top.
+//   4. `FunctionDef` stmt — binds a Closure value via cross-pass read of
+//      `purityScopePass`. Const/type treat FunctionDef as a no-op.
+//   5. Call-site arg escape — bare Variable args to unknown callees get
+//      downgraded to Unknown in the env. Const/type don't model escape.
+//
+// Any of these would break the existing const/type passes if retrofitted
+// into the shared block-transfer. The visitor-pattern style (vs. the
+// instanceof chain used here) is a stylistic drift — not semantic — and
+// could be unified if a new Expr kind surfaces missed-case risk.
+//
 // Mutable state threaded through the block transfer: the OUT env and a sticky
 // impure flag. A single mutable holder lets the expression walker downgrade
 // slots at escape points without plumbing extra return channels.
@@ -219,6 +247,12 @@ function transferCall(expr: ExprNS.Call, state: BlockState): AbsVal {
   // Evaluate args for their own effects, and escape any Variable-shaped args
   // to Unknown unless the callee is a read-only whitelisted builtin or a
   // statically-known pure or pending closure.
+  //
+  // Self-recursion is NOT in the exempt set: without an interprocedural
+  // summary we must assume the callee could mutate its params. Callers that
+  // self-recurse with a bare Variable arg holding a Fresh value will see
+  // that Fresh track destroyed post-call. Rare and appropriately
+  // conservative — tighten with a summary-based analysis if it ever bites.
   const argsEscape = !isWhitelistedBuiltin && !isPureClosureCall && !isPendingClosureCall;
   for (const arg of expr.args) {
     transferExpr(arg, state);
@@ -476,4 +510,4 @@ const scopeToBlock: ReadSpec<BasicBlock> = {
     return block === undefined ? [] : [block];
   },
 };
-(purityBlockPass.reads as ReadSpec<BasicBlock>[]).push(scopeToBlock);
+addRead(purityBlockPass, scopeToBlock);

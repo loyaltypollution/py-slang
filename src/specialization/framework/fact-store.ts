@@ -24,6 +24,11 @@ export class FactStore {
    *  mid-iteration state and silently violate the "one event per value-changing
    *  write" contract. `evict` remains allowed (silent, event-free, non-lattice). */
   private inListenerDispatch = false;
+  /** Runs after the listener loop in `write` exits (inListenerDispatch=false),
+   *  but before `write` returns. Intended for bookkeeping listeners want to
+   *  perform against the store itself (e.g. evictions queued during dispatch).
+   *  Callbacks must not call `write` on this store — same reentry rules. */
+  private readonly postDispatch = new Set<() => void>();
 
   read<K, V>(pass: Pass<K, V>, key: K): V {
     const inner = this.cells.get(pass as Pass<unknown, unknown>);
@@ -80,7 +85,18 @@ export class FactStore {
     } finally {
       this.inListenerDispatch = false;
     }
+    // Drain post-dispatch callbacks OUTSIDE the listener frame, so any queued
+    // work (e.g. evictions requested by listeners) runs against a store that
+    // is no longer mid-dispatch — future evict implementations that emit
+    // events won't break the no-reentry contract other listeners depend on.
+    for (const cb of this.postDispatch) cb();
     return true;
+  }
+
+  /** Register a callback fired after every `write`'s listener loop exits. */
+  onPostDispatch(cb: () => void): () => void {
+    this.postDispatch.add(cb);
+    return () => this.postDispatch.delete(cb);
   }
 
   /** Delete a cell. Silent if absent; no event emitted. */

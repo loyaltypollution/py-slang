@@ -143,6 +143,12 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     return this.annotate(expr, booleanValue(BoolRef.Top));
   }
 
+  // Type-analysis narrows the *type* of `and`/`or` using a three-way boolRef
+  // view: if the left operand is a known-bool True/False, the result is
+  // resolved; otherwise the result widens to bool⊤. This is orthogonal to
+  // const-analysis `visitBoolOpExpr` — that one tracks concrete values under
+  // Python's short-circuit semantics. Both operands are always visited here
+  // for the same reason: sub-expression annotation for downstream passes.
   visitBoolOpExpr(expr: ExprNS.BoolOp): TypeLattice {
     const left = expr.left.accept(this);
     const right = expr.right.accept(this);

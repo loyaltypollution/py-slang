@@ -133,9 +133,13 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     return this.annotate(expr, CONST_TOP);
   }
 
+  // Const-analysis tracks concrete *values* through `and`/`or` (Python
+  // semantics: `a and b` yields `a` when falsy else `b`). Both operands are
+  // always visited so sub-expressions get annotated for downstream passes.
+  // See type-analysis `visitBoolOpExpr` for the parallel boolRef-narrowing
+  // view — the two are complementary, not duplicates.
   visitBoolOpExpr(expr: ExprNS.BoolOp): ConstLattice {
     const left = expr.left.accept(this);
-    // Evaluate right regardless to annotate its sub-expressions
     const right = expr.right.accept(this);
     if (left.tag !== "const") return this.annotate(expr, CONST_TOP);
     if (expr.operator.type === TokenType.AND) {
