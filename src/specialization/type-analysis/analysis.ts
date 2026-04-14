@@ -1,6 +1,8 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
+import type { CFGEdge } from "../framework/cfg";
 import type { FactStore } from "../framework/fact-store";
+import type { MutableEnv } from "../framework/mutable-env";
 import type { Lattice } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
 import type { BlockDfaSpec, SlotEnv } from "../framework/interfaces";
@@ -15,13 +17,16 @@ import {
   BOTTOM,
   CLOSURE,
   COMPLEX,
+  FLOAT_BIT,
   FLOAT_NEG,
   FLOAT_POS,
   FLOAT_ZERO,
   floatValue,
+  INT_BIT,
   INT_NEG,
   INT_POS,
   INT_ZERO,
+  IntRef,
   join,
   leq,
   meet,
@@ -260,11 +265,193 @@ export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
   ): ExprNS.Visitor<TypeLattice> {
     return new TypeAnalysisVisitor(factStore, env, slotLookup, recordExprFact);
   },
-  // Identity: type narrowing from `if x > 0` etc. lands in a later commit.
-  refineOnEdge(env, _edge) {
-    return env;
+  /**
+   * Narrow the env when crossing a branch edge. Handles `slot OP literal`
+   * (and `literal OP slot`) for the six comparison operators and `not c`.
+   * Any other predicate shape returns `env` unchanged — sound because a
+   * predicate we can't read gives no new information.
+   *
+   * Only refines when the literal's numeric value is non-zero-signed enough
+   * to produce a proper sub-lattice value; `slot > -5` stays as-is because
+   * the sign lattice has no finer grain than {Neg, Zero, Pos, ...}.
+   */
+  refineOnEdge(env, edge) {
+    if (edge.kind === "unconditional") return env;
+    const truth = edge.kind === "branch-true";
+    const slotLookup = edge.from.unit.slotLookup;
+    return applyPredicate(env, edge.condition, truth, slotLookup);
   },
 };
+
+// ---- Predicate narrowing helpers ----
+
+/** Numeric literal extracted from an expression, with its Python sign. */
+interface NumericLiteral {
+  readonly value: number;
+  readonly isFloat: boolean;
+}
+
+function readNumericLiteral(expr: ExprNS.Expr): NumericLiteral | undefined {
+  if (expr instanceof ExprNS.Literal && typeof expr.value === "number") {
+    const v = expr.value;
+    const isFloat = !Number.isInteger(v) || !Number.isFinite(v);
+    return { value: v, isFloat };
+  }
+  if (expr instanceof ExprNS.BigIntLiteral) {
+    return { value: Number(expr.value), isFloat: false };
+  }
+  return undefined;
+}
+
+function signOf(value: number): IntRef {
+  if (Number.isNaN(value)) return IntRef.Top;
+  if (value > 0) return IntRef.Pos;
+  if (value < 0) return IntRef.Neg;
+  return IntRef.Zero;
+}
+
+/** A refinement value that covers both int and float kinds with the given
+ *  sign refinement. Meeting with a pure-INT env slot keeps INT; with a pure
+ *  FLOAT slot keeps FLOAT; with a disjoint (e.g. STRING) slot collapses to
+ *  BOTTOM, which is correct — the branch is statically unreachable given
+ *  the slot's type. */
+function numericRefinement(ref: IntRef): TypeLattice {
+  return {
+    kinds: INT_BIT | FLOAT_BIT,
+    intRef: ref,
+    floatRef: ref,
+    boolRef: 0 as BoolRef,
+  };
+}
+
+/** Sign refinement for `slot OP literal` where slot is on the left. `op`
+ *  is one of the six comparison operators; `c` is the literal's numeric
+ *  value. Returns `undefined` when the sign lattice cannot refine further
+ *  (e.g. `slot > -5` admits any value ≥ -4, which has no sign bound). */
+function leftSlotRefinement(op: string, c: number): IntRef | undefined {
+  const sign = signOf(c);
+  switch (op) {
+    case ">":
+      // slot > c. If c ≥ 0 → slot > 0 → Pos. If c < 0 → could be any.
+      return sign === IntRef.Neg ? undefined : IntRef.Pos;
+    case "<":
+      return sign === IntRef.Pos ? undefined : IntRef.Neg;
+    case ">=":
+      if (sign === IntRef.Pos) return IntRef.Pos;
+      if (sign === IntRef.Zero) return IntRef.NonNeg;
+      return undefined;
+    case "<=":
+      if (sign === IntRef.Neg) return IntRef.Neg;
+      if (sign === IntRef.Zero) return IntRef.NonPos;
+      return undefined;
+    case "==":
+      // slot == c → slot has c's sign.
+      return sign;
+    case "!=":
+      // slot != c. Only refines when c is zero: slot ≠ 0 → NonZero.
+      return sign === IntRef.Zero ? IntRef.NonZero : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** Swap left/right semantics: `c OP slot` ≡ `slot OP_SWAPPED c`. */
+function swapOp(op: string): string {
+  switch (op) {
+    case "<":
+      return ">";
+    case ">":
+      return "<";
+    case "<=":
+      return ">=";
+    case ">=":
+      return "<=";
+    default:
+      return op; // == and != are symmetric
+  }
+}
+
+const COMPARE_TO_STRING: ReadonlyMap<TokenType, string> = new Map([
+  [TokenType.LESS, "<"],
+  [TokenType.GREATER, ">"],
+  [TokenType.LESSEQUAL, "<="],
+  [TokenType.GREATEREQUAL, ">="],
+  [TokenType.DOUBLEEQUAL, "=="],
+  [TokenType.NOTEQUAL, "!="],
+]);
+
+function negateOp(op: string): string {
+  switch (op) {
+    case ">":
+      return "<=";
+    case "<":
+      return ">=";
+    case ">=":
+      return "<";
+    case "<=":
+      return ">";
+    case "==":
+      return "!=";
+    case "!=":
+      return "==";
+    default:
+      return op;
+  }
+}
+
+/** Apply a predicate to the env. Returns `env` unchanged when no refinement
+ *  is possible — callers use identity to skip the snapshot. */
+function applyPredicate(
+  env: MutableEnv<TypeLattice>,
+  cond: ExprNS.Expr,
+  truth: boolean,
+  slotLookup: SlotLookup,
+): MutableEnv<TypeLattice> {
+  // Peel `not`: the inner predicate flips truth.
+  if (cond instanceof ExprNS.Unary && cond.operator.type === TokenType.NOT) {
+    return applyPredicate(env, cond.right, !truth, slotLookup);
+  }
+  if (cond instanceof ExprNS.Grouping) {
+    return applyPredicate(env, cond.expression, truth, slotLookup);
+  }
+
+  if (!(cond instanceof ExprNS.Compare)) return env;
+  const opStr = COMPARE_TO_STRING.get(cond.operator.type);
+  if (opStr === undefined) return env;
+
+  // Apply negation via op transformation so `leftSlotRefinement` sees the
+  // operator as if the predicate were directly asserted.
+  const effectiveOp = truth ? opStr : negateOp(opStr);
+
+  // Find the (slot, literal) pair, whichever side each lives on.
+  let slotSide: "left" | "right";
+  let slotVar: ExprNS.Variable;
+  let lit: NumericLiteral | undefined;
+  if (cond.left instanceof ExprNS.Variable && (lit = readNumericLiteral(cond.right))) {
+    slotSide = "left";
+    slotVar = cond.left;
+  } else if (cond.right instanceof ExprNS.Variable && (lit = readNumericLiteral(cond.left))) {
+    slotSide = "right";
+    slotVar = cond.right;
+  } else {
+    return env;
+  }
+
+  const info = slotLookup(slotVar.name);
+  if (!isLocal(info)) return env;
+
+  const normalizedOp = slotSide === "left" ? effectiveOp : swapOp(effectiveOp);
+  const ref = leftSlotRefinement(normalizedOp, lit.value);
+  if (ref === undefined) return env;
+
+  const existing = env.get(info.slot) ?? TOP;
+  const refined = meet(existing, numericRefinement(ref));
+  if (refined === existing) return env;
+
+  const out = env.snapshot();
+  out.set(info.slot, refined);
+  return out;
+}
 
 function liftType(rawKind: RawKind): TypeLattice | undefined {
   switch (rawKind.kind) {
