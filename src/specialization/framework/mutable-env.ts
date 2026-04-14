@@ -1,4 +1,4 @@
-import { latticeEquals, type BoundedLattice, type Lattice } from "./pass";
+import type { BoundedLattice, Lattice } from "./pass";
 
 /** Per-function slot → L env. Slot numbering matches SVMLCompiler. */
 export class MutableEnv<L> {
@@ -74,18 +74,6 @@ export class MutableEnv<L> {
         this.slots[i] = lattice.meet(lattice.top, b);
       }
     }
-  }
-
-  equals(other: MutableEnv<L>, lattice: Lattice<L>): boolean {
-    if (this.slots.length !== other.slots.length) return false;
-    for (let i = 0; i < this.slots.length; i++) {
-      const a = this.slots[i];
-      const b = other.slots[i];
-      if (a === b) continue;
-      if (a === undefined || b === undefined) return false;
-      if (!latticeEquals(lattice, a, b)) return false;
-    }
-    return true;
   }
 
   /** Pointwise `this ⊑ other` under `lattice.leq`. Missing slots are ⊥, so
