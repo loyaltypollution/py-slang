@@ -266,8 +266,8 @@ export class Worklist {
     this.transformDirty.set(rule, dirty);
 
     const addUnit = (_ctx: PassCtx, unit: FunctionUnit): void => { dirty.add(unit); };
-    this.lifecycleSubs.mint.push(addUnit);
-    this.lifecycleSubs.rebuild.push(addUnit);
+    const auto = rule.autoDirtyOn ?? ["mint", "rebuild"];
+    for (const kind of auto) this.lifecycleSubs[kind].push(addUnit);
 
     if (rule.edges !== undefined) {
       for (const edge of rule.edges) {

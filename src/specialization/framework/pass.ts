@@ -132,6 +132,12 @@ export interface TransformRule {
    *  edge's `pass` calls `wake(ctx, key)`, which yields the units to add to
    *  this rule's dirty set. Omit for a rule that only fires on mint/rebuild. */
   readonly edges?: ReadonlyArray<FactEdge<FunctionUnit>>;
+  /** Lifecycle events that auto-dirty every unit. Defaults to both `"mint"`
+   *  and `"rebuild"` — the historical behavior. Rules that drive dirtying
+   *  purely from fact edges can opt out with `[]`. Explicit so the
+   *  mint/rebuild auto-dirty is visible in the type rather than hidden
+   *  inside `Worklist.registerTransform`. */
+  readonly autoDirtyOn?: ReadonlyArray<"mint" | "rebuild">;
   /** Returns `true` iff `unit.body` was mutated — the worklist then schedules
    *  a CFG rebuild for `unit`. */
   sweep(unit: FunctionUnit, ctx: PassCtx): boolean;
