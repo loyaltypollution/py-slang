@@ -32,7 +32,15 @@ export const nodeIdToBlock = (
 export interface DfaBlockFact<L> {
   /** Slot-keyed OUT env for forward successor / backward predecessor merging. */
   readonly outEnv: MutableEnv<L>;
-  /** NodeId → lattice value for expressions visited in this block's transfer. */
+  /** NodeId → lattice value for expressions visited in this block's transfer.
+   *
+   *  Negative nodeIds are reserved as analysis-specific block-global
+   *  sentinels. Real AST nodeIds are always non-negative, so a negative key
+   *  never collides with a syntactic expression. Sentinels participate in the
+   *  factory's per-key lattice join just like regular exprFacts — this lets
+   *  an analysis carry sticky block-global state (e.g. an "impure" marker)
+   *  without a separate summary channel. Canonical example:
+   *  `IMPURE_SENTINEL_NODE_ID` in `purity-analysis/lattice.ts`. */
   readonly exprFacts: ReadonlyMap<number, L>;
 }
 
