@@ -44,7 +44,7 @@ const config = [
       file: `dist/${EVALUATOR}.js`,
       format: "iife",
       name: "PySlangWorker",
-      sourcemap: true,
+      sourcemap: false,
     },
     plugins: plugins(),
   },

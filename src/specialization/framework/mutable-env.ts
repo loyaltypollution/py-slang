@@ -1,15 +1,4 @@
-// src/specialization/framework/mutable-env.ts — per-function slot-indexed lattice env
-
-/**
- * Per-function type environment: maps slot index → L.
- *
- * Slot indices come from SVMLCompiler.getOrAssignSlot — the same numbering
- * used by codegen, so analysis and codegen agree on which variable is which.
- *
- * Reference equality is the fast path for lattice comparisons: lattice
- * modules return frozen singletons, so identical lattice values are the
- * same object. The leq-based path handles non-singleton join results.
- */
+/** Per-function slot → L env. Slot numbering matches SVMLCompiler. */
 export class MutableEnv<L> {
   private slots: (L | undefined)[];
 
@@ -29,10 +18,7 @@ export class MutableEnv<L> {
     return new MutableEnv(this.slots);
   }
 
-  /**
-   * In-place join: for each slot, replace with join(this[i], other[i]).
-   * Missing slots are treated as ⊥ (identity for join): join(⊥, x) = x.
-   */
+  /** In-place join; missing slots treated as ⊥. */
   joinWith(other: MutableEnv<L>, joinFn: (a: L, b: L) => L): void {
     const len = Math.max(this.slots.length, other.slots.length);
     for (let i = 0; i < len; i++) {
@@ -46,10 +32,7 @@ export class MutableEnv<L> {
     }
   }
 
-  /**
-   * In-place meet: for each slot, replace with meet(this[i], other[i]).
-   * Missing slots are treated as ⊤ (identity for meet): meet(⊤, x) = x.
-   */
+  /** In-place meet; missing slots treated as ⊤. */
   meetWith(other: MutableEnv<L>, meetFn: (a: L, b: L) => L, top: L): void {
     const len = Math.max(this.slots.length, other.slots.length);
     for (let i = 0; i < len; i++) {

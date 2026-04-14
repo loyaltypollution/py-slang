@@ -5,28 +5,21 @@ import { buildCFG } from "./cfg";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
-/**
- * Per-scope optimization unit. `cfg`, `blockMap`, and `generation` are
- * scheduler-owned and replaced wholesale on body-level invalidation by
- * `Worklist.flushPendingRebuilds`. `body` is a read-through getter onto
- * the AST's statement array, which non-monotone transforms splice in
- * place. `callCount` persists across CFG rebuilds. The structural
- * version is tracked by `structuralPass` in the fact store.
- */
+/** Per-scope optimization unit. CFG fields are scheduler-owned and replaced
+ *  by `Worklist.flushPendingRebuilds`. `body` is a live getter onto the AST. */
 export interface FunctionUnit {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
   cfg: CFG;
   blockMap: Map<BlockId, BasicBlock>;
-  /** NodeId → containing BasicBlock. Populated at CFG build; used by the
-   *  DFA factory's affectedKeys to map runtime node triggers to blocks. */
+  /** NodeId → containing BasicBlock. */
   blockOfNode: Map<number, BasicBlock>;
   generation: number;
   callCount: number;
 }
 
-// Lambda bodies are a separate scope and are not analyzed here.
+// Lambda bodies are separate scopes and not analyzed here.
 class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   constructor(
     private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
@@ -79,7 +72,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     for (const s of stmt.body) s.accept(this);
   }
 
-  // Leaf / non-block-introducing statements — no recursion, no new scope.
+  // Leaf / non-block-introducing statements.
   visitAssignStmt(_stmt: StmtNS.Assign): void {}
   visitAnnAssignStmt(_stmt: StmtNS.AnnAssign): void {}
   visitReturnStmt(_stmt: StmtNS.Return): void {}
@@ -93,8 +86,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-/** Populates `blockMap`, `blockOfNode`, and each block's `unit`
- *  back-pointer. This is the only write site for `BasicBlock.unit`. */
+/** Populates `blockMap`, `blockOfNode`, and each block's `unit` back-pointer. */
 export function indexCFG(cfg: CFG, unit: FunctionUnit): {
   blockMap: Map<BlockId, BasicBlock>;
   blockOfNode: Map<number, BasicBlock>;

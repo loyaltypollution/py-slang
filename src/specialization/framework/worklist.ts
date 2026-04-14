@@ -1,4 +1,4 @@
-// Unified priority-scheduled worklist (pass-graph dispatch).
+// Priority-scheduled worklist for pass-graph dispatch.
 
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
@@ -18,8 +18,6 @@ import { memoizationRule } from "../transforms/memoization";
 import { typeAnalysisPass } from "../type-analysis/analysis";
 import { typeAnalysisDfa, constAnalysisDfa } from "./dfa-passes";
 
-// ── Performance stats ───────────────────────────────────────────────────────
-
 export interface WorklistStats {
   readonly itemsProcessed: number;
   readonly analysisItemsProcessed: number;
@@ -27,44 +25,37 @@ export interface WorklistStats {
   readonly transformRounds: number;
   readonly drainCalls: number;
   readonly wallClockMs: number;
+  /** Max combined depth across tier queues, sampled on enqueue. */
+  readonly peakQueueDepth: number;
 }
-
-// ── Worklist ────────────────────────────────────────────────────────────────
 
 type QItem = { pass: Pass<any, any>; key: unknown };
 
 export class Worklist {
   readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
-  /** funcAst.id → owning unit. Stable for the life of the Worklist: unit
-   *  Map membership doesn't change after construction (CFG rebuilds mutate
-   *  units in place), and `FunctionDef.id` is assigned at parse time. */
+  /** funcAst.id → owning unit. */
   private readonly unitsByFdId: Map<number, FunctionUnit> = new Map();
+  /** nodeId → outermost containing unit. */
+  private readonly nodeToUnit: Map<number, FunctionUnit> = new Map();
+  /** nodeId → every containing unit. */
+  private readonly nodeToUnits: Map<number, FunctionUnit[]> = new Map();
+  private static readonly EMPTY_UNITS: ReadonlyArray<FunctionUnit> = Object.freeze([]);
 
-  /** Units with a transform-tier "fired" write that have not yet had their
-   *  CFG rebuilt. Populated by `handleFactChange`; drained after
-   *  `drainPasses` finishes so pruning doesn't clear fired markers mid-drain. */
+  /** Units awaiting CFG rebuild after a transform fire. */
   private readonly pendingRebuilds = new Set<FunctionUnit>();
 
-  // Pass-graph dispatch: FactStore + subscription graph. On a lattice-change
-  // write to pass `p`, every registered reader `p'` whose `reads` contains
-  // `p` is enqueued for every key in `p'.affectedKeys?.(p, k)` (or all
-  // previously-written keys if `p'.coarse === true`).
   readonly factStore = new FactStore();
   private readonly registeredPasses: Pass<any, any>[] = [];
   private readonly passReaders = new Map<Pass<any, any>, Pass<any, any>[]>();
-  /** Tier-indexed FIFO queues. `runtimeQ`/`analysisQ` drain strict-FIFO via
-   *  `shift()`; `transformQ` is scanned head→tail for the first item whose
-   *  unit has no pending analysis work. Queue depths stay small (<100), so
-   *  O(n) `shift` is cheaper than maintaining head indices + compaction. */
+  // Tier-indexed FIFO queues.
   private readonly runtimeQ: QItem[] = [];
   private readonly analysisQ: QItem[] = [];
   private readonly transformQ: QItem[] = [];
-  /** Global deduper — at most one pending entry per (pass, key). */
+  /** Dedup — at most one pending entry per (pass, key). */
   private readonly pendingKeysByPass = new Map<Pass<any, any>, Set<unknown>>();
   private draining = false;
 
-  /** Counter: analysis-tier pass items pending per unit. Maintained incrementally
-   *  by enqueue/drain so `analysisPendingForUnit` is O(1). */
+  /** Count of pending analysis items per unit. */
   private readonly analysisPendingByUnit = new Map<FunctionUnit, number>();
 
   // Perf counters
@@ -74,6 +65,7 @@ export class Worklist {
   private _transformRounds = 0;
   private _drainCalls = 0;
   private _wallClockMs = 0;
+  private _peakQueueDepth = 0;
 
   constructor(
     ast: StmtNS.FileInput,
@@ -86,45 +78,34 @@ export class Worklist {
         this.unitsByFdId.set(unit.funcAst.id, unit);
       }
     }
+    this.rebuildNodeToUnit();
 
     for (const p of passes) this.register(p);
     this.factStore.onChange(c => this.handleFactChange(c));
 
-    // Seed `structuralPass` for every unit so analyses + transforms wake via
-    // their declared reads. First write fires onChange because
-    // `hadPrev === false`; subsequent no-op writes at the same version are
-    // suppressed by the equality gate.
+    // Seed structuralPass for every unit to wake downstream passes.
     for (const unit of this.units.values()) {
       this.factStore.write(structuralPass, unit, 0);
     }
 
-    // Synchrony tripwire: reject `async`-declared observe. TS accepts
-    // `() => Promise<void>` where `() => void` is declared, so check at runtime.
+    // Synchrony tripwire.
     const fn = (this as unknown as Record<string, unknown>)["observe"];
     if (typeof fn !== "function" || (fn as Function).constructor.name === "AsyncFunction") {
       throw new Error(`Worklist.observe must be synchronous`);
     }
   }
 
-  // ── Reactive API ───────────────────────────────────────────────────────
-
-  /** Drain to fixpoint (initial pass). */
+  /** Drain to fixpoint. */
   converge(): void {
     this.drain();
   }
 
-  /**
-   * Process pending work incrementally. Returns true if any units changed.
-   * Evaluators call this after execution to drain work queued during the run.
-   */
+  /** Incremental drain; returns true if any units changed. */
   tick(limit?: number): boolean {
     return this.drain(limit).size > 0;
   }
 
-  /**
-   * Register a pass with the dispatch graph. Idempotent. Every pass must
-   * either declare `affectedKeys` or set `coarse: true` — fail fast otherwise.
-   */
+  /** Register a pass. Idempotent. Requires `affectedKeys` or `coarse: true`. */
   register<K, V>(pass: Pass<K, V>): void {
     if (this.registeredPasses.indexOf(pass as Pass<any, any>) !== -1) return;
     if (pass.affectedKeys === undefined && pass.coarse !== true) {
@@ -145,21 +126,13 @@ export class Worklist {
     }
   }
 
-  /**
-   * Runtime-observation API for `runtime`-tier source passes. Writes
-   * `(pass, key) → value` into the fact store, then drains synchronously
-   * so transform side-effects land before the next interpreter instruction.
-   * Re-entry is guarded by `drainPasses`.
-   */
+  /** Runtime-observation entry: write and drain synchronously. Re-entry guarded. */
   observe<K, V>(pass: Pass<K, V>, key: K, value: V): void {
     this.factStore.write(pass, key, value);
     this.drainPasses();
   }
 
-  /**
-   * Enqueue a `(pass, key)` item for re-transfer. Deduped: a second
-   * enqueue for the same pair before drain is a no-op.
-   */
+  /** Enqueue `(pass, key)` for re-transfer. Deduped per pair. */
   enqueue<K, V>(pass: Pass<K, V>, key: K): void {
     const p = pass as Pass<any, any>;
     let pending = this.pendingKeysByPass.get(p);
@@ -171,7 +144,6 @@ export class Worklist {
     pending.add(key);
     const item: QItem = { pass: p, key };
 
-    // Route to tier-indexed queue. Effective tier defaults to "analysis".
     const tier = p.tier ?? "analysis";
     if (tier === "runtime") {
       this.runtimeQ.push(item);
@@ -184,13 +156,12 @@ export class Worklist {
         this.analysisPendingByUnit.set(unit, (this.analysisPendingByUnit.get(unit) ?? 0) + 1);
       }
     }
+    const depth = this.runtimeQ.length + this.analysisQ.length + this.transformQ.length;
+    if (depth > this._peakQueueDepth) this._peakQueueDepth = depth;
   }
 
-  /**
-   * Drain the pass-graph queue to fixpoint. Order: tier (runtime < analysis
-   * < transform < jit), FIFO within tier. Transforms defer while analysis
-   * items are pending for the same unit.
-   */
+  /** Drain one pass-dispatch round. Tier order: runtime < analysis < transform;
+   *  transforms defer while analysis is pending for the same unit. */
   drainPasses(): void {
     if (this.draining) return;
     this.draining = true;
@@ -221,10 +192,7 @@ export class Worklist {
     }
   }
 
-  /**
-   * Pop in tier order: runtime, analysis, then the first transform-tier item
-   * whose unit has no pending analysis work.
-   */
+  /** Pop in tier order; skips transform items with pending analysis on same unit. */
   private popNextItem(): QItem | undefined {
     if (this.runtimeQ.length > 0) return this.runtimeQ.shift();
     if (this.analysisQ.length > 0) return this.analysisQ.shift();
@@ -242,20 +210,16 @@ export class Worklist {
     read: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.read(p, key),
     tryRead: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.tryRead(p, key),
     readAll: <K2, V2>(p: Pass<K2, V2>) => this.factStore.readAll(p),
-    unitFor: (funcAst: StmtNS.FileInput | StmtNS.FunctionDef) => this.units.get(funcAst),
-    unitForNode: (nodeId: number) => {
-      for (const unit of this.units.values()) {
-        if (unit.blockOfNode.has(nodeId)) return unit;
-      }
-      return undefined;
-    },
+    unitForNode: (nodeId: number) => this.nodeToUnit.get(nodeId),
+    unitsContainingNode: (nodeId: number) =>
+      this.nodeToUnits.get(nodeId) ?? Worklist.EMPTY_UNITS,
     unitForFdId: (fdId: number) => this.unitsByFdId.get(fdId),
     factStore: this.factStore,
   };
 
   private handleFactChange(change: FactChange<unknown, unknown>): void {
     const readers = this.passReaders.get(change.pass as Pass<any, any>);
-    // On a structural change, let every pass evict stale keys.
+    // Structural change: let every pass evict stale keys.
     if ((change.pass as Pass<any, any>) === (structuralPass as Pass<any, any>)) {
       const unit = change.key as FunctionUnit;
       for (const p of this.registeredPasses) {
@@ -265,9 +229,7 @@ export class Worklist {
         for (const k of toEvict) this.factStore.evict(p, k);
       }
     }
-    // Transform-tier "fired" writes: defer the CFG rebuild until after the
-    // current drainPasses completes, so prune (triggered by the subsequent
-    // structuralPass bump) doesn't clear the fired marker mid-drain.
+    // Defer CFG rebuild until the current drain completes.
     if (
       change.pass.tier === "transform" &&
       change.newValue === "fired" &&
@@ -282,8 +244,7 @@ export class Worklist {
     }
   }
 
-  /** Rebuild CFG + bump structuralPass for every pending unit. Returns the
-   *  scopes rebuilt, so drain() can roll them into its `changed` set. */
+  /** Rebuild CFG + bump structuralPass for every pending unit. */
   private flushPendingRebuilds(): FunctionUnit[] {
     if (this.pendingRebuilds.size === 0) return [];
     const rebuilt: FunctionUnit[] = [];
@@ -298,7 +259,22 @@ export class Worklist {
       rebuilt.push(unit);
     }
     this.pendingRebuilds.clear();
+    this.rebuildNodeToUnit();
     return rebuilt;
+  }
+
+  /** Rebuild nodeId → unit indexes (first-write-wins for outermost). */
+  private rebuildNodeToUnit(): void {
+    this.nodeToUnit.clear();
+    this.nodeToUnits.clear();
+    for (const unit of this.units.values()) {
+      for (const nodeId of unit.blockOfNode.keys()) {
+        if (!this.nodeToUnit.has(nodeId)) this.nodeToUnit.set(nodeId, unit);
+        const list = this.nodeToUnits.get(nodeId);
+        if (list === undefined) this.nodeToUnits.set(nodeId, [unit]);
+        else list.push(unit);
+      }
+    }
   }
 
   private computeAffectedKeys(
@@ -308,7 +284,7 @@ export class Worklist {
     if (reader.affectedKeys !== undefined) {
       return reader.affectedKeys(this.passCtx, change.pass, change.key);
     }
-    // coarse: re-run on all previously-written keys.
+    // coarse pass: re-run on all previously-written keys.
     return Array.from(this.factStore.readAll(reader).keys());
   }
 
@@ -323,9 +299,6 @@ export class Worklist {
     return (this.analysisPendingByUnit.get(unit) ?? 0) > 0;
   }
 
-
-  // ── Drain ────────────────────────────────────────────────────────────────
-
   drain(limit = Infinity): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
     const t0 = performance.now();
     this._drainCalls++;
@@ -333,13 +306,10 @@ export class Worklist {
     let processed = 0;
 
     while (processed < limit) {
-      // Drain analysis + transform pass-graph items to fixpoint.
       this.drainPasses();
-
-      // Apply any CFG rebuilds queued by transform fires. Each rebuild bumps
-      // structuralPass, which fans out fresh work onto the pass queue; the
-      // outer loop picks it up on the next iteration.
+      // CFG rebuilds bump structuralPass, re-enqueuing downstream work.
       const rebuilt = this.flushPendingRebuilds();
+
       if (rebuilt.length === 0) break;
 
       this._transformRounds++;
@@ -353,7 +323,7 @@ export class Worklist {
     return changed;
   }
 
-  /** Current structural version for `unit` — the value of `structuralPass` in the fact store. */
+  /** Current structural version for `unit` (value of `structuralPass`). */
   structuralVersionOf(unit: FunctionUnit): number {
     return this.factStore.read(structuralPass, unit);
   }
@@ -378,6 +348,7 @@ export class Worklist {
       transformRounds: this._transformRounds,
       drainCalls: this._drainCalls,
       wallClockMs: this._wallClockMs,
+      peakQueueDepth: this._peakQueueDepth,
     });
   }
 
@@ -388,15 +359,12 @@ export class Worklist {
     this._transformRounds = 0;
     this._drainCalls = 0;
     this._wallClockMs = 0;
+    this._peakQueueDepth = 0;
   }
 
 }
 
-/**
- * Default production pass set registered by `Worklist`. Tests can pass
- * a subset (or `[]`) to `new Worklist(ast, envs, passes)` to exercise
- * dispatch in isolation.
- */
+/** Default production pass set. Tests may pass a subset for isolation. */
 export const DEFAULT_PASSES: ReadonlyArray<Pass<any, any>> = [
   structuralPass,
   runtimeWritePass,

@@ -1,29 +1,10 @@
-// Constant folding. Idempotent: once a Binary/Compare is rewritten to a
-// Literal, `matchesExpr` returns false on the replacement, so re-entry on
-// a converged body is a no-op sweep.
+// Constant folding. Idempotent: rewriting Binary/Compare to Literal removes the "const" fact match.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import { constAnalysisPass } from "../const-analysis/analysis";
-import type { ConstLattice } from "../const-analysis/lattice";
 import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
 import { unitSweepRule } from "../framework/transform-rule";
-
-/** Does this expression have a statically-known constant value that we can fold? */
-function matchesExpr(expr: ExprNS.Expr, factStore: FactStore): boolean {
-  if (!(expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare)) return false;
-  return factStore.tryRead(constAnalysisPass, expr.id)?.tag === "const";
-}
-
-/** Replace a folded Binary/Compare with the corresponding Literal. */
-function applyExpr(expr: ExprNS.Expr, factStore: FactStore): ExprNS.Expr {
-  const cv = factStore.tryRead(constAnalysisPass, expr.id) as ConstLattice & { tag: "const" };
-  return new ExprNS.Literal(
-    expr.startToken,
-    expr.endToken,
-    cv.value as true | false | number | string,
-  );
-}
 
 class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
@@ -31,11 +12,15 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   constructor(private readonly factStore: FactStore) {}
 
   private tryRewrite(expr: ExprNS.Expr): ExprNS.Expr {
-    if (matchesExpr(expr, this.factStore)) {
-      this.changed = true;
-      return applyExpr(expr, this.factStore);
-    }
-    return expr;
+    if (!(expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare)) return expr;
+    const cv = this.factStore.tryRead(constAnalysisPass, expr.id);
+    if (cv?.tag !== "const") return expr;
+    this.changed = true;
+    return new ExprNS.Literal(
+      expr.startToken,
+      expr.endToken,
+      cv.value as true | false | number | string,
+    );
   }
 
   rewrite(expr: ExprNS.Expr): ExprNS.Expr {
@@ -93,14 +78,13 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     expr.value = expr.value.accept(this);
     return this.tryRewrite(expr);
   }
-  // Lambda bodies are a separate scope — do not descend (matches DFA boundary).
+  // Lambda bodies: separate scope, do not descend.
   visitLambdaExpr(expr: ExprNS.Lambda): ExprNS.Expr {
     return this.tryRewrite(expr);
   }
   visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExprNS.Expr {
     return this.tryRewrite(expr);
   }
-  // Leaves
   visitLiteralExpr(expr: ExprNS.Literal): ExprNS.Expr {
     return this.tryRewrite(expr);
   }
@@ -118,7 +102,6 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   }
 }
 
-// Function bodies are skipped — each unit is optimised independently.
 class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: ConstFoldExprVisitor;
@@ -171,7 +154,7 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   visitFileInputStmt(stmt: StmtNS.FileInput): void {
     this.sweep(stmt.statements);
   }
-  // Function bodies are optimised independently by their own units.
+  // Nested functions: own unit handles them.
   visitFunctionDefStmt(_stmt: StmtNS.FunctionDef): void {}
   visitPassStmt(_stmt: StmtNS.Pass): void {}
   visitBreakStmt(_stmt: StmtNS.Break): void {}
@@ -181,14 +164,7 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-/**
- * Sweep `unit.body` for Binary/Compare expressions whose `constVal` hint
- * has collapsed to a statically-known constant and rewrite them in place
- * to `Literal` nodes. Returns `true` iff a mutation occurred. Called from
- * `constantFoldingRule.transfer`; the worklist marks the scope structurally
- * dirty and bumps the `structuralPass` version when this returns `true`.
- */
-export function applyConstantFoldingSweep(unit: FunctionUnit, factStore: FactStore): boolean {
+function constantFoldingSweep(unit: FunctionUnit, factStore: FactStore): boolean {
   const v = new ConstFoldStmtVisitor(factStore);
   v.sweep(unit.body);
   return v.changed;
@@ -197,5 +173,5 @@ export function applyConstantFoldingSweep(unit: FunctionUnit, factStore: FactSto
 export const constantFoldingRule = unitSweepRule(
   "constantFoldingRule",
   [constAnalysisPass],
-  applyConstantFoldingSweep,
+  constantFoldingSweep,
 );

@@ -15,12 +15,13 @@ import fs from "fs";
 import { ExprNS, StmtNS } from "../src/ast-types";
 import { parse } from "../src/parser/parser-adapter";
 import { analyzeWithEnvironments } from "../src/resolver";
+import { Worklist } from "../src/specialization";
+import { typeAnalysisPass } from "../src/specialization/type-analysis/analysis";
+import { constAnalysisPass } from "../src/specialization/const-analysis/analysis";
+import type { FactStore } from "../src/specialization/framework/fact-store";
+import type { TypeLattice } from "../src/specialization/type-analysis/lattice";
+import type { ConstLattice } from "../src/specialization/const-analysis/lattice";
 import {
-  ConstAnalysisPass,
-  HintStore,
-  Worklist,
-  TypeAnalysisPass,
-  type OptimizationHint,
   INT_BIT,
   BOOL_BIT,
   STR_BIT,
@@ -28,7 +29,7 @@ import {
   CLOSURE_BIT,
   FLOAT_BIT,
   COMPLEX_BIT,
-} from "../src/specialization";
+} from "../src/specialization/type-analysis/lattice";
 
 // ── CLI ──────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -71,14 +72,16 @@ const KIND_BITS: Array<[number, string]> = [
 
 const ALL_KINDS = KIND_BITS.reduce((acc, [b]) => acc | b, 0);
 
-function formatHint(h: OptimizationHint | undefined): string {
-  if (!h) return "";
+function formatHint(fs: FactStore | undefined, nodeId: number): string {
+  if (!fs) return "";
   const parts: string[] = [];
-  if (h.type?.kinds !== undefined && h.type.kinds !== ALL_KINDS) {
-    const names = KIND_BITS.filter(([b]) => (h.type!.kinds & b) !== 0).map(([, n]) => n);
+  const type = fs.tryRead<number, TypeLattice>(typeAnalysisPass, nodeId);
+  if (type !== undefined && type.kinds !== 0 && type.kinds !== ALL_KINDS) {
+    const names = KIND_BITS.filter(([b]) => (type.kinds & b) !== 0).map(([, n]) => n);
     if (names.length) parts.push(names.join("|"));
   }
-  if (h.constVal?.tag === "const") parts.push(`=${JSON.stringify(h.constVal.value)}`);
+  const cv = fs.tryRead<number, ConstLattice>(constAnalysisPass, nodeId);
+  if (cv?.tag === "const") parts.push(`=${JSON.stringify(cv.value)}`);
   return parts.length ? `\\n[${parts.join(" ")}]` : "";
 }
 
@@ -87,16 +90,11 @@ class DotGraph {
   private id = 0;
   private readonly prefix: string;
   private readonly lines: string[] = [];
-  private hints: HintStore | undefined;
+  factStore: FactStore | undefined;
 
-  constructor(prefix: string, hints?: HintStore) {
+  constructor(prefix: string, factStore?: FactStore) {
     this.prefix = prefix;
-    this.hints = hints;
-  }
-
-  annotate(node: ExprNS.Expr | StmtNS.Stmt, base: string): string {
-    if (!this.hints) return base;
-    return base + formatHint(this.hints.get(node));
+    this.factStore = factStore;
   }
 
   node(label: string, color?: string): string {
@@ -119,7 +117,7 @@ class DotGraph {
 
 // ── AST -> DOT emitters ─────────────────────────────────────────────
 function emitExpr(expr: ExprNS.Expr, g: DotGraph): string {
-  const hint = formatHint(g["hints"]?.get(expr));
+  const hint = formatHint(g.factStore, expr.id);
   if (expr instanceof ExprNS.Literal) {
     return g.node(`${JSON.stringify(expr.value)}${hint}`, "#d4edda");
   } else if (expr instanceof ExprNS.BigIntLiteral) {
@@ -240,11 +238,8 @@ function emitStmt(stmt: StmtNS.Stmt, g: DotGraph): string {
   } else if (stmt instanceof StmtNS.FunctionDef) {
     const params = stmt.parameters.map(p => p.lexeme).join(", ");
     const id = g.node(`def ${stmt.name.lexeme}(${params})`, "#e0f7fa");
-    const childHints = UNIT_HINTS?.get(stmt);
-    const prev = g["hints"];
-    if (childHints) g["hints"] = childHints;
+    // FactStore is scope-agnostic (keyed by nodeId), so no per-scope swap.
     emitBody(stmt.body, g, id);
-    g["hints"] = prev;
     return id;
   } else if (stmt instanceof StmtNS.Return) {
     const id = g.node("return", "#fce4ec");
@@ -279,8 +274,6 @@ function emitStmt(stmt: StmtNS.Stmt, g: DotGraph): string {
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
-let UNIT_HINTS: Map<StmtNS.FileInput | StmtNS.FunctionDef, HintStore> | undefined;
-
 const ast = parse(source);
 
 const before = new DotGraph("b");
@@ -293,40 +286,60 @@ if (errors.length > 0) {
   for (const e of errors) console.error(" ", String(e));
   process.exit(1);
 }
-const worklist = new Worklist(ast, environments, [
-  new TypeAnalysisPass(),
-  new ConstAnalysisPass(),
-]);
+const worklist = new Worklist(ast, environments);
 worklist.converge();
 const units = worklist.units;
+const factStore = worklist.factStore;
 
-UNIT_HINTS = new Map();
+// Per-unit summary by bucketing node-keyed facts onto the unit whose
+// blockOfNode owns the node. Node-id → unit is O(N_units) here; that's
+// fine for a dump script.
+const unitOfNode = new Map<number, StmtNS.FileInput | StmtNS.FunctionDef>();
+for (const [scope, unit] of units) {
+  for (const nodeId of unit.blockOfNode.keys()) unitOfNode.set(nodeId, scope);
+}
+
+const totals = new Map<
+  StmtNS.FileInput | StmtNS.FunctionDef,
+  { types: number; consts: number; nodes: Set<number> }
+>();
+for (const scope of units.keys()) totals.set(scope, { types: 0, consts: 0, nodes: new Set() });
+
+for (const [nodeId, t] of factStore.readAll<number, TypeLattice>(typeAnalysisPass)) {
+  if (t.kinds === 0 || t.kinds === ALL_KINDS) continue;
+  const scope = unitOfNode.get(nodeId);
+  if (!scope) continue;
+  const s = totals.get(scope)!;
+  s.types++;
+  s.nodes.add(nodeId);
+}
+for (const [nodeId, c] of factStore.readAll<number, ConstLattice>(constAnalysisPass)) {
+  if (c.tag !== "const") continue;
+  const scope = unitOfNode.get(nodeId);
+  if (!scope) continue;
+  const s = totals.get(scope)!;
+  s.consts++;
+  s.nodes.add(nodeId);
+}
+
 let totalHints = 0;
 let concreteTypes = 0;
 let constants = 0;
 for (const [scope, unit] of units) {
-  UNIT_HINTS.set(scope, unit.hints);
   const scopeName = scope instanceof StmtNS.FunctionDef ? `def ${scope.name.lexeme}` : "<module>";
-  let unitHints = 0;
-  let unitConcrete = 0;
-  let unitConsts = 0;
-  for (const [, h] of unit.hints) {
-    unitHints++;
-    if (h.type?.kinds !== undefined && h.type.kinds !== ALL_KINDS) unitConcrete++;
-    if (h.constVal?.tag === "const") unitConsts++;
-  }
-  totalHints += unitHints;
-  concreteTypes += unitConcrete;
-  constants += unitConsts;
+  const s = totals.get(scope)!;
+  totalHints += s.nodes.size;
+  concreteTypes += s.types;
+  constants += s.consts;
   console.error(
-    `  unit ${scopeName}: hints=${unitHints} concreteTypes=${unitConcrete} consts=${unitConsts} structuralVersion=${unit.structuralVersion}`,
+    `  unit ${scopeName}: annotatedNodes=${s.nodes.size} concreteTypes=${s.types} consts=${s.consts} generation=${unit.generation}`,
   );
 }
 console.error(
-  `Specialization summary: units=${units.size} hints=${totalHints} concreteTypes=${concreteTypes} consts=${constants}`,
+  `Specialization summary: units=${units.size} annotatedNodes=${totalHints} concreteTypes=${concreteTypes} consts=${constants}`,
 );
 
-const after = new DotGraph("a", UNIT_HINTS.get(ast));
+const after = new DotGraph("a", factStore);
 for (const s of ast.statements) emitStmt(s, after);
 
 // Compose DOT

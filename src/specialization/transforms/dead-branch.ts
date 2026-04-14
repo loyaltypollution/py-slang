@@ -1,25 +1,10 @@
-// Dead branch elimination. Idempotent: once an `If` is spliced out,
-// `matchesIf` returns false on the replacement statements.
+// Dead branch elimination. Idempotent: spliced-out `If` nodes no longer match.
 
 import { StmtNS } from "../../ast-types";
 import { constAnalysisPass } from "../const-analysis/analysis";
-import type { ConstLattice } from "../const-analysis/lattice";
 import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
 import { unitSweepRule } from "../framework/transform-rule";
-
-/** Does this `if`-stmt have a statically-known boolean condition? */
-function matchesIf(stmt: StmtNS.Stmt, factStore: FactStore): stmt is StmtNS.If {
-  if (!(stmt instanceof StmtNS.If)) return false;
-  const cv = factStore.tryRead(constAnalysisPass, stmt.condition.id);
-  return cv?.tag === "const" && typeof cv.value === "boolean";
-}
-
-/** Replace an `if <const bool>:` with the taken branch body. */
-function applyIf(ifStmt: StmtNS.If, factStore: FactStore): StmtNS.Stmt[] {
-  const cv = factStore.tryRead(constAnalysisPass, ifStmt.condition.id) as ConstLattice & { tag: "const" };
-  return cv.value ? ifStmt.body : (ifStmt.elseBlock ?? []);
-}
 
 class DeadBranchVisitor implements StmtNS.Visitor<void> {
   changed = false;
@@ -29,12 +14,11 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
     let i = 0;
     while (i < stmts.length) {
       const s = stmts[i];
-      if (matchesIf(s, this.factStore)) {
-        const replacements = applyIf(s, this.factStore);
-        stmts.splice(i, 1, ...replacements);
+      const replacement = this.tryReplaceIf(s);
+      if (replacement !== null) {
+        stmts.splice(i, 1, ...replacement);
         this.changed = true;
-        // Do not advance i: inspect the newly spliced-in head as the
-        // replacement body may itself contain a dead `If`.
+        // Do not advance i: spliced-in head may itself be a dead `If`.
       } else {
         s.accept(this);
         i++;
@@ -42,8 +26,15 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
     }
   }
 
+  private tryReplaceIf(stmt: StmtNS.Stmt): StmtNS.Stmt[] | null {
+    if (!(stmt instanceof StmtNS.If)) return null;
+    const cv = this.factStore.tryRead(constAnalysisPass, stmt.condition.id);
+    if (cv?.tag !== "const" || typeof cv.value !== "boolean") return null;
+    return cv.value ? stmt.body : (stmt.elseBlock ?? []);
+  }
+
   visitIfStmt(stmt: StmtNS.If): void {
-    // Expression rewrites happen elsewhere — no recursion into stmt.condition.
+    // Condition rewrites handled by constant folding.
     this.sweep(stmt.body);
     if (stmt.elseBlock) this.sweep(stmt.elseBlock);
   }
@@ -56,9 +47,8 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
   visitFileInputStmt(stmt: StmtNS.FileInput): void {
     this.sweep(stmt.statements);
   }
-  // Function bodies are optimised independently by their own units.
+  // Nested functions: own unit handles them.
   visitFunctionDefStmt(_stmt: StmtNS.FunctionDef): void {}
-  // Leaves & stmts without child blocks.
   visitAssignStmt(_stmt: StmtNS.Assign): void {}
   visitAnnAssignStmt(_stmt: StmtNS.AnnAssign): void {}
   visitReturnStmt(_stmt: StmtNS.Return): void {}
@@ -72,13 +62,7 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-/**
- * Sweep `unit.body` for `if <const bool>:` statements and splice them
- * out. Returns `true` iff a mutation occurred. Called from
- * `deadBranchRule.transfer`; the worklist marks the scope structurally
- * dirty and bumps the `structuralPass` version when this returns `true`.
- */
-export function applyDeadBranchSweep(unit: FunctionUnit, factStore: FactStore): boolean {
+function deadBranchSweep(unit: FunctionUnit, factStore: FactStore): boolean {
   const v = new DeadBranchVisitor(factStore);
   v.sweep(unit.body);
   return v.changed;
@@ -87,5 +71,5 @@ export function applyDeadBranchSweep(unit: FunctionUnit, factStore: FactStore): 
 export const deadBranchRule = unitSweepRule(
   "deadBranchRule",
   [constAnalysisPass],
-  applyDeadBranchSweep,
+  deadBranchSweep,
 );

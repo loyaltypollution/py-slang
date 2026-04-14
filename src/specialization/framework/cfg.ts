@@ -1,19 +1,17 @@
-// src/specialization/framework/cfg.ts — BasicBlock / CFG types + builder
+// BasicBlock / CFG types + builder.
 
 import { StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "./function-unit";
-
-// ── Types ────────────────────────────────────────────────────────────────────
 
 export type BlockId = number;
 
 export interface BasicBlock {
   readonly id: BlockId;
-  /** View into the AST's statement arrays. Do not mutate — owned by the AST. */
+  /** View into the AST's statement arrays; do not mutate. */
   readonly stmts: StmtNS.Stmt[];
   readonly successors: BasicBlock[];
   readonly predecessors: BasicBlock[];
-  /** Set by `indexCFG` immediately after `buildCFG`. Non-null post-indexing. */
+  /** Set by `indexCFG` after `buildCFG`. */
   unit: FunctionUnit;
 }
 
@@ -23,17 +21,7 @@ export interface CFG {
   readonly blocks: ReadonlyArray<BasicBlock>;
 }
 
-// ── Builder ──────────────────────────────────────────────────────────────────
-
-/**
- * Build a control-flow graph from a flat statement list (function/module body).
- *
- * The resulting CFG has a single entry block and a single exit block.
- * Unreachable code (after both branches of an if return, or after break/continue/return)
- * is not represented — no block is created for it.
- *
- * Block ID counter and helper are local to each invocation (no module-global state).
- */
+/** Build CFG from a flat stmt list. Single entry/exit; unreachable tails not represented. */
 export function buildCFG(body: StmtNS.Stmt[]): CFG {
   let nextId = 0;
   const blocks: BasicBlock[] = [];
@@ -44,7 +32,7 @@ export function buildCFG(body: StmtNS.Stmt[]): CFG {
       stmts: [],
       successors: [],
       predecessors: [],
-      // Populated by indexCFG; cast keeps the field non-optional for callers.
+      // Populated by indexCFG.
       unit: undefined as unknown as FunctionUnit,
     };
     blocks.push(block);
@@ -56,25 +44,17 @@ export function buildCFG(body: StmtNS.Stmt[]): CFG {
     to.predecessors.push(from);
   }
 
-  // Loop context for break/continue targeting
   const loopStack: { header: BasicBlock; exit: BasicBlock }[] = [];
 
   const entry = makeBlock();
   const exit = makeBlock();
 
-  /**
-   * Emit statements into `current` block, creating new blocks for control flow.
-   * Returns the block where control falls through after the last statement,
-   * or `null` if control never reaches the end (return/break/continue/diverging if).
-   */
+  /** Emit into `current`; return fall-through block, or null if control diverges. */
   function emitBlock(stmts: StmtNS.Stmt[], current: BasicBlock): BasicBlock | null {
     for (const stmt of stmts) {
-      // If a previous statement killed control flow, remaining stmts are dead code.
-      // We don't create blocks for them.
       switch (stmt.kind) {
         case "If": {
           const ifStmt = stmt as StmtNS.If;
-          // The condition is evaluated in the current block.
           (current.stmts as StmtNS.Stmt[]).push(stmt);
 
           const trueBlock = makeBlock();
@@ -86,18 +66,16 @@ export function buildCFG(body: StmtNS.Stmt[]): CFG {
             addEdge(current, falseBlock);
             const afterFalse = emitBlock(ifStmt.elseBlock, falseBlock);
 
-            // Join point: only create if at least one branch falls through.
             if (afterTrue || afterFalse) {
               const join = makeBlock();
               if (afterTrue) addEdge(afterTrue, join);
               if (afterFalse) addEdge(afterFalse, join);
               current = join;
             } else {
-              // Both branches diverge — no fall-through. Remaining stmts are dead.
+              // Both branches diverge.
               return null;
             }
           } else {
-            // No else: current → trueBlock, current → join (fall-through).
             const join = makeBlock();
             addEdge(current, join);
             if (afterTrue) addEdge(afterTrue, join);
@@ -108,7 +86,6 @@ export function buildCFG(body: StmtNS.Stmt[]): CFG {
 
         case "While": {
           const whileStmt = stmt as StmtNS.While;
-          // Loop header: evaluates condition each iteration.
           const header = makeBlock();
           addEdge(current, header);
           (header.stmts as StmtNS.Stmt[]).push(stmt);
@@ -117,13 +94,12 @@ export function buildCFG(body: StmtNS.Stmt[]): CFG {
           addEdge(header, loopBody);
 
           const loopExit = makeBlock();
-          addEdge(header, loopExit); // condition-false edge
+          addEdge(header, loopExit);
 
           loopStack.push({ header, exit: loopExit });
           const afterBody = emitBlock(whileStmt.body, loopBody);
           loopStack.pop();
 
-          // Back edge
           if (afterBody) addEdge(afterBody, header);
 
           current = loopExit;
@@ -132,7 +108,6 @@ export function buildCFG(body: StmtNS.Stmt[]): CFG {
 
         case "For": {
           const forStmt = stmt as StmtNS.For;
-          // Loop header: evaluates iter, assigns target each iteration.
           const header = makeBlock();
           addEdge(current, header);
           (header.stmts as StmtNS.Stmt[]).push(stmt);
@@ -141,13 +116,12 @@ export function buildCFG(body: StmtNS.Stmt[]): CFG {
           addEdge(header, loopBody);
 
           const loopExit = makeBlock();
-          addEdge(header, loopExit); // exhaustion edge
+          addEdge(header, loopExit);
 
           loopStack.push({ header, exit: loopExit });
           const afterBody = emitBlock(forStmt.body, loopBody);
           loopStack.pop();
 
-          // Back edge
           if (afterBody) addEdge(afterBody, header);
 
           current = loopExit;
@@ -178,7 +152,6 @@ export function buildCFG(body: StmtNS.Stmt[]): CFG {
           return null;
         }
 
-        // Straight-line statements: append to current block.
         default: {
           (current.stmts as StmtNS.Stmt[]).push(stmt);
           break;

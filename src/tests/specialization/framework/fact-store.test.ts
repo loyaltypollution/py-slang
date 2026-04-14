@@ -8,8 +8,8 @@
  *   (d) `readAll` surfaces all written keys for a pass;
  *   (e) `evict` drops a cell without firing events.
  */
-import { FactStore, type FactChange } from "../specialization/framework/fact-store";
-import type { Lattice, Pass, PassCtx } from "../specialization/framework/pass";
+import { FactStore, type FactChange } from "../../../specialization/framework/fact-store";
+import type { Lattice, Pass, PassCtx } from "../../../specialization/framework/pass";
 
 // ---------------------------------------------------------------------------
 // Fixtures: a monotone int-max lattice and a top-only "fired" lattice.
@@ -49,7 +49,7 @@ describe("FactStore", () => {
     const store = new FactStore();
     const p = makePass<string, number>("p", intMaxLattice);
     expect(store.read(p, "k")).toBe(0);
-    expect(store.has(p, "k")).toBe(false);
+    expect(store.readAll(p).has("k")).toBe(false);
   });
 
   it("fires onChange with correct payload on first write", () => {
@@ -107,7 +107,7 @@ describe("FactStore", () => {
 
     store.write(p1, "k", 7);
     expect(store.read(p2, "k")).toBe(0);
-    expect(store.has(p2, "k")).toBe(false);
+    expect(store.readAll(p2).has("k")).toBe(false);
   });
 
   it("readAll returns the pass's full keyspace", () => {
@@ -131,7 +131,7 @@ describe("FactStore", () => {
     store.onChange(e => events.push(e));
 
     store.evict(p, "k");
-    expect(store.has(p, "k")).toBe(false);
+    expect(store.readAll(p).has("k")).toBe(false);
     expect(store.read(p, "k")).toBe(0);
     expect(events).toHaveLength(0);
   });

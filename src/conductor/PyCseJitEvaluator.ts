@@ -10,7 +10,12 @@ import {
   displayError,
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
-import { analyze } from "../resolver/analysis";
+import { analyzeWithEnvironments } from "../resolver";
+import {
+  Worklist,
+  runtimeCallPass,
+  runtimeWritePass,
+} from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import pairmutator from "../stdlib/pairmutator";
@@ -23,11 +28,7 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
   return () => (promise ??= fn());
 }
 
-/**
- * The abstract class PyCseEvaluatorBase implements the common logic for all variants of
- * the CSE evaluator, which includes setting up the context, loading preludes, and evaluating chunks of code.
- */
-abstract class PyCseEvaluatorBase extends BasicEvaluator {
+abstract class PyCseJitEvaluatorBase extends BasicEvaluator {
   private context = new Context();
   private readonly variant: number;
   private readonly groups: Group[];
@@ -71,7 +72,12 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
 
       const script = chunk + "\n";
       const ast = parse(script);
-      const errors = analyze(ast, script, this.variant, this.groups);
+      const { errors, environments } = analyzeWithEnvironments(
+        ast,
+        script,
+        this.variant,
+        this.groups,
+      );
 
       if (errors.length > 0) {
         for (const error of errors.slice(0, -1)) {
@@ -80,10 +86,31 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
         throw errors[errors.length - 1];
       }
 
-      await evaluate("", ast, this.context, {
-        variant: this.variant,
-        groups: this.groups,
-      });
+      const worklist = new Worklist(ast, environments);
+      worklist.converge();
+
+      this.context.runtime.rootScope = ast;
+      // Per-callee raw counters live in the closure for this evaluation.
+      const callCounts = new Map<number, number>();
+      this.context.runtime.observeNodeWrite = (nodeId, value) => {
+        worklist.observe(runtimeWritePass, nodeId, value);
+      };
+      this.context.runtime.observeScopeCall = (scopeId) => {
+        const next = (callCounts.get(scopeId) ?? 0) + 1;
+        callCounts.set(scopeId, next);
+        worklist.observe(runtimeCallPass, scopeId, next);
+      };
+
+      try {
+        await evaluate("", ast, this.context, {
+          variant: this.variant,
+          groups: this.groups,
+        });
+        worklist.tick();
+      } finally {
+        this.context.runtime.observeNodeWrite = undefined;
+        this.context.runtime.observeScopeCall = undefined;
+      }
     } catch (e) {
       if (e instanceof SyntaxError) {
         await displayError(this.context, e, ErrorType.EVALUATOR_SYNTAX);
@@ -96,25 +123,25 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
   }
 }
 
-export class PyCseEvaluator1 extends PyCseEvaluatorBase {
+export class PyCseJitEvaluator1 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
     super(conductor, 1, []);
   }
 }
 
-export class PyCseEvaluator2 extends PyCseEvaluatorBase {
+export class PyCseJitEvaluator2 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
     super(conductor, 2, [linkedList]);
   }
 }
 
-export class PyCseEvaluator3 extends PyCseEvaluatorBase {
+export class PyCseJitEvaluator3 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
     super(conductor, 3, [linkedList, list, pairmutator, stream]);
   }
 }
 
-export class PyCseEvaluator4 extends PyCseEvaluatorBase {
+export class PyCseJitEvaluator4 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
     super(conductor, 4, [linkedList, list, pairmutator, stream, parser]);
   }

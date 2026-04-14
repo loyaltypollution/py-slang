@@ -1,25 +1,7 @@
-// src/specialization/purity-analysis/lattice.ts
-//
-// Purity lattice for an intraprocedural MOD dataflow.
-//
-// A `PurityFact` is a *block-level* fact (not a per-slot lattice), so the
-// purity analysis is not shaped like `AnalysisPass<L>` (see
-// `docs/specialization-cleanup-plan.md` §E for why). It is driven by
-// `PurityScopePass` walking the CFG directly and joining at merges.
-//
-// Fields:
-//   - `mod`      — slot indices (envLevel 0, locals-incl.-params) that may be
-//                  written on this path.
-//   - `calls`    — worst call-purity observed on this path: CLEAN (no call),
-//                  WHITELISTED (only memo-safe builtins), IMPURE (user fn or
-//                  non-whitelisted builtin).
-//   - `impure`   — sticky "definitely-disqualifying" flag. Set by
-//                  subscript-stores (target may alias caller object),
-//                  `assert` (can raise AssertionError), nonlocal/global
-//                  reads or writes, `lambda` / `List` / nested `FunctionDef`
-//                  / `Starred` / `Global` / `NonLocal` / `FromImport`. These
-//                  are not expressible in structured sub-fields without an
-//                  escape model this cycle declines to build.
+// Block-level purity fact for intraprocedural MOD dataflow.
+//   mod      — slots (envLevel 0) possibly written on this path
+//   calls    — worst observed call purity (clean | whitelisted | impure)
+//   impure   — sticky disqualifying flag (aliasing stores, assert, nonlocal/global, lambda, list alloc, etc.)
 
 export type CallPurity = "clean" | "whitelisted" | "impure";
 
@@ -40,8 +22,6 @@ export const BOTTOM_FACT: PurityFact = Object.freeze({
   calls: CLEAN,
   impure: false,
 });
-
-export const PURE_FIELD = "pure" as const;
 
 export function joinCallPurity(a: CallPurity, b: CallPurity): CallPurity {
   if (a === IMPURE_CALL || b === IMPURE_CALL) return IMPURE_CALL;

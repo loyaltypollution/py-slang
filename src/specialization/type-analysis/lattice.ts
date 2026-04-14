@@ -1,9 +1,5 @@
-// src/specialization/type-analysis/lattice.ts
-//
-// Type lattice: bitmask of possible Python types with sign/truth refinements.
+// Type lattice: bitmask of Python kinds with sign/truth refinements.
 // join = OR, meet = AND over the powerset domain.
-
-// ---- Kind bitmask constants ----
 
 export const INT_BIT = 1;
 export const BOOL_BIT = 2;
@@ -14,8 +10,6 @@ export const FLOAT_BIT = 32;
 export const COMPLEX_BIT = 64;
 export const ALL_KINDS_MASK =
   INT_BIT | BOOL_BIT | STR_BIT | NULL_BIT | CLOSURE_BIT | FLOAT_BIT | COMPLEX_BIT;
-
-// ---- Refinement enums (power-set bitmasks) ----
 
 export const enum IntRef {
   Bottom = 0,
@@ -35,16 +29,12 @@ export const enum BoolRef {
   Top = True | False, // 3
 }
 
-// ---- TypeLattice: the abstract value for type analysis ----
-
 export interface TypeLattice {
   readonly kinds: number;
   readonly intRef: IntRef;
   readonly boolRef: BoolRef;
   readonly floatRef: IntRef; // reuses IntRef enum for sign refinement
 }
-
-// ---- Lattice operations (pure bitwise) ----
 
 export function joinIntRef(a: IntRef, b: IntRef): IntRef {
   return a | b;
@@ -65,8 +55,6 @@ export function meetBoolRef(a: BoolRef, b: BoolRef): BoolRef {
 export function leqBoolRef(a: BoolRef, b: BoolRef): boolean {
   return (a & b) === a;
 }
-
-// ---- TypeLattice operations ----
 
 export function join(a: TypeLattice, b: TypeLattice): TypeLattice {
   if (a === b) return a;
@@ -94,8 +82,6 @@ export function leq(a: TypeLattice, b: TypeLattice): boolean {
   if (a.kinds & FLOAT_BIT && !leqIntRef(a.floatRef, b.floatRef)) return false;
   return true;
 }
-
-// ---- Frozen singletons ----
 
 function makeSingleton(
   kinds: number,
@@ -133,7 +119,7 @@ export const NULL_VAL: TypeLattice = makeSingleton(NULL_BIT, 0 as IntRef, 0 as B
 export const CLOSURE_VAL: TypeLattice = makeSingleton(CLOSURE_BIT, 0 as IntRef, 0 as BoolRef);
 export const COMPLEX_VAL: TypeLattice = makeSingleton(COMPLEX_BIT, 0 as IntRef, 0 as BoolRef);
 
-// ---- Constructor functions (zero allocation — singleton lookups) ----
+// Constructors return frozen singletons (zero allocation).
 
 export function integer(intRef: IntRef = 7 as IntRef): TypeLattice {
   return INT_SINGLETONS[intRef];

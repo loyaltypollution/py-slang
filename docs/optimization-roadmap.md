@@ -17,17 +17,23 @@ Cite as `SPEC-NN` in PR discussions, code comments, and reviews.
 
 ### SPEC-01 — No facade; evaluators wire the framework directly
 
-Every evaluator: (1) constructs one `Worklist` with its static
-analyses, (2) calls `worklist.converge()` for the static fixpoint,
-(3) wires the interpreter with `observeNodeWrite` / `observeScopeCall`
-callbacks that call `worklist.observe(pass, key, value)`, (4) runs
-execution, (5) calls `worklist.tick()` afterwards. SVML-family
-engines additionally register a `jitPass` via `worklist.register(...)`
-before execution; that pass is the install seam. Evaluators must not
-introduce a facade between themselves and the worklist.
+Reactive evaluators (`PyCseJitEvaluator`, `PySvmlJitEvaluator`):
+(1) construct one `Worklist` (using `DEFAULT_PASSES`), (2) call
+`worklist.converge()` for the static fixpoint, (3) wire the
+interpreter with `observeNodeWrite` / `observeScopeCall` callbacks
+that call `worklist.observe(pass, key, value)`, (4) run execution,
+(5) call `worklist.tick()` afterwards (CSE JIT) or rely on
+mid-execution cascades (SVML JIT). `PySvmlJitEvaluator` additionally
+registers a `makeJitPass(...)` via `worklist.register(...)` before
+execution; that pass is the install seam. Non-reactive evaluators
+(`PyCseEvaluator`, `PySvmlEvaluator`, `PySvmlSinterEvaluator`) omit
+steps (3)–(5) and either skip the worklist entirely (plain CSE) or
+build one and only converge statically (SVML one-shot). Evaluators
+must not introduce a facade between themselves and the worklist.
 *Location*: `src/specialization/framework/worklist.ts` (`converge`,
 `tick`, `register`, `observe`); construction sites in
-`src/conductor/PyCseEvaluator.ts`, `PySvmlEvaluator.ts`,
+`src/conductor/PyCseEvaluator.ts` (plain, no worklist),
+`PyCseJitEvaluator.ts`, `PySvmlEvaluator.ts`,
 `PySvmlJitEvaluator.ts`, `PySvmlSinterEvaluator.ts`.
 *Principle*: P-01, P-05.
 
@@ -64,9 +70,10 @@ When a pass's write changes a cell, consumers — passes whose `reads`
 contains the writer — are candidate work. `affectedKeys` supplies
 the precise subset of the consumer's keyspace that needs re-transfer;
 `coarse: true` opts into "re-run previously written keys" when no
-precise map is available. `tier` (`runtime` < `analysis` < `transform`
-< `jit`) is only a tiebreaker for drain order; analyses always
-complete before any transform that reads them.
+precise map is available. `tier` (`runtime` < `analysis` <
+`transform`) is only a tiebreaker for drain order; analyses always
+complete before any transform that reads them. The JIT install
+pass is `tier: "transform"` — there is no separate "jit" tier.
 *Location*: `src/specialization/framework/worklist.ts` (drain policy,
 `processPass`).
 *Principle*: P-04.
@@ -77,15 +84,15 @@ Passes whose transfer has observable side effects (AST mutation,
 `patchFunction`) must arrange that *equal writes are no-ops*. Two
 working patterns: (a) return a `"fired" | undefined` marker and guard
 the effect with a shape check of the target (e.g. `isAlreadyWrapped`
-in memoization); (b) return a structural digest of the effect's
-output and compare it to the previously-stored value before
-committing the effect (the JIT pattern). The framework's
+in memoization); (b) return the full effect output and rely on a
+structural `lattice.equals` to suppress re-patches (the JIT
+pattern — `SVMLIR` as the fact, field-wise compare). The framework's
 equality-gated write is what makes this discipline sufficient; there
 is no `fireOnce` flag, no `appliedTransforms` set, no
 `firedOneShotRules` map.
 *Location*: `src/specialization/transforms/memoization.ts`
-(`isAlreadyWrapped` gate); `src/conductor/PySvmlJitEvaluator.ts`
-(`digestSVMLIR` gate).
+(`isAlreadyWrapped` gate); `src/engines/svml/jit-pass.ts`
+(`structuralEquals` gate over `SVMLIR`).
 *Principle*: P-06.
 
 ### SPEC-06 — Interpreter feedback is two plain callbacks
@@ -128,18 +135,30 @@ their dispatch shape is different.
 
 ### SPEC-08 — The JIT install seam is a registered `Pass`
 
-SVML JIT registration is a regular `worklist.register(jitPass)` with
-`reads: [callCountPass, purityScopePass, structuralPass]`, `tier:
-"jit"`, and `lattice` of `number` (IR digest). Transfer recompiles
-the unit via `compiler.compileFunction(unit)`, digests the new IR,
-and calls `interpreter.patchFunction(index, ir)` only when the
-digest differs from the stored value. Patching is **dispatch
-patching** (V8 "lazy replacement" / HotSpot nmethod trampoline
-swap), not OSR — no state mapping, no frame rebuild. CSE registers
-no install pass: its materialized form is the AST, which transforms
-mutate in place.
-*Location*: `src/conductor/PySvmlJitEvaluator.ts` (inline `jitPass`
-literal); `src/engines/svml/svml-interpreter.ts` (`patchFunction`).
+SVML JIT registration is `worklist.register(makeJitPass({ compiler,
+interpreter, unitsOf }))` with `reads: [callCountPass,
+purityScopePass, structuralPass, typeAnalysisPass,
+constAnalysisPass]`, `tier: "transform"`, and a `lattice` whose
+value is the compiled `SVMLIR` itself — `equals` is a field-wise
+structural compare (NaN-safe over the `Float64Array` constants),
+`join` is right-biased. `affectedKeys` narrows per trigger: scope-
+keyed reads map to the owning unit; `structuralPass` routes
+directly; node-keyed `type` / `const` triggers walk every unit
+whose `blockOfNode` contains the node (bumping a per-unit
+`analysisGen` counter) and enqueue only the `FunctionDef` units.
+Transfer gates on a per-unit `(structuralGen, callCount, purity,
+analysisGen)` snapshot before calling
+`compiler.compileFunction(unit)`, then structurally compares the
+new IR against the stored one and calls
+`interpreter.patchFunction(index, ir)` only when they differ.
+Patching is **dispatch patching** (V8 "lazy replacement" / HotSpot
+nmethod trampoline swap), not OSR — no state mapping, no frame
+rebuild. CSE registers no install pass: its materialized form is
+the AST, which transforms mutate in place.
+*Location*: `src/engines/svml/jit-pass.ts` (`makeJitPass`,
+`structuralEquals`); `src/conductor/PySvmlJitEvaluator.ts`
+(registration site); `src/engines/svml/svml-interpreter.ts`
+(`patchFunction`).
 *Principle*: P-01, P-08.
 
 ### SPEC-09 — Runtime observation sources are explicit passes
@@ -327,10 +346,10 @@ Three primitives. No facade, no coordinator, no strategy object.
 ```mermaid
 flowchart TB
     EV["Evaluator (conductor/*)<br/>parse → resolve → new Worklist →<br/>converge → register(jitPass)? → wire callbacks → execute → tick"]
-    WL["Worklist<br/>register · observe · converge/tick<br/>drain policy over tiers (runtime < analysis < transform < jit)"]
+    WL["Worklist<br/>register · observe · converge/tick<br/>drain policy over tiers (runtime < analysis < transform)"]
     FS["FactStore<br/>(pass, key) → V<br/>equality-gated writes + onChange listeners"]
     INT["Interpreter (CSE / SVML / Sinter)<br/>LBD: re-resolve callee body at every CALL<br/>calls observeNodeWrite / observeScopeCall"]
-    JITP["jitPass (SVML only)<br/>reads callCount · purity · structural<br/>transfer: compile + digest + patchFunction"]
+    JITP["jitPass (SVML only, tier: transform)<br/>reads callCount · purity · structural · type · const<br/>transfer: snapshot-gate + compile + structural-equals + patchFunction"]
     FU["FunctionUnit<br/>funcAst + body getter + slot table"]
 
     EV --> WL
@@ -368,9 +387,10 @@ constructor or imported from `framework/`):
 
 Engine-specific:
 
-- SVML JIT: `jitPass`, registered by the evaluator. Transfer
-  composes `compileFunction` + digest + `patchFunction` and writes
-  the digest as its fact.
+- SVML JIT: `jitPass` built by `makeJitPass` in
+  `src/engines/svml/jit-pass.ts`, registered by the evaluator.
+  Transfer composes `compileFunction` + structural-equality compare
+  + `patchFunction` and writes the `SVMLIR` itself as its fact.
 
 ### LBD — hazard class & resolution
 
@@ -423,16 +443,17 @@ a requirements driver.
 
 ### D3 — Unit lookup from node-keyed triggers is O(N_functions)
 
-`memoizationRule.affectedKeys` currently walks
-`ctx.readAll(structuralPass).keys()` to map a `FunctionDef.id` back
-to its owning `FunctionUnit`, because its reads
-(`callCountPass` / `purityScopePass`) are scope-id-keyed. Fine for
-tens of functions, visible for thousands. The code comments the
-workaround explicitly.
-
-**Fix when it matters:** add an `id → unit` index on the worklist,
-or key the derived passes on `FunctionUnit` directly. Profile
-before doing either.
+Resolved in the current tree: `memoizationRule.affectedKeys` (and
+`jitPass.affectedKeys`) now map `FunctionDef.id` → `FunctionUnit`
+via `ctx.unitForFdId`, backed by a `unitsByFdId` index on the
+worklist built at construction and stable for the worklist's
+lifetime. Keeping this entry as a marker that the index currently
+only covers `FunctionDef`-id keys; node-id triggers
+(`typeAnalysisPass` / `constAnalysisPass`) still fan out via
+`ctx.unitsContainingNode`, which scans `blockOfNode` per unit.
+If the node fan-out ever shows up in profiling, the fix is an
+explicit `nodeId → Set<FunctionUnit>` reverse index maintained
+alongside CFG rebuilds.
 
 ### D4 — `buildFunctionUnits` rebuild for new scopes
 
@@ -479,10 +500,11 @@ Most recent first.
   `DeadBranchEliminationRule`, `ConstantFoldingRule` removed; their
   behavior re-expressed as `callCountPass`, `purityScopePass`,
   `memoizationRule`, `deadBranchRule`, `constantFoldingRule`
-  (object-literal passes in `framework/migrated-passes.ts`). The
-  memoization AST rewrite is now the exported helper
-  `applyMemoizationWrap` in `transforms/memoization.ts`, called from
-  `memoizationRule.transfer`.
+  (object-literal passes in their respective
+  `memoization-analysis/`, `purity-analysis/`, and `transforms/`
+  directories). The memoization AST rewrite is now the exported
+  helper `applyMemoizationWrap` in `transforms/memoization.ts`,
+  called from `memoizationRule.transfer`.
 - **`HintStore` + `OptimizationHint` deleted.** Replaced by
   `FactStore`. Compile-time readers (SVML compiler) take
   `worklist.factStore` and read `ctx.read`-style.
@@ -493,7 +515,7 @@ Most recent first.
   dedicated interface — they pass plain functions.
 - **`onScopeChanged` / `subscribe` / `notify` deleted.** The install
   seam is a registered `jitPass` whose `reads` declare when it
-  should run and whose digest fact gates side effects. No separate
+  should run and whose structural-`SVMLIR` fact gates side effects. No separate
   subscriber list; the dispatcher already has all the wiring.
 - **`callObservations: CallRecord[]` buffer collapsed.** Per-callee
   call count is a single scalar: evaluator bumps a local counter,

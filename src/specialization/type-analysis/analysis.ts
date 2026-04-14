@@ -33,11 +33,6 @@ import {
 } from "./lattice";
 import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
 
-// ── Pass<K,V> handle ────────────────────────────────────────────────────────
-// Fact-store channel: values are written directly by `TypeAnalysisVisitor`;
-// this pass exists as a `Pass<K,V>` so downstream readers can subscribe via
-// the normal pass-graph mechanism.
-
 const typeLattice: Lattice<TypeLattice> = {
   bottom: BOTTOM,
   equals: (a, b) =>
@@ -61,9 +56,6 @@ export const typeAnalysisPass: Pass<number, TypeLattice> = {
   },
 };
 
-/**
- * Maps Python binary operator token types to the string expected by transfer functions.
- */
 const BINARY_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
   [TokenType.PLUS, "+"],
   [TokenType.MINUS, "-"],
@@ -82,7 +74,7 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
   [TokenType.NOTEQUAL, "!="],
 ]);
 
-export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
+class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
     private readonly factStore: FactStore,
     private readonly slotTypes: { get(slot: number): TypeLattice | undefined },
@@ -136,7 +128,7 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     const left = expr.left.accept(this);
     const right = expr.right.accept(this);
 
-    // String concatenation: handled before numeric dispatch so str+str → string, not TOP.
+    // str+str → string (handled before numeric dispatch).
     if (
       expr.operator.type === TokenType.PLUS &&
       left.kinds === STR_BIT &&
@@ -254,14 +246,7 @@ export class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   }
 }
 
-/**
- * Type analysis AnalysisPass: wraps TypeAnalysisVisitor transfer functions
- * in the AnalysisPass interface. Lattice operations delegate to lattice.ts.
- *
- * This is a forward May analysis: merge = join (least upper bound).
- * At join points (if/else, loop headers) the env takes the union of possible types,
- * so we specialize only when the type is known to be numeric on ALL incoming paths.
- */
+// Forward may-analysis: env join = union; specialize only when numeric on all paths.
 export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
   readonly name = "type";
   readonly mergeKind = "may" as const;
@@ -289,11 +274,9 @@ export class TypeAnalysisPass implements AnalysisPass<TypeLattice> {
   ): ExprNS.Visitor<TypeLattice> {
     return new TypeAnalysisVisitor(factStore, env, slotLookup);
   }
-
 }
 
-// CSE stack values are tagged objects with `.type` discriminator.
-// Duck-type on the tag to avoid an engine → framework import.
+// Duck-type CSE stack values via `.type` discriminator (avoids engine→framework import).
 function liftType(rawValue: unknown): TypeLattice | undefined {
   if (rawValue === null || rawValue === undefined) return nullValue();
   if (typeof rawValue === "number") return rawToNumberLattice(rawValue);

@@ -1,7 +1,5 @@
-// Memoization: wraps a hot, pure FunctionDef with a runtime cache by
-// mutating its body in place. Relies on three interpreter-registered
-// intrinsics: __memo_has(id, *args), __memo_get(id, *args),
-// __memo_put(id, *args, value). No new scopes introduced.
+// Memoization: wraps a hot, pure FunctionDef body in place using the
+// __memo_has / __memo_get / __memo_put runtime intrinsics.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "../framework/function-unit";
@@ -17,21 +15,13 @@ import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
-/**
- * Wrap `unit`'s FunctionDef body with the memoization prelude in place.
- * Returns `true` iff the body was mutated. Caller gates on threshold +
- * purity; this helper only handles the rewrite.
- */
-export function applyMemoizationWrap(unit: FunctionUnit): boolean {
+// Idempotent: returns false if the prelude is already present.
+function applyMemoizationWrap(unit: FunctionUnit): boolean {
   const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return false;
-  // Idempotence: re-invocation on an already-wrapped body must be a no-op.
-  // Transfer mutates AST eagerly; the lattice "fired" write gates dispatch
-  // fan-out but the side effect happens before any equality check. Detect
-  // the prelude by shape: an `If` whose condition is a Call to MEMO_HAS.
   if (isAlreadyWrapped(fd.body)) return false;
 
-  const id = mintId(fd);
+  const id = `${fd.name.lexeme}@L${fd.name.line}`;
   const params = fd.parameters.map(p => mkVar(fd, p.lexeme));
 
   const hasCall = mkCall(fd, MEMO_HAS, [mkStr(fd, id), ...params]);
@@ -59,11 +49,7 @@ function isAlreadyWrapped(body: StmtNS.Stmt[]): boolean {
   return callee instanceof ExprNS.Variable && callee.name.lexeme === MEMO_HAS;
 }
 
-// ── AST construction helpers ────────────────────────────────────────────────
-
-function mintId(fd: StmtNS.FunctionDef): string {
-  return `${fd.name.lexeme}@L${fd.name.line}`;
-}
+// AST construction helpers
 
 function mkTok(fd: StmtNS.FunctionDef, type: TokenType, lexeme: string): Token {
   return new Token(type, lexeme, fd.name.line, fd.name.col, fd.name.indexInSource);
@@ -74,9 +60,8 @@ function mkVar(fd: StmtNS.FunctionDef, name: string): ExprNS.Variable {
   return new ExprNS.Variable(tok, tok, tok);
 }
 
+// Fresh node (new id) reusing the name Token — AST hint lookups key on node identity.
 function cloneVar(v: ExprNS.Variable): ExprNS.Variable {
-  // Fresh node (new id) reusing the name Token. AST hint lookups key on
-  // node identity, so we never share an expression node across call sites.
   return new ExprNS.Variable(v.startToken, v.endToken, v.name);
 }
 
@@ -89,7 +74,6 @@ function mkCall(fd: StmtNS.FunctionDef, fn: string, args: ExprNS.Expr[]): ExprNS
   return new ExprNS.Call(fd.startToken, fd.endToken, mkVar(fd, fn), args);
 }
 
-// ── Return rewriting ────────────────────────────────────────────────────────
 
 function rewriteReturns(
   stmts: StmtNS.Stmt[],
@@ -109,14 +93,11 @@ function rewriteReturns(
     } else if (s instanceof StmtNS.While || s instanceof StmtNS.For) {
       rewriteReturns(s.body, fd, id, params);
     }
-    // FunctionDef (nested), Assign, Pass, etc. — do not descend.
+    // Nested FunctionDef / Assign / Pass / etc. — do not descend.
   }
 }
 
-// ── Pass<K,V> rule ──────────────────────────────────────────────────────────
-// Gated on callCount threshold and pure===true. Both reads are keyed by
-// FunctionDef.id; affectedKeys fan-out maps back to the owning unit via
-// the structural-pass units view. Structural-triggered fan-out is direct.
+// Gated on callCount threshold and purity. Keyed by FunctionDef.id via structuralPass.
 export const memoizationRule: Pass<FunctionUnit, Fired> = {
   id: Symbol("memoizationRule"),
   debugName: "memoizationRule",
@@ -131,9 +112,7 @@ export const memoizationRule: Pass<FunctionUnit, Fired> = {
     const unit = ctx.unitForFdId(fdId);
     return unit === undefined ? [] : [unit];
   },
-  // No `prune`: memoization is one-shot per function. `applyMemoizationWrap`
-  // returns false on re-entry, so the "fired" cell persists and the equality
-  // gate suppresses onChange. Pruning would self-trigger via structuralPass.
+  // No `prune`: one-shot — pruning would self-trigger via structuralPass.
   transfer(ctx: PassCtx, key: FunctionUnit): Fired {
     const fd = key.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return undefined;

@@ -1,8 +1,4 @@
-// Intraprocedural purity analysis. `purityScopePass.transfer` runs a FIFO
-// CFG fixpoint (`solveCfg`) per FunctionDef and derives a boolean verdict
-// from the exit-block fact. Disqualifying effects (subscript-store, assert,
-// nonlocal/global, lambda, List literal, nested FunctionDef, Starred, etc.)
-// collapse into the fact's sticky `impure` flag. Consumer: memoizationRule.
+// Intraprocedural purity analysis (FIFO CFG fixpoint per FunctionDef). Consumer: memoizationRule.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
@@ -22,10 +18,7 @@ import {
   type PurityFact,
 } from "./lattice";
 
-// Memo-safe builtins: deterministic, no I/O, no caller-state mutation.
-// `print` is deliberately excluded (I/O). `__memo_*` intrinsics are
-// whitelisted so a body already rewritten by MemoizationTransformRule
-// continues to classify as pure on subsequent passes.
+// Memo-safe builtins (deterministic, no I/O). __memo_* keep rewritten bodies pure.
 const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
   "range",
   "len",
@@ -42,10 +35,8 @@ const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
   "__memo_put",
 ]);
 
-// ── Pass<K,V> handle ────────────────────────────────────────────────────────
-// 3-point lattice: ⊥ = undefined, true, false, ⊤ = "contested". The
-// "contested" sentinel is reachable only from the Pass-layer join.
-export type PurityPoint = boolean | "contested" | undefined;
+// 3-point lattice: ⊥ = undefined, true/false, ⊤ = "contested".
+type PurityPoint = boolean | "contested" | undefined;
 
 const purityLattice: Lattice<PurityPoint> = {
   bottom: undefined,
@@ -59,7 +50,7 @@ const purityLattice: Lattice<PurityPoint> = {
   },
 };
 
-// Key is the owning FunctionDef.id.
+// Keyed by the owning FunctionDef.id.
 export const purityScopePass: Pass<number, PurityPoint> = {
   id: Symbol("purityScopePass"),
   debugName: "purityScopePass",
@@ -76,17 +67,13 @@ export const purityScopePass: Pass<number, PurityPoint> = {
   },
   transfer(ctx: PassCtx, key: number): PurityPoint {
     const unit = ctx.unitForFdId(key);
-    return unit === undefined ? undefined : computePurity(unit);
+    if (unit === undefined) return undefined;
+    const fd = unit.funcAst;
+    if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
+    const exitFact = solveCfg(unit, fd.name.lexeme);
+    return !exitFact.impure && exitFact.calls !== IMPURE_CALL;
   },
 };
-
-export function computePurity(unit: FunctionUnit): boolean | undefined {
-  const fd = unit.funcAst;
-  if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
-  const self = fd.name.lexeme;
-  const exitFact = solveCfg(unit, self);
-  return !exitFact.impure && exitFact.calls !== IMPURE_CALL;
-}
 
 function solveCfg(unit: FunctionUnit, selfName: string): PurityFact {
   const outByBlock = new Map<number, PurityFact>();
@@ -121,8 +108,6 @@ function solveCfg(unit: FunctionUnit, selfName: string): PurityFact {
 
   return outByBlock.get(unit.cfg.exit.id) ?? BOTTOM_FACT;
 }
-
-// ── Transfer ────────────────────────────────────────────────────────────
 
 type StmtTransfer = (stmt: StmtNS.Stmt, fact: PurityFact) => PurityFact;
 type ExprTransfer = (expr: ExprNS.Expr, fact: PurityFact) => PurityFact;
@@ -163,9 +148,7 @@ function makeStmtTransfer(slotLookup: SlotLookup, exprT: ExprTransfer): StmtTran
           if (isLocal(info)) return addMod(f, info.slot);
           return markImpure(f);
         }
-        // Subscript-store: target may alias a caller-owned object (the
-        // grammar has no way to prove local construction without an escape
-        // model). Evaluate children, then mark impure.
+        // Subscript-store may alias caller object; disqualify.
         let g = exprT(a.target.value, f);
         g = exprT(a.target.index, g);
         return markImpure(g);
@@ -193,8 +176,7 @@ function makeStmtTransfer(slotLookup: SlotLookup, exprT: ExprTransfer): StmtTran
       }
 
       case "SimpleExpr": {
-        // Bare expression-statement has no consumer for its value. Parity
-        // with the prior structural-fold rule: disqualify.
+        // Bare expression-statement: no value consumer; disqualify.
         const s = stmt as StmtNS.SimpleExpr;
         return markImpure(exprT(s.expression, fact));
       }
@@ -242,38 +224,26 @@ function makeExprTransfer(slotLookup: SlotLookup, selfName: string): ExprTransfe
     }
 
     if (expr instanceof ExprNS.Call) {
-      // Classify callee without routing it through the Variable rule (which
-      // would flag nonlocal/primitive reads as impure). Self-recursion and
-      // whitelisted builtins stay pure.
+      // Self-recursion and whitelisted builtins stay pure; anything else is impure.
       let f = fact;
       if (expr.callee instanceof ExprNS.Variable) {
         const name = expr.callee.name.lexeme;
-        if (name === selfName || WHITELISTED_BUILTINS.has(name)) {
-          f = bumpCalls(f, WHITELISTED);
-        } else {
-          f = bumpCalls(f, IMPURE_CALL);
-        }
+        const call = name === selfName || WHITELISTED_BUILTINS.has(name) ? WHITELISTED : IMPURE_CALL;
+        f = bumpCalls(f, call);
       } else {
-        // Computed callee (e.g. subscript of a list-of-fns). Walk value
-        // subtree; call site disqualifies.
-        f = walk(expr.callee, f);
-        f = bumpCalls(f, IMPURE_CALL);
+        // Computed callee (e.g. subscript of list-of-fns) disqualifies.
+        f = bumpCalls(walk(expr.callee, f), IMPURE_CALL);
       }
       for (const a of expr.args) f = walk(a, f);
       return f;
     }
 
     if (expr instanceof ExprNS.Subscript) {
-      // Read is pure in effect. `visitSubscriptExpr` in the old code marked
-      // it IMPURE unconditionally; this rewrite removes that monkey patch.
-      let f = walk(expr.value, fact);
-      f = walk(expr.index, f);
-      return f;
+      return walk(expr.index, walk(expr.value, fact));
     }
 
     if (expr instanceof ExprNS.List) {
-      // Allocation identity is caller-observable; without an escape model
-      // we conservatively disqualify.
+      // Allocation identity is caller-observable; disqualify.
       let f = fact;
       for (const el of expr.elements) f = walk(el, f);
       return markImpure(f);

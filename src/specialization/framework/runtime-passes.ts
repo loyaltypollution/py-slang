@@ -1,31 +1,18 @@
-// src/specialization/framework/runtime-passes.ts
-//
-// Runtime observation source passes. The interpreter writes into these
-// via `Worklist.observe(pass, key, value)` on every tracked event:
-//   - `runtimeWritePass`: per-node RHS observation (assign, etc.)
-//   - `runtimeCallPass`:  per-scope call count
-//
-// `tier: "runtime"` — never drain-dispatched; their values are supplied
-// externally. The tier exists so the drain scheduler sorts readers
-// (callCountPass, analyses) behind them.
+// Runtime observation passes. Written via `Worklist.observe`; tier "runtime".
 
 import type { Lattice, Pass, PassCtx } from "./pass";
 
-// ── runtimeWritePass: NodeId → ObservedValue (raw JS value) ─────────────
+// Saturation ceiling; post-saturation writes compare equal and suppress cascade.
+export const RUNTIME_CALL_COUNT_SAT = 11;
 
-// Reference equality: the interpreter re-emits raw values, downstream
-// analyses do their own widening. Right-biased join: latest wins.
+// Right-biased: latest value wins.
 const rawValueLattice: Lattice<unknown> = {
   bottom: undefined,
   equals: (a, b) => a === b,
   join: (_a, b) => b,
 };
 
-/**
- * Runtime observation source for per-node value writes (assign RHS, etc.).
- * Key is `NodeId` (number); value is the raw JS value. `transfer` is a
- * no-op — the interpreter writes via `Worklist.observe`.
- */
+/** Runtime observation of per-node value writes. Key = NodeId, value = raw JS. */
 export const runtimeWritePass: Pass<number, unknown> = {
   id: Symbol("runtimeWritePass"),
   debugName: "runtimeWritePass",
@@ -38,20 +25,13 @@ export const runtimeWritePass: Pass<number, unknown> = {
   },
 };
 
-// ── runtimeCallPass: Scope → call count ────────────────────────────────
-
 const countLattice: Lattice<number> = {
   bottom: 0,
   equals: (a, b) => a === b,
-  join: (a, b) => Math.max(a, b),
+  join: (a, b) => Math.min(RUNTIME_CALL_COUNT_SAT, Math.max(a, b)),
 };
 
-/**
- * Runtime observation source for function-entry counts. Key is the
- * callee `FunctionDef.id`; value is a monotonically-increasing call
- * count. `transfer` is a no-op — the interpreter writes via
- * `Worklist.observe`.
- */
+/** Runtime observation of function-entry counts. Key = FunctionDef.id. */
 export const runtimeCallPass: Pass<number, number> = {
   id: Symbol("runtimeCallPass"),
   debugName: "runtimeCallPass",

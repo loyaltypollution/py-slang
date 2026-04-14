@@ -16,10 +16,6 @@ import {
   constOf,
 } from "./lattice";
 
-export { constJoin, constLeq, constMeet };
-
-// ── Pass<K,V> handle ────────────────────────────────────────────────────────
-// Fact-store channel: values are written directly by `ConstAnalysisVisitor`.
 const constLattice: Lattice<ConstLattice> = {
   bottom: CONST_BOTTOM,
   equals: (a, b) =>
@@ -41,8 +37,6 @@ export const constAnalysisPass: Pass<number, ConstLattice> = {
     return undefined;
   },
 };
-
-// ── Expression-level visitor ──────────────────────────────────────────────────
 
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
@@ -228,14 +222,6 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 }
 
-// ── AnalysisPass ────────────────────────────────────────────────────────────
-
-/**
- * Constant-propagation AnalysisPass.
- *
- * Tracks whether each expression evaluates to a statically known constant.
- * mergeKind = "may" (join at control-flow merge points).
- */
 export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
   readonly name = "constVal";
   readonly mergeKind = "may" as const;
@@ -263,7 +249,6 @@ export class ConstAnalysisPass implements AnalysisPass<ConstLattice> {
   ): ExprNS.Visitor<ConstLattice> {
     return new ConstAnalysisVisitor(factStore, env, slotLookup);
   }
-
 }
 
 function liftConst(rawValue: unknown): ConstLattice | undefined {

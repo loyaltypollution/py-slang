@@ -4,19 +4,8 @@ import { MutableEnv } from "./mutable-env";
 import type { Lattice, Pass, PassCtx } from "./pass";
 import { structuralPass } from "./structural-pass";
 
-/**
- * Packages a Kildall-style block DFA into the framework. Produces:
- *
- *   - `blockKeyedPass: Pass<BasicBlock, MutableEnv<L>>` — fixpoint state. The
- *     block's OUT env. Lattice-equals gates downstream wakes; on a closed
- *     gate, every per-node value derivable from this block is unchanged
- *     (monotone determinism), so no separate per-node pass is needed.
- *
- * `transferBlock` MUST be pure: no `factStore.write`, no mutation of
- * `unit`. Side-effect writes from inside this function bypass the
- * lattice-equals gate and reopen the spurious-wake bug class the
- * framework exists to prevent.
- */
+/** Packages a Kildall block DFA as a `Pass<BasicBlock, MutableEnv<L>>` over block OUT envs.
+ *  `transferBlock` MUST be pure — any factStore.write bypasses the equality gate. */
 
 export type DfaDirection = "forward" | "backward";
 
@@ -28,7 +17,7 @@ export interface DfaConfig<L> {
   readonly join: (a: L, b: L) => L;
   readonly meet: (a: L, b: L) => L;
   readonly mergeKind: "may" | "must";
-  /** Pure: take IN env, return OUT env. No fact-store writes, no unit mutation. */
+  /** Pure: IN env → OUT env. No fact-store writes. */
   readonly transferBlock: (
     ctx: PassCtx,
     block: BasicBlock,
@@ -80,10 +69,7 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
     return env ?? config.seedEnv(unit);
   }
 
-  // Forward-reference pattern: `reads` must include the pass itself so
-  // block-OUT changes wake CFG-successors through the dispatch graph. The
-  // array is built first, populated with the self-reference after the pass
-  // object exists, then frozen. ReadonlyArray contract preserved.
+  // Self-reference appended below so block-OUT changes wake CFG-successors.
   const readsArr: Pass<any, any>[] = [...config.reads, structuralPass];
   // eslint-disable-next-line prefer-const
   let blockKeyedPass: Pass<BasicBlock, MutableEnv<L>>;
@@ -100,21 +86,17 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
       return config.transferBlock(ctx, block, inEnv, unit);
     },
     affectedKeys(ctx, triggerPass, triggerKey) {
-      // Self-wake: a block's OUT changing wakes its CFG-successors so they
-      // recompute IN. Direction-aware.
+      // Self-wake: block OUT change → CFG successors recompute IN.
       if ((triggerPass as Pass<any, any>) === (blockKeyedPass as Pass<any, any>)) {
         return successors(triggerKey as BasicBlock, config.direction);
       }
-      // Structural: seed only the entry block; self-wake walks the CFG.
+      // Structural: seed entry/exit; self-wake walks the CFG.
       if ((triggerPass as Pass<any, any>) === (structuralPass as Pass<any, any>)) {
         const unit = triggerKey as FunctionUnit;
         const seed = config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
         return [seed];
       }
-      // Other reads (runtimeWritePass, etc.): precise mapping. triggerKey is
-      // a NodeId; resolve via the structural `unitForNode` lookup — does not
-      // depend on any pass having produced facts yet, so `observe()` calls
-      // made before `converge()` still fan out correctly.
+      // NodeId trigger: map to containing block.
       if (typeof triggerKey === "number") {
         const unit = ctx.unitForNode(triggerKey);
         const block = unit?.blockOfNode.get(triggerKey);
@@ -123,12 +105,10 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): DfaPasses<L> {
       return [];
     },
     prune(_ctx, unit, previousKeys) {
-      // Fresh blocks aren't in `previousKeys` yet, so `k.unit === unit` selects exactly the stale ones.
       return Array.from(previousKeys).filter(k => k.unit === unit);
     },
   };
 
-  // Self-wake: block OUT changes propagate to CFG-successors (handled in affectedKeys).
   readsArr.push(blockKeyedPass);
   Object.freeze(readsArr);
 

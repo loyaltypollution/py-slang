@@ -1,8 +1,5 @@
-// Shared scaffolding for unit-keyed transform rules (dead-branch,
-// constant-folding). The top-only `"fired"` lattice is the
-// re-fire guard: once set, a re-write yields `equals === true`,
-// suppressing `onChange` and downstream wakes. On structural rebuild the
-// cell must be pruned so the rule can fire again on the new body.
+// Shared scaffolding for unit-keyed transform rules.
+// The `"fired"` top-only lattice guards re-fires; structural rebuild prunes the cell.
 
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
@@ -17,11 +14,7 @@ export const firedLattice: Lattice<Fired> = {
   join: (a, b) => (a ?? b),
 };
 
-/**
- * Build a unit-keyed sweep rule. `reads` must include any per-node fact
- * passes the sweep consults; `structuralPass` is appended automatically
- * and drives both `affectedKeys` and `prune`.
- */
+/** Build a unit-keyed sweep rule. `structuralPass` is auto-appended to `reads`. */
 export function unitSweepRule(
   name: string,
   reads: ReadonlyArray<Pass<any, any>>,
@@ -39,11 +32,8 @@ export function unitSweepRule(
       }
       return [];
     },
-    // Evict the "fired" cell for this unit on structural rebuild so the
-    // rule can re-fire against the new body. Without this the top-only
-    // lattice permanently suppresses re-entry.
+    // Evict "fired" on structural rebuild so the rule can fire again.
     prune(_ctx, unit, previousKeys) {
-      // Fact-store keysets are unique, so at most one match exists.
       for (const k of previousKeys) if (k === unit) return [unit];
       return [];
     },

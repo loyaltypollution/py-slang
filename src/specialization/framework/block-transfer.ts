@@ -5,11 +5,7 @@ import type { AnalysisPass } from "./interfaces";
 import type { MutableEnv } from "./mutable-env";
 import type { SlotLookup } from "./slot-table";
 
-/**
- * Statement-level transfer. Updates `env` in place. Control-flow stmts
- * (If/While/For) appear as headers in their own block; only the
- * condition/iter is evaluated here — bodies live in successor blocks.
- */
+/** Statement-level transfer; updates `env` in place. If/While/For headers evaluate condition/iter only. */
 export function transferStmt<L>(
   stmt: StmtNS.Stmt,
   env: MutableEnv<L>,

@@ -1,18 +1,7 @@
-// ── ConstLattice ──────────────────────────────────────────────────────────────
-
 export type ConstValue = number | boolean | string;
 
-/**
- * Constant-propagation lattice element.
- *
- * Ordering: BOTTOM ≤ const(v) ≤ TOP
- *   - bottom  = "no info yet" — identity for join
- *   - const(v) = "definitely has value v on all paths so far"
- *   - top     = "overdefined / unknown"
- *
- * join(const(v), const(w)) = top when v ≠ w (paths disagree → lose the constant).
- * mergeKind = "may" (join at merge points).
- */
+// Constant-propagation lattice: BOTTOM ≤ const(v) ≤ TOP. Join of disagreeing
+// constants is TOP. mergeKind = "may".
 export type ConstLattice =
   | { readonly tag: "bottom" }
   | { readonly tag: "const"; readonly value: ConstValue }
@@ -24,14 +13,12 @@ export function constOf(value: ConstValue): ConstLattice {
   return { tag: "const", value };
 }
 
-// ── Lattice operations ────────────────────────────────────────────────────────
-
 export function constLeq(a: ConstLattice, b: ConstLattice): boolean {
   if (a.tag === "bottom") return true;
   if (b.tag === "top") return true;
-  if (a.tag === "top") return false; // top ≤ b only if b === top (handled above)
+  if (a.tag === "top") return false;
   if (b.tag === "bottom") return false;
-  return a.value === b.value; // const(v) ≤ const(w) iff v === w
+  return a.value === b.value;
 }
 
 export function constJoin(a: ConstLattice, b: ConstLattice): ConstLattice {

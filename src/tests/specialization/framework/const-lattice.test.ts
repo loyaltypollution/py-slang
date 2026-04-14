@@ -13,7 +13,7 @@ import {
   CONST_BOTTOM,
   CONST_TOP,
   constOf,
-} from "../specialization";
+} from "../../../specialization";
 
 describe("ConstLattice operations", () => {
   const c3 = constOf(3);

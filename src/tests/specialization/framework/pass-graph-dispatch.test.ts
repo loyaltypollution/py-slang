@@ -13,12 +13,12 @@
  *   (d) transform defers while analysis is queued for the same unit;
  *   (e) prune hook evicts stale BlockId-shaped keys on CFG rebuild.
  */
-import { parse } from "../parser/parser-adapter";
-import { Resolver } from "../resolver";
-import { Worklist } from "../specialization/framework/worklist";
-import { structuralPass } from "../specialization/framework/structural-pass";
-import type { Lattice, Pass } from "../specialization/framework/pass";
-import type { FunctionUnit } from "../specialization/framework/function-unit";
+import { parse } from "../../../parser/parser-adapter";
+import { Resolver } from "../../../resolver";
+import { Worklist } from "../../../specialization/framework/worklist";
+import { structuralPass } from "../../../specialization/framework/structural-pass";
+import type { Lattice, Pass } from "../../../specialization/framework/pass";
+import type { FunctionUnit } from "../../../specialization/framework/function-unit";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 

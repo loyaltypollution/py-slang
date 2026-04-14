@@ -1,9 +1,5 @@
-// src/specialization/type-analysis/transfer.ts
-//
-// Transfer functions for type analysis. Sign and boolean refinements use
-// lookup tables over the IntRef/BoolRef bitmask domains (8 and 4 values
-// respectively). Each table is indexed as TABLE[(a << 3) | b] for 8x8,
-// or TABLE[(a << 2) | b] for 4x4.
+// Transfer functions for type analysis. Sign/boolean refinements are table
+// lookups indexed as TABLE[(a << 3) | b] (8x8) or TABLE[(a << 2) | b] (4x4).
 import {
   type IntRef,
   BoolRef,
@@ -19,12 +15,8 @@ import {
   complexValue as complexVal,
 } from "./lattice";
 
-// ========================================================================
-// Sign arithmetic transfer tables (IntRef × IntRef → IntRef)
-// ========================================================================
-//
-// IntRef encoding (3-bit powerset):
-//   0=Bottom  1=Neg  2=Zero  3=NonPos  4=Pos  5=NonZero  6=NonNeg  7=Top
+// Sign arithmetic tables (IntRef × IntRef → IntRef).
+// IntRef: 0=Bot 1=Neg 2=Zero 3=NonPos 4=Pos 5=NonZero 6=NonNeg 7=Top
 
 // prettier-ignore
 const ADD_TABLE = new Uint8Array([
@@ -81,11 +73,9 @@ const MOD_TABLE = new Uint8Array([
 /*Top*/  0,  3,  7,  3,  6,  7,  6,  7,
 ]);
 
-// ========================================================================
-// Boolean comparison tables (IntRef × IntRef → BoolRef)
-// ========================================================================
+// Boolean comparison tables (IntRef × IntRef → BoolRef).
 
-// Greater-than: GT_TABLE[l][r] = BoolRef of (l > r)
+// GT_TABLE[l][r] = BoolRef of (l > r)
 // prettier-ignore
 const GT_TABLE = new Uint8Array([
 // l\r:  Bot Neg Zer Nps Pos Nzr Nng Top
@@ -99,7 +89,7 @@ const GT_TABLE = new Uint8Array([
 /*Top*/  0,  3,  3,  3,  3,  3,  3,  3,
 ]);
 
-// Equality: EQ_TABLE[l][r] = BoolRef of (l == r)
+// EQ_TABLE[l][r] = BoolRef of (l == r)
 // prettier-ignore
 const EQ_TABLE = new Uint8Array([
 // l\r:  Bot Neg Zer Nps Pos Nzr Nng Top
@@ -112,10 +102,6 @@ const EQ_TABLE = new Uint8Array([
 /*Nng*/  0,  2,  3,  3,  3,  3,  3,  3,
 /*Top*/  0,  3,  3,  3,  3,  3,  3,  3,
 ]);
-
-// ========================================================================
-// Sign arithmetic functions (table lookups)
-// ========================================================================
 
 /** Negate a sign: swap Neg (bit 0) and Pos (bit 2), keep Zero (bit 1). */
 export function negSign(a: IntRef): IntRef {
@@ -141,10 +127,6 @@ export function divSigns(a: IntRef, b: IntRef): IntRef {
 export function modSigns(a: IntRef, b: IntRef): IntRef {
   return MOD_TABLE[(a << 3) | b] as IntRef;
 }
-
-// ========================================================================
-// Boolean transfer functions
-// ========================================================================
 
 export function notBoolRef(t: BoolRef): BoolRef {
   if (t === 0) return 0 as BoolRef; // bottom
@@ -174,9 +156,7 @@ export function neqSigns(l: IntRef, r: IntRef): BoolRef {
   return notBoolRef(eqSigns(l, r));
 }
 
-// ========================================================================
-// Top-level transfer functions operating on TypeLattice
-// ========================================================================
+// Top-level transfer functions operating on TypeLattice.
 
 export function transferBinaryOp(op: string, left: TypeLattice, right: TypeLattice): TypeLattice {
   const lk = left.kinds;

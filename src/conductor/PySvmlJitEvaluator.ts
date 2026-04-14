@@ -1,10 +1,10 @@
 import { BasicEvaluator } from "@sourceacademy/conductor/runner";
+import { makeJitPass } from "../engines/svml/jit-pass";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import { makeJitPass } from "../engines/svml/jit-pass";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { Worklist, runtimeCallPass, runtimeWritePass } from "../specialization";
+import { RUNTIME_CALL_COUNT_SAT, Worklist, runtimeCallPass, runtimeWritePass } from "../specialization";
 import { EvaluatorError } from "./errors";
 
 /**
@@ -27,7 +27,6 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const compiler = SVMLCompiler.fromProgramUnit(ast, environments, worklist.units, worklist.factStore);
       const program = compiler.compileProgram(ast);
 
-      // Per-callee raw count map for runtimeCallPass.
       const callCounts = new Map<number, number>();
 
       const interpreter = new SVMLInterpreter(program, {
@@ -36,7 +35,9 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           worklist.observe(runtimeWritePass, nodeId, value);
         },
         observeScopeCall: (scopeId) => {
-          const next = (callCounts.get(scopeId) ?? 0) + 1;
+          const cur = callCounts.get(scopeId) ?? 0;
+          if (cur >= RUNTIME_CALL_COUNT_SAT) return;
+          const next = cur + 1;
           callCounts.set(scopeId, next);
           worklist.observe(runtimeCallPass, scopeId, next);
         },

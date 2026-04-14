@@ -8,12 +8,24 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import type { Pass, PassCtx } from "../../specialization/framework/pass";
+import { constAnalysisPass } from "../../specialization/const-analysis/analysis";
 import { structuralPass } from "../../specialization/framework/structural-pass";
 import { callCountPass } from "../../specialization/memoization-analysis/call-count";
 import { purityScopePass } from "../../specialization/purity-analysis/analysis";
+import { typeAnalysisPass } from "../../specialization/type-analysis/analysis";
 import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
 import { SVMLIR } from "./types";
+
+/** Memoized snapshot of the inputs that determine a unit's compiled IR.
+ *  `analysisGen` counts node-level type/const fact changes within this unit;
+ *  compileFunction reads those via factStore, so any change must invalidate. */
+interface CompileInputs {
+  structuralGen: number;
+  callCount: number;
+  purity: unknown;
+  analysisGen: number;
+}
 
 export interface JitPassDeps {
   readonly compiler: SVMLCompiler;
@@ -36,6 +48,15 @@ const UNCOMPILED: SVMLIR = new SVMLIR(
 export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
   const { compiler, interpreter, unitsOf } = deps;
 
+  // Per-unit snapshot of the (structuralGen, callCount, purity) tuple that
+  // determines compilation output. On trigger, if the snapshot matches the
+  // current fact-store values, skip compileFunction entirely.
+  const lastInputs = new WeakMap<FunctionUnit, CompileInputs>();
+  // Per-unit tick bumped whenever a node-level type/const fact changes within
+  // the unit. compileFunction reads typeAnalysisPass/constAnalysisPass on a
+  // per-node basis, so the memo snapshot must invalidate on any such change.
+  const analysisGen = new WeakMap<FunctionUnit, number>();
+
   const jitPass: Pass<FunctionUnit, SVMLIR> = {
     id: Symbol("jitPass"),
     debugName: "jitPass",
@@ -44,10 +65,31 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       equals: structuralEquals,
       join: (_a, b) => b,
     },
-    reads: [callCountPass, purityScopePass, structuralPass],
+    reads: [callCountPass, purityScopePass, structuralPass, typeAnalysisPass, constAnalysisPass],
     tier: "transform",
-    // Any change in a read pass invalidates every FunctionDef unit.
-    affectedKeys(_ctx, _triggerPass, _triggerKey) {
+    affectedKeys(ctx, triggerPass, triggerKey) {
+      if (triggerPass === callCountPass || triggerPass === purityScopePass) {
+        const unit = ctx.unitForFdId(triggerKey as number);
+        return unit === undefined ? [] : [unit];
+      }
+      if (triggerPass === structuralPass) {
+        return [triggerKey as FunctionUnit];
+      }
+      if (triggerPass === typeAnalysisPass || triggerPass === constAnalysisPass) {
+        // A node may be indexed by multiple units (e.g. a FunctionDef body
+        // node is also indexed in the enclosing FileInput's CFG). Bump
+        // analysisGen for every containing unit so the memo invalidates
+        // correctly regardless of nesting; only enqueue FunctionDef units
+        // since jitPass only produces IR for those.
+        const nodeId = triggerKey as number;
+        const containing = ctx.unitsContainingNode(nodeId);
+        const affected: FunctionUnit[] = [];
+        for (const u of containing) {
+          analysisGen.set(u, (analysisGen.get(u) ?? 0) + 1);
+          if (u.funcAst instanceof StmtNS.FunctionDef) affected.push(u);
+        }
+        return affected;
+      }
       return Array.from(unitsOf());
     },
     transfer(ctx: PassCtx, unit: FunctionUnit): SVMLIR | undefined {
@@ -55,9 +97,28 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
       const index = compiler.indexOf(scope);
       if (index === undefined) return undefined;
+
+      const curInputs: CompileInputs = {
+        structuralGen: unit.generation,
+        callCount: ctx.read(callCountPass, scope.id),
+        purity: ctx.read(purityScopePass, scope.id),
+        analysisGen: analysisGen.get(unit) ?? 0,
+      };
+      const prevInputs = lastInputs.get(unit);
+      if (
+        prevInputs !== undefined &&
+        prevInputs.structuralGen === curInputs.structuralGen &&
+        prevInputs.callCount === curInputs.callCount &&
+        prevInputs.purity === curInputs.purity &&
+        prevInputs.analysisGen === curInputs.analysisGen
+      ) {
+        return undefined;
+      }
+
       const newCode = compiler.compileFunction(unit);
+      lastInputs.set(unit, curInputs);
       const prev = ctx.read(jitPass, unit);
-      if (structuralEquals(newCode, prev)) return undefined; // no write, no patch
+      if (structuralEquals(newCode, prev)) return undefined;
       interpreter.patchFunction(index, newCode);
       return newCode;
     },

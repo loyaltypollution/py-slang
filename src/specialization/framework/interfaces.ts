@@ -2,15 +2,7 @@ import type { ExprNS } from "../../ast-types";
 import type { FactStore } from "./fact-store";
 import type { SlotLookup } from "./slot-table";
 
-/**
- * Expression-level dataflow analysis pass. The `name` doubles as a stable
- * identifier for logging. Runs as a Kildall fixpoint over basic blocks
- * within a `FunctionUnit`.
- *
- * Scope-level passes (purity, call-count) and transforms (dead-branch,
- * constant-folding, memoization) are `Pass<K, V>` instances colocated
- * with their analysis/transform modules.
- */
+/** Expression-level DFA module for block-fixpoint analyses. */
 export interface AnalysisPass<L> {
   readonly name: string;
   top(): L;
@@ -21,11 +13,7 @@ export interface AnalysisPass<L> {
   readonly mergeKind: "may" | "must";
   readonly direction: "forward" | "backward";
 
-  /**
-   * Create the expression-level visitor for this analysis. The DFA driver
-   * calls this per expression sub-tree; the returned visitor reads from
-   * `env` and writes computed facts via the shared `FactStore`.
-   */
+  /** Per-subtree visitor: reads from `env`, writes facts via `factStore`. */
   makeExprVisitor(
     factStore: FactStore,
     env: { get(slot: number): L | undefined },

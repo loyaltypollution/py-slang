@@ -1,7 +1,4 @@
-// Framework-level "unit CFG changed" signal. Seeded at unit construction,
-// bumped by `Worklist.flushPendingRebuilds` after a transform rebuilds the
-// CFG. Source pass (no derivation): readers (analyses, transforms, JIT)
-// re-run on AST-shape changes and evict stale keys via their `prune` hook.
+// "Unit CFG changed" signal; bumped by `Worklist.flushPendingRebuilds`.
 
 import type { Lattice, Pass, PassCtx } from "./pass";
 import type { FunctionUnit } from "./function-unit";

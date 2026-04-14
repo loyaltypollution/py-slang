@@ -1,13 +1,6 @@
 import type { Pass } from "./pass";
 
-/**
- * Event emitted when a fact-store write changes a `(pass, key)` cell's
- * value under `pass.lattice.equals`. Equality-identical writes produce
- * no event — the primitive that drives change propagation.
- *
- * `oldValue` is `null` if the cell was previously empty. `newValue` is
- * always defined — `undefined` returns from `transfer` never reach the store.
- */
+/** Fired on value-changing `(pass, key)` writes. `oldValue` is `null` if the cell was empty. */
 export interface FactChange<K, V> {
   readonly pass: Pass<K, V>;
   readonly key: K;
@@ -17,14 +10,8 @@ export interface FactChange<K, V> {
 
 export type FactChangeListener = (change: FactChange<unknown, unknown>) => void;
 
-/**
- * Single source of truth for pass-produced facts. Keyed by `(pass, key)`
- * using a two-level map (outer keyed by pass identity, inner by the pass's
- * own `K`). Writes are equality-gated: if the incoming value compares equal
- * to the stored one under `pass.lattice.equals`, the write is a no-op and
- * no listener fires. This is what makes saturating lattices (e.g. the
- * `callCountPass` bucket) suppress downstream work once they converge.
- */
+/** Fact storage keyed by `(pass, key)`. Writes are gated by `pass.lattice.equals`;
+ *  no-op writes suppress listener fan-out. */
 export class FactStore {
   private readonly cells = new Map<Pass<unknown, unknown>, Map<unknown, unknown>>();
   private readonly listeners = new Set<FactChangeListener>();
@@ -33,10 +20,6 @@ export class FactStore {
     const inner = this.cells.get(pass as Pass<unknown, unknown>);
     if (inner === undefined || !inner.has(key)) return pass.lattice.bottom;
     return inner.get(key) as V;
-  }
-
-  has<K, V>(pass: Pass<K, V>, key: K): boolean {
-    return this.cells.get(pass as Pass<unknown, unknown>)?.has(key) ?? false;
   }
 
   tryRead<K, V>(pass: Pass<K, V>, key: K): V | undefined {
@@ -50,10 +33,7 @@ export class FactStore {
     return (inner ?? new Map()) as ReadonlyMap<K, V>;
   }
 
-  /**
-   * Write a fact. Returns `true` iff the value changed under the pass's
-   * lattice equality and a listener event was fired.
-   */
+  /** Write a fact. Returns `true` iff the value changed and a listener event fired. */
   write<K, V>(pass: Pass<K, V>, key: K, value: V): boolean {
     let inner = this.cells.get(pass as Pass<unknown, unknown>);
     if (inner === undefined) {
@@ -79,7 +59,7 @@ export class FactStore {
     return true;
   }
 
-  /** Delete a `(pass, key)` cell. Silent if absent. Does not emit events. */
+  /** Delete a cell. Silent if absent; no event emitted. */
   evict<K, V>(pass: Pass<K, V>, key: K): void {
     this.cells.get(pass as Pass<unknown, unknown>)?.delete(key);
   }

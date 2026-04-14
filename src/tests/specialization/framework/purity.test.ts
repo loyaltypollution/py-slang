@@ -9,15 +9,15 @@
  *   - subscript-read treated as pure (previously IMPURE)
  */
 
-import { StmtNS } from "../ast-types";
-import { parse } from "../parser/parser-adapter";
-import { analyzeWithEnvironments } from "../resolver";
+import { StmtNS } from "../../../ast-types";
+import { parse } from "../../../parser/parser-adapter";
+import { analyzeWithEnvironments } from "../../../resolver";
 import {
   ConstAnalysisPass,
   TypeAnalysisPass,
   Worklist,
-} from "../specialization";
-import { purityScopePass } from "../specialization/purity-analysis/analysis";
+} from "../../../specialization";
+import { purityScopePass } from "../../../specialization/purity-analysis/analysis";
 
 function purityOf(code: string, fnName: string): boolean | undefined {
   const script = code + "\n";
