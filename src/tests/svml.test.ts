@@ -198,6 +198,27 @@ describe("SVML E2E", () => {
     ],
   };
 
+  const listTests: SVMLTestCases = {
+    "list literal and read": [
+      ["xs = [10, 20, 30]\nxs[1]", 20, null],
+      ["[1, 2, 3][0]", 1, null],
+    ],
+    "subscript assignment": [
+      ["xs = [9]\nxs[0] = 7\nxs[0]", 7, null],
+      ["xs = [1, 2, 3]\nxs[2] = 99\nxs[2]", 99, null],
+      [
+        "def f(n):\n    xs = [9]\n    xs[0] = n\n    return xs[0]\nf(42)",
+        42,
+        null,
+      ],
+      [
+        "def f(n):\n    xs = [9]\n    xs[0] = n\n    return xs[0]\nx = 0\nfor i in range(1000):\n    x = f(x)\nx",
+        0,
+        null,
+      ],
+    ],
+  };
+
   const errorTests: SVMLTestCases = {
     "type errors": [
       ['1 + ""', UnsupportedOperandTypeError, null],
@@ -214,5 +235,6 @@ describe("SVML E2E", () => {
   describe("Branches", () => generateSVMLTestCases(branchTests));
   describe("Loops", () => generateSVMLTestCases(loopTests));
   describe("Combined", () => generateSVMLTestCases(combinedTests));
+  describe("Lists", () => generateSVMLTestCases(listTests));
   describe("Errors", () => generateSVMLTestCases(errorTests));
 });

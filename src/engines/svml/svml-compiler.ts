@@ -679,6 +679,22 @@ export class SVMLCompiler
   }
 
   visitAssignStmt(stmt: StmtNS.Assign): ExpressionResult {
+    if (stmt.target instanceof ExprNS.Subscript) {
+      const objResult = this.compile(stmt.target.value);
+      const idxResult = this.compile(stmt.target.index);
+      const valResult = this.compile(stmt.value);
+      this.builder.emitNullary(OpCodes.STAG);
+      this.builder.emitNullary(OpCodes.LGCU);
+      return {
+        maxStackSize: Math.max(
+          objResult.maxStackSize,
+          1 + idxResult.maxStackSize,
+          2 + valResult.maxStackSize,
+          1,
+        ),
+      };
+    }
+
     const initResult = this.compile(stmt.value);
 
     // Record an observation write site at the STORE pc so the runtime can
