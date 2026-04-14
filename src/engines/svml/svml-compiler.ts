@@ -491,11 +491,18 @@ export class SVMLCompiler
     return pair[specialized ? 1 : 0];
   }
 
-  /** True when both operands have a statically known numeric type (int or float). */
+  /** True when both operands are statically numeric — pure int, pure float,
+   *  or the mixed `INT_BIT | FLOAT_BIT` that guard-narrowing produces from
+   *  predicates like `if x > 0:`. F-opcodes cast both sides to `number` and
+   *  dispatch a plain JS arithmetic op, which handles int and float
+   *  identically; the prior singleton-kind check rejected the mixed case
+   *  and was the gate that kept narrowed slots from reaching F-opcodes. */
   private bothNumeric(left: ExprNS.Expr, right: ExprNS.Expr): boolean {
     const lk = this.getType(left)?.kinds;
     const rk = this.getType(right)?.kinds;
-    return (lk === INT_BIT || lk === FLOAT_BIT) && (rk === INT_BIT || rk === FLOAT_BIT);
+    if (lk === undefined || rk === undefined) return false;
+    const NUMERIC = INT_BIT | FLOAT_BIT;
+    return lk !== 0 && (lk & ~NUMERIC) === 0 && rk !== 0 && (rk & ~NUMERIC) === 0;
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExpressionResult {
@@ -573,7 +580,12 @@ export class SVMLCompiler
       }
       case TokenType.MINUS: {
         const k = this.getType(expr.right)?.kinds;
-        opcode = k === INT_BIT || k === FLOAT_BIT ? OpCodes.NEGF : OpCodes.NEGG;
+        // Accept any subset of INT|FLOAT — NEGF does `-(x as number)` and
+        // treats int and float identically. See `bothNumeric` for rationale.
+        const NUMERIC = INT_BIT | FLOAT_BIT;
+        opcode = k !== undefined && k !== 0 && (k & ~NUMERIC) === 0
+          ? OpCodes.NEGF
+          : OpCodes.NEGG;
         break;
       }
       case TokenType.PLUS:
