@@ -16,7 +16,7 @@ import {
   wireCFG,
   type FunctionUnit,
 } from "./function-unit";
-import type { Pass, PassCtx, TransformRule, LifecycleEdge } from "./pass";
+import { REGISTERED_PASSES, type Pass, type PassCtx, type TransformRule, type LifecycleEdge } from "./pass";
 import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
 import { callCountPass } from "../memoization-analysis/call-count";
 import { purityBlockPass, purityScopePass } from "../purity-analysis/analysis";
@@ -196,9 +196,11 @@ export class Worklist {
   register<K, V>(pass: Pass<K, V>): void {
     if (this.registeredPasses.indexOf(pass as Pass<any, any>) !== -1) return;
     this.registeredPasses.push(pass as Pass<any, any>);
-    // Stamp the pass so `addEdge` can reject post-registration amendments
-    // that would be silently dropped by the dispatch-table snapshot below.
-    (pass as Pass<K, V> & { __worklistRegistered?: boolean }).__worklistRegistered = true;
+    // Record registration so `addEdge` can reject post-registration
+    // amendments that would be silently dropped by the dispatch-table
+    // snapshot below. WeakSet lives in module scope (pass.ts) to avoid
+    // stamping a structural marker onto the Pass itself.
+    REGISTERED_PASSES.add(pass as Pass<any, any>);
     const reader = pass as Pass<any, any>;
     const fireLifecycleEdge = (lc: LifecycleEdge<any>, unit: FunctionUnit): void => {
       if (lc.wake !== undefined) {

@@ -60,15 +60,22 @@ export interface LifecycleEdge<K> {
   effect?(ctx: PassCtx, unit: FunctionUnit): void;
 }
 
+/** Module-level set of passes the Worklist has registered. Populated by
+ *  `Worklist.register`; consulted by `addEdge` to reject amendments that
+ *  would be silently dropped by the worklist's edge-snapshot. Using a
+ *  `WeakSet` means the bookkeeping lives off-object (no structural stamp
+ *  on `Pass`) and retired-but-unreferenced passes are collectible. */
+export const REGISTERED_PASSES: WeakSet<Pass<any, any>> = new WeakSet();
+
 /** Append an `EdgeSpec` to a pass's `edges` after construction. Encapsulates
  *  the readonly-cast that would otherwise leak at every call site. Intended
  *  for passes with mutually-recursive edges that can't be declared at
  *  literal-construction time (e.g. purity block ↔ scope). Throws if `pass`
  *  is already registered with a worklist — the worklist snapshots `edges`
  *  during `register`, so post-registration additions would silently never
- *  dispatch. `__worklistRegistered` is set by `Worklist.register`. */
+ *  dispatch. */
 export function addEdge<K>(pass: Pass<K, any>, spec: EdgeSpec<K>): void {
-  if ((pass as Pass<K, any> & { __worklistRegistered?: boolean }).__worklistRegistered) {
+  if (REGISTERED_PASSES.has(pass as Pass<any, any>)) {
     throw new Error(
       `[addEdge] pass "${pass.debugName}" is already registered with a worklist; edges added now will never dispatch. Declare edges at construction or via addEdge before register().`,
     );
