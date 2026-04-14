@@ -1,5 +1,5 @@
 // Shared scaffolding for unit-keyed transform rules.
-// The `"fired"` top-only lattice guards re-fires; structural rebuild prunes the cell.
+// The `"fired"` top-only lattice guards re-fires; structural rebuild evicts the cell.
 
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
@@ -14,7 +14,10 @@ export const firedLattice: Lattice<Fired> = {
   join: (a, b) => (a ?? b),
 };
 
-/** Build a unit-keyed sweep rule. `structuralPass` is auto-appended to `edges`. */
+/** Build a unit-keyed sweep rule. On `structuralPass` writes for a unit, the
+ *  rule wakes on that unit and evicts any stale `"fired"` cell so it can
+ *  fire again. Other `reads` are dependency-only — their writes don't wake
+ *  the rule. */
 export function unitSweepRule(
   name: string,
   reads: ReadonlyArray<Pass<any, any>>,
@@ -24,19 +27,15 @@ export function unitSweepRule(
     id: Symbol(name),
     debugName: name,
     lattice: firedLattice,
-    edges: [...reads.map(p => ({ pass: p })), { pass: structuralPass }],
+    edges: [
+      ...reads.map(p => ({ pass: p })),
+      {
+        pass: structuralPass,
+        wake: (_c, k) => [k as FunctionUnit],
+        evict: (_c, k) => [k as FunctionUnit],
+      },
+    ],
     tier: "transform",
-    affectedKeys(_ctx, triggerPass, triggerKey) {
-      if (triggerPass === (structuralPass as Pass<any, any>)) {
-        return [triggerKey as FunctionUnit];
-      }
-      return [];
-    },
-    // Evict "fired" on structural rebuild so the rule can fire again.
-    prune(_ctx, unit, previousKeys) {
-      for (const k of previousKeys) if (k === unit) return [unit];
-      return [];
-    },
     transfer(ctx: PassCtx, key: FunctionUnit): Fired {
       if (!sweep(key, ctx.factStore)) return undefined;
       return "fired";

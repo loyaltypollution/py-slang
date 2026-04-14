@@ -54,9 +54,14 @@ export class Worklist {
   private readonly registeredPasses: Pass<any, any>[] = [];
   private readonly passReaders = new Map<Pass<any, any>, Pass<any, any>[]>();
   /** reader → (upstream pass → wake fn). One entry per edge that declares a
-   *  `wake` function. Skipped when the reader overrides dispatch via
-   *  `affectedKeys`. */
+   *  `wake` function. */
   private readonly passWakers = new Map<
+    Pass<any, any>,
+    Map<Pass<any, any>, (ctx: PassCtx, key: unknown) => Iterable<unknown>>
+  >();
+  /** reader → (upstream pass → evict fn). One entry per edge that declares
+   *  an `evict` function. */
+  private readonly passEvictors = new Map<
     Pass<any, any>,
     Map<Pass<any, any>, (ctx: PassCtx, key: unknown) => Iterable<unknown>>
   >();
@@ -192,29 +197,35 @@ export class Worklist {
     return this.nodeToUnit;
   }
 
-  /** Register a pass. Idempotent. Dispatch on upstream write:
-   *   - if `affectedKeys` is defined, it owns dispatch for every upstream;
-   *   - else, per-edge `wake` functions run for their respective upstreams;
-   *     edges without `wake` are dependency-only (no auto-wake). */
+  /** Register a pass. Idempotent. On an upstream write, each edge matching
+   *  the written pass runs its `wake` (→ enqueue) and `evict` (→ delete from
+   *  fact store) projections; edges with neither are dependency-only. */
   register<K, V>(pass: Pass<K, V>): void {
     if (this.registeredPasses.indexOf(pass as Pass<any, any>) !== -1) return;
     this.registeredPasses.push(pass as Pass<any, any>);
     const reader = pass as Pass<any, any>;
-    const useEdgeWake = pass.affectedKeys === undefined;
-    let wakeMap:
+    const wakeMap: Map<
+      Pass<any, any>,
+      (ctx: PassCtx, key: unknown) => Iterable<unknown>
+    > = new Map();
+    this.passWakers.set(reader, wakeMap);
+    let evictMap:
       | Map<Pass<any, any>, (ctx: PassCtx, key: unknown) => Iterable<unknown>>
       | undefined;
-    if (useEdgeWake) {
-      wakeMap = new Map();
-      this.passWakers.set(reader, wakeMap);
-    }
     for (const spec of pass.edges) {
       const upstream = spec.pass;
       const list = this.passReaders.get(upstream) ?? [];
       list.push(reader);
       this.passReaders.set(upstream, list);
-      if (wakeMap !== undefined && spec.wake !== undefined) {
+      if (spec.wake !== undefined) {
         wakeMap.set(upstream, spec.wake as (ctx: PassCtx, key: unknown) => Iterable<unknown>);
+      }
+      if (spec.evict !== undefined) {
+        if (evictMap === undefined) {
+          evictMap = new Map();
+          this.passEvictors.set(reader, evictMap);
+        }
+        evictMap.set(upstream, spec.evict as (ctx: PassCtx, key: unknown) => Iterable<unknown>);
       }
     }
   }
@@ -295,24 +306,14 @@ export class Worklist {
    *  listener-dispatch loop, so it (and anything it calls) MUST NOT invoke
    *  `factStore.write` — re-entrant writes would let listener fan-out observe
    *  mid-iteration state and break the "one event per value-changing write"
-   *  contract that `affectedKeys` single-call consumers (e.g. jit-pass's
-   *  `analysisGen` bump) rely on. Evictions needed by prune are queued into
+   *  contract that single-call consumers (e.g. jit-pass's `analysisGen` bump)
+   *  rely on. Evictions needed by prune are queued into
    *  `pendingEvictions` and drained at the top of `processQueue`, keeping
    *  listeners strictly read-only w.r.t. the fact store. New writes triggered
    *  by a change belong in `enqueue` → `processQueue`, not in this handler.
    *  `FactStore.write` throws on re-entry to enforce this. */
   private handleFactChange(change: FactChange<unknown, unknown>): void {
     const readers = this.passReaders.get(change.pass as Pass<any, any>);
-    // Structural change: let every pass evict stale keys.
-    if ((change.pass as Pass<any, any>) === (structuralPass as Pass<any, any>)) {
-      const unit = change.key as FunctionUnit;
-      for (const p of this.registeredPasses) {
-        if (p.prune === undefined) continue;
-        const prev = this.factStore.readAll(p);
-        const toEvict = p.prune(this.passCtx, unit, prev.keys());
-        for (const k of toEvict) this.pendingEvictions.push([p, k]);
-      }
-    }
     // Defer CFG rebuild until the current drain completes.
     if (
       change.pass.tier === "transform" &&
@@ -325,6 +326,12 @@ export class Worklist {
     for (const reader of readers) {
       const keys = this.computeAffectedKeys(reader, change);
       for (const k of keys) this.enqueue(reader, k);
+      const evictFn = this.passEvictors.get(reader)?.get(change.pass as Pass<any, any>);
+      if (evictFn !== undefined) {
+        for (const k of evictFn(this.passCtx, change.key)) {
+          this.pendingEvictions.push([reader, k]);
+        }
+      }
     }
   }
 
@@ -364,12 +371,7 @@ export class Worklist {
     reader: Pass<any, any>,
     change: FactChange<unknown, unknown>,
   ): Iterable<unknown> {
-    if (reader.affectedKeys !== undefined) {
-      return reader.affectedKeys(this.passCtx, change.pass, change.key);
-    }
-    const wakeMap = this.passWakers.get(reader);
-    if (wakeMap === undefined) return [];
-    const wake = wakeMap.get(change.pass as Pass<any, any>);
+    const wake = this.passWakers.get(reader)?.get(change.pass as Pass<any, any>);
     return wake === undefined ? [] : wake(this.passCtx, change.key);
   }
 

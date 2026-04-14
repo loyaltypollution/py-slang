@@ -29,13 +29,16 @@ export interface BoundedLattice<V> extends Lattice<V> {
 
 /** An edge to an upstream pass. `wake` projects an upstream key-change to
  *  zero-or-more keys in *this* pass's key-space, enqueuing them for
- *  re-transfer. An edge without `wake` is a dependency-only declaration —
- *  the pass reads from `ctx.read(upstream, ...)` in `transfer` but does not
- *  auto-wake on upstream writes (its own `affectedKeys` handles dispatch, or
- *  it genuinely doesn't need to react). */
+ *  re-transfer. `evict` projects to keys to delete from this pass's fact
+ *  store (used for stale-cell cleanup on structural rebuild). Both fire
+ *  on every upstream write to the named pass; absence means "no reaction
+ *  of that kind." An edge with neither is a dependency-only declaration —
+ *  the pass reads from `ctx.read(upstream, ...)` in `transfer` but does
+ *  not auto-react to upstream writes. */
 export interface EdgeSpec<K> {
   readonly pass: Pass<any, any>;
   wake?(ctx: PassCtx, key: unknown): Iterable<K>;
+  evict?(ctx: PassCtx, key: unknown): Iterable<K>;
 }
 
 /** Append an `EdgeSpec` to a pass's `edges` after construction. Encapsulates
@@ -56,15 +59,6 @@ export interface Pass<K, V> {
   readonly edges: ReadonlyArray<EdgeSpec<K>>;
   readonly tier?: "runtime" | "analysis" | "transform";
   transfer(ctx: PassCtx, key: K): V | undefined;
-  /** Custom wake dispatch, overriding per-edge `wake` functions. If present,
-   *  the worklist calls this for every upstream change and ignores `wake`. */
-  affectedKeys?(
-    ctx: PassCtx,
-    triggerPass: Pass<any, any>,
-    triggerKey: unknown,
-  ): Iterable<K>;
-  /** Called on CFG rebuild. `previousKeys` spans all units; return keys to evict. */
-  prune?(ctx: PassCtx, unit: FunctionUnit, previousKeys: Iterable<K>): Iterable<K>;
 }
 
 /** View handed to `Pass.transfer`. */

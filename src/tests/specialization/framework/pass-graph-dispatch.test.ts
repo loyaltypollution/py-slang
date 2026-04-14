@@ -63,11 +63,6 @@ function makePass<K, V>(opts: {
   edges?: ReadonlyArray<EdgeSpec<K>>;
   tier?: "runtime" | "analysis" | "transform";
   transfer?: (key: K) => V | undefined;
-  affectedKeys?: (p: Pass<any, any>, k: unknown) => Iterable<K>;
-  prune?: (
-    unit: FunctionUnit,
-    prev: Iterable<K>,
-  ) => Iterable<K>;
 }): Pass<K, V> {
   return {
     id: Symbol(opts.name),
@@ -76,10 +71,6 @@ function makePass<K, V>(opts: {
     edges: opts.edges ?? [],
     tier: opts.tier,
     transfer: (_ctx, key) => (opts.transfer ? opts.transfer(key as K) : undefined),
-    affectedKeys: opts.affectedKeys
-      ? (_ctx, p, k) => opts.affectedKeys!(p, k)
-      : undefined,
-    prune: opts.prune ? (_ctx, unit, prev) => opts.prune!(unit, prev as Iterable<K>) : undefined,
   };
 }
 
@@ -264,16 +255,23 @@ describe("Worklist pass-graph dispatch", () => {
     expect(t).toBeGreaterThan(a);
   });
 
-  test("(e) prune hook evicts stale BlockId-shaped keys on CFG rebuild", () => {
+  test("(e) evict edge removes stale BlockId-shaped keys on CFG rebuild", () => {
     const wl = buildWorklist();
-    const blockKeyed = makePass<string, number>({
+    // eslint-disable-next-line prefer-const
+    let blockKeyed: Pass<string, number>;
+    blockKeyed = makePass<string, number>({
       name: "block-keyed",
       lattice: intMax,
-      edges: [identityWake(structuralPass)],
+      edges: [
+        {
+          pass: structuralPass,
+          wake: (_c, k) => [k as unknown as string],
+          // On structural rebuild, evict every previous key (simulating "all
+          // BlockIds belonged to the old CFG").
+          evict: (ctx) => Array.from(ctx.readAll(blockKeyed).keys()),
+        },
+      ],
       transfer: () => undefined,
-      // On structural rebuild, evict every previous key (simulating "all
-      // BlockIds belonged to the old CFG").
-      prune: (_unit, prev) => Array.from(prev),
     });
     wl.register(blockKeyed);
 

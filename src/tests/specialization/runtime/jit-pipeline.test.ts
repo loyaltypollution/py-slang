@@ -60,16 +60,11 @@ f()
         leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
       },
-      edges: [{ pass: callCountPass }],
+      edges: [{ pass: callCountPass, wake: (_c, k) => [k as number] }],
       tier: "transform",
       transfer(ctx, key) {
         transferRuns++;
         return ctx.read(callCountPass, key) ?? 0;
-      },
-      affectedKeys(_ctx, triggerPass, triggerKey) {
-        return triggerPass === (callCountPass as Pass<unknown, unknown>)
-          ? [triggerKey as number]
-          : [];
       },
     };
     worklist.register(observer);
@@ -92,9 +87,8 @@ f()
         leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
       },
-      edges: [{ pass: callCountPass }],
+      edges: [{ pass: callCountPass, wake: () => [unit] }],
       tier: "transform",
-      affectedKeys: () => [unit],
       transfer(ctx, u) {
         const c = ctx.read(callCountPass, fDef.id) ?? 0;
         if (c <= MEMOIZATION_THRESHOLD) return undefined;

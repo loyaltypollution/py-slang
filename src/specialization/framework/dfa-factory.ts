@@ -190,12 +190,22 @@ export function makeBlockFixpointPass<L, S = void>(
   }));
 
   // Structural change: seed entry (forward) / exit (backward); self-wake
-  // walks the CFG from there.
+  // walks the CFG from there. Evict every previously-written block-key
+  // belonging to the rebuilt unit — the prior CFG's `BasicBlock` identities
+  // are orphaned after `wireCFG(unit)`, so their facts are stale by key.
   const structuralEdge: EdgeSpec<BasicBlock> = {
     pass: structuralPass,
     wake: (_ctx, key) => {
       const unit = key as FunctionUnit;
       return [config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit];
+    },
+    evict: (ctx, key) => {
+      const unit = key as FunctionUnit;
+      const out: BasicBlock[] = [];
+      for (const b of ctx.readAll(blockKeyedPass).keys()) {
+        if (b.unit === unit) out.push(b);
+      }
+      return out;
     },
   };
 
@@ -228,9 +238,6 @@ export function makeBlockFixpointPass<L, S = void>(
       const unit = block.unit;
       const inEnv = inEnvFor(ctx, block, unit);
       return config.transferBlock(ctx, block, inEnv, unit);
-    },
-    prune(_ctx, unit, previousKeys) {
-      return Array.from(previousKeys).filter(k => k.unit === unit);
     },
   };
   return blockKeyedPass;
