@@ -930,3 +930,94 @@ Neither is small. Flagged for 9-E:
   tests for: monotone join convergence, idempotence, change-propagation,
   bottom-init discipline, iteration-cap throw. No integration yet.
 
+
+---
+
+## Round 4 Phase 9-E — per-block invalidation deferred (structural block)
+
+Plan §"Phase 9 success criteria" item 2 asks for a test proving that
+`typeOf` on a node in an acyclic post-loop block does not invalidate when
+`runtimeWrite` lands on a node inside the loop body. After 9-C/9-D the
+external shape of `typeBlockEnvs`/`constBlockEnvs` is unchanged — both
+are single cells keyed by `unitId`, each reading every node's
+`runtimeWriteInput` via `gatherObservations(collectAllIds(cfg))`.
+
+### Why the test cannot pass in the current cell shape
+
+Dependency edges are established at `db.get`-read time. For
+`typeBlockEnvs(unit)` to re-run conditionally on *which* block an
+observation lands in, the cell would have to read node-level
+observations selectively — but the whole-unit Kildall fixpoint requires
+the full observation set to produce a correct env map. Narrowing the
+set of reads narrows the invalidation trigger *and* narrows the
+evaluator's input, breaking correctness. So on a unit-level cell, any
+`runtimeWriteInput.set(n, v)` for any `n` in the unit makes
+`typeBlockEnvs(unit)` red by construction.
+
+This is not a semi-naive evaluator issue. It is a Query-cell-granularity
+issue. The semi-naive swap surfaces `changedBlocks`, which could power
+*downstream* per-block invalidation (which `typeOf`/`constOf`
+projections to skip), but the gating `typeBlockEnvs` cell still has to
+re-run to produce the signal.
+
+### What shipping per-block invalidation would require
+
+Exactly what DECISIONS §"Phase 8 — SCC-aware cycle_fn spike" and
+§"Round 2 Phase D" already enumerated, now re-stated with the semi-naive
+layer in place:
+
+1. **Split into per-block cells**: `typeBlockOut(unitId, blockId)`, each
+   reading `runtimeWriteInput` only for nodes inside that block.
+2. **Per-block cells form an SCC along CFG back-edges**: same structural
+   shape as Phase 8 path (1). The semi-naive evaluator gives a
+   Kildall-precise least fixpoint when run on the whole unit; it does
+   *not* retrofit onto a demand-driven multi-cell SCC in Salsa without
+   answering the five Round 2 Phase D open questions.
+3. **Dep-recording for never-read blocks** (Round 2 Phase D question 4):
+   under path Y the answer is "rule-body atoms" — the evaluator's body
+   reads every predecessor, so deps get registered. But those reads
+   occur *inside the evaluator*, not at the Salsa layer. Salsa would
+   need a new primitive allowing a cell to declare "I read these
+   fact-cells during iteration even if they weren't observed through
+   db.get." Neither architect in 9-A resolved this.
+
+Net: delivering the 9-E test is back to the full Phase 8 path X scope.
+No overnight-sized hack sidesteps it.
+
+### Decision
+
+Stop at Phase 9-D, per the plan's explicit escape. The semi-naive
+refactor shipped its honest wins:
+
+- Module boundary (`src/specialization/runtime/datalog/`) in place for
+  future substrate work.
+- `kildall.ts` deleted — single iteration engine used by both analyses.
+- `changedBlocks` return value exposed on the evaluator; any future
+  per-block or delete-rederive work has a concrete signal to build on.
+- No regression (37 → 38 suites, 2586 → 2592 tests; the +1 suite is
+  semi-naive.test.ts's seven tests minus the one deleted kildall
+  iteration-cap test).
+
+Per-block invalidation ("the genuine payoff") is deferred to the same
+trigger the Phase 8 retrospective named: revisit only when a profiler
+shows per-unit re-runs dominating hot-path cost, or a new analysis
+needs per-block granularity for correctness. As with Phase 8, the
+per-unit cell matches the legacy worklist drain coarseness — so this
+is no regression vs status quo, it is the plan's anticipated landing.
+
+### What the 9-F retrospective should say
+
+The Round 4 refactor is best understood as a **rename + exposure of a
+signal that enables a future refactor**, not as a precision or
+invalidation improvement. Calling it "Datalog" is aspirational framing
+against the literature (IncA/DRedL) rather than a semantic change over
+Kildall on the current non-goals. The honest value is:
+
+1. Future work to split `typeBlockEnvs` into per-block cells has a
+   signal (`changedBlocks`) it didn't have before.
+2. `kildall.ts` and the standalone iterator are gone; there is now one
+   module responsible for all forward-DFA fixpoint iteration in this
+   codebase.
+3. No new correctness traps were introduced; the previously-shipped
+   Kildall precision is preserved bit-for-bit.
+
