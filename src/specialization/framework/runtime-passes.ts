@@ -14,24 +14,26 @@ const RAW_TOP: RawKind = { kind: "unknown" };
 // < singletons (one observed RawKind) < ⊤ ({kind:"unknown"}, conflict-absorbing).
 // `bottom` is the ⊤ sentinel because no reader calls `factStore.read` on this
 // pass (only `tryRead`), so `bottom`'s value is never observed as a lattice ⊥.
+function rawKindEquals(a: RawKind, b: RawKind): boolean {
+  if (a === b) return true;
+  if (a.kind !== b.kind) return false;
+  switch (a.kind) {
+    case "number":
+    case "bool":
+    case "string":
+      return a.value === (b as typeof a).value;
+    default:
+      return true;
+  }
+}
+
 const rawValueLattice: Lattice<RawKind> = {
   bottom: RAW_TOP,
-  equals(a: RawKind, b: RawKind): boolean {
-    if (a === b) return true;
-    if (a.kind !== b.kind) return false;
-    switch (a.kind) {
-      case "number":
-      case "bool":
-      case "string":
-        return a.value === (b as typeof a).value;
-      default:
-        return true;
-    }
-  },
-  join(a: RawKind, b: RawKind): RawKind {
-    if (a.kind === "unknown" || b.kind === "unknown") return RAW_TOP;
-    return rawValueLattice.equals(a, b) ? a : RAW_TOP;
-  },
+  leq: (a, b) => b.kind === "unknown" || rawKindEquals(a, b),
+  join: (a, b) =>
+    a.kind === "unknown" || b.kind === "unknown"
+      ? RAW_TOP
+      : rawKindEquals(a, b) ? a : RAW_TOP,
 };
 
 /** Runtime observation of per-node value writes. Key = NodeId, value = RawKind. */
@@ -39,9 +41,8 @@ export const runtimeWritePass: Pass<number, RawKind> = {
   id: Symbol("runtimeWritePass"),
   debugName: "runtimeWritePass",
   lattice: rawValueLattice,
-  reads: [],
+  edges: [],
   tier: "runtime",
-  coarse: true,
   transfer(_ctx: PassCtx, _key: number): RawKind | undefined {
     return undefined;
   },
@@ -65,9 +66,13 @@ export function observeRuntimeWrite(
   observer.observe(runtimeWritePass, nodeId, classifyRawValue(raw));
 }
 
-const countLattice: Lattice<number> = {
+/** Saturating call-count lattice: `bottom=0`, monotone `<=`, join clamped at
+ *  `RUNTIME_CALL_COUNT_SAT`. Shared by `runtimeCallPass` (raw observations)
+ *  and `callCountPass` (projected view), since both saturate at the same
+ *  ceiling and have identical algebra. */
+export const saturatingCountLattice: Lattice<number> = {
   bottom: 0,
-  equals: (a, b) => a === b,
+  leq: (a, b) => a <= b,
   join: (a, b) => Math.min(RUNTIME_CALL_COUNT_SAT, Math.max(a, b)),
 };
 
@@ -75,10 +80,9 @@ const countLattice: Lattice<number> = {
 export const runtimeCallPass: Pass<number, number> = {
   id: Symbol("runtimeCallPass"),
   debugName: "runtimeCallPass",
-  lattice: countLattice,
-  reads: [],
+  lattice: saturatingCountLattice,
+  edges: [],
   tier: "runtime",
-  coarse: true,
   transfer(_ctx: PassCtx, _key: number): number | undefined {
     return undefined;
   },

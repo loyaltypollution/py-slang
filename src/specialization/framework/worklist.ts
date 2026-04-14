@@ -17,7 +17,6 @@ import {
   type FunctionUnit,
 } from "./function-unit";
 import type { Pass, PassCtx } from "./pass";
-import { readSpecPass, isProjectorRead } from "./pass";
 import { structuralPass } from "./structural-pass";
 import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
 import { callCountPass } from "../memoization-analysis/call-count";
@@ -54,9 +53,10 @@ export class Worklist {
   readonly factStore = new FactStore();
   private readonly registeredPasses: Pass<any, any>[] = [];
   private readonly passReaders = new Map<Pass<any, any>, Pass<any, any>[]>();
-  /** reader → (upstream pass → projector). Populated only when the reader
-   *  declares projector-reads and omits `affectedKeys`. */
-  private readonly passProjectors = new Map<
+  /** reader → (upstream pass → wake fn). One entry per edge that declares a
+   *  `wake` function. Skipped when the reader overrides dispatch via
+   *  `affectedKeys`. */
+  private readonly passWakers = new Map<
     Pass<any, any>,
     Map<Pass<any, any>, (ctx: PassCtx, key: unknown) => Iterable<unknown>>
   >();
@@ -192,46 +192,29 @@ export class Worklist {
     return this.nodeToUnit;
   }
 
-  /** Register a pass. Idempotent. Requires one of:
-   *   - `affectedKeys` (custom per-pass dispatch),
-   *   - `coarse: true` (re-run over all previously-written keys),
-   *   - every `reads` entry is a `{pass, project}` ReadSpec (synthesized
-   *     dispatch via per-upstream projector). */
+  /** Register a pass. Idempotent. Dispatch on upstream write:
+   *   - if `affectedKeys` is defined, it owns dispatch for every upstream;
+   *   - else, per-edge `wake` functions run for their respective upstreams;
+   *     edges without `wake` are dependency-only (no auto-wake). */
   register<K, V>(pass: Pass<K, V>): void {
     if (this.registeredPasses.indexOf(pass as Pass<any, any>) !== -1) return;
-    const allProjectors =
-      pass.reads.length > 0 && pass.reads.every(isProjectorRead);
-    if (
-      pass.affectedKeys === undefined &&
-      pass.coarse !== true &&
-      !allProjectors
-    ) {
-      throw new Error(
-        `[Worklist] pass "${pass.debugName}" must declare affectedKeys, coarse:true, or projector-reads`,
-      );
-    }
-    if (pass.affectedKeys !== undefined && pass.coarse === true) {
-      throw new Error(
-        `[Worklist] pass "${pass.debugName}" must not set both affectedKeys and coarse:true`,
-      );
-    }
     this.registeredPasses.push(pass as Pass<any, any>);
     const reader = pass as Pass<any, any>;
-    const useProjectors = pass.affectedKeys === undefined && allProjectors;
-    let projMap:
+    const useEdgeWake = pass.affectedKeys === undefined;
+    let wakeMap:
       | Map<Pass<any, any>, (ctx: PassCtx, key: unknown) => Iterable<unknown>>
       | undefined;
-    if (useProjectors) {
-      projMap = new Map();
-      this.passProjectors.set(reader, projMap);
+    if (useEdgeWake) {
+      wakeMap = new Map();
+      this.passWakers.set(reader, wakeMap);
     }
-    for (const spec of pass.reads) {
-      const upstream = readSpecPass(spec);
+    for (const spec of pass.edges) {
+      const upstream = spec.pass;
       const list = this.passReaders.get(upstream) ?? [];
       list.push(reader);
       this.passReaders.set(upstream, list);
-      if (projMap !== undefined && isProjectorRead(spec)) {
-        projMap.set(upstream, spec.project as (ctx: PassCtx, key: unknown) => Iterable<unknown>);
+      if (wakeMap !== undefined && spec.wake !== undefined) {
+        wakeMap.set(upstream, spec.wake as (ctx: PassCtx, key: unknown) => Iterable<unknown>);
       }
     }
   }
@@ -384,13 +367,10 @@ export class Worklist {
     if (reader.affectedKeys !== undefined) {
       return reader.affectedKeys(this.passCtx, change.pass, change.key);
     }
-    const projMap = this.passProjectors.get(reader);
-    if (projMap !== undefined) {
-      const proj = projMap.get(change.pass as Pass<any, any>);
-      return proj === undefined ? [] : proj(this.passCtx, change.key);
-    }
-    // coarse pass: re-run on all previously-written keys.
-    return Array.from(this.factStore.readAll(reader).keys());
+    const wakeMap = this.passWakers.get(reader);
+    if (wakeMap === undefined) return [];
+    const wake = wakeMap.get(change.pass as Pass<any, any>);
+    return wake === undefined ? [] : wake(this.passCtx, change.key);
   }
 
   /** Drain to fixed point. `limit` caps the number of CFG rebuild iterations —

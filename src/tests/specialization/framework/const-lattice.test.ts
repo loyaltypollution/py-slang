@@ -1,9 +1,9 @@
 /**
  * Unit tests for ConstLattice algebraic operations exposed via the public API.
  *
- * `constJoin` is the only lattice op the module publicly exposes; leq/meet
- * helpers were demoted to internals of `const-analysis/analysis.ts`. Bottom is
- * obtained through `constAnalysisModule.bottom()`.
+ * `constJoin` is the only standalone exported function; `leq`/`meet`/`top`/
+ * `bottom` are accessed via `constAnalysisModule` (which conforms to
+ * `BoundedLattice<ConstLattice>`).
  *
  * End-to-end const-analysis behaviour (e.g. `x = 3 + 4 → const(7)`,
  * variable propagation, while-loop convergence) is covered in
@@ -18,7 +18,7 @@ import {
 } from "../../../specialization/const-analysis/lattice";
 
 describe("ConstLattice operations", () => {
-  const CONST_BOTTOM = constAnalysisModule.bottom();
+  const CONST_BOTTOM = constAnalysisModule.bottom;
   const c3 = constOf(3);
   const c7 = constOf(7);
 

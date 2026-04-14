@@ -59,48 +59,24 @@ export function buildOneFunctionUnit(
 }
 
 // Lambda bodies are separate scopes and not analyzed here.
-class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
-  constructor(
-    private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
-    private readonly functionEnvironments: FunctionEnvironments,
-    private readonly registry: FunctionRegistry,
-  ) {}
-
-  register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
-    const unit = buildOneFunctionUnit(funcAst, this.functionEnvironments, this.registry);
-    this.units.set(funcAst, unit);
-    for (const stmt of unit.body) stmt.accept(this);
+function discoverScopes(
+  stmts: ReadonlyArray<StmtNS.Stmt>,
+  units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
+  functionEnvironments: FunctionEnvironments,
+  registry: FunctionRegistry,
+): void {
+  for (const stmt of stmts) {
+    if (stmt instanceof StmtNS.FunctionDef) {
+      const unit = buildOneFunctionUnit(stmt, functionEnvironments, registry);
+      units.set(stmt, unit);
+      discoverScopes(unit.body, units, functionEnvironments, registry);
+    } else if (stmt instanceof StmtNS.If) {
+      discoverScopes(stmt.body, units, functionEnvironments, registry);
+      if (stmt.elseBlock) discoverScopes(stmt.elseBlock, units, functionEnvironments, registry);
+    } else if (stmt instanceof StmtNS.While || stmt instanceof StmtNS.For) {
+      discoverScopes(stmt.body, units, functionEnvironments, registry);
+    }
   }
-
-  visitFunctionDefStmt(stmt: StmtNS.FunctionDef): void {
-    this.register(stmt);
-  }
-  visitFileInputStmt(stmt: StmtNS.FileInput): void {
-    for (const s of stmt.statements) s.accept(this);
-  }
-  visitIfStmt(stmt: StmtNS.If): void {
-    for (const s of stmt.body) s.accept(this);
-    if (stmt.elseBlock) for (const s of stmt.elseBlock) s.accept(this);
-  }
-  visitWhileStmt(stmt: StmtNS.While): void {
-    for (const s of stmt.body) s.accept(this);
-  }
-  visitForStmt(stmt: StmtNS.For): void {
-    for (const s of stmt.body) s.accept(this);
-  }
-
-  // Leaf / non-block-introducing statements.
-  visitAssignStmt(_stmt: StmtNS.Assign): void {}
-  visitAnnAssignStmt(_stmt: StmtNS.AnnAssign): void {}
-  visitReturnStmt(_stmt: StmtNS.Return): void {}
-  visitSimpleExprStmt(_stmt: StmtNS.SimpleExpr): void {}
-  visitAssertStmt(_stmt: StmtNS.Assert): void {}
-  visitPassStmt(_stmt: StmtNS.Pass): void {}
-  visitBreakStmt(_stmt: StmtNS.Break): void {}
-  visitContinueStmt(_stmt: StmtNS.Continue): void {}
-  visitGlobalStmt(_stmt: StmtNS.Global): void {}
-  visitNonLocalStmt(_stmt: StmtNS.NonLocal): void {}
-  visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
 /** (Re)build `unit.cfg` and refresh `blockMap` / `blockOfNode`.
@@ -145,7 +121,8 @@ export function buildFunctionUnits(
   registry: FunctionRegistry,
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
-  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, registry);
-  visitor.register(ast);
+  const rootUnit = buildOneFunctionUnit(ast, functionEnvironments, registry);
+  units.set(ast, rootUnit);
+  discoverScopes(rootUnit.body, units, functionEnvironments, registry);
   return units;
 }

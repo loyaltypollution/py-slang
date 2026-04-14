@@ -57,10 +57,10 @@ f()
       debugName: "observer",
       lattice: {
         bottom: 0,
-        equals: (a, b) => a === b,
+        leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
       },
-      reads: [callCountPass],
+      edges: [{ pass: callCountPass }],
       tier: "transform",
       transfer(ctx, key) {
         transferRuns++;
@@ -89,10 +89,10 @@ f()
       debugName: "test-jitPass",
       lattice: {
         bottom: 0,
-        equals: (a, b) => a === b,
+        leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
       },
-      reads: [callCountPass],
+      edges: [{ pass: callCountPass }],
       tier: "transform",
       affectedKeys: () => [unit],
       transfer(ctx, u) {
@@ -158,12 +158,15 @@ g()
       debugName: "test-jitPass",
       lattice: {
         bottom: undefined,
-        equals: (a, b) => a === b,
+        leq: (a, b) => a === undefined || a === b,
         join: (a, b) => a ?? b,
       },
-      reads: [callCountPass, purityScopePass, structuralPass],
+      edges: [
+        { pass: callCountPass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
+        { pass: purityScopePass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
+        { pass: structuralPass, wake: (_c, k) => [k as FunctionUnit] },
+      ],
       tier: "transform",
-      coarse: true,
       transfer(_ctx: PassCtx, unit: FunctionUnit) {
         const scope = unit.funcAst;
         if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
@@ -338,7 +341,7 @@ f(1)
   // Pins the load-bearing invariant of the reference-identity snapshot: a
   // lattice-equal FactStore.write (one that does not advance the lattice)
   // must NOT trigger a recompile. FactStore.write short-circuits on
-  // `lattice.equals(prev, joined)` and keeps the prior reference; the
+  // `latticeEquals(prev, joined)` and keeps the prior reference; the
   // CompileSnapshot's identity-compare therefore matches and transfer
   // short-circuits before invoking compileFunction. If anyone ever changes
   // FactStore.write to replace the reference on equal writes, or the

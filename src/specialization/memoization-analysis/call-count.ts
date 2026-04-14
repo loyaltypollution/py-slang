@@ -1,23 +1,17 @@
 // Call-count gate for memoization; saturating fold over runtimeCallPass writes.
 
-import type { Lattice, Pass, PassCtx } from "../framework/pass";
-import { runtimeCallPass, RUNTIME_CALL_COUNT_SAT } from "../framework/runtime-passes";
+import type { Pass, PassCtx } from "../framework/pass";
+import { runtimeCallPass, RUNTIME_CALL_COUNT_SAT, saturatingCountLattice } from "../framework/runtime-passes";
 
 /** Calls required before MemoizationTransformRule may fire; derived from the runtime saturation ceiling so they cannot drift. */
 export const MEMOIZATION_THRESHOLD = RUNTIME_CALL_COUNT_SAT - 1;
 
-const callCountLattice: Lattice<number> = {
-  bottom: 0,
-  equals: (a, b) => a === b,
-  join: (a, b) => Math.min(RUNTIME_CALL_COUNT_SAT, Math.max(a, b)),
-};
-
 export const callCountPass: Pass<number, number> = {
   id: Symbol("callCountPass"),
   debugName: "callCountPass",
-  lattice: callCountLattice,
-  reads: [
-    { pass: runtimeCallPass, project: (_ctx, key) => [key as number] },
+  lattice: saturatingCountLattice,
+  edges: [
+    { pass: runtimeCallPass, wake: (_ctx, key) => [key as number] },
   ],
   tier: "analysis",
   transfer(ctx: PassCtx, key: number): number | undefined {

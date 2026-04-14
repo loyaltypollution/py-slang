@@ -17,10 +17,7 @@ function dfaPass<L>(
   return makeBlockFixpointPass<L>({
     debugName,
     direction: spec.direction,
-    top: spec.top(),
-    leq: spec.leq,
-    join: spec.join,
-    meet: spec.meet,
+    valueLattice: spec,
     mergeKind: spec.mergeKind,
     summaryLattice: VOID_SUMMARY,
     reads: [runtimeWritePass],

@@ -1,4 +1,4 @@
-import type { Pass } from "./pass";
+import { latticeEquals, type Pass } from "./pass";
 
 /** Fired on value-changing `(pass, key)` writes. `oldValue` is `undefined` if the cell was empty. */
 export interface FactChange<K, V> {
@@ -12,23 +12,14 @@ type FactChangeListener = (change: FactChange<unknown, unknown>) => void;
 
 /** Fact storage keyed by `(pass, key)`. Writes are lattice-monotone: the stored
  *  cell is `join(prev, value)`, never `value` alone. A write that produces no
- *  change under `lattice.equals` suppresses listener fan-out. This turns the
+ *  change under `latticeEquals` suppresses listener fan-out. This turns the
  *  lattice's monotonicity promise into a framework-level invariant — callers
  *  can pass raw transfer output without hand-joining, and regressive writes
  *  (value ⊏ prev) collapse to no-ops instead of silently corrupting state. */
 export class FactStore {
   private readonly cells = new Map<Pass<unknown, unknown>, Map<unknown, unknown>>();
-  private readonly listeners = new Set<FactChangeListener>();
-  /** True while iterating `listeners` inside `write`. Guards against re-entrant
-   *  `write` from a listener — which would let listener fan-out observe
-   *  mid-iteration state and silently violate the "one event per value-changing
-   *  write" contract. `evict` remains allowed (silent, event-free, non-lattice). */
-  private inListenerDispatch = false;
-  /** Runs after the listener loop in `write` exits (inListenerDispatch=false),
-   *  but before `write` returns. Intended for bookkeeping listeners want to
-   *  perform against the store itself (e.g. evictions queued during dispatch).
-   *  Callbacks must not call `write` on this store — same reentry rules. */
-  private readonly postDispatch = new Set<() => void>();
+  private listener: FactChangeListener | undefined;
+  private postDispatch: (() => void) | undefined;
 
   read<K, V>(pass: Pass<K, V>, key: K): V {
     const inner = this.cells.get(pass as Pass<unknown, unknown>);
@@ -51,13 +42,6 @@ export class FactStore {
    *  not advance the lattice is a no-op. Returns `true` iff the cell advanced
    *  and a listener event fired. */
   write<K, V>(pass: Pass<K, V>, key: K, value: V): boolean {
-    if (this.inListenerDispatch) {
-      throw new Error(
-        `[FactStore] re-entrant write from listener dispatch (pass="${pass.debugName}"). ` +
-          `Listeners must be read-only observers; "evict" is the only permitted mutation. ` +
-          `Writes from listeners would cause fan-out to observe mid-iteration state.`,
-      );
-    }
     let inner = this.cells.get(pass as Pass<unknown, unknown>);
     if (inner === undefined) {
       inner = new Map();
@@ -66,9 +50,14 @@ export class FactStore {
 
     const hadPrev = inner.has(key);
     const prev = hadPrev ? (inner.get(key) as V) : undefined;
+    // Fast path: if `value ⊑ prev`, the join is `prev` and no cell advance can
+    // happen. Skips allocating a join result for the common monotone-no-op
+    // case (e.g. re-transfer producing the same fact). Correct under the
+    // lattice contract: `leq(v, prev) ⇒ join(prev, v) = prev`.
+    if (hadPrev && pass.lattice.leq(value, prev as V)) return false;
     const joined = hadPrev ? pass.lattice.join(prev as V, value) : value;
 
-    if (hadPrev && pass.lattice.equals(prev as V, joined)) return false;
+    if (hadPrev && latticeEquals(pass.lattice, prev as V, joined)) return false;
 
     inner.set(key, joined);
     const change: FactChange<K, V> = {
@@ -77,26 +66,20 @@ export class FactStore {
       oldValue: prev,
       newValue: joined,
     };
-    this.inListenerDispatch = true;
-    try {
-      for (const listener of this.listeners) {
-        listener(change as FactChange<unknown, unknown>);
-      }
-    } finally {
-      this.inListenerDispatch = false;
-    }
-    // Drain post-dispatch callbacks OUTSIDE the listener frame, so any queued
-    // work (e.g. evictions requested by listeners) runs against a store that
-    // is no longer mid-dispatch — future evict implementations that emit
-    // events won't break the no-reentry contract other listeners depend on.
-    for (const cb of this.postDispatch) cb();
+    this.listener?.(change as FactChange<unknown, unknown>);
+    this.postDispatch?.();
     return true;
   }
 
-  /** Register a callback fired after every `write`'s listener loop exits. */
+  /** Register a callback fired after every `write`'s listener call. */
   onPostDispatch(cb: () => void): () => void {
-    this.postDispatch.add(cb);
-    return () => this.postDispatch.delete(cb);
+    if (this.postDispatch !== undefined) {
+      throw new Error(`[FactStore] onPostDispatch already registered; only one subscriber supported`);
+    }
+    this.postDispatch = cb;
+    return () => {
+      if (this.postDispatch === cb) this.postDispatch = undefined;
+    };
   }
 
   /** Delete a cell. Silent if absent; no event emitted. */
@@ -105,7 +88,12 @@ export class FactStore {
   }
 
   onChange(listener: FactChangeListener): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    if (this.listener !== undefined) {
+      throw new Error(`[FactStore] onChange already registered; only one subscriber supported`);
+    }
+    this.listener = listener;
+    return () => {
+      if (this.listener === listener) this.listener = undefined;
+    };
   }
 }

@@ -10,11 +10,11 @@ export type Fired = "fired" | undefined;
 
 export const firedLattice: Lattice<Fired> = {
   bottom: undefined,
-  equals: (a, b) => a === b,
+  leq: (a, b) => a === undefined || a === b,
   join: (a, b) => (a ?? b),
 };
 
-/** Build a unit-keyed sweep rule. `structuralPass` is auto-appended to `reads`. */
+/** Build a unit-keyed sweep rule. `structuralPass` is auto-appended to `edges`. */
 export function unitSweepRule(
   name: string,
   reads: ReadonlyArray<Pass<any, any>>,
@@ -24,7 +24,7 @@ export function unitSweepRule(
     id: Symbol(name),
     debugName: name,
     lattice: firedLattice,
-    reads: [...reads, structuralPass],
+    edges: [...reads.map(p => ({ pass: p })), { pass: structuralPass }],
     tier: "transform",
     affectedKeys(_ctx, triggerPass, triggerKey) {
       if (triggerPass === (structuralPass as Pass<any, any>)) {

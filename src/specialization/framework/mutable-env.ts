@@ -1,3 +1,5 @@
+import { latticeEquals, type BoundedLattice, type Lattice } from "./pass";
+
 /** Per-function slot → L env. Slot numbering matches SVMLCompiler. */
 export class MutableEnv<L> {
   private slots: (L | undefined)[];
@@ -43,14 +45,14 @@ export class MutableEnv<L> {
   }
 
   /** In-place join; missing slots treated as ⊥. */
-  joinWith(other: MutableEnv<L>, joinFn: (a: L, b: L) => L): void {
+  joinWith(other: MutableEnv<L>, lattice: Lattice<L>): void {
     this.assertMutable();
     const len = Math.max(this.slots.length, other.slots.length);
     for (let i = 0; i < len; i++) {
       const a = this.slots[i];
       const b = other.slots[i];
       if (a !== undefined && b !== undefined) {
-        this.slots[i] = joinFn(a, b);
+        this.slots[i] = lattice.join(a, b);
       } else {
         this.slots[i] = a ?? b;
       }
@@ -58,30 +60,30 @@ export class MutableEnv<L> {
   }
 
   /** In-place meet; missing slots treated as ⊤. */
-  meetWith(other: MutableEnv<L>, meetFn: (a: L, b: L) => L, top: L): void {
+  meetWith(other: MutableEnv<L>, lattice: BoundedLattice<L>): void {
     this.assertMutable();
     const len = Math.max(this.slots.length, other.slots.length);
     for (let i = 0; i < len; i++) {
       const a = this.slots[i];
       const b = other.slots[i];
       if (a !== undefined && b !== undefined) {
-        this.slots[i] = meetFn(a, b);
+        this.slots[i] = lattice.meet(a, b);
       } else if (a !== undefined) {
-        this.slots[i] = meetFn(a, top);
+        this.slots[i] = lattice.meet(a, lattice.top);
       } else if (b !== undefined) {
-        this.slots[i] = meetFn(top, b);
+        this.slots[i] = lattice.meet(lattice.top, b);
       }
     }
   }
 
-  equals(other: MutableEnv<L>, leq: (a: L, b: L) => boolean): boolean {
+  equals(other: MutableEnv<L>, lattice: Lattice<L>): boolean {
     if (this.slots.length !== other.slots.length) return false;
     for (let i = 0; i < this.slots.length; i++) {
       const a = this.slots[i];
       const b = other.slots[i];
       if (a === b) continue;
       if (a === undefined || b === undefined) return false;
-      if (!leq(a, b) || !leq(b, a)) return false;
+      if (!latticeEquals(lattice, a, b)) return false;
     }
     return true;
   }

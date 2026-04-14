@@ -92,10 +92,10 @@ export const memoizationRule: Pass<FunctionUnit, Fired> = {
   id: Symbol("memoizationRule"),
   debugName: "memoizationRule",
   lattice: firedLattice,
-  reads: [
-    { pass: structuralPass, project: (_ctx, key) => [key as FunctionUnit] },
-    { pass: callCountPass, project: (ctx, key) => { const u = ctx.unitForFdId(key as number); return u === undefined ? [] : [u]; } },
-    { pass: purityScopePass, project: (ctx, key) => { const u = ctx.unitForFdId(key as number); return u === undefined ? [] : [u]; } },
+  edges: [
+    { pass: structuralPass, wake: (_ctx, key) => [key as FunctionUnit] },
+    { pass: callCountPass, wake: (ctx, key) => { const u = ctx.unitForFdId(key as number); return u === undefined ? [] : [u]; } },
+    { pass: purityScopePass, wake: (ctx, key) => { const u = ctx.unitForFdId(key as number); return u === undefined ? [] : [u]; } },
   ],
   tier: "transform",
   // No `prune`: one-shot — pruning would self-trigger via structuralPass.

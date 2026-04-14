@@ -7,7 +7,7 @@ export type AstVersion = number;
 
 const astVersionLattice: Lattice<AstVersion> = {
   bottom: 0,
-  equals: (a, b) => a === b,
+  leq: (a, b) => a <= b,
   join: (a, b) => Math.max(a, b),
 };
 
@@ -15,9 +15,8 @@ export const structuralPass: Pass<FunctionUnit, AstVersion> = {
   id: Symbol("structuralPass"),
   debugName: "structuralPass",
   lattice: astVersionLattice,
-  reads: [],
+  edges: [],
   tier: "runtime",
-  coarse: true,
   transfer(_ctx: PassCtx, _unit: FunctionUnit): AstVersion | undefined {
     return undefined;
   },

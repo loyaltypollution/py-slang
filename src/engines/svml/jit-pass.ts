@@ -67,17 +67,17 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
     debugName: "jitPass",
     lattice: {
       bottom: UNCOMPILED,
-      equals: structuralEquals,
+      leq: structuralEquals,
       join: (_a, b) => b,
     },
-    reads: [
-      { pass: structuralPass, project: (_ctx, key) => [key as FunctionUnit] },
+    edges: [
+      { pass: structuralPass, wake: (_ctx, key) => [key as FunctionUnit] },
       // Block-keyed DFA pass: a fact-advancing change on a block invalidates
       // the memo of the owning unit. `transfer` decides whether the change
       // materially differs from the last compile via reference-identity
       // compare against `lastSnapshot`.
-      { pass: typeAnalysisPass, project: blockToOwningUnit },
-      { pass: constAnalysisPass, project: blockToOwningUnit },
+      { pass: typeAnalysisPass, wake: blockToOwningUnit },
+      { pass: constAnalysisPass, wake: blockToOwningUnit },
     ],
     tier: "transform",
     transfer(ctx: PassCtx, unit: FunctionUnit): SVMLIR | undefined {

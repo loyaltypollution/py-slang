@@ -16,13 +16,13 @@ import type { Lattice, Pass, PassCtx } from "../../../specialization/framework/p
 // ---------------------------------------------------------------------------
 const intMaxLattice: Lattice<number> = {
   bottom: 0,
-  equals: (a, b) => a === b,
+  leq: (a, b) => a <= b,
   join: (a, b) => Math.max(a, b),
 };
 
 const firedLattice: Lattice<"fired"> = {
   bottom: "fired",
-  equals: () => true,
+  leq: () => true,
   join: () => "fired",
 };
 
@@ -35,8 +35,7 @@ function makePass<K, V>(
     id: Symbol(name),
     debugName: name,
     lattice,
-    reads: [],
-    coarse: true,
+    edges: [],
     transfer,
   };
 }

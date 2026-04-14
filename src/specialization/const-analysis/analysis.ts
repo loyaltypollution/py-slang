@@ -7,8 +7,8 @@ import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
+  CONST_BOTTOM,
   CONST_TOP,
-  constBottom,
   constJoin,
   constOf,
 } from "./lattice";
@@ -205,14 +205,14 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
 export const constAnalysisModule: AnalysisPass<ConstLattice> = {
   mergeKind: "may",
   direction: "forward",
-  top: () => CONST_TOP,
-  bottom: constBottom,
+  bottom: CONST_BOTTOM,
+  top: CONST_TOP,
   join: constJoin,
   meet: (a, b) => {
     if (a.tag === "top") return b;
     if (b.tag === "top") return a;
-    if (a.tag === "bottom" || b.tag === "bottom") return constBottom();
-    return a.value === b.value ? a : constBottom();
+    if (a.tag === "bottom" || b.tag === "bottom") return CONST_BOTTOM;
+    return a.value === b.value ? a : CONST_BOTTOM;
   },
   leq: (a, b) => {
     if (a.tag === "bottom") return true;

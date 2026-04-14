@@ -1,49 +1,51 @@
 import type { FunctionUnit } from "./function-unit";
 import type { FactStore } from "./fact-store";
 
-/** Value-space algebra. `equals` gates change events; `bottom` is returned for unwritten cells. */
+/** Value-space algebra. `leq` is the partial order (a ⊑ b). `join` is the
+ *  least upper bound. `bottom` is returned for unwritten cells. Equality is
+ *  always derived as `leq(a,b) && leq(b,a)` — no custom override, so the
+ *  partial order is the single source of truth for change detection. */
 export interface Lattice<V> {
   readonly bottom: V;
-  equals(a: V, b: V): boolean;
+  leq(a: V, b: V): boolean;
   join(a: V, b: V): V;
 }
 
-/** A read declaration: either a bare `Pass` (legacy — same key-space identity
- *  projection, or user provides `affectedKeys`) or `{ pass, project }` where
- *  the projector maps an upstream key to zero-or-more keys in *this* pass's
- *  key-space. When every entry carries a projector AND the pass omits
- *  `affectedKeys`, the worklist synthesizes dispatch automatically — one
- *  source of truth per upstream dependency. */
-export type ReadSpec<K> =
-  | Pass<any, any>
-  | ProjectorRead<K>;
+/** Equality under the lattice's partial order, derived from `leq`. */
+export function latticeEquals<V>(lattice: Lattice<V>, a: V, b: V): boolean {
+  return lattice.leq(a, b) && lattice.leq(b, a);
+}
 
-export interface ProjectorRead<K> {
+/** Bounded lattice: adds `top` and `meet` to `Lattice<V>`. Required by DFA
+ *  value-lattices — `meet` is the dual merge for "must" analyses, and `top`
+ *  seeds MutableEnv slots when the generic block transfer widens (e.g. For
+ *  loop targets). Cell-level `Lattice<V>` (the `Pass.lattice` type) does not
+ *  need these; counters, sticky flags, and observation lattices rarely have
+ *  a natural `top` or `meet`, so we keep the base interface permissive. */
+export interface BoundedLattice<V> extends Lattice<V> {
+  readonly top: V;
+  meet(a: V, b: V): V;
+}
+
+/** An edge to an upstream pass. `wake` projects an upstream key-change to
+ *  zero-or-more keys in *this* pass's key-space, enqueuing them for
+ *  re-transfer. An edge without `wake` is a dependency-only declaration —
+ *  the pass reads from `ctx.read(upstream, ...)` in `transfer` but does not
+ *  auto-wake on upstream writes (its own `affectedKeys` handles dispatch, or
+ *  it genuinely doesn't need to react). */
+export interface EdgeSpec<K> {
   readonly pass: Pass<any, any>;
-  readonly project: (ctx: PassCtx, key: unknown) => Iterable<K>;
+  wake?(ctx: PassCtx, key: unknown): Iterable<K>;
 }
 
-/** Discriminate `ReadSpec`: a projector entry has a callable `project` field.
- *  Checking for `project` (not `pass`) is load-bearing — `Pass` has no
- *  `project` field, and this narrows safely even if `Pass` ever grows a
- *  `pass` property. */
-export function isProjectorRead<K>(spec: ReadSpec<K>): spec is ProjectorRead<K> {
-  return typeof (spec as ProjectorRead<K>).project === "function";
-}
-
-/** Extract the underlying upstream `Pass` from a `ReadSpec`. */
-export function readSpecPass(spec: ReadSpec<any>): Pass<any, any> {
-  return isProjectorRead(spec) ? spec.pass : spec;
-}
-
-/** Append a `ReadSpec` to a pass's `reads` after construction. Encapsulates
+/** Append an `EdgeSpec` to a pass's `edges` after construction. Encapsulates
  *  the readonly-cast that would otherwise leak at every call site. Intended
- *  for passes with mutually-recursive read edges that can't be declared at
+ *  for passes with mutually-recursive edges that can't be declared at
  *  literal-construction time (e.g. purity block ↔ scope). MUST be called
  *  before the pass is registered with a worklist — the worklist snapshots
- *  `reads` during `register`, and later amendments will not take effect. */
-export function addRead<K>(pass: Pass<K, any>, spec: ReadSpec<K>): void {
-  (pass.reads as ReadSpec<K>[]).push(spec);
+ *  `edges` during `register`, and later amendments will not take effect. */
+export function addEdge<K>(pass: Pass<K, any>, spec: EdgeSpec<K>): void {
+  (pass.edges as EdgeSpec<K>[]).push(spec);
 }
 
 /** A computation over the fact store. `transfer` returning `undefined` means "no write". */
@@ -51,16 +53,11 @@ export interface Pass<K, V> {
   readonly id: symbol;
   readonly debugName: string;
   readonly lattice: Lattice<V>;
-  readonly reads: ReadonlyArray<ReadSpec<K>>;
+  readonly edges: ReadonlyArray<EdgeSpec<K>>;
   readonly tier?: "runtime" | "analysis" | "transform";
-  /** If set, on any upstream write this pass re-transfers over **every
-   *  previously-written key** (O(N) per upstream change). Prefer
-   *  `affectedKeys` when you can narrow the set — `coarse: true` silently
-   *  amplifies to quadratic work when the upstream is a high-fanout source
-   *  like `runtimeWritePass` or `runtimeCallPass`. Mutually exclusive with
-   *  `affectedKeys`; one is required. */
-  readonly coarse?: boolean;
   transfer(ctx: PassCtx, key: K): V | undefined;
+  /** Custom wake dispatch, overriding per-edge `wake` functions. If present,
+   *  the worklist calls this for every upstream change and ignores `wake`. */
   affectedKeys?(
     ctx: PassCtx,
     triggerPass: Pass<any, any>,

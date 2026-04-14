@@ -2,7 +2,7 @@ import type { BasicBlock } from "./cfg";
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
-import type { Lattice, Pass, PassCtx, ReadSpec } from "./pass";
+import { latticeEquals, type BoundedLattice, type EdgeSpec, type Lattice, type Pass, type PassCtx } from "./pass";
 import { structuralPass } from "./structural-pass";
 
 /** Packages a Kildall block DFA as a `Pass<BasicBlock, DfaBlockFact<L, S>>`.
@@ -27,14 +27,9 @@ export interface DfaBlockFact<L, S = void> {
 
 type DfaDirection = "forward" | "backward";
 
-interface DfaConfig<L, S = void> {
+interface DfaConfigBase<L, S> {
   readonly debugName: string;
   readonly direction: DfaDirection;
-  readonly top: L;
-  readonly leq: (a: L, b: L) => boolean;
-  readonly join: (a: L, b: L) => L;
-  readonly meet: (a: L, b: L) => L;
-  readonly mergeKind: "may" | "must";
   /** Lattice for the per-block summary. Use `VOID_SUMMARY` for analyses that
    *  don't need one — it treats all values as equal and has `undefined` bottom. */
   readonly summaryLattice: Lattice<S>;
@@ -56,10 +51,20 @@ interface DfaConfig<L, S = void> {
   readonly reads: ReadonlyArray<Pass<any, any>>;
 }
 
+/** May-merge analyses only need `Lattice<L>` (join + leq). Must-merge needs
+ *  `BoundedLattice<L>` so the factory can call `meetWith(..., top)`. The
+ *  discriminated union lets `purityBlockPass` (may-merge) pass a plain
+ *  `Lattice` without fabricating unused `top`/`meet` — the type system
+ *  refuses a must-merge config paired with a non-bounded lattice. */
+type DfaConfig<L, S = void> = DfaConfigBase<L, S> & (
+  | { readonly mergeKind: "may"; readonly valueLattice: Lattice<L> }
+  | { readonly mergeKind: "must"; readonly valueLattice: BoundedLattice<L> }
+);
+
 /** No-op summary lattice for analyses that don't carry block-global state. */
 export const VOID_SUMMARY: Lattice<void> = {
   bottom: undefined,
-  equals: () => true,
+  leq: () => true,
   join: () => undefined,
 };
 
@@ -88,7 +93,7 @@ export function makeBlockFixpointPass<L, S = void>(
     for (const [k, va] of a) {
       const vb = b.get(k);
       if (vb === undefined) return false;
-      if (!config.leq(va, vb) || !config.leq(vb, va)) return false;
+      if (!latticeEquals(config.valueLattice, va, vb)) return false;
     }
     return true;
   };
@@ -102,28 +107,30 @@ export function makeBlockFixpointPass<L, S = void>(
     const merged = new Map<number, L>(a);
     for (const [k, vb] of b) {
       const va = merged.get(k);
-      merged.set(k, va === undefined ? vb : config.join(va, vb));
+      merged.set(k, va === undefined ? vb : config.valueLattice.join(va, vb));
     }
     return merged;
   };
 
+  // All three parts participate in change detection — exprFacts or summary
+  // can advance while outEnv stays invariant (e.g. runtime observation
+  // widening a sub-expression in `return e`), and readers of any projection
+  // must wake on those. Ripple cost is bounded: a change to exprFacts/summary
+  // alone still wakes CFG successors via the self-reader edge, but each
+  // successor's transfer then produces an unchanged OUT, so the ripple dies
+  // after one hop per successor — O(|CFG|) per observation.
+  //
+  // `leq` is conservative (= equals): a true point-wise leq would let
+  // strictly-smaller writes skip `join` allocation, but the compound
+  // structure makes that fiddly and the FactStore.write `latticeEquals`
+  // backstop still suppresses the listener event for no-op writes.
+  const compoundEquals = (a: DfaBlockFact<L, S>, b: DfaBlockFact<L, S>): boolean =>
+    a.outEnv.equals(b.outEnv, config.valueLattice) &&
+    exprFactsEqual(a.exprFacts, b.exprFacts) &&
+    latticeEquals(config.summaryLattice, a.summary, b.summary);
   const envLattice: Lattice<DfaBlockFact<L, S>> = {
     bottom: bottomFact,
-    // All three parts participate in equality: a block whose stmts produce no
-    // slot writes (e.g. bare `return e`) has an invariant outEnv, but runtime
-    // observations widen per-expression facts inside `e`, and summary-only
-    // analyses may flip the block summary without touching slots. Readers of
-    // any projection must wake on those.
-    //
-    // Ripple cost: a change to `exprFacts` or `summary` alone still wakes CFG
-    // successors via the self-reader edge on `blockKeyedPass`. Each successor's
-    // `transfer` recomputes IN from the same (unchanged) predecessor OUT envs
-    // and produces an unchanged OUT, so the ripple dies after one extra hop
-    // per successor. Bounded at O(|CFG|) per runtime observation.
-    equals: (a, b) =>
-      a.outEnv.equals(b.outEnv, config.leq) &&
-      exprFactsEqual(a.exprFacts, b.exprFacts) &&
-      config.summaryLattice.equals(a.summary, b.summary),
+    leq: compoundEquals,
     // Commutative monotone join: outEnv merges slot-wise, exprFacts merge
     // per-nodeId, summary merges via its own lattice. Under the DFA's expected
     // monotone transfer, FactStore.write's join(prev, new) collapses to `new`;
@@ -131,9 +138,9 @@ export function makeBlockFixpointPass<L, S = void>(
     join: (a, b) => {
       const merged = a.outEnv.snapshot();
       if (config.mergeKind === "must") {
-        merged.meetWith(b.outEnv, config.meet, config.top);
+        merged.meetWith(b.outEnv, config.valueLattice);
       } else {
-        merged.joinWith(b.outEnv, config.join);
+        merged.joinWith(b.outEnv, config.valueLattice);
       }
       return {
         outEnv: merged,
@@ -158,9 +165,9 @@ export function makeBlockFixpointPass<L, S = void>(
         env = predOut.snapshot();
       } else {
         if (config.mergeKind === "must") {
-          env.meetWith(predOut, config.meet, config.top);
+          env.meetWith(predOut, config.valueLattice);
         } else {
-          env.joinWith(predOut, config.join);
+          env.joinWith(predOut, config.valueLattice);
         }
       }
     }
@@ -177,47 +184,46 @@ export function makeBlockFixpointPass<L, S = void>(
 
   // Config-supplied upstreams are node-fact sources (runtime observations,
   // node-keyed analyses). Project each to its containing block.
-  const configReads: ReadSpec<BasicBlock>[] = config.reads.map(p => ({
+  const configEdges: EdgeSpec<BasicBlock>[] = config.reads.map(p => ({
     pass: p,
-    project: nodeIdToBlock,
+    wake: nodeIdToBlock,
   }));
 
   // Structural change: seed entry (forward) / exit (backward); self-wake
   // walks the CFG from there.
-  const structuralRead: ReadSpec<BasicBlock> = {
+  const structuralEdge: EdgeSpec<BasicBlock> = {
     pass: structuralPass,
-    project: (_ctx, key) => {
+    wake: (_ctx, key) => {
       const unit = key as FunctionUnit;
       return [config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit];
     },
   };
 
-  const readsArr: ReadSpec<BasicBlock>[] = [...configReads, structuralRead];
+  const edgesArr: EdgeSpec<BasicBlock>[] = [...configEdges, structuralEdge];
   // eslint-disable-next-line prefer-const
   let blockKeyedPass: Pass<BasicBlock, DfaBlockFact<L, S>>;
   // Self-wake: block OUT change → CFG successors recompute IN.
-  const selfRead: ReadSpec<BasicBlock> = {
+  const selfEdge: EdgeSpec<BasicBlock> = {
     // `pass` is bound below via closure; the worklist reads this at register time.
     get pass() {
       return blockKeyedPass as Pass<any, any>;
     },
-    project: (_ctx, key) => {
+    wake: (_ctx, key) => {
       const b = key as BasicBlock;
       return config.direction === "forward" ? b.successors : b.predecessors;
     },
   };
-  readsArr.push(selfRead);
-  // Intentionally not frozen: callers with cross-pass read cycles (e.g. a
+  edgesArr.push(selfEdge);
+  // Intentionally not frozen: callers with cross-pass edge cycles (e.g. a
   // block pass that needs to wake on an outer projection pass defined later)
-  // amend `reads` post-construction with an additional ReadSpec.
+  // amend `edges` post-construction with an additional EdgeSpec.
 
   blockKeyedPass = {
     id: blockPassId,
     debugName: `${config.debugName}:blocks`,
     lattice: envLattice,
-    reads: readsArr,
+    edges: edgesArr,
     tier: "analysis",
-    coarse: false,
     transfer(ctx: PassCtx, block: BasicBlock): DfaBlockFact<L, S> | undefined {
       const unit = block.unit;
       const inEnv = inEnvFor(ctx, block, unit);

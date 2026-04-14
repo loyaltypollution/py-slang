@@ -33,12 +33,11 @@ import {
 } from "../framework/dfa-factory";
 import type { FunctionUnit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
-import type { Lattice, Pass, PassCtx, ReadSpec } from "../framework/pass";
-import { addRead } from "../framework/pass";
+import type { EdgeSpec, Lattice, Pass, PassCtx } from "../framework/pass";
+import { addEdge } from "../framework/pass";
 import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
 import { structuralPass } from "../framework/structural-pass";
 import {
-  absEquals,
   absJoin,
   absLeq,
   closure,
@@ -394,18 +393,22 @@ function seedEnv(unit: FunctionUnit): MutableEnv<AbsVal> {
   return env;
 }
 
-const absValLattice: Pick<Lattice<AbsVal>, "equals"> & {
-  leq: (a: AbsVal, b: AbsVal) => boolean;
-  join: (a: AbsVal, b: AbsVal) => AbsVal;
-} = {
-  equals: absEquals,
+// AbsVal has no natural ⊥ (slot absence in MutableEnv represents "not yet
+// assigned") and no natural meet. Typed as plain `Lattice` — the DfaConfig
+// discriminated union refuses to pair this with `mergeKind: "must"`, so
+// `meet`/`top` can be honestly absent rather than fabricated-and-thrown.
+// `bottom: UNKNOWN` is unused by the factory (per-slot absence means ⊥ in
+// MutableEnv); it satisfies `Lattice.bottom` and would only surface if a
+// reader called `factStore.read` on a non-existent cell through this lattice.
+const absValLattice: Lattice<AbsVal> = {
+  bottom: UNKNOWN,
   leq: absLeq,
   join: absJoin,
 };
 
 const summaryLattice: Lattice<PurityBlockSummary> = {
   bottom: PURE_SUMMARY,
-  equals: summaryEquals,
+  leq: (a, b) => summaryEquals(a, b) || b === IMPURE_SUMMARY,
   join: summaryJoin,
 };
 
@@ -415,11 +418,7 @@ export const purityBlockPass: Pass<
 > = makeBlockFixpointPass<AbsVal, PurityBlockSummary>({
   debugName: "purityAnalysis",
   direction: "forward",
-  top: UNKNOWN,
-  leq: absValLattice.leq,
-  join: absValLattice.join,
-  // `meet` is unused for "may"-merge; provide absJoin to satisfy the config.
-  meet: absValLattice.join,
+  valueLattice: absValLattice,
   mergeKind: "may",
   summaryLattice,
   reads: [],
@@ -442,7 +441,11 @@ const EMPTY_EXPR_FACTS: ReadonlyMap<number, AbsVal> = new Map();
 // only fires on strict `=== true`, so both `false` and `undefined` gate it off.
 const outerLattice: Lattice<boolean | undefined> = {
   bottom: undefined,
-  equals: (a, b) => a === b,
+  // Total order: undefined ⊏ true ⊏ false. `false` (seen-and-impure) is ⊤;
+  // `true` is the pure verdict; `undefined` is "unseen". Join = `a && b`
+  // places `false` at the top, which matches memoization's gate (strict
+  // `=== true` is required to fire, so `false` correctly poisons).
+  leq: (a, b) => a === undefined || a === b || (a === true && b === false),
   // Never expected to race: single writer per fd.id. Join is defensive.
   join: (a, b) => {
     if (a === undefined) return b;
@@ -455,24 +458,23 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
   id: Symbol("purityScopePass"),
   debugName: "purityScopePass",
   lattice: outerLattice,
-  reads: [
+  edges: [
     {
       pass: structuralPass,
-      project: (_ctx, key) => {
+      wake: (_ctx, key) => {
         const fd = (key as FunctionUnit).funcAst;
         return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
       },
     },
     {
       pass: purityBlockPass,
-      project: (_ctx, key) => {
+      wake: (_ctx, key) => {
         const fd = (key as BasicBlock).unit.funcAst;
         return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
       },
     },
   ],
   tier: "analysis",
-  coarse: false,
   transfer(ctx: PassCtx, fdId: number): boolean | undefined {
     const unit = ctx.unitForFdId(fdId);
     if (unit === undefined) return undefined;
@@ -494,20 +496,20 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
   },
 };
 
-// Cross-pass reads: the block pass consults `purityScopePass` when it hits a
+// Cross-pass edge: the block pass consults `purityScopePass` when it hits a
 // nested `FunctionDef` stmt (to learn the nested function's purity verdict).
 // Declared post-hoc because both passes reference each other. The factory
-// returns `reads` as a plain (unfrozen) array so late amendments are safe.
+// returns `edges` as a plain (unfrozen) array so late amendments are safe.
 // Wake-up path: when the nested fd's scope-pass writes for `fdId`, project
 // to the outer block containing that `def` stmt via `unitForNode` +
 // `blockOfNode`.
-const scopeToBlock: ReadSpec<BasicBlock> = {
+const scopeToBlock: EdgeSpec<BasicBlock> = {
   pass: purityScopePass,
-  project: (ctx, key) => {
+  wake: (ctx, key) => {
     if (typeof key !== "number") return [];
     const u = ctx.unitForNode(key);
     const block = u?.blockOfNode.get(key);
     return block === undefined ? [] : [block];
   },
 };
-addRead(purityBlockPass, scopeToBlock);
+addEdge(purityBlockPass, scopeToBlock);

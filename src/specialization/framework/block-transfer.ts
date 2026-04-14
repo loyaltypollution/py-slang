@@ -40,7 +40,7 @@ function transferStmt<L>(
       const f = stmt as StmtNS.For;
       f.iter.accept(visitor);
       const info = slotLookup(f.target);
-      if (isLocal(info)) env.set(info.slot, module.top());
+      if (isLocal(info)) env.set(info.slot, module.top);
       return;
     }
     case "Return": {

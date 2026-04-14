@@ -1,5 +1,6 @@
 import type { ExprNS } from "../../ast-types";
 import type { FactStore } from "./fact-store";
+import type { BoundedLattice } from "./pass";
 import type { SlotLookup } from "./slot-table";
 
 /**
@@ -35,13 +36,11 @@ export interface SlotEnv<L> {
   get(slot: number): L | undefined;
 }
 
-/** Expression-level DFA module for block-fixpoint analyses. */
-export interface AnalysisPass<L> {
-  top(): L;
-  bottom(): L;
-  join(a: L, b: L): L;
-  meet(a: L, b: L): L;
-  leq(a: L, b: L): boolean;
+/** Expression-level DFA module for block-fixpoint analyses. Extends
+ *  `BoundedLattice<L>` so the module itself IS the per-slot value lattice —
+ *  no separate field, no duplication between `AnalysisPass` and the
+ *  `valueLattice` passed to `makeBlockFixpointPass`. */
+export interface AnalysisPass<L> extends BoundedLattice<L> {
   readonly mergeKind: "may" | "must";
   readonly direction: "forward" | "backward";
 

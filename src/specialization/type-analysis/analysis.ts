@@ -35,12 +35,7 @@ import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from
 
 export const typeLatticeAlgebra: Lattice<TypeLattice> = {
   bottom: BOTTOM,
-  equals: (a, b) =>
-    a === b ||
-    (a.kinds === b.kinds &&
-      a.intRef === b.intRef &&
-      a.boolRef === b.boolRef &&
-      a.floatRef === b.floatRef),
+  leq,
   join,
 };
 
@@ -242,8 +237,8 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 export const typeAnalysisModule: AnalysisPass<TypeLattice> = {
   mergeKind: "may",
   direction: "forward",
-  top: () => TOP,
-  bottom: () => BOTTOM,
+  bottom: BOTTOM,
+  top: TOP,
   join,
   meet,
   leq,

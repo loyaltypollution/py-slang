@@ -17,7 +17,7 @@ import { parse } from "../../../parser/parser-adapter";
 import { Resolver } from "../../../resolver";
 import { Worklist } from "../../../specialization/framework/worklist";
 import { structuralPass } from "../../../specialization/framework/structural-pass";
-import type { Lattice, Pass } from "../../../specialization/framework/pass";
+import type { EdgeSpec, Lattice, Pass } from "../../../specialization/framework/pass";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -31,13 +31,13 @@ function buildWorklist(src = "x = 1\n"): Worklist {
 
 const intMax: Lattice<number> = {
   bottom: 0,
-  equals: (a, b) => a === b,
+  leq: (a, b) => a <= b,
   join: (a, b) => Math.max(a, b),
 };
 
 const topOnly: Lattice<"fired"> = {
   bottom: "fired",
-  equals: () => true,
+  leq: () => true,
   join: () => "fired",
 };
 
@@ -45,17 +45,23 @@ const topOnly: Lattice<"fired"> = {
 function saturatingBucket(ceiling: number): Lattice<number> {
   return {
     bottom: 0,
-    equals: (a, b) => a === b,
+    leq: (a, b) => a <= b,
     join: (a, b) => Math.min(ceiling, Math.max(a, b)),
   };
+}
+
+/** Default wake: identity projection from upstream key → [same key]. Mirrors
+ *  the semantics of pre-edge `coarse:true` for tests whose consumer key-space
+ *  matches the upstream's. */
+function identityWake<K>(pass: Pass<any, any>): EdgeSpec<K> {
+  return { pass, wake: (_c, k) => [k as K] };
 }
 
 function makePass<K, V>(opts: {
   name: string;
   lattice: Lattice<V>;
-  reads?: ReadonlyArray<Pass<any, any>>;
+  edges?: ReadonlyArray<EdgeSpec<K>>;
   tier?: "runtime" | "analysis" | "transform";
-  coarse?: boolean;
   transfer?: (key: K) => V | undefined;
   affectedKeys?: (p: Pass<any, any>, k: unknown) => Iterable<K>;
   prune?: (
@@ -67,9 +73,8 @@ function makePass<K, V>(opts: {
     id: Symbol(opts.name),
     debugName: opts.name,
     lattice: opts.lattice,
-    reads: opts.reads ?? [],
+    edges: opts.edges ?? [],
     tier: opts.tier,
-    coarse: opts.coarse ?? opts.affectedKeys === undefined,
     transfer: (_ctx, key) => (opts.transfer ? opts.transfer(key as K) : undefined),
     affectedKeys: opts.affectedKeys
       ? (_ctx, p, k) => opts.affectedKeys!(p, k)
@@ -91,8 +96,7 @@ describe("Worklist pass-graph dispatch", () => {
     const consumer = makePass<string, number>({
       name: "consumer",
       lattice: intMax,
-      reads: [producer],
-      coarse: true,
+      edges: [identityWake(producer)],
       transfer: () => {
         consumerRuns++;
         return 1;
@@ -101,7 +105,6 @@ describe("Worklist pass-graph dispatch", () => {
     wl.register(producer);
     wl.register(consumer);
 
-    // Seed consumer with a key so coarse re-fan has a target.
     wl.factStore.write(consumer, "k", 1);
     consumerRuns = 0;
 
@@ -117,8 +120,8 @@ describe("Worklist pass-graph dispatch", () => {
 
     // Further writes at ceiling must be no-ops (equal under lattice.equals);
     // no onChange fires → consumer not re-enqueued.
-    wl.factStore.write(producer, "k", 3); // equal under lattice → suppressed
-    wl.factStore.write(producer, "k", 3); // still equal → suppressed
+    wl.factStore.write(producer, "k", 3);
+    wl.factStore.write(producer, "k", 3);
     wl.drain();
     expect(consumerRuns).toBe(runsAtCeiling);
   });
@@ -129,8 +132,7 @@ describe("Worklist pass-graph dispatch", () => {
     const consumer = makePass<string, number>({
       name: "consumer",
       lattice: intMax,
-      reads: [], // reads nothing
-      coarse: true,
+      edges: [],
       transfer: () => 1,
     });
     wl.register(unread);
@@ -138,33 +140,27 @@ describe("Worklist pass-graph dispatch", () => {
     wl.factStore.write(consumer, "k", 1);
 
     let enqueued = false;
-    // Spy by wrapping: re-register of same pass is a no-op, so use an
-    // observer pass instead to detect fan-out.
     const observer = makePass<string, number>({
       name: "observer",
       lattice: intMax,
-      reads: [unread],
-      coarse: true,
+      edges: [identityWake(unread)],
       transfer: () => {
         enqueued = true;
         return undefined;
       },
     });
     wl.register(observer);
-    wl.factStore.write(observer, "k", 1); // seed observer's key
+    wl.factStore.write(observer, "k", 1);
 
-    // Fire a write to `unread` — `consumer` doesn't read it, `observer` does.
     wl.factStore.write(unread, "k", 5);
     wl.drain();
     expect(enqueued).toBe(true);
 
-    // But consumer (reads nothing) must never have been woken.
     let consumerRan = false;
     const consumer2 = makePass<string, number>({
       name: "consumer2",
       lattice: intMax,
-      reads: [],
-      coarse: true,
+      edges: [],
       transfer: () => {
         consumerRan = true;
         return undefined;
@@ -181,15 +177,13 @@ describe("Worklist pass-graph dispatch", () => {
     const reader = makePass<FunctionUnit, number>({
       name: "struct-reader",
       lattice: intMax,
-      reads: [structuralPass],
-      coarse: true,
+      edges: [identityWake(structuralPass)],
       transfer: () => 1,
     });
     const nonReader = makePass<FunctionUnit, number>({
       name: "non-reader",
       lattice: intMax,
-      reads: [],
-      coarse: true,
+      edges: [],
       transfer: () => 1,
     });
     wl.register(reader);
@@ -204,8 +198,7 @@ describe("Worklist pass-graph dispatch", () => {
     const readerSpy = makePass<FunctionUnit, number>({
       name: "reader-spy",
       lattice: intMax,
-      reads: [structuralPass],
-      coarse: true,
+      edges: [identityWake(structuralPass)],
       transfer: () => {
         readerRuns++;
         return undefined;
@@ -214,8 +207,7 @@ describe("Worklist pass-graph dispatch", () => {
     const nonReaderSpy = makePass<FunctionUnit, number>({
       name: "non-reader-spy",
       lattice: intMax,
-      reads: [],
-      coarse: true,
+      edges: [],
       transfer: () => {
         nonReaderRuns++;
         return undefined;
@@ -239,8 +231,7 @@ describe("Worklist pass-graph dispatch", () => {
     const analysis = makePass<FunctionUnit, number>({
       name: "analysis",
       lattice: intMax,
-      reads: [structuralPass],
-      coarse: true,
+      edges: [identityWake(structuralPass)],
       tier: "analysis",
       transfer: () => {
         order.push("analysis");
@@ -250,8 +241,7 @@ describe("Worklist pass-graph dispatch", () => {
     const transform = makePass<FunctionUnit, number>({
       name: "transform",
       lattice: intMax,
-      reads: [structuralPass],
-      coarse: true,
+      edges: [identityWake(structuralPass)],
       tier: "transform",
       transfer: () => {
         order.push("transform");
@@ -268,7 +258,6 @@ describe("Worklist pass-graph dispatch", () => {
     wl.factStore.write(structuralPass, unit, 7);
     wl.drain();
 
-    // analysis must precede transform for the same unit.
     const a = order.indexOf("analysis");
     const t = order.indexOf("transform");
     expect(a).toBeGreaterThanOrEqual(0);
@@ -280,8 +269,7 @@ describe("Worklist pass-graph dispatch", () => {
     const blockKeyed = makePass<string, number>({
       name: "block-keyed",
       lattice: intMax,
-      reads: [structuralPass],
-      coarse: true,
+      edges: [identityWake(structuralPass)],
       transfer: () => undefined,
       // On structural rebuild, evict every previous key (simulating "all
       // BlockIds belonged to the old CFG").
@@ -289,29 +277,14 @@ describe("Worklist pass-graph dispatch", () => {
     });
     wl.register(blockKeyed);
 
-    // Seed some "block" keys.
     wl.factStore.write(blockKeyed, "b0", 1);
     wl.factStore.write(blockKeyed, "b1", 2);
     expect(wl.factStore.readAll(blockKeyed).size).toBe(2);
 
-    // Simulate a CFG rebuild by writing a new AstVersion to structuralPass.
     const [unit] = [...wl.units.values()];
     wl.factStore.write(structuralPass, unit, 99);
 
-    // Prune runs synchronously inside handleFactChange.
     expect(wl.factStore.readAll(blockKeyed).size).toBe(0);
-  });
-
-  test("register: fails fast if neither affectedKeys nor coarse is declared", () => {
-    const wl = buildWorklist();
-    const bad: Pass<string, number> = {
-      id: Symbol("bad"),
-      debugName: "bad",
-      lattice: intMax,
-      reads: [],
-      transfer: () => undefined,
-    };
-    expect(() => wl.register(bad)).toThrow(/affectedKeys.*coarse/);
   });
 
   test("top-only lattice: re-write of 'fired' suppresses re-enqueue", () => {
@@ -319,14 +292,12 @@ describe("Worklist pass-graph dispatch", () => {
     const rule = makePass<string, "fired">({
       name: "rule",
       lattice: topOnly,
-      coarse: true,
     });
     let reads = 0;
     const reader = makePass<string, number>({
       name: "reader",
       lattice: intMax,
-      reads: [rule],
-      coarse: true,
+      edges: [identityWake(rule)],
       transfer: () => {
         reads++;
         return undefined;
@@ -341,7 +312,7 @@ describe("Worklist pass-graph dispatch", () => {
     const firstReads = reads;
     expect(firstReads).toBeGreaterThan(0);
 
-    wl.factStore.write(rule, "n1", "fired"); // equal → suppressed
+    wl.factStore.write(rule, "n1", "fired");
     wl.drain();
     expect(reads).toBe(firstReads);
   });
@@ -356,9 +327,7 @@ describe("Worklist pass-graph dispatch", () => {
     const reader = makePass<number, number>({
       name: "reader",
       lattice: intMax,
-      reads: [producer],
-      coarse: false,
-      affectedKeys: (_trig, key) => [key as number],
+      edges: [{ pass: producer, wake: (_c, k) => [k as number] }],
       transfer: (k) => {
         seenKeys.push(k);
         return undefined;
@@ -367,11 +336,9 @@ describe("Worklist pass-graph dispatch", () => {
     wl.register(producer);
     wl.register(reader);
 
-    // Pre-populate the reader at many keys so a coarse re-fan would wake all of them.
     for (let i = 0; i < 10; i++) wl.factStore.write(reader, i, 1);
     seenKeys.length = 0;
 
-    // A single producer write at key=3 must wake reader at key=3 only.
     wl.factStore.write(producer, 3, 1);
     wl.drain();
 
@@ -391,9 +358,7 @@ describe("Worklist pass-graph dispatch", () => {
       const reader = makePass<number, number>({
         name: "reader",
         lattice: intMax,
-        reads: [producer],
-        coarse: false,
-        affectedKeys: (_trig, key) => [key as number],
+        edges: [{ pass: producer, wake: (_c, k) => [k as number] }],
         transfer: (k) => {
           order.push(k);
           return undefined;
@@ -411,7 +376,6 @@ describe("Worklist pass-graph dispatch", () => {
         if (i === 2) midOrderLen = order.length;
       }
       if (batched) {
-        // No transfers should have run mid-batch.
         expect(midOrderLen).toBe(0);
         wl.endBatch();
       }
@@ -419,10 +383,8 @@ describe("Worklist pass-graph dispatch", () => {
       runs.push({ batched, order: order.slice() });
     }
 
-    // Same post-drain sequence of (pass,key) events either way.
     expect(runs[0].order).toEqual(runs[1].order);
 
-    // Tripwire: endBatch without matching beginBatch throws.
     const wl = buildWorklist();
     expect(() => wl.endBatch()).toThrow(/matching beginBatch/);
   });
