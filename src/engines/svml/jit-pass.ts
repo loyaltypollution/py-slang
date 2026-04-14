@@ -67,6 +67,12 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
     },
     reads: [callCountPass, purityScopePass, structuralPass, typeAnalysisPass, constAnalysisPass],
     tier: "transform",
+    // Invariant: `Worklist.handleFactChange` calls this exactly once per
+    // value-changing FactStore write. The DFA branch below mutates
+    // `analysisGen` as a deliberate coupling to that single call site. If
+    // this contract ever loosens (e.g. speculative invocation for scheduling
+    // introspection), the bump must move into `transfer` and compare a
+    // block-fact reference snapshot.
     affectedKeys(ctx, triggerPass, triggerKey) {
       if (triggerPass === callCountPass || triggerPass === purityScopePass) {
         const unit = ctx.unitForFdId(triggerKey as number);
