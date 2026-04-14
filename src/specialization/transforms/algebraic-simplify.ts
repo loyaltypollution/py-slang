@@ -22,6 +22,7 @@
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
+import type { BasicBlock } from "../framework/cfg";
 import { typeAnalysisPass, constAnalysisPass } from "../framework/dfa-passes";
 import { readExprFact } from "../framework/dfa-factory";
 import type { FactStore } from "../framework/fact-store";
@@ -319,5 +320,5 @@ export const algebraicSimplifyRule = unitSweepRule(
     v.sweep(unit.body);
     return v.changed;
   },
-  [{ pass: typeAnalysisPass, wake: (_ctx, block) => [block.unit] }],
+  [{ on: "fact", pass: typeAnalysisPass, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
 );

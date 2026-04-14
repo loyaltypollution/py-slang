@@ -1,6 +1,7 @@
 // Constant folding. Idempotent: rewriting Binary/Compare to Literal removes the "const" fact match.
 
 import { ExprNS, StmtNS } from "../../ast-types";
+import type { BasicBlock } from "../framework/cfg";
 import { constAnalysisPass } from "../framework/dfa-passes";
 import { readExprFact } from "../framework/dfa-factory";
 import type { FactStore } from "../framework/fact-store";
@@ -176,5 +177,5 @@ export const constantFoldingRule = unitSweepRule(
     v.sweep(unit.body);
     return v.changed;
   },
-  [{ pass: constAnalysisPass, wake: (_ctx, block) => [block.unit] }],
+  [{ on: "fact", pass: constAnalysisPass, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
 );

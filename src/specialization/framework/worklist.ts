@@ -18,7 +18,6 @@ import {
 } from "./function-unit";
 import { REGISTERED_PASSES, type Pass, type PassCtx, type TransformRule, type LifecycleEdge } from "./pass";
 import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
-import { callCountPass } from "../memoization-analysis/call-count";
 import { purityBlockPass, purityScopePass } from "../purity-analysis/analysis";
 import { algebraicSimplifyRule } from "../transforms/algebraic-simplify";
 import { constantFoldingRule } from "../transforms/constant-folding";
@@ -246,7 +245,7 @@ export class Worklist {
 
     if (rule.edges !== undefined) {
       for (const edge of rule.edges) {
-        const wake = edge.wake as (ctx: PassCtx, key: unknown) => Iterable<FunctionUnit>;
+        const wake = edge.wake;
         this.subscribeFact(edge.pass, (ctx, key) => {
           for (const u of wake(ctx, key)) dirty.add(u);
         });
@@ -418,7 +417,6 @@ export const DEFAULT_PASSES: ReadonlyArray<Pass<any, any>> = [
   constAnalysisPass,
   purityBlockPass,
   purityScopePass,
-  callCountPass,
 ];
 
 export const DEFAULT_TRANSFORMS: ReadonlyArray<TransformRule> = [

@@ -1,6 +1,7 @@
 // Dead branch elimination. Idempotent: spliced-out `If` nodes no longer match.
 
 import { StmtNS } from "../../ast-types";
+import type { BasicBlock } from "../framework/cfg";
 import { constAnalysisPass } from "../framework/dfa-passes";
 import { readExprFact } from "../framework/dfa-factory";
 import type { FactStore } from "../framework/fact-store";
@@ -74,5 +75,5 @@ export const deadBranchRule = unitSweepRule(
     v.sweep(unit.body);
     return v.changed;
   },
-  [{ pass: constAnalysisPass, wake: (_ctx, block) => [block.unit] }],
+  [{ on: "fact", pass: constAnalysisPass, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
 );

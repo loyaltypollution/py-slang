@@ -3,8 +3,12 @@
 import { StmtNS, ExprNS } from "../../ast-types";
 import type { FunctionUnit } from "../framework/function-unit";
 import type { PassCtx, TransformRule } from "../framework/pass";
-import { callCountPass, MEMOIZATION_THRESHOLD } from "../memoization-analysis/call-count";
+import { runtimeCallPass, RUNTIME_CALL_COUNT_SAT } from "../framework/runtime-passes";
 import { purityScopePass } from "../purity-analysis/analysis";
+
+// Calls required before memoization may fire; derived from the runtime
+// saturation ceiling so they cannot drift.
+export const MEMOIZATION_THRESHOLD = RUNTIME_CALL_COUNT_SAT - 1;
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokens";
 import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
@@ -89,12 +93,12 @@ export const memoizationRule: TransformRule = (() => {
     id: Symbol("memoizationRule"),
     debugName: "memoizationRule",
     edges: [
-      { pass: callCountPass, wake: (ctx, fdId: number) => {
-        const u = ctx.unitForFdId(fdId);
+      { on: "fact", pass: runtimeCallPass, wake: (ctx, fdId) => {
+        const u = ctx.unitForFdId(fdId as number);
         return u ? [u] : [];
       }},
-      { pass: purityScopePass, wake: (ctx, fdId: number) => {
-        const u = ctx.unitForFdId(fdId);
+      { on: "fact", pass: purityScopePass, wake: (ctx, fdId) => {
+        const u = ctx.unitForFdId(fdId as number);
         return u ? [u] : [];
       }},
     ],
@@ -102,7 +106,9 @@ export const memoizationRule: TransformRule = (() => {
       if (wrapped.has(unit)) return false;
       const fd = unit.funcAst;
       if (!(fd instanceof StmtNS.FunctionDef)) return false;
-      if (ctx.read(callCountPass, fd.id) < MEMOIZATION_THRESHOLD) return false;
+      // runtimeCallPass already saturates at RUNTIME_CALL_COUNT_SAT via its
+      // lattice join, so ctx.read returns the capped count directly.
+      if (ctx.read(runtimeCallPass, fd.id) < MEMOIZATION_THRESHOLD) return false;
       if (ctx.read(purityScopePass, fd.id) !== true) return false;
       if (!applyMemoizationWrap(unit)) return false;
       wrapped.add(unit);

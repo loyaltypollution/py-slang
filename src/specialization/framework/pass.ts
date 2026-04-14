@@ -115,18 +115,6 @@ export interface PassCtx {
   readonly factStore: FactStore;
 }
 
-/** Edge from a transform to an upstream pass. A write to `pass` wakes the
- *  rule over the units yielded by `wake(ctx, key)`. The edge is the only
- *  way a transform gets fact-driven dirtying; without edges, a rule only
- *  runs on mint / rebuild (which the worklist handles universally).
- *
- *  Structurally parallels `FactEdge<K>` but yields `FunctionUnit`s
- *  (transforms have no keyspace); keep the two in sync when extending either. */
-export interface TransformEdge<K> {
-  readonly pass: Pass<K, any>;
-  wake(ctx: PassCtx, key: K): Iterable<FunctionUnit>;
-}
-
 /** One-shot or cascading imperative AST sweep gated on analyses. Transforms
  *  are not `Pass<_, _>` — they have no lattice, no transfer, and do not
  *  participate in the fact-store fixpoint. Worklist dirties a rule on unit
@@ -139,8 +127,11 @@ export interface TransformEdge<K> {
 export interface TransformRule {
   readonly id: symbol;
   readonly debugName: string;
-  /** Fact-driven wake edges. Omit for a rule that only fires on mint/rebuild. */
-  readonly edges?: ReadonlyArray<TransformEdge<any>>;
+  /** Fact-driven wake edges — reuses `FactEdge<FunctionUnit>` so transform
+   *  and pass edges go through the same dispatch shape. A write to the
+   *  edge's `pass` calls `wake(ctx, key)`, which yields the units to add to
+   *  this rule's dirty set. Omit for a rule that only fires on mint/rebuild. */
+  readonly edges?: ReadonlyArray<FactEdge<FunctionUnit>>;
   /** Returns `true` iff `unit.body` was mutated — the worklist then schedules
    *  a CFG rebuild for `unit`. */
   sweep(unit: FunctionUnit, ctx: PassCtx): boolean;

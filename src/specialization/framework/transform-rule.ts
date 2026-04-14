@@ -7,7 +7,7 @@
 
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
-import type { PassCtx, TransformEdge, TransformRule } from "./pass";
+import type { FactEdge, PassCtx, TransformRule } from "./pass";
 
 /** Build a unit-keyed transform rule from a sweep function that reads
  *  fact-store state and mutates `unit.body`. Returns `true` iff the AST
@@ -16,7 +16,7 @@ import type { PassCtx, TransformEdge, TransformRule } from "./pass";
 export function unitSweepRule(
   name: string,
   sweep: (unit: FunctionUnit, factStore: FactStore) => boolean,
-  edges: ReadonlyArray<TransformEdge<any>> = [],
+  edges: ReadonlyArray<FactEdge<FunctionUnit>> = [],
 ): TransformRule {
   return {
     id: Symbol(name),
