@@ -40,7 +40,6 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
   }
 
   visitIfStmt(stmt: StmtNS.If): void {
-    // Condition rewrites handled by constant folding.
     this.sweep(stmt.body);
     if (stmt.elseBlock) this.sweep(stmt.elseBlock);
   }

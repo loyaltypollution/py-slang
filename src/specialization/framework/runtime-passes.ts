@@ -11,10 +11,9 @@ export const RUNTIME_CALL_COUNT_SAT = 11;
 
 const RAW_TOP: RawKind = { kind: "unknown" };
 
-// Monotone observation lattice: ⊥ (never stored; tryRead returns undefined)
-// < singletons (one observed RawKind) < ⊤ ({kind:"unknown"}, conflict-absorbing).
-// `bottom` is the ⊤ sentinel because no reader calls `factStore.read` on this
-// pass (only `tryRead`), so `bottom`'s value is never observed as a lattice ⊥.
+// Observation lattice: singletons < ⊤ ({kind:"unknown"}, conflict-absorbing).
+// `bottom` is set to RAW_TOP because readers only call `tryRead` on this pass
+// (never `read`), so the declared `bottom` never surfaces as a lattice ⊥.
 function rawKindEquals(a: RawKind, b: RawKind): boolean {
   if (a === b) return true;
   if (a.kind !== b.kind) return false;

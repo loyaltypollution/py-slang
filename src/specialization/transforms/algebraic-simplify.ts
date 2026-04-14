@@ -34,28 +34,6 @@ import {
 } from "../type-analysis/lattice";
 import { truthiness } from "../type-analysis/transfer";
 
-function typeOf(
-  factStore: FactStore,
-  unit: FunctionUnit,
-  node: ExprNS.Expr,
-): TypeLattice | undefined {
-  const block = unit.blockOfNode.get(node.id);
-  return readExprFact(factStore, typeAnalysisPass, block, node.id);
-}
-
-function readConstFact(
-  factStore: FactStore,
-  unit: FunctionUnit,
-  node: ExprNS.Expr,
-): ConstLattice | undefined {
-  const block = unit.blockOfNode.get(node.id);
-  return readExprFact(factStore, constAnalysisPass, block, node.id);
-}
-
-function isConstValue(c: ConstLattice | undefined, v: number | boolean | string): boolean {
-  return c !== undefined && c.tag === "const" && c.value === v;
-}
-
 function unwrapGrouping(e: ExprNS.Expr): ExprNS.Expr {
   while (e instanceof ExprNS.Grouping) e = e.expression;
   return e;
@@ -68,18 +46,19 @@ function isPureInt(t: TypeLattice | undefined): boolean {
   return t !== undefined && t.kinds === INT_BIT;
 }
 
-/** `x` is safe to drop (purely readable) if it's a Literal or Variable. Calls,
- *  subscripts, arithmetic subexpressions etc. may side-effect or throw. */
-function zeroLiteralLike(e: ExprNS.Expr): ExprNS.Literal {
-  return new ExprNS.Literal(e.startToken, e.endToken, 0 as unknown as number);
-}
-
+// `x` is safe to drop (purely readable) if it's a Literal, Variable, None,
+// or BigInt. Calls, subscripts, arithmetic subexpressions etc. may
+// side-effect or throw, so `x * 0 → 0` is unsound against them.
 function isSafeToDrop(e: ExprNS.Expr): boolean {
   const u = unwrapGrouping(e);
   return u instanceof ExprNS.Literal ||
     u instanceof ExprNS.BigIntLiteral ||
     u instanceof ExprNS.Variable ||
     u instanceof ExprNS.None;
+}
+
+function zeroLiteralLike(e: ExprNS.Expr): ExprNS.Literal {
+  return new ExprNS.Literal(e.startToken, e.endToken, 0 as unknown as number);
 }
 
 class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
@@ -98,23 +77,30 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     return e;
   }
 
+  private typeOf(node: ExprNS.Expr): TypeLattice | undefined {
+    return readExprFact(this.factStore, typeAnalysisPass, this.unit.blockOfNode.get(node.id), node.id);
+  }
+  private constOf(node: ExprNS.Expr): ConstLattice | undefined {
+    return readExprFact(this.factStore, constAnalysisPass, this.unit.blockOfNode.get(node.id), node.id);
+  }
+
   visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
     expr.left = expr.left.accept(this);
     expr.right = expr.right.accept(this);
-    const lt = typeOf(this.factStore, this.unit, expr.left);
-    const rt = typeOf(this.factStore, this.unit, expr.right);
-    const lc = readConstFact(this.factStore, this.unit, expr.left);
-    const rc = readConstFact(this.factStore, this.unit, expr.right);
+    const lt = this.typeOf(expr.left);
+    const rt = this.typeOf(expr.right);
+    const lc = this.constOf(expr.left);
+    const rc = this.constOf(expr.right);
 
-    // Precise identity detectors using the const lattice. The sign lattice
+    // Precise identity detectors via the const lattice. The sign lattice
     // cannot distinguish `1` from any other positive, so `x * 1 → x` needs
     // const facts; the sign lattice *can* catch `0` (IntRef.Zero is a
-    // singleton), and we prefer it because const-folding often runs first
-    // and leaves us with non-constant expressions whose sign is still known.
-    const rIsZeroInt = isIntZero(rt) || isConstValue(rc, 0);
-    const lIsZeroInt = isIntZero(lt) || isConstValue(lc, 0);
-    const rIsOneInt = isConstValue(rc, 1);
-    const lIsOneInt = isConstValue(lc, 1);
+    // singleton), preferred because const-folding often runs first and
+    // leaves non-constant expressions whose sign is still known.
+    const rIsZeroInt = isIntZero(rt) || (rc?.tag === "const" && rc.value === 0);
+    const lIsZeroInt = isIntZero(lt) || (lc?.tag === "const" && lc.value === 0);
+    const rIsOneInt = rc?.tag === "const" && rc.value === 1;
+    const lIsOneInt = lc?.tag === "const" && lc.value === 1;
 
     switch (expr.operator.type) {
       case TokenType.PLUS:
@@ -128,8 +114,8 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
         if (isPureInt(lt) && rIsOneInt) return this.mark(expr.left);
         if (lIsOneInt && isPureInt(rt)) return this.mark(expr.right);
         // x * 0 → 0 : only when the dropped side is side-effect-free AND
-        // statically integer (float can be NaN/inf, complex has 0j
-        // semantics, str*0 is the empty string).
+        // statically integer (float NaN/inf, complex 0j semantics, str*0
+        // all break the rewrite).
         if (isPureInt(lt) && rIsZeroInt && isSafeToDrop(expr.left)) {
           return this.mark(zeroLiteralLike(expr));
         }
@@ -147,7 +133,7 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   visitBoolOpExpr(expr: ExprNS.BoolOp): ExprNS.Expr {
     expr.left = expr.left.accept(this);
     expr.right = expr.right.accept(this);
-    const lt = typeOf(this.factStore, this.unit, expr.left);
+    const lt = this.typeOf(expr.left);
     if (lt !== undefined) {
       const truth = truthiness(lt);
       // Short-circuit identities, safe because we evaluate left for
@@ -182,7 +168,7 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
       inner.operator.type === TokenType.NOT
     ) {
       const body = inner.right;
-      const bodyType = typeOf(this.factStore, this.unit, body);
+      const bodyType = this.typeOf(body);
       if (bodyType !== undefined && bodyType.kinds === BOOL_BIT) {
         return this.mark(body);
       }

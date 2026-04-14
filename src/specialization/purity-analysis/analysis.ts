@@ -1,29 +1,17 @@
 // Intraprocedural purity analysis with freshness/escape tracking.
 //
-// Inner pass: block-keyed DFA (registered via the DFA factory). Per-slot
-// abstract value tracks the *origin* of each local binding (Fresh/Param/Global/
-// Unknown). A block-global sticky `impure` summary captures effects that can't
-// be attributed to a slot (assert, global writes, non-whitelisted calls, etc.).
-//
-// Outer pass: `purityScopePass`, keyed by `FunctionDef.id`, projects the exit
-// block's summary to `true | false | undefined` for the memoization consumer.
-//
 // Freshness earns the CFG dataflow: `xs = []; xs[0] = 1` stays pure because
 // `xs` holds a `Fresh` value at the subscript-store. At merge points,
 // `xs = [] / xs = param` joins to `Unknown`, so subsequent mutation widens to
-// impure — flow-sensitivity that a linear scan can't express.
+// impure — flow-sensitivity a linear scan can't express.
 //
-// Nested `FunctionDef` statements are analyzed as their own `FunctionUnit`s;
-// the enclosing block reads the nested `purityScopePass` verdict via a
-// cross-pass reads-edge and binds the name's slot to a `Closure(fdId, pure)`
-// value. Call sites consult the `pure` field: a resolved-pure closure call is
-// pure, a resolved-impure closure call taints, and a pending closure (inner
-// not yet analyzed) defers judgment until the scope-pass refinement arrives.
+// Nested `FunctionDef` bodies are analyzed as their own `FunctionUnit`s; the
+// enclosing block reads the nested `purityScopePass` verdict via a cross-pass
+// reads-edge and binds the name's slot to `Closure(fdId, pure)`. Pending
+// closures (inner not yet analyzed) defer judgment until the scope-pass
+// refinement arrives.
 //
-// `Lambda` and `MultiLambda` expressions currently stay sticky-impure — out
-// of scope for this phase.
-//
-// Consumer: `memoizationRule`.
+// `Lambda` / `MultiLambda` stay sticky-impure — out of scope for this phase.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
@@ -99,17 +87,6 @@ class BlockState {
     readonly factStore: FactStore,
   ) {}
 
-  markImpure(): void {
-    this.impure = true;
-  }
-
-  /** Escape a local slot to `Unknown` (e.g., passed to a non-whitelisted call). */
-  escapeSlot(slot: number): void {
-    const cur = this.env.get(slot);
-    if (cur === undefined || cur.kind !== "unknown") {
-      this.env.set(slot, UNKNOWN);
-    }
-  }
 }
 
 function transferExpr(expr: ExprNS.Expr, state: BlockState): AbsVal {
@@ -136,7 +113,7 @@ function transferExpr(expr: ExprNS.Expr, state: BlockState): AbsVal {
       return UNKNOWN;
     }
     // Built-in or module-level global: can change between calls, impure.
-    state.markImpure();
+    state.impure = true;
     return GLOBAL;
   }
 
@@ -183,17 +160,17 @@ function transferExpr(expr: ExprNS.Expr, state: BlockState): AbsVal {
 
   if (expr instanceof ExprNS.Lambda || expr instanceof ExprNS.MultiLambda) {
     // Deferred: proper closure analysis in a later phase.
-    state.markImpure();
+    state.impure = true;
     return UNKNOWN;
   }
 
   if (expr instanceof ExprNS.Starred) {
     transferExpr(expr.value, state);
-    state.markImpure();
+    state.impure = true;
     return UNKNOWN;
   }
 
-  state.markImpure();
+  state.impure = true;
   return UNKNOWN;
 }
 
@@ -207,7 +184,7 @@ function transferCall(expr: ExprNS.Call, state: BlockState): AbsVal {
   } else {
     // Computed callee (e.g. subscript of list-of-fns) is not analyzable.
     transferExpr(expr.callee, state);
-    state.markImpure();
+    state.impure = true;
   }
 
   const isWhitelistedBuiltin =
@@ -226,7 +203,7 @@ function transferCall(expr: ExprNS.Call, state: BlockState): AbsVal {
     isClosureCall && (calleeAbs as { pure: boolean | undefined }).pure === undefined;
 
   if (isImpureClosureCall) {
-    state.markImpure();
+    state.impure = true;
   } else if (
     !isWhitelistedBuiltin &&
     !isSelfRecursion &&
@@ -235,7 +212,7 @@ function transferCall(expr: ExprNS.Call, state: BlockState): AbsVal {
     calleeName !== undefined
   ) {
     // Unknown function: effects are unconstrained.
-    state.markImpure();
+    state.impure = true;
   }
 
   // Evaluate args for their own effects, and escape any Variable-shaped args
@@ -252,7 +229,10 @@ function transferCall(expr: ExprNS.Call, state: BlockState): AbsVal {
     transferExpr(arg, state);
     if (argsEscape && arg instanceof ExprNS.Variable) {
       const info = state.slotLookup(arg.name);
-      if (isLocal(info)) state.escapeSlot(info.slot);
+      // Escape a local slot to `Unknown` when it may be mutated via alias.
+      if (isLocal(info) && state.env.get(info.slot)?.kind !== "unknown") {
+        state.env.set(info.slot, UNKNOWN);
+      }
     }
   }
   return UNKNOWN;
@@ -273,7 +253,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
         // Returning a resolved-impure closure escapes it to the caller, who
         // may invoke it and observe side effects. Taint the enclosing fn.
         // Pending closures (inner purity undetermined) defer judgment.
-        if (val.kind === "closure" && val.pure === false) state.markImpure();
+        if (val.kind === "closure" && val.pure === false) state.impure = true;
       }
       return;
     }
@@ -286,7 +266,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
         if (isLocal(info)) {
           state.env.set(info.slot, val);
         } else {
-          state.markImpure(); // Write to nonlocal/global is observable.
+          state.impure = true; // Write to nonlocal/global is observable.
         }
         return;
       }
@@ -294,7 +274,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
       const container = transferExpr(a.target.value, state);
       transferExpr(a.target.index, state);
       if (container.kind !== "fresh") {
-        state.markImpure();
+        state.impure = true;
       }
       return;
     }
@@ -306,7 +286,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
       if (isLocal(info)) {
         state.env.set(info.slot, val);
       } else {
-        state.markImpure();
+        state.impure = true;
       }
       return;
     }
@@ -327,7 +307,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
       if (isLocal(info)) {
         state.env.set(info.slot, UNKNOWN);
       } else {
-        state.markImpure();
+        state.impure = true;
       }
       return;
     }
@@ -339,7 +319,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
 
     case "Assert": {
       transferExpr((stmt as StmtNS.Assert).value, state);
-      state.markImpure(); // Assert can raise; control-flow observable.
+      state.impure = true; // Assert can raise; control-flow observable.
       return;
     }
 
@@ -351,7 +331,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
       const fd = stmt as StmtNS.FunctionDef;
       const info = state.slotLookup(fd.name);
       if (!isLocal(info)) {
-        state.markImpure();
+        state.impure = true;
         return;
       }
       const innerPure = state.factStore.tryRead(purityScopePass, fd.id);
@@ -369,7 +349,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
     case "NonLocal":
     case "FromImport":
       // Naming a nonlocal/global binding rebinds across scope — observable.
-      state.markImpure();
+      state.impure = true;
       return;
   }
 }

@@ -158,17 +158,16 @@ export function makeBlockFixpointPass<L>(
 
   function inEnvFor(factStore: FactStore, block: BasicBlock, unit: FunctionUnit): MutableEnv<L> {
     // Iterate predecessor *edges* so `refineOnEdge` sees the labeled edge
-    // (branch-true/false + condition). For backward analyses, predecessors
-    // are the block's successors in the CFG.
+    // (branch-true/false + condition). Backward analyses treat CFG successors
+    // as predecessors by symmetry.
     const preds = config.direction === "forward"
       ? block.predecessorEdges
       : block.successorEdges;
     if (preds.length === 0) return config.seedEnv(unit);
     let env: MutableEnv<L> | undefined;
     for (const edge of preds) {
-      // For forward analyses, the pred-out is edge.from.outEnv; for backward,
-      // the pred-out is edge.to.outEnv. `factStore.read` returns the (frozen)
-      // bottomFact for unwritten cells — we never mutate it in place.
+      // `factStore.read` returns the frozen bottomFact for unwritten cells;
+      // we never mutate it in place.
       const predBlock = config.direction === "forward" ? edge.from : edge.to;
       const predOut = factStore.read(blockKeyedPass, predBlock).outEnv;
       // Refine across the edge. Identity returns are common and must not

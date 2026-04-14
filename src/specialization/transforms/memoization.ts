@@ -20,7 +20,8 @@ function applyMemoizationWrap(unit: FunctionUnit): boolean {
   const params = fd.parameters.map(p => mkVar(fd, p.lexeme));
 
   const hasCall = mkCall(fd, MEMO_HAS, [mkStr(fd, id), ...params]);
-  // Fresh Variable nodes (new ids) reusing name Tokens — AST hint lookups key on node identity.
+  // Fresh Variable nodes (new ids) reusing name Tokens — AST hint lookups
+  // key on node identity, so the args cannot alias the `params` array above.
   const getCall = mkCall(fd, MEMO_GET, [mkStr(fd, id), ...params.map(p => new ExprNS.Variable(p.startToken, p.endToken, p.name))]);
   const prelude = new StmtNS.If(
     fd.startToken,
@@ -34,8 +35,6 @@ function applyMemoizationWrap(unit: FunctionUnit): boolean {
   fd.body.unshift(prelude);
   return true;
 }
-
-// AST construction helpers
 
 function mkTok(fd: StmtNS.FunctionDef, type: TokenType, lexeme: string): Token {
   return new Token(type, lexeme, fd.name.line, fd.name.col, fd.name.indexInSource);
