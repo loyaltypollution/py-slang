@@ -4,7 +4,6 @@ import type { FactStore } from "../framework/fact-store";
 import { runtimeWritePass } from "../framework/runtime-passes";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { MutableEnv } from "../framework/mutable-env";
-import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
@@ -22,12 +21,20 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     private readonly recordExprFact: (nodeId: number, val: ConstLattice) => void,
   ) {}
 
-  // Every visitor site MUST route through annotate — it fuses the
-  // runtime-observation widen + recordExprFact write. Skipping it yields
-  // stale per-node facts and loses runtime refinement.
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
     const observed = this.factStore.tryRead(runtimeWritePass, node.id);
-    const lifted = observed !== undefined ? liftConst(observed) : undefined;
+    let lifted: ConstLattice | undefined;
+    if (observed !== undefined) {
+      switch (observed.kind) {
+        case "number":
+        case "bool":
+          lifted = constOf(observed.value);
+          break;
+        case "string":
+          lifted = observed.value !== undefined ? constOf(observed.value) : undefined;
+          break;
+      }
+    }
     const widened = lifted !== undefined ? constJoin(val, lifted) : val;
     this.recordExprFact(node.id, widened);
     return widened;
@@ -233,22 +240,7 @@ export const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
   ): ExprNS.Visitor<ConstLattice> {
     return new ConstAnalysisVisitor(factStore, env, slotLookup, recordExprFact);
   },
-  // Identity: const propagation across `if x == 5` edges is a possible
-  // follow-up; none wired today.
   refineOnEdge(env, _edge) {
     return env;
   },
 };
-
-function liftConst(rawKind: RawKind): ConstLattice | undefined {
-  switch (rawKind.kind) {
-    case "number":
-      return constOf(rawKind.value);
-    case "bool":
-      return constOf(rawKind.value);
-    case "string":
-      return rawKind.value !== undefined ? constOf(rawKind.value) : undefined;
-    default:
-      return undefined;
-  }
-}

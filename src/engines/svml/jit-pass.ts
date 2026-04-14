@@ -86,6 +86,12 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
         wake: (_ctx, unit) =>
           unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [],
       },
+      {
+        on: "retire",
+        effect: (ctx, unit) => {
+          ctx.factStore.evict(jitPass, unit);
+        },
+      },
     ],
     tier: "analysis",
     transfer(ctx: PassCtx, unit: FunctionUnit): SVMLIR | undefined {

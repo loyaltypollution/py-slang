@@ -124,8 +124,6 @@ export interface PassCtx {
   readAll<K2, V2>(p: Pass<K2, V2>): ReadonlyMap<K2, V2>;
   /** Outermost containing unit for a node. */
   unitForNode(nodeId: number): FunctionUnit | undefined;
-  /** Every unit whose `blockOfNode` indexes this node. */
-  unitsContainingNode(nodeId: number): ReadonlyArray<FunctionUnit>;
   /** Unit for a `FunctionDef.id`. */
   unitForFdId(fdId: number): FunctionUnit | undefined;
   /** Internal-only: reserved for DFA factory's block fixpoint. */

@@ -61,8 +61,6 @@ export class Worklist {
   private readonly _units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> = new Map();
   private readonly unitsByFdId: Map<number, FunctionUnit> = new Map();
   private readonly nodeToUnit: Map<number, FunctionUnit> = new Map();
-  private readonly nodeToUnits: Map<number, FunctionUnit[]> = new Map();
-  private static readonly EMPTY_UNITS: ReadonlyArray<FunctionUnit> = Object.freeze([]);
 
   /** Units awaiting CFG rebuild after a transform fire. */
   private readonly pendingRebuilds = new Set<FunctionUnit>();
@@ -145,7 +143,7 @@ export class Worklist {
     this._units.set(node, unit);
     this.unitsByFdId.set(node.id, unit);
     this.rebuildNodeToUnit();
-    this.fireUnitMinted(unit);
+    this.fireLifecycle("mint", unit);
   }
 
   private onRegistryRetire(fdId: number, node: FunctionScopeNode): void {
@@ -155,15 +153,12 @@ export class Worklist {
     this._units.delete(node as StmtNS.FileInput | StmtNS.FunctionDef);
     this.pendingRebuilds.delete(unit);
     for (const s of this.transformDirty.values()) s.delete(unit);
-    // Unit-keyed passes (e.g. makeJitPass): the blanket evict drops the cell.
-    // Harmless no-op for other keyspaces — Map.delete on a missing key is
-    // cheap. Block-keyed DFA passes attach their own `{on:"retire", effect}`
-    // via `makeBlockFixpointPass`; number-keyed passes (runtimeCall/Write,
-    // callCount, purityScope) now declare explicit retire edges that iterate
-    // their keyspace. Both kinds fire via `fireLifecycle("retire", ...)` below.
-    for (const p of this.registeredPasses) {
-      this.factStore.evict(p, unit);
-    }
+    // Every pass declares its own retire behavior via `{on:"retire", effect}`:
+    // block-keyed DFA passes through `makeBlockFixpointPass`, number-keyed
+    // observation passes (`runtimeWritePass`, `runtimeCallPass`,
+    // `purityScopePass`) explicitly, unit-keyed passes (`jitPass`) explicitly.
+    // No implicit blanket evict — a pass author that forgets a retire edge
+    // gets a real leak, not a silent no-op across three out of four keyspaces.
     this.fireLifecycle("retire", unit);
     this.rebuildNodeToUnit();
   }
@@ -183,14 +178,6 @@ export class Worklist {
     for (const sub of this.lifecycleSubs[kind]) sub(this.passCtx, unit);
   }
 
-  private fireUnitMinted(unit: FunctionUnit): void {
-    this.fireLifecycle("mint", unit);
-  }
-
-  private fireUnitRebuilt(unit: FunctionUnit): void {
-    this.fireLifecycle("rebuild", unit);
-  }
-
   blockOfNode(nodeId: number): BasicBlock | undefined {
     return this.nodeToUnit.get(nodeId)?.blockOfNode.get(nodeId);
   }
@@ -199,11 +186,8 @@ export class Worklist {
     return this.nodeToUnit;
   }
 
-  /** Memoized read-only projection of the DFA fact-store. Built once on
-   *  first access; the closure captures `this.factStore` and `this.nodeToUnit`
-   *  by reference so later cell writes and index rebuilds are reflected
-   *  without invalidation. Replaces the per-compile `makeDfaQuery(worklist.factStore, worklist.nodeIndex)`
-   *  construction at conductor/test call sites. */
+  /** Memoized DFA projection; the closure captures `factStore` and
+   *  `nodeToUnit` by reference so later writes/rebuilds are reflected. */
   private _dfaQuery: DfaQuery | undefined;
   get dfaQuery(): DfaQuery {
     if (this._dfaQuery === undefined) {
@@ -359,8 +343,6 @@ export class Worklist {
     tryRead: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.tryRead(p, key),
     readAll: <K2, V2>(p: Pass<K2, V2>) => this.factStore.readAll(p),
     unitForNode: (nodeId: number) => this.nodeToUnit.get(nodeId),
-    unitsContainingNode: (nodeId: number) =>
-      this.nodeToUnits.get(nodeId) ?? Worklist.EMPTY_UNITS,
     unitForFdId: (fdId: number) => this.unitsByFdId.get(fdId),
     factStore: this.factStore,
   };
@@ -386,19 +368,15 @@ export class Worklist {
     }
     this.pendingRebuilds.clear();
     this.rebuildNodeToUnit();
-    for (const unit of rebuilt) this.fireUnitRebuilt(unit);
+    for (const unit of rebuilt) this.fireLifecycle("rebuild", unit);
     return rebuilt;
   }
 
   private rebuildNodeToUnit(): void {
     this.nodeToUnit.clear();
-    this.nodeToUnits.clear();
     for (const unit of this.units.values()) {
       for (const nodeId of unit.blockOfNode.keys()) {
         this.nodeToUnit.set(nodeId, unit);
-        const list = this.nodeToUnits.get(nodeId);
-        if (list === undefined) this.nodeToUnits.set(nodeId, [unit]);
-        else list.push(unit);
       }
     }
   }

@@ -372,22 +372,6 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
   }
 }
 
-function selfNameOf(unit: FunctionUnit): string | undefined {
-  const fd = unit.funcAst;
-  return fd instanceof StmtNS.FunctionDef ? fd.name.lexeme : undefined;
-}
-
-function seedEnv(unit: FunctionUnit): MutableEnv<AbsVal> {
-  const env = new MutableEnv<AbsVal>();
-  const fd = unit.funcAst;
-  if (fd instanceof StmtNS.FunctionDef) {
-    for (let i = 0; i < fd.parameters.length; i++) {
-      env.set(i, { kind: "param", slot: i });
-    }
-  }
-  return env;
-}
-
 // AbsVal has no natural ⊥ (slot absence in MutableEnv represents "not yet
 // assigned") and no natural meet. Typed as plain `Lattice` — the DfaConfig
 // discriminated union refuses to pair this with `mergeKind: "must"`, so
@@ -409,9 +393,20 @@ export const purityBlockPass: Pass<
   direction: "forward",
   valueLattice: absValLattice,
   mergeKind: "may",
-  seedEnv,
+  seedEnv: (unit) => {
+    const env = new MutableEnv<AbsVal>();
+    const fd = unit.funcAst;
+    if (fd instanceof StmtNS.FunctionDef) {
+      for (let i = 0; i < fd.parameters.length; i++) {
+        env.set(i, { kind: "param", slot: i });
+      }
+    }
+    return env;
+  },
   transferBlock: (ctx, block, inEnv, unit) => {
-    const state = new BlockState(inEnv, unit.slotLookup, selfNameOf(unit), ctx);
+    const fd = unit.funcAst;
+    const selfName = fd instanceof StmtNS.FunctionDef ? fd.name.lexeme : undefined;
+    const state = new BlockState(inEnv, unit.slotLookup, selfName, ctx);
     for (const stmt of block.stmts) transferStmt(stmt, state);
     // Block-global impure flag lives at a sentinel key in `exprFacts`. The
     // DFA factory's per-key lattice join handles monotone propagation; a

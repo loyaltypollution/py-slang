@@ -1,13 +1,9 @@
-// Memoization: wraps a hot, pure FunctionDef body using __memo_has / __memo_get / __memo_put.
-
 import { StmtNS, ExprNS } from "../../ast-types";
 import type { FunctionUnit } from "../framework/function-unit";
 import type { PassCtx, TransformRule } from "../framework/pass";
 import { runtimeCallPass, RUNTIME_CALL_COUNT_SAT } from "../framework/runtime-passes";
 import { purityScopePass } from "../purity-analysis/analysis";
 
-// Calls required before memoization may fire; derived from the runtime
-// saturation ceiling so they cannot drift.
 export const MEMOIZATION_THRESHOLD = RUNTIME_CALL_COUNT_SAT - 1;
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokens";

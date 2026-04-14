@@ -1,6 +1,3 @@
-// Type lattice: bitmask of Python kinds with sign/truth refinements.
-// join = OR, meet = AND over the powerset domain.
-
 export const INT_BIT = 1;
 export const BOOL_BIT = 2;
 export const STR_BIT = 4;

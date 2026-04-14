@@ -49,7 +49,6 @@ export type AbsVal =
   | { readonly kind: "impure" }
   | { readonly kind: "unknown" };
 
-export const BOTTOM: AbsVal = Object.freeze({ kind: "bottom" });
 export const UNKNOWN: AbsVal = Object.freeze({ kind: "unknown" });
 export const GLOBAL: AbsVal = Object.freeze({ kind: "global" });
 export const IMPURE_MARKER: AbsVal = Object.freeze({ kind: "impure" });
@@ -58,7 +57,7 @@ export const IMPURE_MARKER: AbsVal = Object.freeze({ kind: "impure" });
  *  so it can never collide with a real AST nodeId. */
 export const IMPURE_SENTINEL_NODE_ID = -1;
 
-export function absEquals(a: AbsVal, b: AbsVal): boolean {
+function absEquals(a: AbsVal, b: AbsVal): boolean {
   if (a === b) return true;
   if (a.kind !== b.kind) return false;
   if (a.kind === "fresh" && b.kind === "fresh") return a.origin === b.origin;
@@ -107,8 +106,3 @@ export function absJoin(a: AbsVal, b: AbsVal): AbsVal {
   return UNKNOWN;
 }
 
-/** Is `v` a freshly-allocated value still owned by this frame? Caller-visible
- *  mutation is pure iff the target slot holds such a value. */
-export function isFresh(v: AbsVal | undefined): boolean {
-  return v !== undefined && v.kind === "fresh";
-}

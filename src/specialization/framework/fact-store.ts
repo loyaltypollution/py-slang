@@ -54,14 +54,7 @@ export class FactStore {
 
     const hadPrev = inner.has(key);
     const prev = hadPrev ? (inner.get(key) as V) : undefined;
-    // Fast path: if `value ⊑ prev`, the join is `prev` and no cell advance can
-    // happen. Skips allocating a join result for the common monotone-no-op
-    // case (e.g. re-transfer producing the same fact). Correct under the
-    // lattice contract: `leq(v, prev) ⇒ join(prev, v) = prev`. Under a
-    // well-formed monotone lattice this also subsumes the old
-    // `latticeEquals(prev, joined)` check: if `leq(value, prev)` returned
-    // false then `join(prev, value) ⊐ prev`, so the extra equals call was
-    // always false on the post-fast-path branch.
+    // Monotone lattice fast-path: leq(value, prev) ⇒ join(prev, value) = prev.
     if (hadPrev && pass.lattice.leq(value, prev as V)) return false;
     const joined = hadPrev ? pass.lattice.join(prev as V, value) : value;
 

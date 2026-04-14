@@ -2,23 +2,19 @@
 // Reads the type lattice (kind mask + sign/bool refinement); no new analysis
 // required. Pure wins on identity/annihilator laws:
 //
-//   int  ::  x + 0 → x      x - 0 → x      x - x → 0
+//   int  ::  x + 0 → x      x - 0 → x
 //             x * 1 → x      x * 0 → 0      x // 1 → x
 //             - -x  → x
-//   bool ::  x and True  → x     x or False → x
-//             x and False → False (when x is pure; skipped — conservative)
-//             x or  True  → True  (when x is pure; skipped — conservative)
+//   bool ::  (short-circuit, lhs-driven — lhs is still evaluated for its
+//             side effects, we just use its truth value to select the arm)
+//             falsy-lhs and y → lhs      truthy-lhs and y → y
+//             truthy-lhs or  y → lhs     falsy-lhs  or  y → y
 //   not (not x) → x  (when x is a known bool)
 //
 // We do NOT apply laws whose soundness depends on purity of the dropped side
 // (e.g. `x * 0 → 0` requires x to be finite; floats with NaN break it — we
-// guard on INT_BIT only). This rule is idempotent: every rewrite strictly
-// reduces node count or lowers kind complexity, so it cannot re-fire on its
-// own output.
-//
-// Not wired into the default pipeline yet — reviewers should decide whether
-// it belongs before or after const-folding. Proposed order: after folding,
-// so concrete zeros/ones produced by folding feed into identity laws.
+// guard on INT_BIT only). Idempotent: every rewrite strictly reduces node
+// count or lowers kind complexity.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
@@ -47,7 +43,7 @@ function typeOf(
   return readExprFact(factStore, typeAnalysisPass, block, node.id);
 }
 
-function constOf(
+function readConstFact(
   factStore: FactStore,
   unit: FunctionUnit,
   node: ExprNS.Expr,
@@ -107,8 +103,8 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     expr.right = expr.right.accept(this);
     const lt = typeOf(this.factStore, this.unit, expr.left);
     const rt = typeOf(this.factStore, this.unit, expr.right);
-    const lc = constOf(this.factStore, this.unit, expr.left);
-    const rc = constOf(this.factStore, this.unit, expr.right);
+    const lc = readConstFact(this.factStore, this.unit, expr.left);
+    const rc = readConstFact(this.factStore, this.unit, expr.right);
 
     // Precise identity detectors using the const lattice. The sign lattice
     // cannot distinguish `1` from any other positive, so `x * 1 → x` needs

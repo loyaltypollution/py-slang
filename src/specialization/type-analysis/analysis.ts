@@ -1,21 +1,22 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import type { CFGEdge } from "../framework/cfg";
 import type { FactStore } from "../framework/fact-store";
 import type { MutableEnv } from "../framework/mutable-env";
-import type { Lattice } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   type TypeLattice,
+  ALL_KINDS_MASK,
   boolean as booleanValue,
+  BOOL_BIT,
   BOOL_FALSE,
   BOOL_TRUE,
   BoolRef,
   BOTTOM,
   CLOSURE,
+  CLOSURE_BIT,
   COMPLEX,
   FLOAT_BIT,
   FLOAT_NEG,
@@ -31,6 +32,7 @@ import {
   leq,
   meet,
   NULL,
+  NULL_BIT,
   STR_BIT,
   STRING,
   TOP,
@@ -42,12 +44,6 @@ import {
   transferUnaryNeg,
   truthiness,
 } from "./transfer";
-
-export const typeLatticeAlgebra: Lattice<TypeLattice> = {
-  bottom: BOTTOM,
-  leq,
-  join,
-};
 
 const BINARY_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
   [TokenType.PLUS, "+"],
@@ -285,20 +281,12 @@ export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
 
 // ---- Predicate narrowing helpers ----
 
-/** Numeric literal extracted from an expression, with its Python sign. */
-interface NumericLiteral {
-  readonly value: number;
-  readonly isFloat: boolean;
-}
-
-function readNumericLiteral(expr: ExprNS.Expr): NumericLiteral | undefined {
+function readNumericLiteral(expr: ExprNS.Expr): number | undefined {
   if (expr instanceof ExprNS.Literal && typeof expr.value === "number") {
-    const v = expr.value;
-    const isFloat = !Number.isInteger(v) || !Number.isFinite(v);
-    return { value: v, isFloat };
+    return expr.value;
   }
   if (expr instanceof ExprNS.BigIntLiteral) {
-    return { value: Number(expr.value), isFloat: false };
+    return Number(expr.value);
   }
   return undefined;
 }
@@ -310,19 +298,41 @@ function signOf(value: number): IntRef {
   return IntRef.Zero;
 }
 
-/** A refinement value that covers both int and float kinds with the given
- *  sign refinement. Meeting with a pure-INT env slot keeps INT; with a pure
- *  FLOAT slot keeps FLOAT; with a disjoint (e.g. STRING) slot collapses to
- *  BOTTOM, which is correct — the branch is statically unreachable given
- *  the slot's type. */
+/** Refinement covering int, float and bool kinds with the given sign.
+ *  Python bool ⊂ int, so a predicate like `b > 0` must be allowed to refine
+ *  a bool slot — not collapse it to BOTTOM. We derive a matching BoolRef:
+ *  the True bit is set iff the sign admits Pos (True == 1); the False bit
+ *  iff the sign admits Zero (False == 0). Meeting with a pure-kind env slot
+ *  keeps that kind; disjoint non-numeric slots (e.g. STRING) still collapse
+ *  to BOTTOM, which is sound — the branch is unreachable. */
 function numericRefinement(ref: IntRef): TypeLattice {
+  // IntRef bits: Neg=1, Zero=2, Pos=4.
+  // BoolRef bits: True=1, False=2.
+  const boolRef = (((ref & 4) >> 2) | (ref & 2)) as BoolRef;
   return {
-    kinds: INT_BIT | FLOAT_BIT,
+    kinds: INT_BIT | FLOAT_BIT | BOOL_BIT,
     intRef: ref,
     floatRef: ref,
-    boolRef: 0 as BoolRef,
+    boolRef,
   };
 }
+
+// Truthiness masks for bare-variable predicates (`if x:` / `if not x:`).
+// TRUTHY drops NULL (None is always falsy); FALSY drops CLOSURE (functions
+// are always truthy). STR and COMPLEX stay in both — we don't track
+// emptiness / zero-ness, so meet leaves them unchanged (sound no-op).
+const TRUTHY_MASK: TypeLattice = {
+  kinds: ALL_KINDS_MASK & ~NULL_BIT,
+  intRef: IntRef.NonZero,
+  floatRef: IntRef.NonZero,
+  boolRef: BoolRef.True,
+};
+const FALSY_MASK: TypeLattice = {
+  kinds: ALL_KINDS_MASK & ~CLOSURE_BIT,
+  intRef: IntRef.Zero,
+  floatRef: IntRef.Zero,
+  boolRef: BoolRef.False,
+};
 
 /** Sign refinement for `slot OP literal` where slot is on the left. `op`
  *  is one of the six comparison operators; `c` is the literal's numeric
@@ -371,15 +381,6 @@ function swapOp(op: string): string {
   }
 }
 
-const COMPARE_TO_STRING: ReadonlyMap<TokenType, string> = new Map([
-  [TokenType.LESS, "<"],
-  [TokenType.GREATER, ">"],
-  [TokenType.LESSEQUAL, "<="],
-  [TokenType.GREATEREQUAL, ">="],
-  [TokenType.DOUBLEEQUAL, "=="],
-  [TokenType.NOTEQUAL, "!="],
-]);
-
 function negateOp(op: string): string {
   switch (op) {
     case ">":
@@ -415,8 +416,23 @@ function applyPredicate(
     return applyPredicate(env, cond.expression, truth, slotLookup);
   }
 
+  // Bare-variable predicate: `if x:` narrows x to truthy values on the true
+  // edge, falsy on the false edge. Uses the full-kind truthiness mask so it
+  // fires on int/float/bool/None/closure slots — even where the sign lattice
+  // has nothing to say.
+  if (cond instanceof ExprNS.Variable) {
+    const info = slotLookup(cond.name);
+    if (!isLocal(info)) return env;
+    const existing = env.get(info.slot) ?? TOP;
+    const refined = meet(existing, truth ? TRUTHY_MASK : FALSY_MASK);
+    if (refined === existing) return env;
+    const out = env.snapshot();
+    out.set(info.slot, refined);
+    return out;
+  }
+
   if (!(cond instanceof ExprNS.Compare)) return env;
-  const opStr = COMPARE_TO_STRING.get(cond.operator.type);
+  const opStr = COMPARE_OP_MAP.get(cond.operator.type);
   if (opStr === undefined) return env;
 
   // Apply negation via op transformation so `leftSlotRefinement` sees the
@@ -426,11 +442,11 @@ function applyPredicate(
   // Find the (slot, literal) pair, whichever side each lives on.
   let slotSide: "left" | "right";
   let slotVar: ExprNS.Variable;
-  let lit: NumericLiteral | undefined;
-  if (cond.left instanceof ExprNS.Variable && (lit = readNumericLiteral(cond.right))) {
+  let litValue: number | undefined;
+  if (cond.left instanceof ExprNS.Variable && (litValue = readNumericLiteral(cond.right)) !== undefined) {
     slotSide = "left";
     slotVar = cond.left;
-  } else if (cond.right instanceof ExprNS.Variable && (lit = readNumericLiteral(cond.left))) {
+  } else if (cond.right instanceof ExprNS.Variable && (litValue = readNumericLiteral(cond.left)) !== undefined) {
     slotSide = "right";
     slotVar = cond.right;
   } else {
@@ -441,7 +457,7 @@ function applyPredicate(
   if (!isLocal(info)) return env;
 
   const normalizedOp = slotSide === "left" ? effectiveOp : swapOp(effectiveOp);
-  const ref = leftSlotRefinement(normalizedOp, lit.value);
+  const ref = leftSlotRefinement(normalizedOp, litValue);
   if (ref === undefined) return env;
 
   const existing = env.get(info.slot) ?? TOP;
@@ -455,8 +471,14 @@ function applyPredicate(
 
 function liftType(rawKind: RawKind): TypeLattice | undefined {
   switch (rawKind.kind) {
-    case "number":
-      return rawToNumberLattice(rawKind.value);
+    case "number": {
+      const v = rawKind.value;
+      if (Number.isInteger(v) && Number.isFinite(v)) {
+        return v > 0 ? INT_POS : v < 0 ? INT_NEG : INT_ZERO;
+      }
+      if (Number.isNaN(v)) return floatValue();
+      return v > 0 ? FLOAT_POS : v < 0 ? FLOAT_NEG : FLOAT_ZERO;
+    }
     case "bool":
       return rawKind.value ? BOOL_TRUE : BOOL_FALSE;
     case "string":
@@ -470,12 +492,4 @@ function liftType(rawKind: RawKind): TypeLattice | undefined {
     case "unknown":
       return undefined;
   }
-}
-
-function rawToNumberLattice(value: number): TypeLattice {
-  if (Number.isInteger(value) && Number.isFinite(value)) {
-    return value > 0 ? INT_POS : value < 0 ? INT_NEG : INT_ZERO;
-  }
-  if (Number.isNaN(value)) return floatValue();
-  return value > 0 ? FLOAT_POS : value < 0 ? FLOAT_NEG : FLOAT_ZERO;
 }

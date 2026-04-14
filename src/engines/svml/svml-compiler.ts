@@ -491,17 +491,16 @@ export class SVMLCompiler
     return pair[specialized ? 1 : 0];
   }
 
-  /** True when both operands are statically numeric — either pure int, pure
-   *  float, or the narrowing-produced mixed `INT_BIT | FLOAT_BIT`. The F-opcodes
-   *  at runtime perform `as number` on both sides and dispatch a plain JS `*`
-   *  / `+` / etc., which handles int and float identically; the original
-   *  singleton-kind check rejected the mixed case and was the gate that kept
-   *  guard-narrowed slots from reaching F-opcodes. */
+  /** True when both operands are statically numeric — any subset of
+   *  `INT_BIT | FLOAT_BIT | BOOL_BIT`. The F-opcodes at runtime `as number`
+   *  both sides and dispatch plain JS `*`/`+`/…, which handles int, float,
+   *  and bool identically (Python `bool <: int`, and JS coerces `true/false`
+   *  to `1/0`). Admits the mixed bitmask produced by guard-narrowing. */
   private bothNumeric(left: ExprNS.Expr, right: ExprNS.Expr): boolean {
     const lk = this.getType(left)?.kinds;
     const rk = this.getType(right)?.kinds;
     if (lk === undefined || rk === undefined) return false;
-    const NUMERIC = INT_BIT | FLOAT_BIT;
+    const NUMERIC = INT_BIT | FLOAT_BIT | BOOL_BIT;
     return lk !== 0 && (lk & ~NUMERIC) === 0 && rk !== 0 && (rk & ~NUMERIC) === 0;
   }
 
@@ -580,10 +579,9 @@ export class SVMLCompiler
       }
       case TokenType.MINUS: {
         const k = this.getType(expr.right)?.kinds;
-        // Accept any subset of INT|FLOAT (including the mixed bitmask that
-        // guard-narrowing produces) — NEGF does `-(x as number)` and is
-        // agnostic within the numeric family.
-        const NUMERIC = INT_BIT | FLOAT_BIT;
+        // Accept any subset of INT|FLOAT|BOOL — NEGF does `-(x as number)`
+        // and is agnostic within the numeric family (JS coerces bool→0/1).
+        const NUMERIC = INT_BIT | FLOAT_BIT | BOOL_BIT;
         opcode = k !== undefined && k !== 0 && (k & ~NUMERIC) === 0
           ? OpCodes.NEGF
           : OpCodes.NEGG;

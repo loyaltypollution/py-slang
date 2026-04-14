@@ -1,5 +1,3 @@
-// Transfer functions for type analysis. Sign/boolean refinements are table
-// lookups indexed as TABLE[(a << 3) | b] (8x8) or TABLE[(a << 2) | b] (4x4).
 import {
   type IntRef,
   BoolRef,

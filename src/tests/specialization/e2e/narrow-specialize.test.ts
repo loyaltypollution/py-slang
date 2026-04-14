@@ -7,7 +7,7 @@ import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import { typeAnalysisPass } from "../../../specialization/framework/dfa-passes";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
-import { FLOAT_BIT, INT_BIT, IntRef } from "../../../specialization/type-analysis/lattice";
+import { BOOL_BIT, FLOAT_BIT, INT_BIT, IntRef } from "../../../specialization/type-analysis/lattice";
 import { compileOptimized } from "../../harness/compile-pipelines";
 import { hasOpcode } from "../../harness/opcode-assert";
 import { buildTestWorklist } from "../../utils";
@@ -44,9 +44,10 @@ def f(x):
       reactive.blockOfNode(xNode.id),
       xNode.id,
     );
-    // Narrowing produces the mixed numeric kind INT|FLOAT with Pos in both
-    // sign fields — `x > 0` does not distinguish int from float, only sign.
-    expect(t?.kinds).toBe(INT_BIT | FLOAT_BIT);
+    // Narrowing produces the mixed numeric kind INT|FLOAT|BOOL with Pos in
+    // both sign fields — `x > 0` does not distinguish int/float/bool, only
+    // sign. BOOL is included because Python `bool <: int` (True > 0 holds).
+    expect(t?.kinds).toBe(INT_BIT | FLOAT_BIT | BOOL_BIT);
     expect(t?.intRef).toBe(IntRef.Pos);
     expect(t?.floatRef).toBe(IntRef.Pos);
   });
