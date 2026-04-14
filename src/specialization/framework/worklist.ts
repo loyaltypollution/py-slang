@@ -4,9 +4,8 @@ import { PriorityQueue } from "@datastructures-js/priority-queue";
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import type { BasicBlock } from "./cfg";
-import { buildCFG } from "./cfg";
 import { FactStore, type FactChange } from "./fact-store";
-import { buildFunctionUnits, indexCFG, type FunctionUnit } from "./function-unit";
+import { buildFunctionUnits, wireCFG, type FunctionUnit } from "./function-unit";
 import type { Pass, PassCtx } from "./pass";
 import { structuralPass } from "./structural-pass";
 import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
@@ -214,10 +213,7 @@ export class Worklist {
     const rebuilt: FunctionUnit[] = [];
     for (const unit of this.pendingRebuilds) {
       unit.generation++;
-      unit.cfg = buildCFG(unit.body, unit);
-      const { blockMap, blockOfNode } = indexCFG(unit.cfg);
-      unit.blockMap = blockMap;
-      unit.blockOfNode = blockOfNode;
+      wireCFG(unit);
       const cur = this.factStore.read(structuralPass, unit);
       this.factStore.write(structuralPass, unit, cur + 1);
       rebuilt.push(unit);

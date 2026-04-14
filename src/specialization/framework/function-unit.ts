@@ -33,11 +33,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     }
     const paramNames =
       funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
-    const body: StmtNS.Stmt[] =
-      funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
-    // Mutual recursion: blocks back-point to the unit, unit owns the cfg.
-    // Build the shell first, then `buildCFG(body, unit)` wires block.unit at creation,
-    // then we assign unit.cfg. The single cast is confined to this bootstrap.
+    // blocks hold unit back-pointers; unit owns cfg. Build shell, then wireCFG.
     const unit = {
       funcAst,
       slotLookup: buildSlotTable(env, paramNames),
@@ -48,11 +44,8 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       get body(): StmtNS.Stmt[] {
         return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
       },
-    } as FunctionUnit;
-    unit.cfg = buildCFG(body, unit);
-    const { blockMap, blockOfNode } = indexCFG(unit.cfg);
-    unit.blockMap = blockMap;
-    unit.blockOfNode = blockOfNode;
+    } as Omit<FunctionUnit, "cfg"> as FunctionUnit;
+    wireCFG(unit);
     this.units.set(funcAst, unit);
     for (const stmt of unit.body) stmt.accept(this);
   }
@@ -88,19 +81,18 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-/** Populates `blockMap` and `blockOfNode`. Each block's `unit` back-pointer
- *  is already set by `buildCFG`. */
-export function indexCFG(cfg: CFG): {
-  blockMap: Map<BlockId, BasicBlock>;
-  blockOfNode: Map<number, BasicBlock>;
-} {
+/** (Re)build `unit.cfg` and refresh `blockMap` / `blockOfNode`.
+ *  Block `unit` back-pointers are set at block creation by `buildCFG`. */
+export function wireCFG(unit: FunctionUnit): void {
+  unit.cfg = buildCFG(unit.body, unit);
   const blockMap = new Map<BlockId, BasicBlock>();
   const blockOfNode = new Map<number, BasicBlock>();
-  for (const block of cfg.blocks) {
+  for (const block of unit.cfg.blocks) {
     blockMap.set(block.id, block);
     for (const stmt of block.stmts) populateBlockOfNode(stmt, block, blockOfNode);
   }
-  return { blockMap, blockOfNode };
+  unit.blockMap = blockMap;
+  unit.blockOfNode = blockOfNode;
 }
 
 function populateBlockOfNode(
