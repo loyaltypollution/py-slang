@@ -139,6 +139,13 @@ function serialiseFunction(f: SVMLIR, targetMaxOpcode?: number): ImFunction {
         break;
       case OpCodes.JMP:
         throw new Error("JMP assembling not implemented");
+      case OpCodes.GUARD_KIND:
+        // arg1 = nodeId, arg2 = SVMLKindBits mask. JIT-only opcode; sinter
+        // rejects it via SINTER_OPCODE_MAX. Emitted here only for symmetry
+        // when targetMaxOpcode is undefined.
+        b.putI(32, instr.arg1 as number);
+        b.putI(32, instr.arg2 as number);
+        break;
     }
   }
 
@@ -470,6 +477,14 @@ export function disassemble(p: Uint8Array): SVMLProgram {
         }
         case OpCodes.JMP:
           throw new Error("JMP disassembly not implemented");
+        case OpCodes.GUARD_KIND:
+          if (cursor + 8 > p.byteLength) {
+            throw new Error("Truncated instruction");
+          }
+          arg1 = view.getInt32(cursor, true);
+          arg2 = view.getInt32(cursor + 4, true);
+          cursor += 8;
+          break;
       }
 
       const instruction: Instruction = { opcode };

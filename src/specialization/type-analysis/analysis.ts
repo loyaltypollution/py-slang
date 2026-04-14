@@ -63,21 +63,38 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
   [TokenType.NOTEQUAL, "!="],
 ]);
 
+/** How a per-node static fact is combined with a runtime observation, if any.
+ *  - `widenObservation` (default): `join(static, observed)` — widens to catch
+ *    polymorphism static missed. Always sound to consume.
+ *  - `narrowObservation`: `meet(static, observed)` — speculatively tightens.
+ *    Consumers MUST emit a runtime guard; violation widens the observation
+ *    (forces ⊤) which cascades a recompile via the fact store. */
+export type CombineObservation = (staticVal: TypeLattice, observed: RawKind) => TypeLattice;
+
+export const widenObservation: CombineObservation = (staticVal, observed) => {
+  const lifted = liftType(observed);
+  return lifted !== undefined ? join(staticVal, lifted) : staticVal;
+};
+
+export const narrowObservation: CombineObservation = (staticVal, observed) => {
+  const lifted = liftType(observed);
+  return lifted !== undefined ? meet(staticVal, lifted) : staticVal;
+};
+
 class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
     private readonly factStore: FactStore,
     private readonly slotTypes: MutableEnv<TypeLattice>,
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: number, val: TypeLattice) => void,
+    private readonly combineObservation: CombineObservation,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
     const observed = this.factStore.tryRead(runtimeWritePass, node.id);
-    const widened = observed !== undefined
-      ? join(val, liftType(observed) ?? BOTTOM)
-      : val;
-    this.recordExprFact(node.id, widened);
-    return widened;
+    const combined = observed !== undefined ? this.combineObservation(val, observed) : val;
+    this.recordExprFact(node.id, combined);
+    return combined;
   }
 
   visitLiteralExpr(expr: ExprNS.Literal): TypeLattice {
@@ -244,8 +261,14 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   }
 }
 
-// Forward may-analysis: env join = union; specialize only when numeric on all paths.
-export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
+/** Build a type-analysis module parameterized on observation-combine semantics.
+ *  Two callers: the standard pass uses `widenObservation` (sound for AST
+ *  transforms); the speculative pass uses `narrowObservation` (consumed only
+ *  by SVML compilation, which emits guards). */
+export function makeTypeAnalysisModule(
+  combineObservation: CombineObservation,
+): BlockDfaSpec<TypeLattice> {
+  return {
   mergeKind: "may",
   direction: "forward",
   bottom: BOTTOM,
@@ -259,7 +282,7 @@ export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: number, val: TypeLattice) => void,
   ): ExprNS.Visitor<TypeLattice> {
-    return new TypeAnalysisVisitor(factStore, env, slotLookup, recordExprFact);
+    return new TypeAnalysisVisitor(factStore, env, slotLookup, recordExprFact, combineObservation);
   },
   /**
    * Narrow the env when crossing a branch edge. Handles `slot OP literal`
@@ -277,7 +300,16 @@ export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
     const slotLookup = edge.from.unit.slotLookup;
     return applyPredicate(env, edge.condition, truth, slotLookup);
   },
-};
+  };
+}
+
+// Forward may-analysis: env join = union; specialize only when numeric on all paths.
+export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = makeTypeAnalysisModule(widenObservation);
+
+/** Speculative variant: observations narrow rather than widen. Consumers
+ *  (svml-compiler, jit-pass) MUST emit a guard at any specialized site that
+ *  was proven only by the narrowed fact. See plan: synthetic-enchanting-wave.md. */
+export const speculativeTypeAnalysisModule: BlockDfaSpec<TypeLattice> = makeTypeAnalysisModule(narrowObservation);
 
 // ---- Predicate narrowing helpers ----
 

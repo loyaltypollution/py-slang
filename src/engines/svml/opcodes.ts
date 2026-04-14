@@ -88,9 +88,27 @@ export enum OpCodes {
   FLOORDIVF = 86,
   NEWITER = 87,
   FOR_ITER = 88,
+  /** Speculative type guard. arg1 = nodeId (Float64-encoded int), arg2 =
+   *  SVMLKindBits mask (Int32). Peeks top of stack and throws
+   *  SpeculationViolation if the runtime kind isn't in the mask. */
+  GUARD_KIND = 89,
 }
 
-export const OPCODE_MAX = 88;
+export const OPCODE_MAX = 89;
+
+/** Bitmask over SVMLType used by GUARD_KIND. Bits are independent so an
+ *  observation lattice that admits multiple kinds (e.g. NUMBER ∪ BOOLEAN
+ *  for Python `bool ⊂ int`) maps to a single guard. */
+export enum SVMLKindBits {
+  NUMBER = 1,
+  BOOLEAN = 2,
+  STRING = 4,
+  CLOSURE = 8,
+  ARRAY = 16,
+  NULL = 32,
+  UNDEFINED = 64,
+  ITERATOR = 128,
+}
 
 /**
  * Sinter VM's maximum supported opcode (op_neq_b = 0x54).
@@ -162,6 +180,9 @@ export function getInstructionSize(opcode: OpCodes): number {
     case OpCodes.LDCF64:
     case OpCodes.LGCF64:
       return 9;
+
+    case OpCodes.GUARD_KIND:
+      return 9; // 1 (opcode) + 4 (nodeId Int32) + 4 (mask Int32)
 
     default:
       return 1;

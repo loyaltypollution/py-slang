@@ -10,7 +10,7 @@ import { Token } from "../../tokenizer";
 import { TokenType } from "../../tokens";
 import { SVMLIRBuilder } from "./SVMLIRBuilder";
 import { PRIMITIVE_FUNCTIONS } from "./builtins";
-import OpCodes from "./opcodes";
+import OpCodes, { SVMLKindBits } from "./opcodes";
 import { SVMLIR, SVMLProgram } from "./types";
 import {
   FunctionRegistry,
@@ -101,6 +101,52 @@ export class SVMLCompiler
 
   private getConst(node: ExprNS.Expr | StmtNS.Stmt): ConstLattice | undefined {
     return this.dfaQuery?.constOf(node.id);
+  }
+
+  private getSpeculativeType(node: ExprNS.Expr | StmtNS.Stmt): TypeLattice | undefined {
+    return this.dfaQuery?.speculativeTypeOf(node.id);
+  }
+
+  /** Speculation is sound to emit only when the enclosing function is pure:
+   *  a guard violation re-enters the call from the top, replaying any side
+   *  effects that already happened. Pure callees have nothing to replay.
+   *  Top-level FileInput is never speculated (re-running the script is too
+   *  expensive and may have observable side effects). */
+  private speculationAllowed(): boolean {
+    const scope = this.builder.getScopeKey();
+    if (!(scope instanceof StmtNS.FunctionDef)) return false;
+    return this.dfaQuery?.isPureScope(scope.id) === true;
+  }
+
+  private static readonly NUMERIC_KIND_MASK = INT_BIT | FLOAT_BIT | BOOL_BIT;
+
+  private isStaticallyNumeric(node: ExprNS.Expr): boolean {
+    const k = this.getType(node)?.kinds;
+    return k !== undefined && k !== 0 && (k & ~SVMLCompiler.NUMERIC_KIND_MASK) === 0;
+  }
+
+  private isSpeculativelyNumeric(node: ExprNS.Expr): boolean {
+    if (!this.speculationAllowed()) return false;
+    if (this.dfaQuery?.isSpeculationBlacklisted(node.id)) return false;
+    const k = this.getSpeculativeType(node)?.kinds;
+    return k !== undefined && k !== 0 && (k & ~SVMLCompiler.NUMERIC_KIND_MASK) === 0;
+  }
+
+  /** Per-operand specialization decision. `"static"` = no guard needed,
+   *  `"speculative"` = emit GUARD_KIND, `"none"` = generic opcode required. */
+  private numericMode(node: ExprNS.Expr): "static" | "speculative" | "none" {
+    if (this.isStaticallyNumeric(node)) return "static";
+    if (this.isSpeculativelyNumeric(node)) return "speculative";
+    return "none";
+  }
+
+  /** Mask matching anything the F-opcodes can handle (`x as number` accepts
+   *  JS numbers, and Python booleans are JS booleans coerced to 0/1). */
+  private static readonly NUMERIC_GUARD_MASK: number =
+    SVMLKindBits.NUMBER | SVMLKindBits.BOOLEAN;
+
+  private emitNumericGuard(node: ExprNS.Expr): void {
+    this.builder.emitBinary(OpCodes.GUARD_KIND, node.id, SVMLCompiler.NUMERIC_GUARD_MASK);
   }
 
   /**
@@ -505,17 +551,27 @@ export class SVMLCompiler
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExpressionResult {
-    const opcode = this.getBinaryOpCode(expr.operator, this.bothNumeric(expr.left, expr.right));
+    const lMode = this.numericMode(expr.left);
+    const rMode = this.numericMode(expr.right);
+    const useSpecialized = lMode !== "none" && rMode !== "none";
+    const opcode = this.getBinaryOpCode(expr.operator, useSpecialized);
     const leftResult = this.compile(expr.left);
+    if (useSpecialized && lMode === "speculative") this.emitNumericGuard(expr.left);
     const rightResult = this.compile(expr.right);
+    if (useSpecialized && rMode === "speculative") this.emitNumericGuard(expr.right);
     this.builder.emitNullary(opcode);
     return { maxStackSize: Math.max(leftResult.maxStackSize, 1 + rightResult.maxStackSize) };
   }
 
   visitCompareExpr(expr: ExprNS.Compare): ExpressionResult {
-    const opcode = this.getCompareOpCode(expr.operator, this.bothNumeric(expr.left, expr.right));
+    const lMode = this.numericMode(expr.left);
+    const rMode = this.numericMode(expr.right);
+    const useSpecialized = lMode !== "none" && rMode !== "none";
+    const opcode = this.getCompareOpCode(expr.operator, useSpecialized);
     const leftResult = this.compile(expr.left);
+    if (useSpecialized && lMode === "speculative") this.emitNumericGuard(expr.left);
     const rightResult = this.compile(expr.right);
+    if (useSpecialized && rMode === "speculative") this.emitNumericGuard(expr.right);
     this.builder.emitNullary(opcode);
     return { maxStackSize: Math.max(leftResult.maxStackSize, 1 + rightResult.maxStackSize) };
   }

@@ -1,11 +1,12 @@
 import { pythonMod } from "../cse/utils";
-import { UnsupportedOperandTypeError, ZeroDivisionError } from "./errors";
+import { SpeculationViolation, UnsupportedOperandTypeError, ZeroDivisionError } from "./errors";
 import OpCodes from "./opcodes";
 import { executePrimitive } from "./builtins";
 import {
   getSVMLType,
   isSVMLObject,
   ObservationSite,
+  svmlKindToBit,
   SVMLArray,
   SVMLBoxType,
   SVMLClosure,
@@ -586,6 +587,21 @@ export class SVMLInterpreter {
         case OpCodes.NOP:
           // Do nothing
           break;
+
+        case OpCodes.GUARD_KIND: {
+          // Speculative type guard. Peeks (does not consume) — the guarded
+          // value is still on the stack for the next opcode to use.
+          const value = this.peek();
+          const witnessedKind = getSVMLType(value);
+          const witnessedBit = svmlKindToBit(witnessedKind);
+          const allowedMask = a2;
+          if ((witnessedBit & allowedMask) === 0) {
+            // a1 is the AST nodeId we narrowed against; deopt handler in
+            // the evaluator widens runtimeWritePass at this nodeId.
+            throw new SpeculationViolation(a1, value, witnessedKind, allowedMask);
+          }
+          break;
+        }
 
         default:
           throw new Error(`Unimplemented opcode: ${op} (${OpCodes[op] || "UNKNOWN"})`);

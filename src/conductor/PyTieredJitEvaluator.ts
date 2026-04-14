@@ -9,12 +9,20 @@ import {
   destroyStreams,
   displayError,
 } from "../engines/cse/streams";
+import { SpeculationViolation } from "../engines/svml/errors";
 import { makeJitPass } from "../engines/svml/jit-pass";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { Worklist, makeJitObservers, makeDfaQuery } from "../specialization";
+import {
+  Worklist,
+  makeJitObservers,
+  makeDfaQuery,
+  blacklistSpeculation,
+} from "../specialization";
+
+const MAX_DEOPT_RETRIES = 32;
 
 /** Races CSE and SVML on a shared Worklist; winner's buffered I/O is flushed, loser is aborted.
  *  Shared Worklist is safe across arms because all wl.* calls are synchronous and JS is
@@ -117,12 +125,38 @@ async function runSvml(
     wl.register(makeJitPass({ compiler, interpreter: interp }));
     wl.beginBatch();
     try {
-      c.sendResult(SVMLInterpreter.toJSValue(await interp.execute()));
+      c.sendResult(SVMLInterpreter.toJSValue(await runSvmlWithDeopt(interp, wl)));
     } finally {
       wl.endBatch();
     }
   } catch (e) {
     if (!(e instanceof AbortError)) throw e;
+  }
+}
+
+/** See PySvmlJitEvaluator.runWithDeopt — same protocol, duplicated to keep
+ *  the AbortError plumbing local to this file. Aborts (race-loser signal)
+ *  propagate; SpeculationViolation triggers widen + recompile + retry. */
+async function runSvmlWithDeopt(
+  interp: SVMLInterpreter,
+  wl: Worklist,
+): Promise<Awaited<ReturnType<SVMLInterpreter["execute"]>>> {
+  let attempts = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    try {
+      return await interp.execute();
+    } catch (e) {
+      if (e instanceof AbortError) throw e;
+      if (!(e instanceof SpeculationViolation)) throw e;
+      if (++attempts > MAX_DEOPT_RETRIES) {
+        throw new Error(
+          `JIT deopt budget exhausted (${MAX_DEOPT_RETRIES}); last violation at node ${e.nodeId} (${e.witnessedKind})`,
+        );
+      }
+      blacklistSpeculation(wl, e.nodeId);
+      wl.drain();
+    }
   }
 }
 

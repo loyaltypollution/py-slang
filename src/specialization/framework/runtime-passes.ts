@@ -75,6 +75,51 @@ export function observeRuntimeWrite(
   observer.observe(runtimeWritePass, nodeId, classifyRawValue(raw));
 }
 
+/** Force the per-node observation to ⊤ (`unknown`), erasing any singleton
+ *  narrowing the speculative pass had derived for THIS specific node. */
+export function widenWriteObservation(
+  observer: { observe: (p: Pass<number, RawKind>, k: number, v: RawKind) => void },
+  nodeId: number,
+): void {
+  observer.observe(runtimeWritePass, nodeId, RAW_TOP);
+}
+
+/** Per-nodeId boolean: `true` means "the speculative pass produced a fact at
+ *  this node that drove a guard which fired at runtime; do not speculate here
+ *  again." Monotone (false → true). The compiler reads it via
+ *  `DfaQuery.isSpeculationBlacklisted` and falls back to generic opcodes
+ *  when set, regardless of how narrowed the speculative pass's fact looks.
+ *
+ *  Why a blacklist instead of widening the source observation: the slot whose
+ *  narrowing drove the guard may have been narrowed by an observation at a
+ *  DIFFERENT AST node (e.g. the RHS of an earlier assignment that flowed into
+ *  this read's slot). We don't track that lineage, so we can't reliably widen
+ *  the upstream observation. Blacklisting the guard's nodeId is coarse but
+ *  sufficient: the compiler skips speculation at that exact site, falling back
+ *  to the generic opcode that handles all kinds. */
+export const speculationBlacklistPass: Pass<number, boolean> = {
+  id: Symbol("speculationBlacklistPass"),
+  debugName: "speculationBlacklistPass",
+  lattice: {
+    bottom: false,
+    leq: (a, b) => !a || b, // false ≤ true; true only ≤ true
+    join: (a, b) => a || b,
+  },
+  edges: [],
+  tier: "runtime",
+  transfer(_factStore: FactStore, _ctx: PassCtx, _key: number): boolean | undefined {
+    return undefined;
+  },
+};
+
+/** Mark `nodeId` as no-longer-speculatable. Idempotent. */
+export function blacklistSpeculation(
+  observer: { observe: (p: Pass<number, boolean>, k: number, v: boolean) => void },
+  nodeId: number,
+): void {
+  observer.observe(speculationBlacklistPass, nodeId, true);
+}
+
 /** Saturating call-count lattice: `bottom=0`, join clamped at
  *  `RUNTIME_CALL_COUNT_SAT`. `leq` clamps both sides so it agrees with the
  *  join-induced order — `leq(12, 11)` = `min(11,12) <= min(11,11)` = true.
@@ -114,10 +159,12 @@ export const runtimeCallPass: Pass<number, number> = {
 };
 
 /** Builds the pair of runtime-observation callbacks used by every JIT evaluator.
- *  Per-callee counts live in the returned closure; saturation at
- *  `RUNTIME_CALL_COUNT_SAT` suppresses further cascades, and the scope-call
- *  boundary drains buffered writes so memoization / tier-up transforms fire
- *  before the next invocation uses the unspecialized body.
+ *  The fact-store itself is the call counter: each call reads the current
+ *  cell, increments, writes back. Saturation at `RUNTIME_CALL_COUNT_SAT` is
+ *  enforced by the lattice's join; the early-return skips the write once
+ *  saturated to avoid the worklist roundtrip. The scope-call boundary drains
+ *  buffered writes so memoization / tier-up transforms fire before the next
+ *  invocation uses the unspecialized body.
  *
  *  `beforeObserve` (optional) runs at the head of each callback. The Tiered
  *  evaluator uses it to throw an AbortError when its arm has lost the race;
@@ -129,7 +176,6 @@ export function makeJitObservers(
   observeNodeWrite: (nodeId: number, value: unknown) => void;
   observeScopeCall: (scopeId: number) => void;
 } {
-  const callCounts = new Map<number, number>();
   return {
     observeNodeWrite: (nodeId, value) => {
       beforeObserve?.();
@@ -137,11 +183,9 @@ export function makeJitObservers(
     },
     observeScopeCall: (scopeId) => {
       beforeObserve?.();
-      const cur = callCounts.get(scopeId) ?? 0;
+      const cur = worklist.factStore.tryRead(runtimeCallPass, scopeId) ?? 0;
       if (cur >= RUNTIME_CALL_COUNT_SAT) return;
-      const next = cur + 1;
-      callCounts.set(scopeId, next);
-      worklist.observe(runtimeCallPass, scopeId, next);
+      worklist.observe(runtimeCallPass, scopeId, cur + 1);
       if (worklist.hasPendingWork()) worklist.drain();
     },
   };

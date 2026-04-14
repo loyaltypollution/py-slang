@@ -6,4 +6,8 @@
 // internal entry point.
 
 export { Worklist, makeDfaQuery, type DfaQuery } from "./framework/worklist";
-export { makeJitObservers } from "./framework/runtime-passes";
+export {
+  makeJitObservers,
+  widenWriteObservation,
+  blacklistSpeculation,
+} from "./framework/runtime-passes";

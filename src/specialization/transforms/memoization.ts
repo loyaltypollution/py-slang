@@ -12,6 +12,19 @@ import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
+/** True if `fd.body` already opens with the memo-check prelude this rule
+ *  emits. Makes the transform shape-idempotent: once the prelude is present,
+ *  the precondition for rewriting is no longer met and `sweep` returns false
+ *  without external bookkeeping. */
+function hasMemoPrelude(fd: StmtNS.FunctionDef): boolean {
+  const first = fd.body[0];
+  if (!(first instanceof StmtNS.If)) return false;
+  const cond = first.condition;
+  if (!(cond instanceof ExprNS.Call)) return false;
+  const callee = cond.callee;
+  return callee instanceof ExprNS.Variable && callee.name.lexeme === MEMO_HAS;
+}
+
 function applyMemoizationWrap(unit: FunctionUnit): boolean {
   const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return false;
@@ -77,36 +90,30 @@ function rewriteReturns(
   }
 }
 
-// Inline (not via `unitSweepRule`): memoization tracks a per-instance
-// `WeakSet<FunctionUnit>` of already-wrapped units, and the helper has no
-// idempotency hook. Dead-branch / const-fold are naturally shape-idempotent
-// and don't need the set.
-export const memoizationRule: TransformRule = (() => {
-  const wrapped = new WeakSet<FunctionUnit>();
-  return {
-    id: Symbol("memoizationRule"),
-    debugName: "memoizationRule",
-    edges: [
-      { on: "fact", pass: runtimeCallPass, wake: (ctx, fdId) => {
-        const u = ctx.unitForFdId(fdId as number);
-        return u ? [u] : [];
-      }},
-      { on: "fact", pass: purityScopePass, wake: (ctx, fdId) => {
-        const u = ctx.unitForFdId(fdId as number);
-        return u ? [u] : [];
-      }},
-    ],
-    sweep(unit: FunctionUnit, factStore: FactStore, _ctx: PassCtx): boolean {
-      if (wrapped.has(unit)) return false;
-      const fd = unit.funcAst;
-      if (!(fd instanceof StmtNS.FunctionDef)) return false;
-      // runtimeCallPass already saturates at RUNTIME_CALL_COUNT_SAT via its
-      // lattice join, so factStore.read returns the capped count directly.
-      if (factStore.read(runtimeCallPass, fd.id) < MEMOIZATION_THRESHOLD) return false;
-      if (factStore.read(purityScopePass, fd.id) !== true) return false;
-      if (!applyMemoizationWrap(unit)) return false;
-      wrapped.add(unit);
-      return true;
-    },
-  };
-})();
+// Shape-idempotent: once the body opens with the memo prelude, the
+// precondition fails and the sweep returns false. Matches the idempotency
+// model used by dead-branch and const-fold — no external wrapped-set needed.
+export const memoizationRule: TransformRule = {
+  id: Symbol("memoizationRule"),
+  debugName: "memoizationRule",
+  edges: [
+    { on: "fact", pass: runtimeCallPass, wake: (ctx, fdId) => {
+      const u = ctx.unitForFdId(fdId as number);
+      return u ? [u] : [];
+    }},
+    { on: "fact", pass: purityScopePass, wake: (ctx, fdId) => {
+      const u = ctx.unitForFdId(fdId as number);
+      return u ? [u] : [];
+    }},
+  ],
+  sweep(unit: FunctionUnit, factStore: FactStore, _ctx: PassCtx): boolean {
+    const fd = unit.funcAst;
+    if (!(fd instanceof StmtNS.FunctionDef)) return false;
+    if (hasMemoPrelude(fd)) return false;
+    // runtimeCallPass already saturates at RUNTIME_CALL_COUNT_SAT via its
+    // lattice join, so factStore.read returns the capped count directly.
+    if (factStore.read(runtimeCallPass, fd.id) < MEMOIZATION_THRESHOLD) return false;
+    if (factStore.read(purityScopePass, fd.id) !== true) return false;
+    return applyMemoizationWrap(unit);
+  },
+};

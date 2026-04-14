@@ -115,8 +115,8 @@ export async function evaluate(
   const opts: IOptions = {
     isPrelude: false,
     groups: [],
-    envSteps: 100000,
-    stepLimit: 100000,
+    envSteps: 10000000,
+    stepLimit: 10000000,
     variant: 4,
     ...(options as Partial<IOptions>),
   };

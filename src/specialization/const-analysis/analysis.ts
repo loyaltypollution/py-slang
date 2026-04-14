@@ -4,6 +4,7 @@ import type { FactStore } from "../framework/fact-store";
 import { runtimeWritePass } from "../framework/runtime-passes";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { MutableEnv } from "../framework/mutable-env";
+import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
@@ -13,31 +14,52 @@ import {
   constOf,
 } from "./lattice";
 
+function liftConst(observed: RawKind): ConstLattice | undefined {
+  switch (observed.kind) {
+    case "number":
+    case "bool":
+      return constOf(observed.value);
+    case "string":
+      return observed.value !== undefined ? constOf(observed.value) : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** See `type-analysis/analysis.ts:CombineObservation` for the contract. */
+export type CombineConstObservation = (staticVal: ConstLattice, observed: RawKind) => ConstLattice;
+
+export const widenConstObservation: CombineConstObservation = (staticVal, observed) => {
+  const lifted = liftConst(observed);
+  return lifted !== undefined ? constJoin(staticVal, lifted) : staticVal;
+};
+
+const constMeet = (a: ConstLattice, b: ConstLattice): ConstLattice => {
+  if (a.tag === "top") return b;
+  if (b.tag === "top") return a;
+  if (a.tag === "bottom" || b.tag === "bottom") return CONST_BOTTOM;
+  return a.value === b.value ? a : CONST_BOTTOM;
+};
+
+export const narrowConstObservation: CombineConstObservation = (staticVal, observed) => {
+  const lifted = liftConst(observed);
+  return lifted !== undefined ? constMeet(staticVal, lifted) : staticVal;
+};
+
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
     private readonly factStore: FactStore,
     private readonly constEnv: MutableEnv<ConstLattice>,
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: number, val: ConstLattice) => void,
+    private readonly combineObservation: CombineConstObservation,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
     const observed = this.factStore.tryRead(runtimeWritePass, node.id);
-    let lifted: ConstLattice | undefined;
-    if (observed !== undefined) {
-      switch (observed.kind) {
-        case "number":
-        case "bool":
-          lifted = constOf(observed.value);
-          break;
-        case "string":
-          lifted = observed.value !== undefined ? constOf(observed.value) : undefined;
-          break;
-      }
-    }
-    const widened = lifted !== undefined ? constJoin(val, lifted) : val;
-    this.recordExprFact(node.id, widened);
-    return widened;
+    const combined = observed !== undefined ? this.combineObservation(val, observed) : val;
+    this.recordExprFact(node.id, combined);
+    return combined;
   }
 
   visitLiteralExpr(expr: ExprNS.Literal): ConstLattice {
@@ -212,34 +234,40 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 }
 
-export const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
-  mergeKind: "may",
-  direction: "forward",
-  bottom: CONST_BOTTOM,
-  top: CONST_TOP,
-  join: constJoin,
-  meet: (a, b) => {
-    if (a.tag === "top") return b;
-    if (b.tag === "top") return a;
-    if (a.tag === "bottom" || b.tag === "bottom") return CONST_BOTTOM;
-    return a.value === b.value ? a : CONST_BOTTOM;
-  },
-  leq: (a, b) => {
-    if (a.tag === "bottom") return true;
-    if (b.tag === "top") return true;
-    if (a.tag === "top") return false;
-    if (b.tag === "bottom") return false;
-    return a.value === b.value;
-  },
-  makeExprVisitor(
-    factStore: FactStore,
-    env: MutableEnv<ConstLattice>,
-    slotLookup: SlotLookup,
-    recordExprFact: (nodeId: number, val: ConstLattice) => void,
-  ): ExprNS.Visitor<ConstLattice> {
-    return new ConstAnalysisVisitor(factStore, env, slotLookup, recordExprFact);
-  },
-  refineOnEdge(env, _edge) {
-    return env;
-  },
-};
+export function makeConstAnalysisModule(
+  combineObservation: CombineConstObservation,
+): BlockDfaSpec<ConstLattice> {
+  return {
+    mergeKind: "may",
+    direction: "forward",
+    bottom: CONST_BOTTOM,
+    top: CONST_TOP,
+    join: constJoin,
+    meet: constMeet,
+    leq: (a, b) => {
+      if (a.tag === "bottom") return true;
+      if (b.tag === "top") return true;
+      if (a.tag === "top") return false;
+      if (b.tag === "bottom") return false;
+      return a.value === b.value;
+    },
+    makeExprVisitor(
+      factStore: FactStore,
+      env: MutableEnv<ConstLattice>,
+      slotLookup: SlotLookup,
+      recordExprFact: (nodeId: number, val: ConstLattice) => void,
+    ): ExprNS.Visitor<ConstLattice> {
+      return new ConstAnalysisVisitor(factStore, env, slotLookup, recordExprFact, combineObservation);
+    },
+    refineOnEdge(env, _edge) {
+      return env;
+    },
+  };
+}
+
+export const constAnalysisModule: BlockDfaSpec<ConstLattice> = makeConstAnalysisModule(widenConstObservation);
+
+/** Speculative variant: observations narrow rather than widen. See
+ *  `type-analysis/analysis.ts:speculativeTypeAnalysisModule` for the contract. */
+export const speculativeConstAnalysisModule: BlockDfaSpec<ConstLattice> =
+  makeConstAnalysisModule(narrowConstObservation);

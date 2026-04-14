@@ -18,7 +18,13 @@ import type { BasicBlock } from "../../specialization/framework/cfg";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import type { FactStore } from "../../specialization/framework/fact-store";
 import type { Pass, PassCtx } from "../../specialization/framework/pass";
-import { constAnalysisPass, typeAnalysisPass } from "../../specialization/framework/dfa-passes";
+import {
+  constAnalysisPass,
+  speculativeConstAnalysisPass,
+  speculativeTypeAnalysisPass,
+  typeAnalysisPass,
+} from "../../specialization/framework/dfa-passes";
+import { speculationBlacklistPass } from "../../specialization/framework/runtime-passes";
 import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
 import { SVMLIR } from "./types";
@@ -32,6 +38,14 @@ interface CompileSnapshot {
   structuralGen: number;
   constFacts: Map<BasicBlock, unknown>;
   typeFacts: Map<BasicBlock, unknown>;
+  /** Speculative facts also flow into the compiled IR (via GUARD_KIND
+   *  emissions). Including their references here is what makes
+   *  recompile-on-deopt fire. */
+  speculativeTypeFacts: Map<BasicBlock, unknown>;
+  speculativeConstFacts: Map<BasicBlock, unknown>;
+  /** Per-nodeId blacklist snapshot. Deopt sets a node to true; on next
+   *  compile, the compiler reads the blacklist and falls back to generic. */
+  blacklistedNodes: Set<number>;
 }
 
 export interface JitPassDeps {
@@ -77,6 +91,18 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       // compare against `lastSnapshot`.
       { on: "fact", pass: typeAnalysisPass, wake: blockToOwningUnit },
       { on: "fact", pass: constAnalysisPass, wake: blockToOwningUnit },
+      { on: "fact", pass: speculativeTypeAnalysisPass, wake: blockToOwningUnit },
+      { on: "fact", pass: speculativeConstAnalysisPass, wake: blockToOwningUnit },
+      // Blacklist update at nodeId N → recompile the unit owning N.
+      {
+        on: "fact",
+        pass: speculationBlacklistPass,
+        wake: (ctx, key) => {
+          const unit = ctx.unitForNode(key as number);
+          if (unit === undefined) return [];
+          return unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
+        },
+      },
       {
         on: "mint",
         wake: (_ctx, unit) =>
@@ -134,6 +160,15 @@ function snapshotMatches(
   for (const block of unit.blockMap.values()) {
     if (factStore.tryRead(constAnalysisPass, block) !== prev.constFacts.get(block)) return false;
     if (factStore.tryRead(typeAnalysisPass, block) !== prev.typeFacts.get(block)) return false;
+    if (factStore.tryRead(speculativeTypeAnalysisPass, block) !== prev.speculativeTypeFacts.get(block)) return false;
+    if (factStore.tryRead(speculativeConstAnalysisPass, block) !== prev.speculativeConstFacts.get(block)) return false;
+  }
+  // Blacklist: any nodeId in the unit that's now blacklisted but wasn't at
+  // the snapshot, or vice versa, invalidates the cache.
+  for (const nodeId of unit.blockOfNode.keys()) {
+    const now = factStore.tryRead(speculationBlacklistPass, nodeId) === true;
+    const then = prev.blacklistedNodes.has(nodeId);
+    if (now !== then) return false;
   }
   return true;
 }
@@ -141,11 +176,28 @@ function snapshotMatches(
 function captureSnapshot(factStore: FactStore, unit: FunctionUnit): CompileSnapshot {
   const constFacts = new Map<BasicBlock, unknown>();
   const typeFacts = new Map<BasicBlock, unknown>();
+  const speculativeTypeFacts = new Map<BasicBlock, unknown>();
+  const speculativeConstFacts = new Map<BasicBlock, unknown>();
+  const blacklistedNodes = new Set<number>();
   for (const block of unit.blockMap.values()) {
     constFacts.set(block, factStore.tryRead(constAnalysisPass, block));
     typeFacts.set(block, factStore.tryRead(typeAnalysisPass, block));
+    speculativeTypeFacts.set(block, factStore.tryRead(speculativeTypeAnalysisPass, block));
+    speculativeConstFacts.set(block, factStore.tryRead(speculativeConstAnalysisPass, block));
   }
-  return { structuralGen: unit.generation, constFacts, typeFacts };
+  for (const nodeId of unit.blockOfNode.keys()) {
+    if (factStore.tryRead(speculationBlacklistPass, nodeId) === true) {
+      blacklistedNodes.add(nodeId);
+    }
+  }
+  return {
+    structuralGen: unit.generation,
+    constFacts,
+    typeFacts,
+    speculativeTypeFacts,
+    speculativeConstFacts,
+    blacklistedNodes,
+  };
 }
 
 /**

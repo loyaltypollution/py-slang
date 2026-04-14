@@ -17,13 +17,18 @@ import {
   type FunctionUnit,
 } from "./function-unit";
 import { REGISTERED_PASSES, type Pass, type PassCtx, type TransformRule, type LifecycleEdge } from "./pass";
-import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
+import { runtimeCallPass, runtimeWritePass, speculationBlacklistPass } from "./runtime-passes";
 import { purityBlockPass, purityScopePass } from "../purity-analysis/analysis";
 import { algebraicSimplifyRule } from "../transforms/algebraic-simplify";
 import { constantFoldingRule } from "../transforms/constant-folding";
 import { deadBranchRule } from "../transforms/dead-branch";
 import { memoizationRule } from "../transforms/memoization";
-import { typeAnalysisPass, constAnalysisPass } from "./dfa-passes";
+import {
+  typeAnalysisPass,
+  constAnalysisPass,
+  speculativeTypeAnalysisPass,
+  speculativeConstAnalysisPass,
+} from "./dfa-passes";
 import { readExprFact } from "./dfa-factory";
 import type { TypeLattice } from "../type-analysis/lattice";
 import type { ConstLattice } from "../const-analysis/lattice";
@@ -34,6 +39,19 @@ import type { ConstLattice } from "../const-analysis/lattice";
 export interface DfaQuery {
   typeOf(nodeId: number): TypeLattice | undefined;
   constOf(nodeId: number): ConstLattice | undefined;
+  /** Speculatively-narrowed type fact (observation `meet`'d with static).
+   *  Consumers MUST emit a runtime guard at any specialization decision
+   *  that depends on a tighter answer than `typeOf` would give. */
+  speculativeTypeOf(nodeId: number): TypeLattice | undefined;
+  speculativeConstOf(nodeId: number): ConstLattice | undefined;
+  /** Purity verdict for a FunctionDef scope. `true` = no observable side
+   *  effects ⇒ safe to whole-call deopt re-entry. `false` = impure.
+   *  `undefined` = not yet computed (treat as impure for safety). */
+  isPureScope(scopeId: number): boolean | undefined;
+  /** True iff a prior guard at this nodeId fired and the deopt handler
+   *  blacklisted further speculation. The compiler must use the generic
+   *  opcode at this site even if speculative facts still appear narrowed. */
+  isSpeculationBlacklisted(nodeId: number): boolean;
 }
 
 export function makeDfaQuery(
@@ -44,6 +62,11 @@ export function makeDfaQuery(
   return {
     typeOf: id => readExprFact(factStore, typeAnalysisPass, blockFor(id), id),
     constOf: id => readExprFact(factStore, constAnalysisPass, blockFor(id), id),
+    speculativeTypeOf: id => readExprFact(factStore, speculativeTypeAnalysisPass, blockFor(id), id),
+    speculativeConstOf: id => readExprFact(factStore, speculativeConstAnalysisPass, blockFor(id), id),
+    isPureScope: scopeId => factStore.tryRead(purityScopePass, scopeId),
+    isSpeculationBlacklisted: nodeId =>
+      factStore.tryRead(speculationBlacklistPass, nodeId) === true,
   };
 }
 
@@ -400,8 +423,11 @@ export class Worklist {
 export const DEFAULT_PASSES: ReadonlyArray<Pass<any, any>> = [
   runtimeWritePass,
   runtimeCallPass,
+  speculationBlacklistPass,
   typeAnalysisPass,
   constAnalysisPass,
+  speculativeTypeAnalysisPass,
+  speculativeConstAnalysisPass,
   purityBlockPass,
   purityScopePass,
 ];

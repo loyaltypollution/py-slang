@@ -199,6 +199,22 @@ export class SVMLProgram {
   }
 }
 
+/** Map an SVMLType to its single-bit position in the GUARD_KIND mask space.
+ *  Mirrors `SVMLKindBits` in `opcodes.ts`; kept colocated with `getSVMLType`
+ *  so adding a new kind requires exactly two edits in this file. */
+export function svmlKindToBit(kind: SVMLType): number {
+  switch (kind) {
+    case SVMLType.NUMBER: return 1;
+    case SVMLType.BOOLEAN: return 2;
+    case SVMLType.STRING: return 4;
+    case SVMLType.CLOSURE: return 8;
+    case SVMLType.ARRAY: return 16;
+    case SVMLType.NULL: return 32;
+    case SVMLType.UNDEFINED: return 64;
+    case SVMLType.ITERATOR: return 128;
+  }
+}
+
 export function getSVMLType(value: SVMLBoxType): SVMLType {
   if (typeof value === "number") {
     return SVMLType.NUMBER;

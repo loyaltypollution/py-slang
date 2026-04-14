@@ -63,6 +63,16 @@ interface DfaConfigBase<L> {
    *  Mandatory so forgotten implementations surface at compile time; passes
    *  that don't narrow return `env` unchanged. */
   readonly refineOnEdge: (env: MutableEnv<L>, edge: CFGEdge) => MutableEnv<L>;
+  /** Block-fact accumulation policy.
+   *  - `"monotone"` (default): factStore.write does `join(prev, new)`. Sound
+   *    for widening analyses; never loses information.
+   *  - `"overwrite"`: factStore.write replaces prev outright (`join := new`),
+   *    and `leq` is structural equality. Required for narrowing analyses
+   *    where observations can either tighten or widen-back facts (e.g. the
+   *    speculative passes — see `dfa-passes.ts`). Convergence then depends on
+   *    upstream observation passes saturating, which they do (runtimeWritePass
+   *    saturates at ⊤ on conflict, runtimeCallPass saturates at SAT). */
+  readonly accumulationMode?: "monotone" | "overwrite";
 }
 
 /** May-merge analyses only need `Lattice<L>` (join + leq). Must-merge needs
@@ -130,7 +140,7 @@ export function makeBlockFixpointPass<L>(
   const compoundLeq = (a: DfaBlockFact<L>, b: DfaBlockFact<L>): boolean =>
     a.outEnv.leq(b.outEnv, config.valueLattice) &&
     exprFactsLeq(a.exprFacts, b.exprFacts);
-  const envLattice: Lattice<DfaBlockFact<L>> = {
+  const monotoneEnvLattice: Lattice<DfaBlockFact<L>> = {
     bottom: bottomFact,
     leq: compoundLeq,
     // Commutative monotone join: outEnv merges slot-wise, exprFacts merge
@@ -150,6 +160,17 @@ export function makeBlockFixpointPass<L>(
       };
     },
   };
+  /** Overwrite mode: leq is structural equality (so identical re-transfers
+   *  are no-ops at the fact store), join discards the old fact entirely. The
+   *  DFA's monotone-transfer assumption is dropped — termination relies on
+   *  upstream observation passes saturating, which they do. */
+  const overwriteEnvLattice: Lattice<DfaBlockFact<L>> = {
+    bottom: bottomFact,
+    leq: (a, b) => compoundLeq(a, b) && compoundLeq(b, a),
+    join: (_a, b) => b,
+  };
+  const envLattice: Lattice<DfaBlockFact<L>> =
+    config.accumulationMode === "overwrite" ? overwriteEnvLattice : monotoneEnvLattice;
 
   const blockPassId = Symbol(`${config.debugName}:blocks`);
 
