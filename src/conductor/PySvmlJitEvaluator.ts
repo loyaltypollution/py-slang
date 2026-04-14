@@ -49,11 +49,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         },
       });
 
-      worklist.register(makeJitPass({
-        compiler,
-        interpreter,
-        unitsOf: () => worklist.units.values(),
-      }));
+      worklist.register(makeJitPass({ compiler, interpreter }));
 
       worklist.beginBatch();
       try {

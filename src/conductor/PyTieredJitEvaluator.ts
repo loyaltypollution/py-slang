@@ -148,7 +148,7 @@ async function runSvml(
         wl.drain();
       },
     });
-    wl.register(makeJitPass({ compiler, interpreter: interp, unitsOf: () => wl.units.values() }));
+    wl.register(makeJitPass({ compiler, interpreter: interp }));
     wl.beginBatch();
     try {
       c.sendResult(SVMLInterpreter.toJSValue(await interp.execute()));

@@ -259,7 +259,6 @@ f(1)
     const jitPass = makeJitPass({
       compiler: compiler as never,
       interpreter: interpreter as never,
-      unitsOf: () => reactive.units.values(),
     });
     reactive.register(jitPass);
 

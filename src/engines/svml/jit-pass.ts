@@ -1,9 +1,17 @@
 // JIT recompile-and-patch pass. Reads compile-relevant fact-store signals
-// (callCount, purity, structural) and, on lattice-change, recompiles the
+// (structural + DFA block facts) and, on lattice-change, recompiles the
 // affected FunctionDef and patches its entry in the interpreter's function
 // table. Side-effect idempotence: patchFunction only fires when the
 // produced IR differs structurally from the previously-stored one; the
 // IR itself is the lattice value, so equal writes suppress onChange.
+//
+// callCount / purity are deliberately NOT tuple inputs: compileFunction does
+// not read them. Their effect on the emitted IR is indirect — memoizationRule
+// reads them and, on fire, wraps the body. That wrap is a structural edit
+// which propagates to jitPass via `structuralPass`. Including them directly
+// would force a recompile on every observed call (up to RUNTIME_CALL_COUNT_SAT)
+// for a function whose IR does not change, which dominated runtime on tight
+// hot loops.
 
 import { StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../../specialization/framework/cfg";
@@ -11,27 +19,24 @@ import type { FunctionUnit } from "../../specialization/framework/function-unit"
 import type { Pass, PassCtx } from "../../specialization/framework/pass";
 import { constAnalysisPass, typeAnalysisPass } from "../../specialization/framework/dfa-passes";
 import { structuralPass } from "../../specialization/framework/structural-pass";
-import { callCountPass } from "../../specialization/memoization-analysis/call-count";
-import { purityScopePass } from "../../specialization/purity-analysis/analysis";
 import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
 import { SVMLIR } from "./types";
 
-/** Memoized snapshot of the inputs that determine a unit's compiled IR.
- *  `analysisGen` counts node-level type/const fact changes within this unit;
- *  compileFunction reads those via factStore, so any change must invalidate. */
-interface CompileInputs {
+/** Snapshot of the inputs that determine a unit's compiled IR, captured at
+ *  the last successful compile. Block-fact entries are reference-compared
+ *  against `ctx.tryRead` on the next transfer: `FactStore.write` preserves
+ *  the previous reference when the new value is lattice-equal, so identity
+ *  inequality is exactly "the DFA fact advanced". */
+interface CompileSnapshot {
   structuralGen: number;
-  callCount: number;
-  purity: unknown;
-  analysisGen: number;
+  constFacts: Map<BasicBlock, unknown>;
+  typeFacts: Map<BasicBlock, unknown>;
 }
 
 export interface JitPassDeps {
   readonly compiler: SVMLCompiler;
   readonly interpreter: SVMLInterpreter;
-  /** Source of unit fan-out on coarse recompile triggers. */
-  readonly unitsOf: () => Iterable<FunctionUnit>;
 }
 
 /** Sentinel "not yet compiled" — a unique SVMLIR instance distinct from every real one by reference. */
@@ -46,16 +51,9 @@ const UNCOMPILED: SVMLIR = new SVMLIR(
 );
 
 export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
-  const { compiler, interpreter, unitsOf } = deps;
+  const { compiler, interpreter } = deps;
 
-  // Per-unit snapshot of the (structuralGen, callCount, purity) tuple that
-  // determines compilation output. On trigger, if the snapshot matches the
-  // current fact-store values, skip compileFunction entirely.
-  const lastInputs = new WeakMap<FunctionUnit, CompileInputs>();
-  // Per-unit tick bumped whenever a node-level type/const fact changes within
-  // the unit. compileFunction reads typeAnalysisPass/constAnalysisPass on a
-  // per-node basis, so the memo snapshot must invalidate on any such change.
-  const analysisGen = new WeakMap<FunctionUnit, number>();
+  const lastSnapshot = new WeakMap<FunctionUnit, CompileSnapshot>();
 
   const jitPass: Pass<FunctionUnit, SVMLIR> = {
     id: Symbol("jitPass"),
@@ -65,33 +63,23 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       equals: structuralEquals,
       join: (_a, b) => b,
     },
-    reads: [callCountPass, purityScopePass, structuralPass, typeAnalysisPass, constAnalysisPass],
+    reads: [structuralPass, typeAnalysisPass, constAnalysisPass],
     tier: "transform",
-    // Invariant: `Worklist.handleFactChange` calls this exactly once per
-    // value-changing FactStore write. The DFA branch below mutates
-    // `analysisGen` as a deliberate coupling to that single call site. If
-    // this contract ever loosens (e.g. speculative invocation for scheduling
-    // introspection), the bump must move into `transfer` and compare a
-    // block-fact reference snapshot.
-    affectedKeys(ctx, triggerPass, triggerKey) {
-      if (triggerPass === callCountPass || triggerPass === purityScopePass) {
-        const unit = ctx.unitForFdId(triggerKey as number);
-        return unit === undefined ? [] : [unit];
-      }
+    affectedKeys(_ctx, triggerPass, triggerKey) {
       if (triggerPass === structuralPass) {
         return [triggerKey as FunctionUnit];
       }
       if (triggerPass === typeAnalysisPass || triggerPass === constAnalysisPass) {
-        // Block-keyed DFA pass: a change to the block's fact invalidates the
-        // memo for the unit that owns the block. Bump analysisGen and, if the
-        // unit is a FunctionDef, enqueue for recompile.
+        // Block-keyed DFA pass: a fact-advancing change on a block invalidates
+        // the memo of the owning unit. Pure projection — no side-effects.
+        // `transfer` decides whether the change materially differs from the
+        // last compile via reference-identity compare against `lastSnapshot`.
         const block = triggerKey as BasicBlock;
         const unit = block.unit;
         if (unit === undefined) return [];
-        analysisGen.set(unit, (analysisGen.get(unit) ?? 0) + 1);
         return unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
       }
-      return Array.from(unitsOf());
+      return [];
     },
     transfer(ctx: PassCtx, unit: FunctionUnit): SVMLIR | undefined {
       const scope = unit.funcAst;
@@ -99,32 +87,51 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       const index = compiler.indexOf(scope);
       if (index === undefined) return undefined;
 
-      const curInputs: CompileInputs = {
-        structuralGen: unit.generation,
-        callCount: ctx.read(callCountPass, scope.id),
-        purity: ctx.read(purityScopePass, scope.id),
-        analysisGen: analysisGen.get(unit) ?? 0,
-      };
-      const prevInputs = lastInputs.get(unit);
+      const prev = lastSnapshot.get(unit);
       if (
-        prevInputs !== undefined &&
-        prevInputs.structuralGen === curInputs.structuralGen &&
-        prevInputs.callCount === curInputs.callCount &&
-        prevInputs.purity === curInputs.purity &&
-        prevInputs.analysisGen === curInputs.analysisGen
+        prev !== undefined &&
+        prev.structuralGen === unit.generation &&
+        snapshotMatches(ctx, unit, prev)
       ) {
         return undefined;
       }
 
       const newCode = compiler.compileFunction(unit);
-      lastInputs.set(unit, curInputs);
-      const prev = ctx.read(jitPass, unit);
-      if (structuralEquals(newCode, prev)) return undefined;
+      lastSnapshot.set(unit, captureSnapshot(ctx, unit));
+      const prevIR = ctx.read(jitPass, unit);
+      if (structuralEquals(newCode, prevIR)) return undefined;
       interpreter.patchFunction(index, newCode);
       return newCode;
     },
   };
   return jitPass;
+}
+
+/** Reference-identity compare of every block's DFA facts against the snapshot.
+ *  A structural rebuild produces fresh `BasicBlock` instances, so the snapshot's
+ *  Map keys become orphaned — but `prev.structuralGen === unit.generation` is
+ *  already checked by the caller, so we only reach here when block identities
+ *  match the snapshot. */
+function snapshotMatches(
+  ctx: PassCtx,
+  unit: FunctionUnit,
+  prev: CompileSnapshot,
+): boolean {
+  for (const block of unit.blockMap.values()) {
+    if (ctx.tryRead(constAnalysisPass, block) !== prev.constFacts.get(block)) return false;
+    if (ctx.tryRead(typeAnalysisPass, block) !== prev.typeFacts.get(block)) return false;
+  }
+  return true;
+}
+
+function captureSnapshot(ctx: PassCtx, unit: FunctionUnit): CompileSnapshot {
+  const constFacts = new Map<BasicBlock, unknown>();
+  const typeFacts = new Map<BasicBlock, unknown>();
+  for (const block of unit.blockMap.values()) {
+    constFacts.set(block, ctx.tryRead(constAnalysisPass, block));
+    typeFacts.set(block, ctx.tryRead(typeAnalysisPass, block));
+  }
+  return { structuralGen: unit.generation, constFacts, typeFacts };
 }
 
 /**
