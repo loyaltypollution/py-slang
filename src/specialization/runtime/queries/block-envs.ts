@@ -25,6 +25,7 @@ import type { Lattice } from "../lattice";
 import { defineQuery, type QueryHandle } from "../query";
 import { cfgOf } from "./cfg";
 import { kildall } from "./kildall";
+import { semiNaive } from "../datalog/semi-naive";
 import {
   collectAllIds,
   gatherObservations,
@@ -103,12 +104,18 @@ export const typeBlockEnvs: QueryHandle<
     const slotLookup = slotLookupForUnit(db, unitId, "typeBlockEnvs");
     const observations = gatherObservations(db, collectAllIds(cfg));
     const initial = new MutableEnv<TypeLattice>();
-    return kildall<TypeLattice>(
+    // DECISIONS §Round 4 Phase 9-C: delegate to the semi-naive evaluator.
+    // The `changedBlocks` field of the result is discarded here — the
+    // unit-level Salsa cell treats the whole env map as its value. Phase
+    // 9-E will return to whether per-block cells + change-signal exposure
+    // are worth the structural cost (see §9-A "9-E hook").
+    const { envs } = semiNaive<TypeLattice>(
       cfg,
       typeEnvLattice,
       initial,
       (env, block) => transferBlockWithObservationsType(block, env, slotLookup, observations),
     );
+    return envs;
   },
 });
 
