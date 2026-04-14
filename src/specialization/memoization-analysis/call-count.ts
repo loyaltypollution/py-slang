@@ -16,9 +16,10 @@ export const callCountPass: Pass<number, number> = {
   id: Symbol("callCountPass"),
   debugName: "callCountPass",
   lattice: callCountLattice,
-  reads: [runtimeCallPass],
+  reads: [
+    { pass: runtimeCallPass, project: (_ctx, key) => [key as number] },
+  ],
   tier: "analysis",
-  affectedKeys: (_ctx, _triggerPass, triggerKey) => [triggerKey as number],
   transfer(ctx: PassCtx, key: number): number | undefined {
     const raw = ctx.read(runtimeCallPass, key);
     return Math.min(RUNTIME_CALL_COUNT_SAT, raw);

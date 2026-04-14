@@ -362,22 +362,24 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
   id: Symbol("purityScopePass"),
   debugName: "purityScopePass",
   lattice: outerLattice,
-  reads: [purityBlockPass, structuralPass],
+  reads: [
+    {
+      pass: structuralPass,
+      project: (_ctx, key) => {
+        const fd = (key as FunctionUnit).funcAst;
+        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
+      },
+    },
+    {
+      pass: purityBlockPass,
+      project: (_ctx, key) => {
+        const fd = (key as BasicBlock).unit.funcAst;
+        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
+      },
+    },
+  ],
   tier: "analysis",
   coarse: false,
-  affectedKeys(_ctx, triggerPass, triggerKey) {
-    if (triggerPass === (structuralPass as Pass<any, any>)) {
-      const fd = (triggerKey as FunctionUnit).funcAst;
-      if (fd instanceof StmtNS.FunctionDef) return [fd.id];
-      return [];
-    }
-    if (triggerPass === (purityBlockPass as Pass<any, any>)) {
-      const block = triggerKey as BasicBlock;
-      const fd = block.unit.funcAst;
-      if (fd instanceof StmtNS.FunctionDef) return [fd.id];
-    }
-    return [];
-  },
   transfer(ctx: PassCtx, fdId: number): boolean | undefined {
     const unit = ctx.unitForFdId(fdId);
     if (unit === undefined) return undefined;

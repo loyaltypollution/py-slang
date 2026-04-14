@@ -2,7 +2,7 @@ import type { BasicBlock } from "./cfg";
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
-import type { Lattice, Pass, PassCtx } from "./pass";
+import type { Lattice, Pass, PassCtx, ReadSpec } from "./pass";
 import { structuralPass } from "./structural-pass";
 
 /** Packages a Kildall block DFA as a `Pass<BasicBlock, DfaBlockFact<L, S>>`.
@@ -162,10 +162,48 @@ export function makeBlockFixpointPass<L, S = void>(
     return env ?? config.seedEnv(unit);
   }
 
-  // Self-reference appended below so block-OUT changes wake CFG-successors.
-  const readsArr: Pass<any, any>[] = [...config.reads, structuralPass];
+  // NodeId-keyed upstream → containing block in this unit.
+  const nodeIdToBlock = (ctx: PassCtx, key: unknown): Iterable<BasicBlock> => {
+    if (typeof key !== "number") return [];
+    const u = ctx.unitForNode(key);
+    const block = u?.blockOfNode.get(key);
+    return block === undefined ? [] : [block];
+  };
+
+  // Config-supplied upstreams are node-fact sources (runtime observations,
+  // node-keyed analyses). Project each to its containing block.
+  const configReads: ReadSpec<BasicBlock>[] = config.reads.map(p => ({
+    pass: p,
+    project: nodeIdToBlock,
+  }));
+
+  // Structural change: seed entry (forward) / exit (backward); self-wake
+  // walks the CFG from there.
+  const structuralRead: ReadSpec<BasicBlock> = {
+    pass: structuralPass,
+    project: (_ctx, key) => {
+      const unit = key as FunctionUnit;
+      return [config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit];
+    },
+  };
+
+  const readsArr: ReadSpec<BasicBlock>[] = [...configReads, structuralRead];
   // eslint-disable-next-line prefer-const
   let blockKeyedPass: Pass<BasicBlock, DfaBlockFact<L, S>>;
+  // Self-wake: block OUT change → CFG successors recompute IN.
+  const selfRead: ReadSpec<BasicBlock> = {
+    // `pass` is bound below via closure; the worklist reads this at register time.
+    get pass() {
+      return blockKeyedPass as Pass<any, any>;
+    },
+    project: (_ctx, key) => {
+      const b = key as BasicBlock;
+      return config.direction === "forward" ? b.successors : b.predecessors;
+    },
+  };
+  readsArr.push(selfRead);
+  Object.freeze(readsArr);
+
   blockKeyedPass = {
     id: blockPassId,
     debugName: `${config.debugName}:blocks`,
@@ -178,33 +216,10 @@ export function makeBlockFixpointPass<L, S = void>(
       const inEnv = inEnvFor(ctx, block, unit);
       return config.transferBlock(ctx, block, inEnv, unit);
     },
-    affectedKeys(ctx, triggerPass, triggerKey) {
-      // Self-wake: block OUT change → CFG successors recompute IN.
-      if ((triggerPass as Pass<any, any>) === (blockKeyedPass as Pass<any, any>)) {
-        const b = triggerKey as BasicBlock;
-        return config.direction === "forward" ? b.successors : b.predecessors;
-      }
-      // Structural: seed entry/exit; self-wake walks the CFG.
-      if ((triggerPass as Pass<any, any>) === (structuralPass as Pass<any, any>)) {
-        const unit = triggerKey as FunctionUnit;
-        const seed = config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
-        return [seed];
-      }
-      // NodeId trigger: map to containing block.
-      if (typeof triggerKey === "number") {
-        const unit = ctx.unitForNode(triggerKey);
-        const block = unit?.blockOfNode.get(triggerKey);
-        if (block !== undefined) return [block];
-      }
-      return [];
-    },
     prune(_ctx, unit, previousKeys) {
       return Array.from(previousKeys).filter(k => k.unit === unit);
     },
   };
-
-  readsArr.push(blockKeyedPass);
-  Object.freeze(readsArr);
 
   return blockKeyedPass;
 }
