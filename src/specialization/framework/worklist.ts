@@ -20,6 +20,7 @@ import type { Pass, PassCtx, TransformRule, WorklistLifecycle } from "./pass";
 import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
 import { callCountPass } from "../memoization-analysis/call-count";
 import { purityBlockPass, purityScopePass } from "../purity-analysis/analysis";
+import { algebraicSimplifyRule } from "../transforms/algebraic-simplify";
 import { constantFoldingRule } from "../transforms/constant-folding";
 import { deadBranchRule } from "../transforms/dead-branch";
 import { memoizationRule } from "../transforms/memoization";
@@ -394,5 +395,6 @@ export const DEFAULT_PASSES: ReadonlyArray<Pass<any, any>> = [
 export const DEFAULT_TRANSFORMS: ReadonlyArray<TransformRule> = [
   deadBranchRule,
   constantFoldingRule,
+  algebraicSimplifyRule,
   memoizationRule,
 ];

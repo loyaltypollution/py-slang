@@ -3,12 +3,11 @@ import { TokenType } from "../../tokens";
 import type { FactStore } from "../framework/fact-store";
 import type { Lattice } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
-import type { AnalysisPass, SlotEnv } from "../framework/interfaces";
+import type { BlockDfaSpec, SlotEnv } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   type TypeLattice,
-  BOOL_BIT,
   boolean as booleanValue,
   BOOL_FALSE,
   BOOL_TRUE,
@@ -31,7 +30,13 @@ import {
   STRING,
   TOP,
 } from "./lattice";
-import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
+import {
+  transferBinaryOp,
+  transferCompare,
+  transferNot,
+  transferUnaryNeg,
+  truthiness,
+} from "./transfer";
 
 export const typeLatticeAlgebra: Lattice<TypeLattice> = {
   bottom: BOTTOM,
@@ -138,26 +143,31 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     return this.annotate(expr, booleanValue(BoolRef.Top));
   }
 
-  // Type-analysis narrows the *type* of `and`/`or` using a three-way boolRef
-  // view: if the left operand is a known-bool True/False, the result is
-  // resolved; otherwise the result widens to bool⊤. This is orthogonal to
-  // const-analysis `visitBoolOpExpr` — that one tracks concrete values under
-  // Python's short-circuit semantics. Both operands are always visited here
-  // for the same reason: sub-expression annotation for downstream passes.
+  // Narrow `and`/`or` under Python short-circuit semantics:
+  //   `a and b` → a if a is falsy else b
+  //   `a or  b` → a if a is truthy else b
+  // We compute truthiness of `left` over the full kind lattice (via
+  // `truthiness`), so this fires whenever the lhs's truth value is known —
+  // including non-bool kinds like None, int-zero, int-nonzero, closure.
+  // When truthiness is Top we join both arms; when unresolved (Bottom) we
+  // return the result of the short-circuit path the caller would take
+  // lexically (the right arm), widened by the left.
+  //
+  // Both operands are always visited so downstream passes receive
+  // sub-expression annotations.
   visitBoolOpExpr(expr: ExprNS.BoolOp): TypeLattice {
     const left = expr.left.accept(this);
     const right = expr.right.accept(this);
-
-    const leftIsBool = left.kinds === BOOL_BIT;
+    const truth = truthiness(left);
 
     if (expr.operator.type === TokenType.AND) {
-      if (leftIsBool && left.boolRef === BoolRef.False) return this.annotate(expr, BOOL_FALSE);
-      if (leftIsBool && left.boolRef === BoolRef.True) return this.annotate(expr, right);
-      return this.annotate(expr, booleanValue(BoolRef.Top));
+      if (truth === BoolRef.False) return this.annotate(expr, left);
+      if (truth === BoolRef.True) return this.annotate(expr, right);
+      return this.annotate(expr, join(left, right));
     } else if (expr.operator.type === TokenType.OR) {
-      if (leftIsBool && left.boolRef === BoolRef.True) return this.annotate(expr, BOOL_TRUE);
-      if (leftIsBool && left.boolRef === BoolRef.False) return this.annotate(expr, right);
-      return this.annotate(expr, booleanValue(BoolRef.Top));
+      if (truth === BoolRef.True) return this.annotate(expr, left);
+      if (truth === BoolRef.False) return this.annotate(expr, right);
+      return this.annotate(expr, join(left, right));
     }
 
     return this.annotate(expr, TOP);
@@ -180,9 +190,9 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 
   visitTernaryExpr(expr: ExprNS.Ternary): TypeLattice {
     expr.predicate.accept(this);
-    expr.consequent.accept(this);
-    expr.alternative.accept(this);
-    return this.annotate(expr, TOP);
+    const cons = expr.consequent.accept(this);
+    const alt = expr.alternative.accept(this);
+    return this.annotate(expr, join(cons, alt));
   }
 
   visitCallExpr(expr: ExprNS.Call): TypeLattice {
@@ -234,7 +244,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 }
 
 // Forward may-analysis: env join = union; specialize only when numeric on all paths.
-export const typeAnalysisModule: AnalysisPass<TypeLattice> = {
+export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
   mergeKind: "may",
   direction: "forward",
   bottom: BOTTOM,

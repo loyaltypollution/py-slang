@@ -5,9 +5,12 @@ import { runSpecCase } from "../../harness/spec-e2e";
 // while the unoptimized baseline still uses G-opcodes. Table-driven so new
 // operators drop in as a single row.
 describe("specialization: int binary ops in while loops", () => {
+  // Seed s at 1 so algebraic simplification can't collapse `s * i` to 0
+  // via the `s=0 ⇒ 0*anything=0` rewrite; the test's intent is opcode
+  // specialization, not preservation of the op against other optimizers.
   const WHILE_BODY = (op: string, guard: string) => `
-i = 0
-s = 0
+i = 1
+s = 1
 while i ${guard} 10:
     s = s ${op} i
     i = i + 1

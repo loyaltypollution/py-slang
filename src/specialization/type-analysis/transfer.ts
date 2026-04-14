@@ -6,6 +6,9 @@ import {
   type TypeLattice,
   INT_BIT,
   BOOL_BIT,
+  STR_BIT,
+  NULL_BIT,
+  CLOSURE_BIT,
   FLOAT_BIT,
   COMPLEX_BIT,
   TOP,
@@ -14,6 +17,10 @@ import {
   floatValue,
   COMPLEX,
 } from "./lattice";
+
+// Kinds that compare by numeric value (Python: bool is a subclass of int,
+// and int/float/complex compare numerically). String, None, closure do not.
+const NUMERIC_MASK = INT_BIT | BOOL_BIT | FLOAT_BIT | COMPLEX_BIT;
 
 // Sign arithmetic tables (IntRef × IntRef → IntRef).
 // IntRef: 0=Bot 1=Neg 2=Zero 3=NonPos 4=Pos 5=NonZero 6=NonNeg 7=Top
@@ -259,6 +266,18 @@ export function transferCompare(op: string, left: TypeLattice, right: TypeLattic
       const ref = op === "==" ? eqSigns(lRef, rRef) : neqSigns(lRef, rRef);
       return boolean(ref);
     }
+    // Disjoint kinds with no numeric crossover → statically unequal.
+    // `x == y` is False when no single value could inhabit both sides.
+    // Numeric kinds (int/bool/float/complex) compare by value and so must
+    // not be treated as disjoint from each other.
+    if (
+      (lk & rk) === 0 &&
+      lk !== 0 &&
+      rk !== 0 &&
+      !(lk & NUMERIC_MASK && rk & NUMERIC_MASK)
+    ) {
+      return boolean(op === "==" ? BoolRef.False : BoolRef.True);
+    }
     return boolean(BoolRef.Top);
   }
 
@@ -300,7 +319,38 @@ export function transferUnaryNeg(operand: TypeLattice): TypeLattice {
   return TOP;
 }
 
+// IntRef-as-truthiness: zero bit → False contribution, nonzero bits → True.
+function intRefTruth(r: IntRef): BoolRef {
+  if (r === 0) return BoolRef.Bottom;
+  const hasZero = (r & 2) !== 0;
+  const hasNonzero = (r & 5) !== 0; // Neg | Pos
+  if (hasZero && hasNonzero) return BoolRef.Top;
+  if (hasZero) return BoolRef.False;
+  return BoolRef.True;
+}
+
+/**
+ * Truthiness over the full kind lattice. Joins per-kind contributions:
+ *   None → False, closure → True, bool → boolRef, int/float → intRefTruth,
+ *   str/complex → Top (length/nonzero not tracked).
+ * Returns BoolRef.Bottom only for the empty lattice.
+ */
+export function truthiness(t: TypeLattice): BoolRef {
+  const k = t.kinds;
+  if (k === 0) return BoolRef.Bottom;
+  let acc: BoolRef = BoolRef.Bottom;
+  if (k & NULL_BIT) acc = (acc | BoolRef.False) as BoolRef;
+  if (k & CLOSURE_BIT) acc = (acc | BoolRef.True) as BoolRef;
+  if (k & STR_BIT) acc = (acc | BoolRef.Top) as BoolRef;
+  if (k & COMPLEX_BIT) acc = (acc | BoolRef.Top) as BoolRef;
+  if (k & BOOL_BIT) acc = (acc | t.boolRef) as BoolRef;
+  if (k & INT_BIT) acc = (acc | intRefTruth(t.intRef)) as BoolRef;
+  if (k & FLOAT_BIT) acc = (acc | intRefTruth(t.floatRef)) as BoolRef;
+  return acc;
+}
+
 export function transferNot(operand: TypeLattice): TypeLattice {
-  if (!(operand.kinds & BOOL_BIT)) return boolean(BoolRef.Top);
-  return boolean(notBoolRef(operand.boolRef));
+  const t = truthiness(operand);
+  if (t === BoolRef.Bottom) return boolean(BoolRef.Top);
+  return boolean(notBoolRef(t));
 }
