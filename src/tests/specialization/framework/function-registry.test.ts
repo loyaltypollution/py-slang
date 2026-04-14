@@ -169,15 +169,6 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
     expect(() => worklist.registry.slotOf(g.id)).toThrow(/not registered/);
   });
 
-  it("markStructuralChange marks the unit pending for rebuild", () => {
-    const { ast, worklist } = build("def f():\n    return 1");
-    const f = ast.statements[0] as StmtNS.FunctionDef;
-
-    expect(worklist.hasPendingWork()).toBe(false);
-    worklist.markStructuralChange(f.id);
-    expect(worklist.hasPendingWork()).toBe(true);
-  });
-
   it("mint after retire re-materializes a unit and fires onUnitMinted again", () => {
     const obs = makeLifecycleObserver();
     const { ast, worklist } = build(

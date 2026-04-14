@@ -159,9 +159,12 @@ g()
         { pass: purityScopePass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
       ],
       tier: "analysis",
-      onRegister(lifecycle) {
-        lifecycle.onUnitMinted(u => { if (u.funcAst instanceof StmtNS.FunctionDef) lifecycle.enqueue(jitPass, u); });
-        lifecycle.onUnitRebuilt(u => { if (u.funcAst instanceof StmtNS.FunctionDef) lifecycle.enqueue(jitPass, u); });
+      onRegister(lifecycle, enqueueSelf) {
+        const enqueueIfFn = (u: FunctionUnit): void => {
+          if (u.funcAst instanceof StmtNS.FunctionDef) enqueueSelf(u);
+        };
+        lifecycle.onUnitMinted(enqueueIfFn);
+        lifecycle.onUnitRebuilt(enqueueIfFn);
       },
       transfer(_ctx: PassCtx, unit: FunctionUnit) {
         const scope = unit.funcAst;

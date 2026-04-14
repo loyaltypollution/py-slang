@@ -19,17 +19,13 @@ import type { SlotLookup } from "./slot-table";
  *      slot layout and fires the worklist's onMint/onRetire listener, which
  *      builds (or drops) the corresponding FunctionUnit and fires the
  *      `onUnitMinted` / `onUnitRetired` lifecycle event.
- *   3. `worklist.markStructuralChange(enclosingFdId)` — schedules the
- *      enclosing unit for CFG rebuild so downstream analyses re-run against
- *      the updated body. The registry knows *which* function was
- *      added/removed, not *where*; the enclosing-unit bump is the
- *      transform's responsibility.
  *
- * Skipping step 2 is undefined behavior (stale slot map, missing unit).
- * Skipping step 3 leaves downstream analyses observing stale per-node facts
- * for the enclosing body. Both convert to noisy throws at the first slot
- * lookup or pass re-transfer under the current contract — never silent
- * miscompile.
+ * The enclosing unit's CFG rebuild is handled automatically: the transform's
+ * `sweep` returns `true`, and the worklist adds the mutated unit to
+ * `pendingRebuilds` — no separate bookkeeping call required.
+ *
+ * Skipping step 2 is undefined behavior (stale slot map, missing unit) and
+ * converts to a noisy throw at the first slot lookup — never silent miscompile.
  */
 
 /** Read-only slot → lattice-value view (the minimum a visitor needs from `MutableEnv<L>`). */

@@ -172,17 +172,6 @@ export function makeBlockFixpointPass<L>(
   // unfrozen to make that safe.
   const edgesArr: EdgeSpec<BasicBlock>[] = [...configEdges];
 
-  function seedUnit(lifecycle: WorklistLifecycle, unit: FunctionUnit): void {
-    const seed = config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
-    lifecycle.enqueue(blockKeyedPass, seed);
-  }
-  function evictStaleBlocks(lifecycle: WorklistLifecycle, unit: FunctionUnit): void {
-    const all = lifecycle.factStore.readAll(blockKeyedPass);
-    for (const b of all.keys()) {
-      if (b.unit === unit) lifecycle.factStore.evict(blockKeyedPass, b);
-    }
-  }
-
   const blockKeyedPass: Pass<BasicBlock, DfaBlockFact<L>> = {
     id: blockPassId,
     debugName: `${config.debugName}:blocks`,
@@ -194,13 +183,18 @@ export function makeBlockFixpointPass<L>(
       const inEnv = inEnvFor(ctx, block, unit);
       return config.transferBlock(ctx, block, inEnv, unit);
     },
-    onRegister(lifecycle: WorklistLifecycle): void {
-      lifecycle.onUnitMinted(unit => seedUnit(lifecycle, unit));
-      lifecycle.onUnitRebuilt(unit => {
-        evictStaleBlocks(lifecycle, unit);
-        seedUnit(lifecycle, unit);
-      });
-      lifecycle.onUnitRetired(unit => evictStaleBlocks(lifecycle, unit));
+    onRegister(lifecycle: WorklistLifecycle, enqueueSelf: (key: BasicBlock) => void): void {
+      const seedUnit = (unit: FunctionUnit): void => {
+        enqueueSelf(config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit);
+      };
+      const evictStaleBlocks = (unit: FunctionUnit): void => {
+        for (const b of lifecycle.factStore.readAll(blockKeyedPass).keys()) {
+          if (b.unit === unit) lifecycle.factStore.evict(blockKeyedPass, b);
+        }
+      };
+      lifecycle.onUnitMinted(seedUnit);
+      lifecycle.onUnitRebuilt(unit => { evictStaleBlocks(unit); seedUnit(unit); });
+      lifecycle.onUnitRetired(evictStaleBlocks);
     },
   };
 

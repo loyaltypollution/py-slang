@@ -62,10 +62,12 @@ export interface Pass<K, V> {
   readonly tier: "runtime" | "analysis";
   transfer(ctx: PassCtx, key: K): V | undefined;
   /** Optional lifecycle hook. Called once when the pass is registered with
-   *  a worklist. Passes that need to react to unit mint / rebuild / retire
-   *  (e.g. block-keyed DFA passes seeding from `unit.cfg.entry` on rebuild)
-   *  subscribe here instead of declaring a cross-keyspace edge. */
-  onRegister?(lifecycle: WorklistLifecycle): void;
+   *  a worklist. `enqueueSelf` is bound to this pass — call it to schedule
+   *  re-transfer at a key in this pass's keyspace. Passes that need to
+   *  react to unit mint / rebuild / retire (e.g. block-keyed DFA passes
+   *  seeding from `unit.cfg.entry` on rebuild) subscribe via `lifecycle`
+   *  rather than declaring a cross-keyspace edge. */
+  onRegister?(lifecycle: WorklistLifecycle, enqueueSelf: (key: K) => void): void;
 }
 
 /** View handed to `Pass.transfer`. */
@@ -89,14 +91,14 @@ export interface PassCtx {
  *  react to unit mint (fresh unit, empty CFG just wired), rebuild (existing
  *  unit, new CFG after transform-triggered rewire), and retire (unit being
  *  dropped). Listeners MUST be read-only with respect to the fact store
- *  except via `evict` and `enqueue`; any new writes belong in a pass
- *  transfer, not a lifecycle callback. */
+ *  except via `factStore.evict`; any new writes belong in a pass transfer,
+ *  not a lifecycle callback. To enqueue work, use the `enqueueSelf` argument
+ *  passed to `Pass.onRegister`. */
 export interface WorklistLifecycle {
   readonly factStore: FactStore;
   onUnitMinted(cb: (unit: FunctionUnit) => void): void;
   onUnitRebuilt(cb: (unit: FunctionUnit) => void): void;
   onUnitRetired(cb: (unit: FunctionUnit, fdId: number) => void): void;
-  enqueue<K>(pass: Pass<K, any>, key: K): void;
 }
 
 /** One-shot or cascading imperative AST sweep gated on analyses. Transforms

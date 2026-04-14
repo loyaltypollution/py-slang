@@ -32,12 +32,11 @@ export interface FunctionRegistryListener {
  * The throws in this class convert the silent-miscompile failure mode into a
  * loud "not registered" at the first slot lookup.
  *
- * Callers operating on a live Worklist MUST also schedule a CFG rebuild for
- * the *enclosing* unit via `worklist.markStructuralChange(enclosingFdId)` —
- * the registry knows which function was added/removed, but the enclosing
- * context is the transform's responsibility. The registry's `listener` hook
- * fires onUnitMinted/onUnitRetired for the newly-minted or removed unit; it
- * does NOT rebuild the enclosing unit whose body structurally changed.
+ * The registry's `listener` hook fires onUnitMinted/onUnitRetired for the
+ * newly-minted or removed unit. Rebuilding the enclosing unit whose body
+ * structurally changed is handled by the worklist's transform sweep: a
+ * `TransformRule.sweep` that mutates the enclosing unit returns `true`, and
+ * the worklist schedules the rebuild automatically.
  */
 export class FunctionRegistry {
   private nextSlot = 0;

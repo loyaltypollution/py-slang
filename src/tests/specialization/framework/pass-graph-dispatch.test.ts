@@ -51,7 +51,7 @@ function makePass<K, V>(opts: {
   edges?: ReadonlyArray<EdgeSpec<K>>;
   tier?: "runtime" | "analysis";
   transfer?: (key: K) => V | undefined;
-  onRegister?: (lifecycle: WorklistLifecycle) => void;
+  onRegister?: (lifecycle: WorklistLifecycle, enqueueSelf: (key: K) => void) => void;
 }): Pass<K, V> {
   return {
     id: Symbol(opts.name),
@@ -167,7 +167,21 @@ describe("Worklist pass-graph dispatch", () => {
       n => n.constructor.name === "FunctionDef",
     )!;
     const fUnit = wl.units.get(fDef)!;
-    wl.markStructuralChange((fDef as { id: number }).id);
+
+    // Drive a rebuild through the real contract: a one-shot transform on the
+    // target unit. Worklist sees `sweep → true`, schedules `fUnit` for CFG
+    // rebuild, fires `onUnitRebuilt`.
+    let fired = false;
+    const oneShot: TransformRule = {
+      id: Symbol("oneShot"),
+      debugName: "oneShot",
+      sweep: unit => {
+        if (fired || unit !== fUnit) return false;
+        fired = true;
+        return true;
+      },
+    };
+    wl.registerTransform(oneShot);
     wl.drain();
 
     expect(rebuildEvents).toEqual([fUnit]);
@@ -184,8 +198,8 @@ describe("Worklist pass-graph dispatch", () => {
         order.push("analysis");
         return undefined;
       },
-      onRegister(lifecycle) {
-        lifecycle.onUnitMinted(u => lifecycle.enqueue(analysis, u));
+      onRegister(lifecycle, enqueueSelf) {
+        lifecycle.onUnitMinted(u => enqueueSelf(u));
       },
     });
     const transform: TransformRule = {

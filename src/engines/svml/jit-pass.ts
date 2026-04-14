@@ -78,9 +78,9 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       { pass: constAnalysisPass, wake: blockToOwningUnit },
     ],
     tier: "analysis",
-    onRegister(lifecycle: WorklistLifecycle): void {
+    onRegister(lifecycle: WorklistLifecycle, enqueueSelf: (key: FunctionUnit) => void): void {
       const enqueue = (unit: FunctionUnit): void => {
-        if (unit.funcAst instanceof StmtNS.FunctionDef) lifecycle.enqueue(jitPass, unit);
+        if (unit.funcAst instanceof StmtNS.FunctionDef) enqueueSelf(unit);
       };
       lifecycle.onUnitMinted(enqueue);
       lifecycle.onUnitRebuilt(enqueue);

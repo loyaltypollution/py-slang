@@ -460,10 +460,10 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
     },
   ],
   tier: "analysis",
-  onRegister(lifecycle: WorklistLifecycle): void {
+  onRegister(lifecycle: WorklistLifecycle, enqueueSelf: (key: number) => void): void {
     const enqueueForUnit = (unit: FunctionUnit): void => {
       const fd = unit.funcAst;
-      if (fd instanceof StmtNS.FunctionDef) lifecycle.enqueue(purityScopePass, fd.id);
+      if (fd instanceof StmtNS.FunctionDef) enqueueSelf(fd.id);
     };
     lifecycle.onUnitMinted(enqueueForUnit);
     lifecycle.onUnitRebuilt(enqueueForUnit);

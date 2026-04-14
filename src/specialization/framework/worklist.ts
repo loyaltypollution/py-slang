@@ -113,17 +113,6 @@ export class Worklist {
     });
   }
 
-  /** Schedule `fdId`'s unit for CFG rebuild. Callers that mint/retire a
-   *  nested function MUST invoke this for the enclosing unit — the registry
-   *  listener handles the new/removed unit, but not the enclosing scope. */
-  markStructuralChange(fdId: number): void {
-    const unit = this.unitsByFdId.get(fdId);
-    if (unit === undefined) {
-      throw new Error(`[Worklist] markStructuralChange: no unit for fdId=${fdId}`);
-    }
-    this.pendingRebuilds.add(unit);
-  }
-
   private onRegistryMint(node: FunctionScopeNode, _slot: number): void {
     if (!(node instanceof StmtNS.FunctionDef)) return;
     const unit = buildOneFunctionUnit(node, this.functionEnvironments, this.registry);
@@ -195,7 +184,7 @@ export class Worklist {
         wakeMap.set(upstream, spec.wake as (ctx: PassCtx, key: unknown) => Iterable<unknown>);
       }
     }
-    pass.onRegister?.(this.lifecycleView);
+    pass.onRegister?.(this.lifecycleView, key => this.enqueue(pass, key));
   }
 
   /** Register a transform rule. Idempotent. Existing units seed its dirty set. */
@@ -297,7 +286,6 @@ export class Worklist {
     },
     onUnitRebuilt: cb => { this.rebuildListeners.push(cb); },
     onUnitRetired: cb => { this.retireListeners.push(cb); },
-    enqueue: (p, k) => this.enqueue(p, k),
   };
 
   /** FactStore listener. Invariant: runs inside `FactStore.write`'s
