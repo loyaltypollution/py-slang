@@ -86,7 +86,6 @@ class BlockState {
     readonly selfName: string | undefined,
     readonly factStore: FactStore,
   ) {}
-
 }
 
 function transferExpr(expr: ExprNS.Expr, state: BlockState): AbsVal {

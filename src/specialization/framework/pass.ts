@@ -18,19 +18,12 @@
 import type { FunctionUnit } from "./function-unit";
 import type { FactStore } from "./fact-store";
 
-/** Value-space algebra. `leq` is the partial order (a ⊑ b). `join` is the
- *  least upper bound. `bottom` is returned for unwritten cells. Equality is
- *  always derived as `leq(a,b) && leq(b,a)` — no custom override, so the
- *  partial order is the single source of truth for change detection. */
+/** Value-space algebra. `leq` is the partial order (a ⊑ b); `join` is the
+ *  least upper bound; `bottom` is returned for unwritten cells. */
 export interface Lattice<V> {
   readonly bottom: V;
   leq(a: V, b: V): boolean;
   join(a: V, b: V): V;
-}
-
-/** Equality under the lattice's partial order, derived from `leq`. */
-export function latticeEquals<V>(lattice: Lattice<V>, a: V, b: V): boolean {
-  return lattice.leq(a, b) && lattice.leq(b, a);
 }
 
 /** Bounded lattice: adds `top` and `meet` to `Lattice<V>`. Required by DFA
@@ -100,10 +93,7 @@ export function addEdge<K>(pass: Pass<K, any>, spec: EdgeSpec<K>): void {
   (pass.edges as EdgeSpec<K>[]).push(spec);
 }
 
-/** A computation over the fact store. `transfer` returning `undefined` means "no write".
- *  `factStore` is passed explicitly so the only reads/writes a pass can perform
- *  go through an identified parameter — PassCtx carries unit-topology lookups
- *  only, not a backdoor to the store. */
+/** A computation over the fact store. `transfer` returning `undefined` means "no write". */
 export interface Pass<K, V> {
   readonly id: symbol;
   readonly debugName: string;
@@ -118,10 +108,7 @@ export interface Pass<K, V> {
   transfer(factStore: FactStore, ctx: PassCtx, key: K): V | undefined;
 }
 
-/** Unit-topology view handed to transfers / effects / sweeps alongside the
- *  `FactStore`. Intentionally narrow: the store is the only read/write path,
- *  and it is always passed as its own parameter so calls like
- *  `ctx.factStore.evict(...)` can't slip through. */
+/** Unit-topology lookups; store access goes through the `FactStore` parameter. */
 export interface PassCtx {
   /** Outermost containing unit for a node. */
   unitForNode(nodeId: number): FunctionUnit | undefined;

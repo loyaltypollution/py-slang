@@ -77,17 +77,10 @@ function rewriteReturns(
   }
 }
 
-// Closure-scoped idempotency set: one wrapped-set per rule instance, not a
-// module-level global. Wrapping persists across CFG rebuilds (unlike
-// dead-branch / const-fold, which are naturally idempotent via AST shape).
-// Replaces the old `firedLattice` cell that was kept sticky by having no
-// `prune`. Units are identified by reference; re-minted units (same AST
-// node, fresh FunctionUnit) fall outside the set and may be re-wrapped.
-// Constructed inline rather than via `unitSweepRule`: this rule needs an
-// instance-scoped WeakSet<FunctionUnit> to track already-wrapped units, and
-// `unitSweepRule` has no hook for that idempotency state. Dead-branch and
-// const-folding are naturally idempotent (the rewrite removes its own
-// precondition), so they use the helper; memoization can't.
+// Inline (not via `unitSweepRule`): memoization tracks a per-instance
+// `WeakSet<FunctionUnit>` of already-wrapped units, and the helper has no
+// idempotency hook. Dead-branch / const-fold are naturally shape-idempotent
+// and don't need the set.
 export const memoizationRule: TransformRule = (() => {
   const wrapped = new WeakSet<FunctionUnit>();
   return {

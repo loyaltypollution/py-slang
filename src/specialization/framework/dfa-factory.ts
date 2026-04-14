@@ -2,7 +2,7 @@ import type { BasicBlock, CFGEdge } from "./cfg";
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
-import { latticeEquals, type BoundedLattice, type EdgeSpec, type Lattice, type Pass, type PassCtx } from "./pass";
+import type { BoundedLattice, EdgeSpec, Lattice, Pass, PassCtx } from "./pass";
 
 /** Packages a Kildall block DFA as a `Pass<BasicBlock, DfaBlockFact<L>>`.
  *  The fact carries the block's OUT env (used for CFG successor propagation)
@@ -49,10 +49,7 @@ type DfaDirection = "forward" | "backward";
 interface DfaConfigBase<L> {
   readonly debugName: string;
   readonly direction: DfaDirection;
-  /** Pure: IN env → OUT env + per-node exprFacts. No fact-store writes.
-   *  Receives `factStore` for read-side lookups (e.g. runtime observation
-   *  widening in the expression visitor); `ctx` is for unit-topology
-   *  lookups only. */
+  /** Pure: IN env → OUT env + per-node exprFacts. No fact-store writes. */
   readonly transferBlock: (
     factStore: FactStore,
     ctx: PassCtx,

@@ -153,12 +153,7 @@ export class Worklist {
     this._units.delete(node as StmtNS.FileInput | StmtNS.FunctionDef);
     this.pendingRebuilds.delete(unit);
     for (const s of this.transformDirty.values()) s.delete(unit);
-    // Every pass declares its own retire behavior via `{on:"retire", effect}`:
-    // block-keyed DFA passes through `makeBlockFixpointPass`, number-keyed
-    // observation passes (`runtimeWritePass`, `runtimeCallPass`,
-    // `purityScopePass`) explicitly, unit-keyed passes (`jitPass`) explicitly.
-    // No implicit blanket evict — a pass author that forgets a retire edge
-    // gets a real leak, not a silent no-op across three out of four keyspaces.
+    // Each pass declares its own eviction via `{on:"retire", effect}`.
     this.fireLifecycle("retire", unit);
     this.rebuildNodeToUnit();
   }
@@ -186,7 +181,7 @@ export class Worklist {
     return this.nodeToUnit;
   }
 
-/** Subscribe `fn` to writes against `upstream`. Called via `register` /
+  /** Subscribe `fn` to writes against `upstream`. Called via `register` /
    *  `registerTransform`; not public API. */
   private subscribeFact(
     upstream: Pass<any, any>,
@@ -204,10 +199,6 @@ export class Worklist {
   register<K, V>(pass: Pass<K, V>): void {
     if (this.registeredPasses.indexOf(pass as Pass<any, any>) !== -1) return;
     this.registeredPasses.push(pass as Pass<any, any>);
-    // Record registration so `addEdge` can reject post-registration
-    // amendments that would be silently dropped by the dispatch-table
-    // snapshot below. WeakSet lives in module scope (pass.ts) to avoid
-    // stamping a structural marker onto the Pass itself.
     REGISTERED_PASSES.add(pass as Pass<any, any>);
     const reader = pass as Pass<any, any>;
     const fireLifecycleEdge = (lc: LifecycleEdge<any>, unit: FunctionUnit): void => {
@@ -218,12 +209,9 @@ export class Worklist {
     };
     for (const spec of pass.edges) {
       if (spec.on !== "fact") {
-        // Lifecycle edge: `spec.on` narrows to "mint" | "rebuild" | "retire".
         this.lifecycleSubs[spec.on].push((_ctx, unit) => fireLifecycleEdge(spec, unit));
         continue;
       }
-      // Fact edge. `on: "fact"` is mandatory on FactEdge, so narrowing leaves
-      // `spec` as FactEdge<K> with no cast required. `wake` is mandatory too.
       const wake = spec.wake;
       this.subscribeFact(spec.pass, (_ctx, key) => {
         for (const k of wake(this.passCtx, key)) this.enqueue(reader, k);
