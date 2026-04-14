@@ -24,7 +24,6 @@ import { transferBlockWithObservations as transferBlockWithObservationsType } fr
 import type { Lattice } from "../lattice";
 import { defineQuery, type QueryHandle } from "../query";
 import { cfgOf } from "./cfg";
-import { kildall } from "./kildall";
 import { semiNaive } from "../datalog/semi-naive";
 import {
   collectAllIds,
@@ -139,11 +138,12 @@ export const constBlockEnvs: QueryHandle<
     const slotLookup = slotLookupForUnit(db, unitId, "constBlockEnvs");
     const observations = gatherObservations(db, collectAllIds(cfg));
     const initial = new MutableEnv<ConstLattice>();
-    return kildall<ConstLattice>(
+    const { envs } = semiNaive<ConstLattice>(
       cfg,
       constEnvLattice,
       initial,
       (env, block) => transferBlockWithObservationsConst(block, env, slotLookup, observations),
     );
+    return envs;
   },
 });

@@ -19,8 +19,6 @@ import {
   runtimeWrite,
   typeBlockEnvs,
   constBlockEnvs,
-  kildall,
-  type Lattice,
 } from "../../specialization/runtime";
 import * as typeAnalysisModule from "../../specialization/type-analysis/analysis";
 import { makeValidatorsForChapter } from "../../validator";
@@ -148,36 +146,7 @@ describe("runtime/queries/constBlockEnvs", () => {
   });
 });
 
-describe("kildall iteration cap", () => {
-  test("throws when transfer is non-monotone and never converges", () => {
-    // Two blocks, straight-line. Transfer always produces a fresh env with
-    // a counter that keeps incrementing, so lattice.equals never holds and
-    // the worklist never drains.
-    // Self-loop on the entry block keeps re-enqueueing it, so the
-    // never-equal lattice can never drain the worklist.
-    const entry: BasicBlock = { id: 0, stmts: [], successors: [], predecessors: [] };
-    const exit: BasicBlock = { id: 1, stmts: [], successors: [], predecessors: [] };
-    (entry.successors as BasicBlock[]).push(entry, exit);
-    (entry.predecessors as BasicBlock[]).push(entry);
-    (exit.predecessors as BasicBlock[]).push(entry);
-    const cfg: CFG = { entry, exit, blocks: [entry, exit] };
-
-    // Synthetic element lattice where equals is always false so every
-    // transfer result looks "new" to the worklist.
-    const neverEqual: Lattice<MutableEnv<number>> = {
-      bottom: new MutableEnv<number>(),
-      equals: () => false,
-      join: (_a, b) => b,
-    };
-
-    let tick = 0;
-    expect(() =>
-      kildall<number>(cfg, neverEqual, new MutableEnv<number>(), (_env, _block) => {
-        const next = new MutableEnv<number>();
-        next.set(0, tick++);
-        return next;
-      }),
-    ).toThrow(/Kildall iteration cap exceeded/);
-  });
-});
+// Iteration-cap coverage lives in `runtime/semi-naive.test.ts` (the
+// evaluator exposes the same iteration-cap semantics as the former
+// standalone kildall helper).
 
