@@ -7,10 +7,10 @@
  */
 import { StmtNS } from "../ast-types";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
+import { makeDfaQuery } from "../specialization";
 import OpCodes from "../engines/svml/opcodes";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { makeDfaQuery } from "../specialization";
 import { buildTestWorklist } from "./utils";
 
 function build(code: string) {

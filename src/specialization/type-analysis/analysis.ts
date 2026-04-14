@@ -5,7 +5,7 @@ import type { FactStore } from "../framework/fact-store";
 import type { MutableEnv } from "../framework/mutable-env";
 import type { Lattice } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
-import type { BlockDfaSpec, SlotEnv } from "../framework/interfaces";
+import type { BlockDfaSpec } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import {
@@ -70,7 +70,7 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
 class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
     private readonly factStore: FactStore,
-    private readonly slotTypes: SlotEnv<TypeLattice>,
+    private readonly slotTypes: MutableEnv<TypeLattice>,
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: number, val: TypeLattice) => void,
   ) {}
@@ -259,7 +259,7 @@ export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
   leq,
   makeExprVisitor(
     factStore: FactStore,
-    env: SlotEnv<TypeLattice>,
+    env: MutableEnv<TypeLattice>,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: number, val: TypeLattice) => void,
   ): ExprNS.Visitor<TypeLattice> {

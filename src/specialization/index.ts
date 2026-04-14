@@ -5,6 +5,5 @@
 // from `./framework/*` and sibling subpaths — the barrel is not the canonical
 // internal entry point.
 
-export { Worklist } from "./framework/worklist";
+export { Worklist, makeDfaQuery, type DfaQuery } from "./framework/worklist";
 export { makeJitObservers } from "./framework/runtime-passes";
-export { makeDfaQuery, type DfaQuery } from "./query";

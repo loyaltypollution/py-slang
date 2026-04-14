@@ -76,13 +76,19 @@ export function observeRuntimeWrite(
   observer.observe(runtimeWritePass, nodeId, classifyRawValue(raw));
 }
 
-/** Saturating call-count lattice: `bottom=0`, monotone `<=`, join clamped at
- *  `RUNTIME_CALL_COUNT_SAT`. Shared by `runtimeCallPass` (raw observations)
- *  and `callCountPass` (projected view), since both saturate at the same
- *  ceiling and have identical algebra. */
+/** Saturating call-count lattice: `bottom=0`, join clamped at
+ *  `RUNTIME_CALL_COUNT_SAT`. `leq` clamps both sides so it agrees with the
+ *  join-induced order — `leq(12, 11)` = `min(11,12) <= min(11,11)` = true.
+ *  Without the clamp, writes above SAT would report `leq(value, prev) = false`
+ *  and escape the fast path; `FactStore.write` relies on a well-formed
+ *  lattice (`leq(v, prev) ⇒ join(prev, v) = prev`) to short-circuit, so the
+ *  lattice itself must saturate in both `leq` and `join`. Used by
+ *  `runtimeCallPass` for raw observations; consumers read the saturated
+ *  value directly. */
 export const saturatingCountLattice: Lattice<number> = {
   bottom: 0,
-  leq: (a, b) => a <= b,
+  leq: (a, b) =>
+    Math.min(RUNTIME_CALL_COUNT_SAT, a) <= Math.min(RUNTIME_CALL_COUNT_SAT, b),
   join: (a, b) => Math.min(RUNTIME_CALL_COUNT_SAT, Math.max(a, b)),
 };
 

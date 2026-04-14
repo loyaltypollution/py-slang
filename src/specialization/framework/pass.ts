@@ -1,3 +1,20 @@
+// Three citizen kinds are registered with a Worklist. They share a registration
+// mechanism but not a shape — do not collapse them:
+//
+//   Pass<K, V>        — monotone lattice-keyed unit. Registered via
+//                       `worklist.register`; `transfer(ctx, key)` writes into
+//                       the FactStore. All fixpoint work flows through Passes.
+//
+//   BlockDfaSpec<L>   — descriptor (lattice + visitor factory) handed to
+//                       `makeBlockFixpointPass` in `interfaces.ts`. Not
+//                       registered directly; the factory produces a
+//                       `Pass<BasicBlock, DfaBlockFact<L>>` that is.
+//
+//   TransformRule     — imperative AST sweep (defined below). Registered via
+//                       `worklist.registerTransform`; no lattice, no transfer,
+//                       no FactStore write. `sweep(unit, ctx)` returns `true`
+//                       to trigger CFG rebuild.
+
 import type { FunctionUnit } from "./function-unit";
 import type { FactStore } from "./fact-store";
 

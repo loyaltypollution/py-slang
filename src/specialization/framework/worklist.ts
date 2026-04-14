@@ -28,10 +28,23 @@ import { readExprFact } from "./dfa-factory";
 import type { TypeLattice } from "../type-analysis/lattice";
 import type { ConstLattice } from "../const-analysis/lattice";
 
-/** Per-node read-only projection of the DFA fact-store. */
+/** Per-node read-only projection of the DFA fact-store. Resolves the
+ *  containing BasicBlock internally via `nodeIndex`, so callers identify
+ *  nodes by id alone. */
 export interface DfaQuery {
   typeOf(nodeId: number): TypeLattice | undefined;
   constOf(nodeId: number): ConstLattice | undefined;
+}
+
+export function makeDfaQuery(
+  factStore: FactStore,
+  nodeIndex: ReadonlyMap<number, FunctionUnit>,
+): DfaQuery {
+  const blockFor = (id: number) => nodeIndex.get(id)?.blockOfNode.get(id);
+  return {
+    typeOf: id => readExprFact(factStore, typeAnalysisPass, blockFor(id), id),
+    constOf: id => readExprFact(factStore, constAnalysisPass, blockFor(id), id),
+  };
 }
 
 type QItem = { pass: Pass<any, any>; key: unknown; seq: number };
@@ -194,11 +207,7 @@ export class Worklist {
   private _dfaQuery: DfaQuery | undefined;
   get dfaQuery(): DfaQuery {
     if (this._dfaQuery === undefined) {
-      const blockFor = (id: number) => this.nodeToUnit.get(id)?.blockOfNode.get(id);
-      this._dfaQuery = {
-        typeOf: id => readExprFact(this.factStore, typeAnalysisPass, blockFor(id), id),
-        constOf: id => readExprFact(this.factStore, constAnalysisPass, blockFor(id), id),
-      };
+      this._dfaQuery = makeDfaQuery(this.factStore, this.nodeToUnit);
     }
     return this._dfaQuery;
   }

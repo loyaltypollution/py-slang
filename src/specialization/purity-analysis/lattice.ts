@@ -58,18 +58,6 @@ export const IMPURE_MARKER: AbsVal = Object.freeze({ kind: "impure" });
  *  so it can never collide with a real AST nodeId. */
 export const IMPURE_SENTINEL_NODE_ID = -1;
 
-export function fresh(origin: number): AbsVal {
-  return { kind: "fresh", origin };
-}
-
-export function param(slot: number): AbsVal {
-  return { kind: "param", slot };
-}
-
-export function closure(fdId: number, pure: boolean | undefined): AbsVal {
-  return { kind: "closure", fdId, pure };
-}
-
 export function absEquals(a: AbsVal, b: AbsVal): boolean {
   if (a === b) return true;
   if (a.kind !== b.kind) return false;

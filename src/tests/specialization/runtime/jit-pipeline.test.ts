@@ -5,7 +5,7 @@ import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import { SVMLIR } from "../../../engines/svml/types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import { MEMOIZATION_THRESHOLD, callCountPass } from "../../../specialization/memoization-analysis/call-count";
+import { MEMOIZATION_THRESHOLD } from "../../../specialization/transforms/memoization";
 import {
   RUNTIME_CALL_COUNT_SAT,
   observeRuntimeWrite,
@@ -36,8 +36,8 @@ function buildUnit(code: string) {
   return { ast, environments, reactive, compiler, program: compiler.compileProgram(ast) };
 }
 
-// ── (1) Saturation: callCountPass caps at SAT and suppresses consumer rerun ──
-describe("callCountPass saturation", () => {
+// ── (1) Saturation: runtimeCallPass caps at SAT and suppresses consumer rerun ──
+describe("runtimeCallPass saturation", () => {
   function setup() {
     const { ast, reactive } = buildUnit(`
 def f():
@@ -59,11 +59,11 @@ f()
         leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
       },
-      edges: [{ on: "fact", pass: callCountPass, wake: (_c, k) => [k as number] }],
+      edges: [{ on: "fact", pass: runtimeCallPass, wake: (_c, k) => [k as number] }],
       tier: "analysis",
       transfer(ctx, key) {
         transferRuns++;
-        return ctx.read(callCountPass, key) ?? 0;
+        return ctx.read(runtimeCallPass, key) ?? 0;
       },
     };
     worklist.register(observer);
@@ -86,10 +86,10 @@ f()
         leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
       },
-      edges: [{ on: "fact", pass: callCountPass, wake: () => [unit] }],
+      edges: [{ on: "fact", pass: runtimeCallPass, wake: () => [unit] }],
       tier: "analysis",
       transfer(ctx, u) {
-        const c = ctx.read(callCountPass, fDef.id) ?? 0;
+        const c = ctx.read(runtimeCallPass, fDef.id) ?? 0;
         if (c <= MEMOIZATION_THRESHOLD) return undefined;
         const prev = ctx.read(jitPass, u);
         if (prev === 1) return undefined;
@@ -155,7 +155,7 @@ g()
         join: (a, b) => a ?? b,
       },
       edges: [
-        { on: "fact", pass: callCountPass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
+        { on: "fact", pass: runtimeCallPass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
         { on: "fact", pass: purityScopePass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
         { on: "mint", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },
         { on: "rebuild", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },

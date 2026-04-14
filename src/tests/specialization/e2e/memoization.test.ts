@@ -1,7 +1,7 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import { MEMOIZATION_THRESHOLD } from "../../../specialization/memoization-analysis/call-count";
+import { MEMOIZATION_THRESHOLD } from "../../../specialization/transforms/memoization";
 import {
   clearMemoCache,
   memoCacheSnapshot,
@@ -12,10 +12,9 @@ import {
 import { runtimeCallPass } from "../../../specialization/framework/runtime-passes";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
 import type { Worklist } from "../../../specialization/framework/worklist";
-import { callCountPass } from "../../../specialization/memoization-analysis/call-count";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
-import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import { makeDfaQuery } from "../../../specialization";
+import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import { buildTestWorklist } from "../../utils";
 
 function setup(code: string) {
@@ -55,9 +54,9 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
     const { ast, reactive } = setup("def f(x):\n    return x + 1");
     reactive.drain();
     const fd = findFunctionDef(ast, "f");
-    expect(reactive.factStore.tryRead(callCountPass, fd.id)).toBeUndefined();
+    expect(reactive.factStore.tryRead(runtimeCallPass, fd.id)).toBeUndefined();
     observeCallsTo(reactive, fd, 3);
-    expect(reactive.factStore.tryRead(callCountPass, fd.id)).toBe(3);
+    expect(reactive.factStore.tryRead(runtimeCallPass, fd.id)).toBe(3);
   });
 
   test("below threshold: body unchanged", () => {

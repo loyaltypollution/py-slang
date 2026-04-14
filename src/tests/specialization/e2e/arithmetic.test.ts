@@ -194,8 +194,13 @@ add(3, 4)
     });
   });
 
-  test("recursive fib keeps generic opcodes in body, never specialized", () => {
-    runSpecCase("fib-generic", {
+  test("recursive fib: narrowed branch specializes subtractions, outer add stays generic", () => {
+    // After guard narrowing, the false branch of `if n <= 1` narrows `n` to
+    // INT|FLOAT with ref > 1 (so positive). Under that, `n - 1` and `n - 2`
+    // take SUBF. The outer `fib(..) + fib(..)` stays ADDG because function
+    // return types are TOP (no call-return refinement yet). The compare at
+    // the head sees un-narrowed `n` and emits LEG.
+    runSpecCase("fib-narrowed", {
       code: `
 def fib(n):
     if n <= 1:
@@ -204,11 +209,11 @@ def fib(n):
 fib(10)
 `,
       checks: [
-        { kind: "present", opcode: OpCodes.ADDG },
-        { kind: "present", opcode: OpCodes.SUBG },
-        { kind: "present", opcode: OpCodes.LEG },
+        { kind: "present", opcode: OpCodes.ADDG }, // outer + over function returns
+        { kind: "present", opcode: OpCodes.SUBF }, // narrowed n - 1, n - 2
+        { kind: "present", opcode: OpCodes.LEG }, // n <= 1 sees un-narrowed n
         { kind: "absent", opcode: OpCodes.ADDF },
-        { kind: "absent", opcode: OpCodes.SUBF },
+        { kind: "absent", opcode: OpCodes.SUBG },
         { kind: "absent", opcode: OpCodes.LEF },
       ],
     });

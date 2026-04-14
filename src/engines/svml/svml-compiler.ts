@@ -3,7 +3,7 @@ import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { ConstLattice } from "../../specialization/const-analysis/lattice";
 import type { TypeLattice } from "../../specialization/type-analysis/lattice";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
-import type { DfaQuery } from "../../specialization/query";
+import type { DfaQuery } from "../../specialization/framework/worklist";
 import { ScopeIndexMap } from "./scope-index-map";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
 import { Token } from "../../tokenizer";
@@ -491,12 +491,12 @@ export class SVMLCompiler
     return pair[specialized ? 1 : 0];
   }
 
-  /** True when both operands are statically numeric — pure int, pure float,
-   *  or the mixed `INT_BIT | FLOAT_BIT` that guard-narrowing produces from
-   *  predicates like `if x > 0:`. F-opcodes cast both sides to `number` and
-   *  dispatch a plain JS arithmetic op, which handles int and float
-   *  identically; the prior singleton-kind check rejected the mixed case
-   *  and was the gate that kept narrowed slots from reaching F-opcodes. */
+  /** True when both operands are statically numeric — either pure int, pure
+   *  float, or the narrowing-produced mixed `INT_BIT | FLOAT_BIT`. The F-opcodes
+   *  at runtime perform `as number` on both sides and dispatch a plain JS `*`
+   *  / `+` / etc., which handles int and float identically; the original
+   *  singleton-kind check rejected the mixed case and was the gate that kept
+   *  guard-narrowed slots from reaching F-opcodes. */
   private bothNumeric(left: ExprNS.Expr, right: ExprNS.Expr): boolean {
     const lk = this.getType(left)?.kinds;
     const rk = this.getType(right)?.kinds;
@@ -580,8 +580,9 @@ export class SVMLCompiler
       }
       case TokenType.MINUS: {
         const k = this.getType(expr.right)?.kinds;
-        // Accept any subset of INT|FLOAT — NEGF does `-(x as number)` and
-        // treats int and float identically. See `bothNumeric` for rationale.
+        // Accept any subset of INT|FLOAT (including the mixed bitmask that
+        // guard-narrowing produces) — NEGF does `-(x as number)` and is
+        // agnostic within the numeric family.
         const NUMERIC = INT_BIT | FLOAT_BIT;
         opcode = k !== undefined && k !== 0 && (k & ~NUMERIC) === 0
           ? OpCodes.NEGF

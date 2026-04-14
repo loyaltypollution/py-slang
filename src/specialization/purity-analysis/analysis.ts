@@ -39,12 +39,9 @@ import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   absJoin,
   absLeq,
-  closure,
-  fresh,
   GLOBAL,
   IMPURE_MARKER,
   IMPURE_SENTINEL_NODE_ID,
-  param,
   UNKNOWN,
   type AbsVal,
 } from "./lattice";
@@ -175,7 +172,7 @@ function transferExpr(expr: ExprNS.Expr, state: BlockState): AbsVal {
 
   if (expr instanceof ExprNS.List) {
     for (const el of expr.elements) transferExpr(el, state);
-    return fresh(expr.id);
+    return { kind: "fresh", origin: expr.id };
   }
 
   if (expr instanceof ExprNS.Call) {
@@ -312,6 +309,8 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
       return;
     }
 
+    // If/While bodies live in separate BasicBlocks — transferBlock here only
+    // sees the branch condition; the bodies are reached via CFG successors.
     case "If":
       transferExpr((stmt as StmtNS.If).condition, state);
       return;
@@ -360,7 +359,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
       // under the cross-pass dependency. When the inner converges, the
       // reads-edge `purityBlockPass ← purityScopePass` wakes this block
       // and the binding resolves to a definite true/false verdict.
-      state.env.set(info.slot, closure(fd.id, innerPure));
+      state.env.set(info.slot, { kind: "closure", fdId: fd.id, pure: innerPure });
       return;
     }
 
@@ -383,7 +382,7 @@ function seedEnv(unit: FunctionUnit): MutableEnv<AbsVal> {
   const fd = unit.funcAst;
   if (fd instanceof StmtNS.FunctionDef) {
     for (let i = 0; i < fd.parameters.length; i++) {
-      env.set(i, param(i));
+      env.set(i, { kind: "param", slot: i });
     }
   }
   return env;

@@ -30,11 +30,6 @@ import type { SlotLookup } from "./slot-table";
  * converts to a noisy throw at the first slot lookup — never silent miscompile.
  */
 
-/** Read-only slot → lattice-value view (the minimum a visitor needs from `MutableEnv<L>`). */
-export interface SlotEnv<L> {
-  get(slot: number): L | undefined;
-}
-
 /** Expression-level DFA module for block-fixpoint analyses. Extends
  *  `BoundedLattice<L>` so the module itself IS the per-slot value lattice —
  *  no separate field, no duplication between `BlockDfaSpec` and the
@@ -51,7 +46,7 @@ export interface BlockDfaSpec<L> extends BoundedLattice<L> {
    *  by `transferBlock`. */
   makeExprVisitor(
     factStore: FactStore,
-    env: SlotEnv<L>,
+    env: MutableEnv<L>,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: number, val: L) => void,
   ): ExprNS.Visitor<L>;

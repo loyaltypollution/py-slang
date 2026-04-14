@@ -2,7 +2,8 @@ import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { FactStore } from "../framework/fact-store";
 import { runtimeWritePass } from "../framework/runtime-passes";
-import type { BlockDfaSpec, SlotEnv } from "../framework/interfaces";
+import type { BlockDfaSpec } from "../framework/interfaces";
+import type { MutableEnv } from "../framework/mutable-env";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import {
@@ -16,11 +17,14 @@ import {
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
     private readonly factStore: FactStore,
-    private readonly constEnv: SlotEnv<ConstLattice>,
+    private readonly constEnv: MutableEnv<ConstLattice>,
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: number, val: ConstLattice) => void,
   ) {}
 
+  // Every visitor site MUST route through annotate — it fuses the
+  // runtime-observation widen + recordExprFact write. Skipping it yields
+  // stale per-node facts and loses runtime refinement.
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
     const observed = this.factStore.tryRead(runtimeWritePass, node.id);
     const lifted = observed !== undefined ? liftConst(observed) : undefined;
@@ -223,7 +227,7 @@ export const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
   },
   makeExprVisitor(
     factStore: FactStore,
-    env: SlotEnv<ConstLattice>,
+    env: MutableEnv<ConstLattice>,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: number, val: ConstLattice) => void,
   ): ExprNS.Visitor<ConstLattice> {

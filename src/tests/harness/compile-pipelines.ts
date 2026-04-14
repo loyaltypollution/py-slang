@@ -1,9 +1,9 @@
 import { parse } from "../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../resolver";
 import { SVMLCompiler } from "../../engines/svml/svml-compiler";
+import { makeDfaQuery } from "../../specialization";
 import { SVMLInterpreter } from "../../engines/svml/svml-interpreter";
 import type { SVMLProgram } from "../../engines/svml/types";
-import { makeDfaQuery } from "../../specialization";
 import { buildTestWorklist } from "../utils";
 
 const CHAPTER = 4;
