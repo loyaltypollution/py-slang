@@ -80,8 +80,18 @@ describe("PurityScopePass — parity with prior syntactic fold", () => {
     expect(purityOf("def f(x):\n    y = lambda z: z\n    return x", "f")).toBe(false);
   });
 
-  test("impure: nested FunctionDef", () => {
-    expect(purityOf("def f(x):\n    def g(y):\n        return y\n    return x", "f")).toBe(false);
+  test("pure: nested FunctionDef with pure body is defined but not called", () => {
+    // Creating a closure is not a side effect. The nested `g` is pure, never
+    // called, never returned — `f` just returns its own param.
+    expect(purityOf("def f(x):\n    def g(y):\n        return y\n    return x", "f")).toBe(true);
+  });
+
+  test("impure: returning a nested FunctionDef that is itself impure", () => {
+    // Returning an impure closure escapes it; the caller could invoke it
+    // and observe side effects. Tainting propagates to the enclosing fn.
+    expect(
+      purityOf("def f(x):\n    def g(y):\n        print(y)\n        return y\n    return g", "f"),
+    ).toBe(false);
   });
 
   test("impure: subscript assignment target (parameter aliased)", () => {
@@ -172,5 +182,89 @@ describe("PurityScopePass — capability gains vs. prior rule", () => {
     // `print` is not in the whitelist. This is the regression guard for
     // the whitelist change.
     expect(purityOf("def f(x):\n    return print(x)", "f")).toBe(false);
+  });
+});
+
+describe("PurityScopePass — freshness / escape tracking", () => {
+  test("pure: fresh list allocation, local mutate, element return", () => {
+    // xs is Fresh in this frame; the subscript-store targets a locally-
+    // owned container. Under the old coarse rule this was impure (any List
+    // literal disqualified).
+    const code = [
+      "def f(n):",
+      "    xs = [0, 0]",
+      "    xs[0] = n",
+      "    return xs[0]",
+    ].join("\n");
+    expect(purityOf(code, "f")).toBe(true);
+  });
+
+  test("impure: subscript-store through a parameter", () => {
+    // xs is Param — the store is caller-observable.
+    expect(purityOf("def f(xs):\n    xs[0] = 1\n    return 0", "f")).toBe(false);
+  });
+
+  test("pure: direct alias of a fresh list", () => {
+    // a = xs copies the Fresh abstract value; a[0] = 1 stays pure.
+    const code = [
+      "def f(n):",
+      "    xs = [0]",
+      "    a = xs",
+      "    a[0] = n",
+      "    return a[0]",
+    ].join("\n");
+    expect(purityOf(code, "f")).toBe(true);
+  });
+
+  test("impure: freshness widened to Unknown at a branch merge", () => {
+    // If the if-branch binds xs to Fresh and the else-branch binds xs to
+    // the Param, the post-merge abstract value is Unknown. A subscript-
+    // store on Unknown is conservatively impure.
+    const code = [
+      "def f(flag, ys):",
+      "    if flag:",
+      "        xs = [0]",
+      "    else:",
+      "        xs = ys",
+      "    xs[0] = 1",
+      "    return 0",
+    ].join("\n");
+    expect(purityOf(code, "f")).toBe(false);
+  });
+});
+
+describe("PurityScopePass — closures (nested FunctionDef)", () => {
+  test("pure: nested def called locally", () => {
+    const code = [
+      "def f(n):",
+      "    def double(x):",
+      "        return x + x",
+      "    return double(n)",
+    ].join("\n");
+    expect(purityOf(code, "f")).toBe(true);
+  });
+
+  test("pure: nested def reading an outer capture", () => {
+    // inner reads `n` from the enclosing scope. A capture read is a
+    // dependency, not a side effect; inner stays pure and so does outer.
+    const code = [
+      "def outer(n):",
+      "    def inner(x):",
+      "        return x + n",
+      "    return inner(1)",
+    ].join("\n");
+    expect(purityOf(code, "outer")).toBe(true);
+  });
+
+  test("impure: call through impure nested def", () => {
+    // inner is impure (calls print); calling inner in outer makes outer impure.
+    const code = [
+      "def outer(n):",
+      "    def inner(x):",
+      "        print(x)",
+      "        return x",
+      "    return inner(n)",
+    ].join("\n");
+    expect(purityOf(code, "outer")).toBe(false);
   });
 });

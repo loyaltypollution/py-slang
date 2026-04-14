@@ -5,6 +5,11 @@ export interface SlotInfo {
   slot: number;
   envLevel: number;
   isPrimitive: boolean;
+  /** Name is declared at module scope (one step inside the outermost
+   *  built-in scope). Module globals can be rebound between calls — purity
+   *  treats their reads as impure, unlike closure captures of an enclosing
+   *  function's locals. */
+  isModuleGlobal: boolean;
 }
 
 export type SlotLookup = (token: Token) => SlotInfo;
@@ -16,18 +21,35 @@ export function isLocal(info: SlotInfo): boolean {
   return !info.isPrimitive && info.envLevel === 0;
 }
 
+/** A closure-capture slot: resolved in an enclosing function scope, not the
+ *  module or builtin scope. Reads of captures depend on the outer frame but
+ *  are not themselves side effects. */
+export function isCapture(info: SlotInfo): boolean {
+  return !info.isPrimitive && !info.isModuleGlobal && info.envLevel > 0;
+}
+
 /** Build a SlotLookup. Params → 0..n-1, locals → n..m; non-locals resolve via env chain. */
 export function buildSlotTable(env: Environment, paramNames: string[]): SlotLookup {
   const slots = new Map<string, SlotInfo>();
 
   for (let i = 0; i < paramNames.length; i++) {
-    slots.set(paramNames[i], { slot: i, envLevel: 0, isPrimitive: false });
+    slots.set(paramNames[i], {
+      slot: i,
+      envLevel: 0,
+      isPrimitive: false,
+      isModuleGlobal: false,
+    });
   }
 
   let nextSlot = paramNames.length;
   for (const name of env.names.keys()) {
     if (!slots.has(name)) {
-      slots.set(name, { slot: nextSlot++, envLevel: 0, isPrimitive: false });
+      slots.set(name, {
+        slot: nextSlot++,
+        envLevel: 0,
+        isPrimitive: false,
+        isModuleGlobal: false,
+      });
     }
   }
 
@@ -41,17 +63,19 @@ export function buildSlotTable(env: Environment, paramNames: string[]): SlotLook
     if (declaringEnv === null) {
       // Memoization intrinsics are injected post-resolution; treat as primitives.
       if (name.startsWith("__memo_")) {
-        return { slot: -1, envLevel: 0, isPrimitive: true };
+        return { slot: -1, envLevel: 0, isPrimitive: true, isModuleGlobal: false };
       }
       throw new Error(`Variable ${name} not found in environment`);
     }
 
-    // Outermost env = primitive.
+    // Outermost (null-enclosing) env = built-in scope; treat as primitive.
     if (declaringEnv.enclosing === null) {
-      return { slot: -1, envLevel: 0, isPrimitive: true };
+      return { slot: -1, envLevel: 0, isPrimitive: true, isModuleGlobal: false };
     }
 
+    // Module scope sits one step inside the built-in scope.
+    const isModuleGlobal = declaringEnv.enclosing.enclosing === null;
     const envLevel = env.lookupNameByString(name);
-    return { slot: 0, envLevel, isPrimitive: false };
+    return { slot: 0, envLevel, isPrimitive: false, isModuleGlobal };
   };
 }

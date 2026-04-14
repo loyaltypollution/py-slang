@@ -28,12 +28,13 @@ import {
 import type { FunctionUnit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
 import type { Lattice, Pass, PassCtx } from "../framework/pass";
-import { isLocal, type SlotLookup } from "../framework/slot-table";
+import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
 import { structuralPass } from "../framework/structural-pass";
 import {
   absEquals,
   absJoin,
   absLeq,
+  closure,
   fresh,
   GLOBAL,
   param,
@@ -73,6 +74,7 @@ class BlockState {
     readonly env: MutableEnv<AbsVal>,
     readonly slotLookup: SlotLookup,
     readonly selfName: string | undefined,
+    readonly ctx: PassCtx,
   ) {}
 
   markImpure(): void {
@@ -103,7 +105,15 @@ function transferExpr(expr: ExprNS.Expr, state: BlockState): AbsVal {
     if (isLocal(info)) {
       return state.env.get(info.slot) ?? UNKNOWN;
     }
-    // Nonlocal / global read: value depends on outside state.
+    if (isCapture(info)) {
+      // Closure capture of an enclosing function's local. A dependency, not
+      // a side effect — the purity of a closure is "deterministic in its
+      // inputs including captures," so reading a capture on its own does
+      // not disqualify. We lose the outer's abstract value without plumbing
+      // cross-frame env lookup, so return Unknown.
+      return UNKNOWN;
+    }
+    // Built-in or module-level global: can change between calls, impure.
     state.markImpure();
     return GLOBAL;
   }
@@ -167,8 +177,11 @@ function transferExpr(expr: ExprNS.Expr, state: BlockState): AbsVal {
 
 function transferCall(expr: ExprNS.Call, state: BlockState): AbsVal {
   let calleeName: string | undefined;
+  let calleeAbs: AbsVal | undefined;
   if (expr.callee instanceof ExprNS.Variable) {
     calleeName = expr.callee.name.lexeme;
+    const info = state.slotLookup(expr.callee.name);
+    if (isLocal(info)) calleeAbs = state.env.get(info.slot);
   } else {
     // Computed callee (e.g. subscript of list-of-fns) is not analyzable.
     transferExpr(expr.callee, state);
@@ -179,15 +192,34 @@ function transferCall(expr: ExprNS.Call, state: BlockState): AbsVal {
     calleeName !== undefined && WHITELISTED_BUILTINS.has(calleeName);
   const isSelfRecursion =
     calleeName !== undefined && calleeName === state.selfName;
+  const isClosureCall = calleeAbs !== undefined && calleeAbs.kind === "closure";
+  const isPureClosureCall =
+    isClosureCall && (calleeAbs as { pure: boolean | undefined }).pure === true;
+  const isImpureClosureCall =
+    isClosureCall && (calleeAbs as { pure: boolean | undefined }).pure === false;
+  // Pending closure: inner purity not yet determined. Defer judgment —
+  // marking impure here would lock this block's summary under the
+  // monotone-join fact-store, blocking a later refinement to "pure."
+  const isPendingClosureCall =
+    isClosureCall && (calleeAbs as { pure: boolean | undefined }).pure === undefined;
 
-  if (!isWhitelistedBuiltin && !isSelfRecursion && calleeName !== undefined) {
+  if (isImpureClosureCall) {
+    state.markImpure();
+  } else if (
+    !isWhitelistedBuiltin &&
+    !isSelfRecursion &&
+    !isPureClosureCall &&
+    !isPendingClosureCall &&
+    calleeName !== undefined
+  ) {
     // Unknown function: effects are unconstrained.
     state.markImpure();
   }
 
   // Evaluate args for their own effects, and escape any Variable-shaped args
-  // to Unknown unless the callee is a read-only whitelisted builtin.
-  const argsEscape = !isWhitelistedBuiltin;
+  // to Unknown unless the callee is a read-only whitelisted builtin or a
+  // statically-known pure or pending closure.
+  const argsEscape = !isWhitelistedBuiltin && !isPureClosureCall && !isPendingClosureCall;
   for (const arg of expr.args) {
     transferExpr(arg, state);
     if (argsEscape && arg instanceof ExprNS.Variable) {
@@ -208,7 +240,13 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
 
     case "Return": {
       const r = stmt as StmtNS.Return;
-      if (r.value !== null) transferExpr(r.value, state);
+      if (r.value !== null) {
+        const val = transferExpr(r.value, state);
+        // Returning a resolved-impure closure escapes it to the caller, who
+        // may invoke it and observe side effects. Taint the enclosing fn.
+        // Pending closures (inner purity undetermined) defer judgment.
+        if (val.kind === "closure" && val.pure === false) state.markImpure();
+      }
       return;
     }
 
@@ -275,11 +313,32 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
       return;
     }
 
-    case "FunctionDef":
+    case "FunctionDef": {
+      // Nested FunctionDef is its own FunctionUnit with its own purity
+      // analysis. Bind the name's slot to a Closure value carrying the
+      // inner's purity verdict. Creating a closure is *not* itself a side
+      // effect — only calling or escaping an impure one is.
+      const fd = stmt as StmtNS.FunctionDef;
+      const info = state.slotLookup(fd.name);
+      if (!isLocal(info)) {
+        state.markImpure();
+        return;
+      }
+      const innerPure = state.ctx.tryRead(purityScopePass, fd.id);
+      // Defer on `undefined`: the inner hasn't been analyzed yet — record a
+      // *pending* Closure. Call sites and escape points treat pending as
+      // "deferred" (no markImpure), keeping this block's summary monotone
+      // under the cross-pass dependency. When the inner converges, the
+      // reads-edge `purityBlockPass ← purityScopePass` wakes this block
+      // and the binding resolves to a definite true/false verdict.
+      state.env.set(info.slot, closure(fd.id, innerPure));
+      return;
+    }
+
     case "Global":
     case "NonLocal":
     case "FromImport":
-      // Deferred (closure analysis) or outright disqualifying.
+      // Naming a nonlocal/global binding rebinds across scope — observable.
       state.markImpure();
       return;
   }
@@ -331,8 +390,8 @@ export const purityBlockPass: Pass<
   summaryLattice,
   reads: [],
   seedEnv,
-  transferBlock: (_ctx, block, inEnv, unit) => {
-    const state = new BlockState(inEnv, unit.slotLookup, selfNameOf(unit));
+  transferBlock: (ctx, block, inEnv, unit) => {
+    const state = new BlockState(inEnv, unit.slotLookup, selfNameOf(unit), ctx);
     for (const stmt of block.stmts) transferStmt(stmt, state);
     return {
       outEnv: state.env,
@@ -398,3 +457,14 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
     return anyVisited ? true : undefined;
   },
 };
+
+// Cross-pass reads: the block pass consults `purityScopePass` when it hits a
+// nested `FunctionDef` stmt (to learn the nested function's purity verdict).
+// Declared post-hoc because both passes reference each other. The factory
+// returns `reads` as a plain (unfrozen) array so late amendments are safe.
+// Wake-up path: when the nested fd's scope-pass writes, the worklist fires
+// `purityBlockPass.affectedKeys(purityScopePass, fdId)`. The factory-supplied
+// default maps a numeric triggerKey to the block containing that node via
+// `unitForNode` + `blockOfNode`, which is exactly the outer block holding
+// the `def g(): ...` stmt.
+(purityBlockPass.reads as Pass<any, any>[]).push(purityScopePass);

@@ -209,7 +209,10 @@ export function makeBlockFixpointPass<L, S = void>(
   };
 
   readsArr.push(blockKeyedPass);
-  Object.freeze(readsArr);
+  // Intentionally not frozen: callers with cross-pass read cycles (e.g. a
+  // block pass that needs to wake on an outer projection pass defined later)
+  // need to amend `reads` post-construction. Other passes in the codebase
+  // hold plain arrays too.
 
   return blockKeyedPass;
 }
