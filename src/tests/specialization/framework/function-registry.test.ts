@@ -6,7 +6,7 @@ import {
   buildFunctionRegistry,
 } from "../../../specialization/framework/function-registry";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
-import type { Pass, WorklistLifecycle } from "../../../specialization/framework/pass";
+import type { Pass } from "../../../specialization/framework/pass";
 import { Worklist } from "../../../specialization/framework/worklist";
 
 /** Test helper: a pass that records mint/rebuild/retire events via onRegister. */
@@ -23,14 +23,17 @@ function makeLifecycleObserver(): {
     id: Symbol("observer"),
     debugName: "observer",
     lattice: { bottom: 0, leq: (a, b) => a <= b, join: Math.max },
-    edges: [],
+    edges: [
+      { on: "mint", effect: (_ctx, u) => { minted.push(u); } },
+      { on: "rebuild", effect: (_ctx, u) => { rebuilt.push(u); } },
+      { on: "retire", effect: (_ctx, u) => {
+        const fd = u.funcAst;
+        const fdId = fd instanceof StmtNS.FunctionDef ? fd.id : -1;
+        retired.push({ unit: u, fdId });
+      }},
+    ],
     tier: "analysis",
     transfer: () => undefined,
-    onRegister(lifecycle: WorklistLifecycle): void {
-      lifecycle.onUnitMinted(u => minted.push(u));
-      lifecycle.onUnitRebuilt(u => rebuilt.push(u));
-      lifecycle.onUnitRetired((u, fdId) => retired.push({ unit: u, fdId }));
-    },
   };
   return { pass, minted, rebuilt, retired };
 }

@@ -2,7 +2,7 @@ import type { BasicBlock } from "./cfg";
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
-import { latticeEquals, type BoundedLattice, type EdgeSpec, type Lattice, type Pass, type PassCtx, type WorklistLifecycle } from "./pass";
+import { latticeEquals, type BoundedLattice, type EdgeSpec, type Lattice, type Pass, type PassCtx } from "./pass";
 
 /** Packages a Kildall block DFA as a `Pass<BasicBlock, DfaBlockFact<L>>`.
  *  The fact carries the block's OUT env (used for CFG successor propagation)
@@ -62,20 +62,6 @@ export function makeBlockFixpointPass<L>(
     exprFacts: new Map<number, L>(),
   });
 
-  const exprFactsEqual = (
-    a: ReadonlyMap<number, L>,
-    b: ReadonlyMap<number, L>,
-  ): boolean => {
-    if (a === b) return true;
-    if (a.size !== b.size) return false;
-    for (const [k, va] of a) {
-      const vb = b.get(k);
-      if (vb === undefined) return false;
-      if (!latticeEquals(config.valueLattice, va, vb)) return false;
-    }
-    return true;
-  };
-
   const exprFactsJoin = (
     a: ReadonlyMap<number, L>,
     b: ReadonlyMap<number, L>,
@@ -90,6 +76,22 @@ export function makeBlockFixpointPass<L>(
     return merged;
   };
 
+  // Pointwise `a ⊑ b`. Missing keys are ⊥; the `a.size === 0` shortcut
+  // handles the common case where a freshly-built fact is compared against
+  // an established one.
+  const exprFactsLeq = (
+    a: ReadonlyMap<number, L>,
+    b: ReadonlyMap<number, L>,
+  ): boolean => {
+    if (a === b || a.size === 0) return true;
+    for (const [k, va] of a) {
+      const vb = b.get(k);
+      if (vb === undefined) return false;
+      if (!config.valueLattice.leq(va, vb)) return false;
+    }
+    return true;
+  };
+
   // Both parts participate in change detection — exprFacts can advance while
   // outEnv stays invariant (e.g. runtime observation widening a sub-expression
   // in `return e`), and readers of any projection must wake on those. Ripple
@@ -97,17 +99,12 @@ export function makeBlockFixpointPass<L>(
   // via the self-reader edge, but each successor's transfer then produces an
   // unchanged OUT, so the ripple dies after one hop per successor — O(|CFG|)
   // per observation.
-  //
-  // `leq` is conservative (= equals): a true point-wise leq would let
-  // strictly-smaller writes skip `join` allocation, but the compound
-  // structure makes that fiddly and the FactStore.write `latticeEquals`
-  // backstop still suppresses the listener event for no-op writes.
-  const compoundEquals = (a: DfaBlockFact<L>, b: DfaBlockFact<L>): boolean =>
-    a.outEnv.equals(b.outEnv, config.valueLattice) &&
-    exprFactsEqual(a.exprFacts, b.exprFacts);
+  const compoundLeq = (a: DfaBlockFact<L>, b: DfaBlockFact<L>): boolean =>
+    a.outEnv.leq(b.outEnv, config.valueLattice) &&
+    exprFactsLeq(a.exprFacts, b.exprFacts);
   const envLattice: Lattice<DfaBlockFact<L>> = {
     bottom: bottomFact,
-    leq: compoundEquals,
+    leq: compoundLeq,
     // Commutative monotone join: outEnv merges slot-wise, exprFacts merge
     // per-nodeId via the value lattice. Under the DFA's expected monotone
     // transfer, FactStore.write's join(prev, new) collapses to `new`;
@@ -172,6 +169,9 @@ export function makeBlockFixpointPass<L>(
   // unfrozen to make that safe.
   const edgesArr: EdgeSpec<BasicBlock>[] = [...configEdges];
 
+  const seedKey = (unit: FunctionUnit): BasicBlock =>
+    config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
+
   const blockKeyedPass: Pass<BasicBlock, DfaBlockFact<L>> = {
     id: blockPassId,
     debugName: `${config.debugName}:blocks`,
@@ -183,20 +183,27 @@ export function makeBlockFixpointPass<L>(
       const inEnv = inEnvFor(ctx, block, unit);
       return config.transferBlock(ctx, block, inEnv, unit);
     },
-    onRegister(lifecycle: WorklistLifecycle, enqueueSelf: (key: BasicBlock) => void): void {
-      const seedUnit = (unit: FunctionUnit): void => {
-        enqueueSelf(config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit);
-      };
-      const evictStaleBlocks = (unit: FunctionUnit): void => {
-        for (const b of lifecycle.factStore.readAll(blockKeyedPass).keys()) {
-          if (b.unit === unit) lifecycle.factStore.evict(blockKeyedPass, b);
-        }
-      };
-      lifecycle.onUnitMinted(seedUnit);
-      lifecycle.onUnitRebuilt(unit => { evictStaleBlocks(unit); seedUnit(unit); });
-      lifecycle.onUnitRetired(evictStaleBlocks);
-    },
   };
+
+  const evictStaleBlocks = (ctx: PassCtx, unit: FunctionUnit): void => {
+    for (const b of ctx.factStore.readAll(blockKeyedPass).keys()) {
+      if (b.unit === unit) ctx.factStore.evict(blockKeyedPass, b);
+    }
+  };
+
+  // Lifecycle edges: seed entry/exit on mint, re-seed after rebuild (post
+  // eviction of stale block cells), and drop stale blocks on retire. Block
+  // cells are keyed by `BasicBlock` (not `FunctionUnit`), so the worklist's
+  // universal unit-keyed eviction doesn't reach them; we do it here.
+  edgesArr.push(
+    { on: "mint", wake: (_ctx, unit) => [seedKey(unit)] },
+    {
+      on: "rebuild",
+      wake: (_ctx, unit) => [seedKey(unit)],
+      effect: evictStaleBlocks,
+    },
+    { on: "retire", effect: evictStaleBlocks },
+  );
 
   // Self-wake: block OUT change → CFG successors recompute IN. Appended after
   // construction so we can reference `blockKeyedPass` directly, no getter.

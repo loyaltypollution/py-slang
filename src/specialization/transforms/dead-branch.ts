@@ -74,4 +74,5 @@ export const deadBranchRule = unitSweepRule(
     v.sweep(unit.body);
     return v.changed;
   },
+  [{ pass: constAnalysisPass, wake: (_ctx, block) => [block.unit] }],
 );

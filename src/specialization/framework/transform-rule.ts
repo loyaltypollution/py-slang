@@ -7,18 +7,21 @@
 
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
-import type { PassCtx, TransformRule } from "./pass";
+import type { PassCtx, TransformEdge, TransformRule } from "./pass";
 
 /** Build a unit-keyed transform rule from a sweep function that reads
  *  fact-store state and mutates `unit.body`. Returns `true` iff the AST
- *  was rewritten. */
+ *  was rewritten. `edges` declares upstream passes whose writes should
+ *  dirty this rule; omitted, the rule only fires on mint / rebuild. */
 export function unitSweepRule(
   name: string,
   sweep: (unit: FunctionUnit, factStore: FactStore) => boolean,
+  edges: ReadonlyArray<TransformEdge<any>> = [],
 ): TransformRule {
   return {
     id: Symbol(name),
     debugName: name,
+    edges,
     sweep(unit: FunctionUnit, ctx: PassCtx): boolean {
       return sweep(unit, ctx.factStore);
     },

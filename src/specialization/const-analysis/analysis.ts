@@ -2,7 +2,7 @@ import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { FactStore } from "../framework/fact-store";
 import { runtimeWritePass } from "../framework/runtime-passes";
-import type { AnalysisPass, SlotEnv } from "../framework/interfaces";
+import type { BlockDfaSpec, SlotEnv } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import {
@@ -202,7 +202,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 }
 
-export const constAnalysisModule: AnalysisPass<ConstLattice> = {
+export const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
   mergeKind: "may",
   direction: "forward",
   bottom: CONST_BOTTOM,

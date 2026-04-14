@@ -5,14 +5,14 @@ import type { TypeLattice } from "../type-analysis/lattice";
 import { transferBlock } from "./block-transfer";
 import type { BasicBlock } from "./cfg";
 import { type DfaBlockFact, makeBlockFixpointPass } from "./dfa-factory";
-import type { AnalysisPass } from "./interfaces";
+import type { BlockDfaSpec } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
 import type { Pass } from "./pass";
 import { runtimeWritePass } from "./runtime-passes";
 
 function dfaPass<L>(
   debugName: string,
-  spec: AnalysisPass<L>,
+  spec: BlockDfaSpec<L>,
 ): Pass<BasicBlock, DfaBlockFact<L>> {
   return makeBlockFixpointPass<L>({
     debugName,

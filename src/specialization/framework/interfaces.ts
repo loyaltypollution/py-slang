@@ -35,9 +35,9 @@ export interface SlotEnv<L> {
 
 /** Expression-level DFA module for block-fixpoint analyses. Extends
  *  `BoundedLattice<L>` so the module itself IS the per-slot value lattice —
- *  no separate field, no duplication between `AnalysisPass` and the
+ *  no separate field, no duplication between `BlockDfaSpec` and the
  *  `valueLattice` passed to `makeBlockFixpointPass`. */
-export interface AnalysisPass<L> extends BoundedLattice<L> {
+export interface BlockDfaSpec<L> extends BoundedLattice<L> {
   readonly mergeKind: "may" | "must";
   readonly direction: "forward" | "backward";
 

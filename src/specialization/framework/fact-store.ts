@@ -19,6 +19,11 @@ type FactChangeListener = (change: FactChange<unknown, unknown>) => void;
 export class FactStore {
   private readonly cells = new Map<Pass<unknown, unknown>, Map<unknown, unknown>>();
   private readonly listeners: FactChangeListener[] = [];
+  /** True while iterating `listeners` inside `write`. Re-entrant writes
+   *  would append events mid-dispatch and produce ordering hazards; the
+   *  comment-only "no reentry" contract became load-bearing documentation
+   *  that no runtime check enforced, so we restore the loud failure. */
+  private inWrite = false;
 
   read<K, V>(pass: Pass<K, V>, key: K): V {
     const inner = this.cells.get(pass as Pass<unknown, unknown>);
@@ -65,7 +70,17 @@ export class FactStore {
       oldValue: prev,
       newValue: joined,
     };
-    for (const l of this.listeners) l(change as FactChange<unknown, unknown>);
+    if (this.inWrite) {
+      throw new Error(
+        `[FactStore] reentrant write during listener dispatch (pass=${pass.debugName}). Listeners MUST NOT call factStore.write — schedule work via worklist.enqueue instead.`,
+      );
+    }
+    this.inWrite = true;
+    try {
+      for (const l of this.listeners) l(change as FactChange<unknown, unknown>);
+    } finally {
+      this.inWrite = false;
+    }
     return true;
   }
 

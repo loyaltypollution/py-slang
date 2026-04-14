@@ -83,6 +83,12 @@ export function absEquals(a: AbsVal, b: AbsVal): boolean {
 
 export function absLeq(a: AbsVal, b: AbsVal): boolean {
   if (a.kind === "bottom") return true;
+  // Impure marker lives only at the exprFacts sentinel key; incomparable
+  // with every other kind. Guard before the `unknown` arm so a spurious
+  // leq(IMPURE, UNKNOWN) === true can't suppress a change event.
+  if (a.kind === "impure" || b.kind === "impure") {
+    return a.kind === "impure" && b.kind === "impure";
+  }
   if (b.kind === "unknown") return true;
   // Closure sub-lattice: same-fdId `undefined` is below `defined`; defined
   // peers (true vs false) are incomparable. Different fdIds fall through.
@@ -96,6 +102,8 @@ export function absLeq(a: AbsVal, b: AbsVal): boolean {
 export function absJoin(a: AbsVal, b: AbsVal): AbsVal {
   if (a.kind === "bottom") return b;
   if (b.kind === "bottom") return a;
+  if (a.kind === "impure" && b.kind === "impure") return a;
+  if (a.kind === "impure" || b.kind === "impure") return UNKNOWN;
   if (a.kind === "unknown" || b.kind === "unknown") return UNKNOWN;
   // Closure sub-lattice: monotonically refine `undefined` → `defined`, so
   // the `pending → pure` transition from `purityScopePass` survives the

@@ -87,4 +87,21 @@ export class MutableEnv<L> {
     }
     return true;
   }
+
+  /** Pointwise `this ⊑ other` under `lattice.leq`. Missing slots are ⊥, so
+   *  `undefined` on the left is trivially ≤ anything, and on the right only
+   *  if the left is also `undefined`. Callers must pass the same lattice
+   *  they use for `join`/`meet` — inconsistent lattices would make the order
+   *  disagree with the join-induced one. */
+  leq(other: MutableEnv<L>, lattice: Lattice<L>): boolean {
+    const len = Math.max(this.slots.length, other.slots.length);
+    for (let i = 0; i < len; i++) {
+      const a = this.slots[i];
+      if (a === undefined) continue;
+      const b = other.slots[i];
+      if (b === undefined) return false;
+      if (!lattice.leq(a, b)) return false;
+    }
+    return true;
+  }
 }

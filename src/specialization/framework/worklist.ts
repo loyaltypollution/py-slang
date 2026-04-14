@@ -16,7 +16,7 @@ import {
   wireCFG,
   type FunctionUnit,
 } from "./function-unit";
-import type { Pass, PassCtx, TransformRule, WorklistLifecycle } from "./pass";
+import type { Pass, PassCtx, TransformRule, LifecycleEdge, FactEdge } from "./pass";
 import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
 import { callCountPass } from "../memoization-analysis/call-count";
 import { purityBlockPass, purityScopePass } from "../purity-analysis/analysis";
@@ -48,26 +48,30 @@ export class Worklist {
 
   readonly factStore = new FactStore();
   private readonly registeredPasses: Pass<any, any>[] = [];
-  private readonly passReaders = new Map<Pass<any, any>, Pass<any, any>[]>();
-  /** reader → (upstream pass → wake fn). Edges without `wake` are dependency-only. */
-  private readonly passWakers = new Map<
-    Pass<any, any>,
-    Map<Pass<any, any>, (ctx: PassCtx, key: unknown) => Iterable<unknown>>
-  >();
   private readonly queue = new PriorityQueue<QItem>(compareItems);
   private seqCounter = 0;
   private readonly pendingKeysByPass = new Map<Pass<any, any>, Set<unknown>>();
   private batchDepth = 0;
 
   /** Registered transforms and their dirty sets. A unit enters the dirty set
-   *  on mint / rebuild; sweep clears it. */
+   *  on mint, rebuild, or a write to an upstream pass declared in the rule's
+   *  `edges`; sweep clears it. */
   private readonly transforms: TransformRule[] = [];
   private readonly transformDirty = new Map<TransformRule, Set<FunctionUnit>>();
 
-  /** Lifecycle subscribers registered via `Pass.onRegister`. */
-  private readonly mintListeners: Array<(unit: FunctionUnit) => void> = [];
-  private readonly rebuildListeners: Array<(unit: FunctionUnit) => void> = [];
-  private readonly retireListeners: Array<(unit: FunctionUnit, fdId: number) => void> = [];
+  /** Single fact-change dispatch index. Passes and transforms both compile
+   *  their fact edges into callbacks here; no per-subscriber-kind branching
+   *  lives in `handleFactChange`. */
+  private readonly factSubs = new Map<
+    Pass<any, any>,
+    Array<(ctx: PassCtx, key: unknown) => void>
+  >();
+  /** Single lifecycle dispatch index, one list per event kind. Passes'
+   *  `LifecycleEdge`s and transforms' mint/rebuild auto-dirtying both
+   *  compile into callbacks here. */
+  private readonly lifecycleSubs: Record<"mint" | "rebuild" | "retire",
+    Array<(ctx: PassCtx, unit: FunctionUnit) => void>
+  > = { mint: [], rebuild: [], retire: [] };
 
   readonly registry: FunctionRegistry;
   private readonly functionEnvironments: FunctionEnvironments;
@@ -130,10 +134,16 @@ export class Worklist {
     this._units.delete(node as StmtNS.FileInput | StmtNS.FunctionDef);
     this.pendingRebuilds.delete(unit);
     for (const s of this.transformDirty.values()) s.delete(unit);
+    // Unit-keyed passes: the blanket evict below drops the cell. Block-keyed
+    // DFA passes attach their own `{ on: "retire", effect }` via
+    // `makeBlockFixpointPass` and are handled by `fireLifecycle`.
+    // TODO: number-keyed passes (runtimeCall/Write, callCount, purityScope)
+    // leak cells for retired fdIds — they declare no retire edge, and the
+    // blanket evict below silently no-ops against their keyspace.
     for (const p of this.registeredPasses) {
       this.factStore.evict(p, unit);
     }
-    for (const cb of this.retireListeners) cb(unit, fdId);
+    this.fireLifecycle("retire", unit);
     this.rebuildNodeToUnit();
   }
 
@@ -148,14 +158,16 @@ export class Worklist {
     return s;
   }
 
+  private fireLifecycle(kind: "mint" | "rebuild" | "retire", unit: FunctionUnit): void {
+    for (const sub of this.lifecycleSubs[kind]) sub(this.passCtx, unit);
+  }
+
   private fireUnitMinted(unit: FunctionUnit): void {
-    for (const cb of this.mintListeners) cb(unit);
-    for (const r of this.transforms) this.dirtyFor(r).add(unit);
+    this.fireLifecycle("mint", unit);
   }
 
   private fireUnitRebuilt(unit: FunctionUnit): void {
-    for (const cb of this.rebuildListeners) cb(unit);
-    for (const r of this.transforms) this.dirtyFor(r).add(unit);
+    this.fireLifecycle("rebuild", unit);
   }
 
   blockOfNode(nodeId: number): BasicBlock | undefined {
@@ -166,35 +178,82 @@ export class Worklist {
     return this.nodeToUnit;
   }
 
-  /** Register a pass. Idempotent. */
+  /** Subscribe `fn` to writes against `upstream`. Called via `register` /
+   *  `registerTransform`; not public API. */
+  private subscribeFact(
+    upstream: Pass<any, any>,
+    fn: (ctx: PassCtx, key: unknown) => void,
+  ): void {
+    const list = this.factSubs.get(upstream) ?? [];
+    list.push(fn);
+    this.factSubs.set(upstream, list);
+  }
+
+  /** Register a pass. Idempotent. Compiles each edge in `pass.edges` into a
+   *  callback on the unified dispatch indices (`factSubs` / `lifecycleSubs`).
+   *  Lifecycle edges with `on: "mint"` fire immediately against every
+   *  existing unit so late-registered passes pick up the initial mint burst. */
   register<K, V>(pass: Pass<K, V>): void {
     if (this.registeredPasses.indexOf(pass as Pass<any, any>) !== -1) return;
     this.registeredPasses.push(pass as Pass<any, any>);
+    // Stamp the pass so `addEdge` can reject post-registration amendments
+    // that would be silently dropped by the dispatch-table snapshot below.
+    (pass as Pass<K, V> & { __worklistRegistered?: boolean }).__worklistRegistered = true;
     const reader = pass as Pass<any, any>;
-    const wakeMap = new Map<
-      Pass<any, any>,
-      (ctx: PassCtx, key: unknown) => Iterable<unknown>
-    >();
-    this.passWakers.set(reader, wakeMap);
-    for (const spec of pass.edges) {
-      const upstream = spec.pass;
-      const list = this.passReaders.get(upstream) ?? [];
-      list.push(reader);
-      this.passReaders.set(upstream, list);
-      if (spec.wake !== undefined) {
-        wakeMap.set(upstream, spec.wake as (ctx: PassCtx, key: unknown) => Iterable<unknown>);
+    const fireLifecycleEdge = (lc: LifecycleEdge<any>, unit: FunctionUnit): void => {
+      if (lc.wake !== undefined) {
+        for (const k of lc.wake(this.passCtx, unit)) this.enqueue(reader, k);
       }
+      if (lc.effect !== undefined) lc.effect(this.passCtx, unit);
+    };
+    for (const spec of pass.edges) {
+      if (spec.on === "mint" || spec.on === "rebuild" || spec.on === "retire") {
+        const lifecycle = spec;
+        this.lifecycleSubs[spec.on].push((_ctx, unit) => fireLifecycleEdge(lifecycle, unit));
+        continue;
+      }
+      // Fact edge. Dependency-only (no `wake`) edges produce no subscriber —
+      // they'd be skipped at dispatch anyway. Cast is load-bearing: `on?` is
+      // optional on FactEdge so the discriminated narrowing above doesn't
+      // refine `spec` — explicit assertion preserves the fact-edge shape.
+      const fact = spec as FactEdge<K>;
+      if (fact.wake === undefined) continue;
+      const wake = fact.wake;
+      this.subscribeFact(fact.pass, (_ctx, key) => {
+        for (const k of wake(this.passCtx, key)) this.enqueue(reader, k);
+      });
     }
-    pass.onRegister?.(this.lifecycleView, key => this.enqueue(pass, key));
+    // Replay existing-unit mints so registration order doesn't determine seeding.
+    for (const spec of pass.edges) {
+      if (spec.on !== "mint") continue;
+      for (const unit of this._units.values()) fireLifecycleEdge(spec, unit);
+    }
   }
 
-  /** Register a transform rule. Idempotent. Existing units seed its dirty set. */
+  /** Register a transform rule. Idempotent. Existing units seed its dirty
+   *  set; mint/rebuild auto-dirty the unit via lifecycle subscriptions; and
+   *  each `edge` compiles into a fact subscription that dirties yielded
+   *  units. All three paths funnel into the unified dispatch indices —
+   *  transforms are not a special subscriber kind. */
   registerTransform(rule: TransformRule): void {
     if (this.transforms.indexOf(rule) !== -1) return;
     this.transforms.push(rule);
     const dirty = new Set<FunctionUnit>();
     for (const u of this._units.values()) dirty.add(u);
     this.transformDirty.set(rule, dirty);
+
+    const addUnit = (_ctx: PassCtx, unit: FunctionUnit): void => { dirty.add(unit); };
+    this.lifecycleSubs.mint.push(addUnit);
+    this.lifecycleSubs.rebuild.push(addUnit);
+
+    if (rule.edges !== undefined) {
+      for (const edge of rule.edges) {
+        const wake = edge.wake as (ctx: PassCtx, key: unknown) => Iterable<FunctionUnit>;
+        this.subscribeFact(edge.pass, (ctx, key) => {
+          for (const u of wake(ctx, key)) dirty.add(u);
+        });
+      }
+    }
   }
 
   observe<K, V>(pass: Pass<K, V>, key: K, value: V): void {
@@ -274,33 +333,14 @@ export class Worklist {
     factStore: this.factStore,
   };
 
-  /** View handed to `Pass.onRegister`. `onUnitMinted` invokes `cb`
-   *  immediately for every existing unit and then on every future mint —
-   *  subscribers almost always want "for every unit that ever exists", and
-   *  replaying past mints avoids an ordering dependency between
-   *  `register(pass)` and the initial mint burst. */
-  private readonly lifecycleView: WorklistLifecycle = {
-    factStore: this.factStore,
-    onUnitMinted: cb => {
-      this.mintListeners.push(cb);
-      for (const u of this._units.values()) cb(u);
-    },
-    onUnitRebuilt: cb => { this.rebuildListeners.push(cb); },
-    onUnitRetired: cb => { this.retireListeners.push(cb); },
-  };
-
   /** FactStore listener. Invariant: runs inside `FactStore.write`'s
-   *  listener-dispatch loop; MUST NOT invoke `factStore.write`. */
+   *  listener-dispatch loop; MUST NOT invoke `factStore.write`. Dispatches
+   *  to every subscriber registered against `change.pass` — pass reader
+   *  wake-ups and transform dirty-additions compiled into the same list. */
   private handleFactChange(change: FactChange<unknown, unknown>): void {
-    const readers = this.passReaders.get(change.pass as Pass<any, any>);
-    if (readers === undefined || readers.length === 0) return;
-    for (const reader of readers) {
-      const wakeMap = this.passWakers.get(reader);
-      const wake = wakeMap?.get(change.pass as Pass<any, any>);
-      if (wake === undefined) continue;
-      const keys = wake(this.passCtx, change.key);
-      for (const k of keys) this.enqueue(reader, k);
-    }
+    const subs = this.factSubs.get(change.pass as Pass<any, any>);
+    if (subs === undefined) return;
+    for (const sub of subs) sub(this.passCtx, change.key);
   }
 
   /** Rebuild CFG for every pending unit, then fire `onUnitRebuilt`. */
@@ -344,15 +384,6 @@ export class Worklist {
   drain(limit: number = Worklist.DEFAULT_DRAIN_LIMIT): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
     const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     let processed = 0;
-
-    // Reseed every transform's dirty set at drain entry: analyses (callCount,
-    // purity) may have advanced between drains (e.g. via `observe`), which
-    // means every unit is a candidate for transform sweep until proven idempotent.
-    // Within a single drain, rebuilds re-add to dirty; sweeps clear.
-    for (const r of this.transforms) {
-      const dirty = this.dirtyFor(r);
-      for (const u of this._units.values()) dirty.add(u);
-    }
 
     while (true) {
       this.processQueue();

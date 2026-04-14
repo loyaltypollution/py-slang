@@ -33,7 +33,7 @@ import {
 } from "../framework/dfa-factory";
 import type { FunctionUnit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
-import type { EdgeSpec, Lattice, Pass, PassCtx, WorklistLifecycle } from "../framework/pass";
+import type { EdgeSpec, Lattice, Pass, PassCtx } from "../framework/pass";
 import { addEdge } from "../framework/pass";
 import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
 import {
@@ -458,16 +458,22 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
         return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
       },
     },
+    {
+      on: "mint",
+      wake: (_ctx, unit) => {
+        const fd = unit.funcAst;
+        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
+      },
+    },
+    {
+      on: "rebuild",
+      wake: (_ctx, unit) => {
+        const fd = unit.funcAst;
+        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
+      },
+    },
   ],
   tier: "analysis",
-  onRegister(lifecycle: WorklistLifecycle, enqueueSelf: (key: number) => void): void {
-    const enqueueForUnit = (unit: FunctionUnit): void => {
-      const fd = unit.funcAst;
-      if (fd instanceof StmtNS.FunctionDef) enqueueSelf(fd.id);
-    };
-    lifecycle.onUnitMinted(enqueueForUnit);
-    lifecycle.onUnitRebuilt(enqueueForUnit);
-  },
   transfer(ctx: PassCtx, fdId: number): boolean | undefined {
     const unit = ctx.unitForFdId(fdId);
     if (unit === undefined) return undefined;

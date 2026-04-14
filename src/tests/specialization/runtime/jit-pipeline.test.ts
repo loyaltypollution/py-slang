@@ -157,15 +157,10 @@ g()
       edges: [
         { pass: callCountPass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
         { pass: purityScopePass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
+        { on: "mint", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },
+        { on: "rebuild", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },
       ],
       tier: "analysis",
-      onRegister(lifecycle, enqueueSelf) {
-        const enqueueIfFn = (u: FunctionUnit): void => {
-          if (u.funcAst instanceof StmtNS.FunctionDef) enqueueSelf(u);
-        };
-        lifecycle.onUnitMinted(enqueueIfFn);
-        lifecycle.onUnitRebuilt(enqueueIfFn);
-      },
       transfer(_ctx: PassCtx, unit: FunctionUnit) {
         const scope = unit.funcAst;
         if (!(scope instanceof StmtNS.FunctionDef)) return undefined;

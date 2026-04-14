@@ -9,7 +9,7 @@
 import { parse } from "../../../parser/parser-adapter";
 import { Resolver } from "../../../resolver";
 import { Worklist } from "../../../specialization/framework/worklist";
-import type { EdgeSpec, Lattice, Pass, TransformRule, WorklistLifecycle } from "../../../specialization/framework/pass";
+import type { EdgeSpec, Lattice, Pass, TransformRule } from "../../../specialization/framework/pass";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -51,7 +51,6 @@ function makePass<K, V>(opts: {
   edges?: ReadonlyArray<EdgeSpec<K>>;
   tier?: "runtime" | "analysis";
   transfer?: (key: K) => V | undefined;
-  onRegister?: (lifecycle: WorklistLifecycle, enqueueSelf: (key: K) => void) => void;
 }): Pass<K, V> {
   return {
     id: Symbol(opts.name),
@@ -60,7 +59,6 @@ function makePass<K, V>(opts: {
     edges: opts.edges ?? [],
     tier: opts.tier ?? "analysis",
     transfer: (_ctx, key) => (opts.transfer ? opts.transfer(key as K) : undefined),
-    onRegister: opts.onRegister,
   };
 }
 
@@ -156,10 +154,10 @@ describe("Worklist pass-graph dispatch", () => {
     const observer = makePass<FunctionUnit, number>({
       name: "observer",
       lattice: intMax,
+      edges: [
+        { on: "rebuild", effect: (_ctx, u) => { rebuildEvents.push(u); } },
+      ],
       transfer: () => undefined,
-      onRegister(lifecycle) {
-        lifecycle.onUnitRebuilt(u => rebuildEvents.push(u));
-      },
     });
     wl.register(observer);
 
@@ -194,12 +192,12 @@ describe("Worklist pass-graph dispatch", () => {
       name: "analysis",
       lattice: intMax,
       tier: "analysis",
+      edges: [
+        { on: "mint", wake: (_ctx, u) => [u] },
+      ],
       transfer: () => {
         order.push("analysis");
         return undefined;
-      },
-      onRegister(lifecycle, enqueueSelf) {
-        lifecycle.onUnitMinted(u => enqueueSelf(u));
       },
     });
     const transform: TransformRule = {
@@ -225,10 +223,10 @@ describe("Worklist pass-graph dispatch", () => {
     const observer = makePass<FunctionUnit, number>({
       name: "observer",
       lattice: intMax,
+      edges: [
+        { on: "rebuild", effect: (_ctx, u) => { rebuilt.push(u); } },
+      ],
       transfer: () => undefined,
-      onRegister(lifecycle) {
-        lifecycle.onUnitRebuilt(u => rebuilt.push(u));
-      },
     });
     let fired = false;
     const transform: TransformRule = {

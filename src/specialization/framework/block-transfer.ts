@@ -2,7 +2,7 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "./cfg";
 import type { DfaBlockFact } from "./dfa-factory";
 import type { FactStore } from "./fact-store";
-import type { AnalysisPass } from "./interfaces";
+import type { BlockDfaSpec } from "./interfaces";
 import type { MutableEnv } from "./mutable-env";
 import { isLocal, type SlotLookup } from "./slot-table";
 
@@ -11,7 +11,7 @@ function transferStmt<L>(
   stmt: StmtNS.Stmt,
   env: MutableEnv<L>,
   visitor: ExprNS.Visitor<L>,
-  module: AnalysisPass<L>,
+  module: BlockDfaSpec<L>,
   slotLookup: SlotLookup,
 ): void {
   switch (stmt.kind) {
@@ -69,7 +69,7 @@ function transferStmt<L>(
 export function transferBlock<L>(
   block: BasicBlock,
   inEnv: MutableEnv<L>,
-  module: AnalysisPass<L>,
+  module: BlockDfaSpec<L>,
   factStore: FactStore,
   slotLookup: SlotLookup,
 ): DfaBlockFact<L> {

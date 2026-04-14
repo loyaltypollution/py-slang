@@ -27,24 +27,48 @@ export interface BoundedLattice<V> extends Lattice<V> {
   meet(a: V, b: V): V;
 }
 
-/** An edge to an upstream pass. `wake` projects an upstream key-change to
- *  zero-or-more keys in *this* pass's key-space, enqueuing them for
- *  re-transfer. An edge without `wake` is a dependency-only declaration —
- *  the pass reads from `ctx.read(upstream, ...)` in `transfer` but does not
- *  auto-react to upstream writes. Cross-unit / lifecycle dispatch lives on
- *  `Pass.onRegister`, not here. */
-export interface EdgeSpec<K> {
+/** An edge into a pass. Two shapes, discriminated by `on`:
+ *
+ *   - Fact edge (default, `on?: "fact"` or omitted): `wake` projects an
+ *     upstream pass's key-change to zero-or-more keys in *this* pass's
+ *     key-space, enqueuing them for re-transfer. `wake` is required —
+ *     "depends on, doesn't react" is not an auto-reactive edge; express
+ *     such dependencies by reading from `ctx.read(upstream, ...)` in
+ *     `transfer` without declaring an edge.
+ *
+ *   - Lifecycle edge (`on: "mint" | "rebuild" | "retire"`): fires on unit
+ *     lifecycle transitions. `wake(ctx, unit)` yields keys to enqueue;
+ *     `effect(ctx, unit)` runs arbitrary side effects (typically
+ *     `factStore.evict` for passes with unit-scoped facts). At least one of
+ *     `wake` / `effect` must be defined.
+ */
+export type EdgeSpec<K> = FactEdge<K> | LifecycleEdge<K>;
+
+export interface FactEdge<K> {
+  readonly on?: "fact";
   readonly pass: Pass<any, any>;
-  wake?(ctx: PassCtx, key: unknown): Iterable<K>;
+  wake(ctx: PassCtx, key: unknown): Iterable<K>;
+}
+
+export interface LifecycleEdge<K> {
+  readonly on: "mint" | "rebuild" | "retire";
+  wake?(ctx: PassCtx, unit: FunctionUnit): Iterable<K>;
+  effect?(ctx: PassCtx, unit: FunctionUnit): void;
 }
 
 /** Append an `EdgeSpec` to a pass's `edges` after construction. Encapsulates
  *  the readonly-cast that would otherwise leak at every call site. Intended
  *  for passes with mutually-recursive edges that can't be declared at
- *  literal-construction time (e.g. purity block ↔ scope). MUST be called
- *  before the pass is registered with a worklist — the worklist snapshots
- *  `edges` during `register`, and later amendments will not take effect. */
+ *  literal-construction time (e.g. purity block ↔ scope). Throws if `pass`
+ *  is already registered with a worklist — the worklist snapshots `edges`
+ *  during `register`, so post-registration additions would silently never
+ *  dispatch. `__worklistRegistered` is set by `Worklist.register`. */
 export function addEdge<K>(pass: Pass<K, any>, spec: EdgeSpec<K>): void {
+  if ((pass as Pass<K, any> & { __worklistRegistered?: boolean }).__worklistRegistered) {
+    throw new Error(
+      `[addEdge] pass "${pass.debugName}" is already registered with a worklist; edges added now will never dispatch. Declare edges at construction or via addEdge before register().`,
+    );
+  }
   (pass.edges as EdgeSpec<K>[]).push(spec);
 }
 
@@ -61,13 +85,6 @@ export interface Pass<K, V> {
    *  priority-sensitive consumer. */
   readonly tier: "runtime" | "analysis";
   transfer(ctx: PassCtx, key: K): V | undefined;
-  /** Optional lifecycle hook. Called once when the pass is registered with
-   *  a worklist. `enqueueSelf` is bound to this pass — call it to schedule
-   *  re-transfer at a key in this pass's keyspace. Passes that need to
-   *  react to unit mint / rebuild / retire (e.g. block-keyed DFA passes
-   *  seeding from `unit.cfg.entry` on rebuild) subscribe via `lifecycle`
-   *  rather than declaring a cross-keyspace edge. */
-  onRegister?(lifecycle: WorklistLifecycle, enqueueSelf: (key: K) => void): void;
 }
 
 /** View handed to `Pass.transfer`. */
@@ -87,31 +104,32 @@ export interface PassCtx {
   readonly factStore: FactStore;
 }
 
-/** Unit lifecycle observer API exposed to `Pass.onRegister`. Subscribers
- *  react to unit mint (fresh unit, empty CFG just wired), rebuild (existing
- *  unit, new CFG after transform-triggered rewire), and retire (unit being
- *  dropped). Listeners MUST be read-only with respect to the fact store
- *  except via `factStore.evict`; any new writes belong in a pass transfer,
- *  not a lifecycle callback. To enqueue work, use the `enqueueSelf` argument
- *  passed to `Pass.onRegister`. */
-export interface WorklistLifecycle {
-  readonly factStore: FactStore;
-  onUnitMinted(cb: (unit: FunctionUnit) => void): void;
-  onUnitRebuilt(cb: (unit: FunctionUnit) => void): void;
-  onUnitRetired(cb: (unit: FunctionUnit, fdId: number) => void): void;
+/** Edge from a transform to an upstream pass. A write to `pass` wakes the
+ *  rule over the units yielded by `wake(ctx, key)`. The edge is the only
+ *  way a transform gets fact-driven dirtying; without edges, a rule only
+ *  runs on mint / rebuild (which the worklist handles universally).
+ *
+ *  Structurally parallels `FactEdge<K>` but yields `FunctionUnit`s
+ *  (transforms have no keyspace); keep the two in sync when extending either. */
+export interface TransformEdge<K> {
+  readonly pass: Pass<K, any>;
+  wake(ctx: PassCtx, key: K): Iterable<FunctionUnit>;
 }
 
 /** One-shot or cascading imperative AST sweep gated on analyses. Transforms
  *  are not `Pass<_, _>` — they have no lattice, no transfer, and do not
- *  participate in the fact-store fixpoint. Worklist runs registered rules
- *  over dirty units after `processQueue` drains, records which units
- *  rewrote, and schedules those for CFG rebuild. Idempotency across
- *  rebuilds is the rule's responsibility: dead-branch / const-folding are
- *  naturally idempotent (rewriting removes the precondition); memoization
- *  must track its own wrapped-set. */
+ *  participate in the fact-store fixpoint. Worklist dirties a rule on unit
+ *  mint / rebuild and on writes to any pass declared in `edges`; the rule's
+ *  `sweep` runs once per dirty unit after `processQueue` drains, and units
+ *  that rewrote are scheduled for CFG rebuild. Idempotency across rebuilds
+ *  is the rule's responsibility: dead-branch / const-folding are naturally
+ *  idempotent (rewriting removes the precondition); memoization must track
+ *  its own wrapped-set. */
 export interface TransformRule {
   readonly id: symbol;
   readonly debugName: string;
+  /** Fact-driven wake edges. Omit for a rule that only fires on mint/rebuild. */
+  readonly edges?: ReadonlyArray<TransformEdge<any>>;
   /** Returns `true` iff `unit.body` was mutated — the worklist then schedules
    *  a CFG rebuild for `unit`. */
   sweep(unit: FunctionUnit, ctx: PassCtx): boolean;

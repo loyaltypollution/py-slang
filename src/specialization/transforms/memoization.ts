@@ -88,6 +88,16 @@ export const memoizationRule: TransformRule = (() => {
   return {
     id: Symbol("memoizationRule"),
     debugName: "memoizationRule",
+    edges: [
+      { pass: callCountPass, wake: (ctx, fdId: number) => {
+        const u = ctx.unitForFdId(fdId);
+        return u ? [u] : [];
+      }},
+      { pass: purityScopePass, wake: (ctx, fdId: number) => {
+        const u = ctx.unitForFdId(fdId);
+        return u ? [u] : [];
+      }},
+    ],
     sweep(unit: FunctionUnit, ctx: PassCtx): boolean {
       if (wrapped.has(unit)) return false;
       const fd = unit.funcAst;

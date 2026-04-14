@@ -176,4 +176,5 @@ export const constantFoldingRule = unitSweepRule(
     v.sweep(unit.body);
     return v.changed;
   },
+  [{ pass: constAnalysisPass, wake: (_ctx, block) => [block.unit] }],
 );

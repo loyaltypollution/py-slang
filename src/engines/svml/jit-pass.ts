@@ -16,7 +16,7 @@
 import { StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../../specialization/framework/cfg";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
-import type { Pass, PassCtx, WorklistLifecycle } from "../../specialization/framework/pass";
+import type { Pass, PassCtx } from "../../specialization/framework/pass";
 import { constAnalysisPass, typeAnalysisPass } from "../../specialization/framework/dfa-passes";
 import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
@@ -76,15 +76,18 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       // compare against `lastSnapshot`.
       { pass: typeAnalysisPass, wake: blockToOwningUnit },
       { pass: constAnalysisPass, wake: blockToOwningUnit },
+      {
+        on: "mint",
+        wake: (_ctx, unit) =>
+          unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [],
+      },
+      {
+        on: "rebuild",
+        wake: (_ctx, unit) =>
+          unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [],
+      },
     ],
     tier: "analysis",
-    onRegister(lifecycle: WorklistLifecycle, enqueueSelf: (key: FunctionUnit) => void): void {
-      const enqueue = (unit: FunctionUnit): void => {
-        if (unit.funcAst instanceof StmtNS.FunctionDef) enqueueSelf(unit);
-      };
-      lifecycle.onUnitMinted(enqueue);
-      lifecycle.onUnitRebuilt(enqueue);
-    },
     transfer(ctx: PassCtx, unit: FunctionUnit): SVMLIR | undefined {
       const scope = unit.funcAst;
       if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
