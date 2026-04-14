@@ -5,9 +5,9 @@
 // truth value the edge reflects. Analysis passes that implement
 // `refineOnEdge` read `condition` to narrow the env at merge sites.
 //
-// The `successors` / `predecessors` arrays remain as a view over the edge
-// arrays for migration convenience — they are intended to be removed once
-// all call sites consume edges directly.
+// Iterate `block.successorEdges` / `block.predecessorEdges` to traverse.
+// The legacy array-of-block views (`successors` / `predecessors`) were
+// removed once the last consumer migrated.
 
 import type { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "./function-unit";
@@ -38,15 +38,10 @@ export interface BasicBlock {
   readonly id: BlockId;
   /** View into the AST's statement arrays; do not mutate. */
   readonly stmts: StmtNS.Stmt[];
-  /** Outgoing control-flow edges. Primary storage. */
+  /** Outgoing control-flow edges. */
   readonly successorEdges: CFGEdge[];
-  /** Incoming control-flow edges. Primary storage. */
+  /** Incoming control-flow edges. */
   readonly predecessorEdges: CFGEdge[];
-  /** Back-compat view over `successorEdges`. Kept in sync by `linkBlocks`;
-   *  slated for removal once all call sites migrate. */
-  readonly successors: BasicBlock[];
-  /** Back-compat view over `predecessorEdges`. Same deprecation path. */
-  readonly predecessors: BasicBlock[];
   /** Back-pointer to owning unit; set by `buildCFG` at creation. */
   readonly unit: FunctionUnit;
 }
@@ -69,18 +64,14 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
       stmts: [],
       successorEdges: [],
       predecessorEdges: [],
-      successors: [],
-      predecessors: [],
       unit,
     };
     blocks.push(block);
     return block;
   }
 
-  /** Create a labeled edge between two blocks. Replaces the legacy `addEdge`
-   *  helper; callers pass the edge `kind` and (when the kind demands it)
-   *  the `condition` expression. Back-compat `successors`/`predecessors`
-   *  arrays are maintained here. */
+  /** Create a labeled edge between two blocks. Callers pass the edge `kind`
+   *  and (when the kind demands it) the `condition` expression. */
   function linkBlocks(
     from: BasicBlock,
     to: BasicBlock,
@@ -98,8 +89,6 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
     }
     from.successorEdges.push(edge);
     to.predecessorEdges.push(edge);
-    from.successors.push(to);
-    to.predecessors.push(from);
   }
 
   const loopStack: { header: BasicBlock; exit: BasicBlock }[] = [];
