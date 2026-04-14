@@ -11,7 +11,7 @@ import {
   COMPLEX_BIT,
   TOP,
   integer,
-  boolean,
+  boolValue,
   floatValue,
   COMPLEX,
 } from "./lattice";
@@ -262,7 +262,7 @@ export function transferCompare(op: string, left: TypeLattice, right: TypeLattic
       const lRef = lk === FLOAT_BIT ? left.floatRef : left.intRef;
       const rRef = rk === FLOAT_BIT ? right.floatRef : right.intRef;
       const ref = op === "==" ? eqSigns(lRef, rRef) : neqSigns(lRef, rRef);
-      return boolean(ref);
+      return boolValue(ref);
     }
     // Disjoint kinds with no numeric crossover → statically unequal.
     // `x == y` is False when no single value could inhabit both sides.
@@ -274,9 +274,9 @@ export function transferCompare(op: string, left: TypeLattice, right: TypeLattic
       rk !== 0 &&
       !(lk & NUMERIC_MASK && rk & NUMERIC_MASK)
     ) {
-      return boolean(op === "==" ? BoolRef.False : BoolRef.True);
+      return boolValue(op === "==" ? BoolRef.False : BoolRef.True);
     }
-    return boolean(BoolRef.Top);
+    return boolValue(BoolRef.Top);
   }
 
   // Ordering comparisons: not valid on complex (raises TypeError at runtime)
@@ -302,12 +302,12 @@ export function transferCompare(op: string, left: TypeLattice, right: TypeLattic
         resultRef = leSigns(lRef, rRef);
         break;
       default:
-        return boolean(BoolRef.Top);
+        return boolValue(BoolRef.Top);
     }
-    return boolean(resultRef);
+    return boolValue(resultRef);
   }
 
-  return boolean(BoolRef.Top);
+  return boolValue(BoolRef.Top);
 }
 
 export function transferUnaryNeg(operand: TypeLattice): TypeLattice {
@@ -349,6 +349,6 @@ export function truthiness(t: TypeLattice): BoolRef {
 
 export function transferNot(operand: TypeLattice): TypeLattice {
   const t = truthiness(operand);
-  if (t === BoolRef.Bottom) return boolean(BoolRef.Top);
-  return boolean(notBoolRef(t));
+  if (t === BoolRef.Bottom) return boolValue(BoolRef.Bottom);
+  return boolValue(notBoolRef(t));
 }

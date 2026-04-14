@@ -49,8 +49,12 @@ type DfaDirection = "forward" | "backward";
 interface DfaConfigBase<L> {
   readonly debugName: string;
   readonly direction: DfaDirection;
-  /** Pure: IN env → OUT env + per-node exprFacts. No fact-store writes. */
+  /** Pure: IN env → OUT env + per-node exprFacts. No fact-store writes.
+   *  Receives `factStore` for read-side lookups (e.g. runtime observation
+   *  widening in the expression visitor); `ctx` is for unit-topology
+   *  lookups only. */
   readonly transferBlock: (
+    factStore: FactStore,
     ctx: PassCtx,
     block: BasicBlock,
     inEnv: MutableEnv<L>,
@@ -152,7 +156,7 @@ export function makeBlockFixpointPass<L>(
 
   const blockPassId = Symbol(`${config.debugName}:blocks`);
 
-  function inEnvFor(ctx: PassCtx, block: BasicBlock, unit: FunctionUnit): MutableEnv<L> {
+  function inEnvFor(factStore: FactStore, block: BasicBlock, unit: FunctionUnit): MutableEnv<L> {
     // Iterate predecessor *edges* so `refineOnEdge` sees the labeled edge
     // (branch-true/false + condition). For backward analyses, predecessors
     // are the block's successors in the CFG.
@@ -163,10 +167,10 @@ export function makeBlockFixpointPass<L>(
     let env: MutableEnv<L> | undefined;
     for (const edge of preds) {
       // For forward analyses, the pred-out is edge.from.outEnv; for backward,
-      // the pred-out is edge.to.outEnv. `ctx.read` returns the (frozen)
+      // the pred-out is edge.to.outEnv. `factStore.read` returns the (frozen)
       // bottomFact for unwritten cells — we never mutate it in place.
       const predBlock = config.direction === "forward" ? edge.from : edge.to;
-      const predOut = ctx.read(blockKeyedPass, predBlock).outEnv;
+      const predOut = factStore.read(blockKeyedPass, predBlock).outEnv;
       // Refine across the edge. Identity returns are common and must not
       // allocate; the factory absorbs that by snapshotting only when the
       // refinement returned a truly different env.
@@ -204,16 +208,16 @@ export function makeBlockFixpointPass<L>(
     lattice: envLattice,
     edges: edgesArr,
     tier: "analysis",
-    transfer(ctx: PassCtx, block: BasicBlock): DfaBlockFact<L> | undefined {
+    transfer(factStore: FactStore, ctx: PassCtx, block: BasicBlock): DfaBlockFact<L> | undefined {
       const unit = block.unit;
-      const inEnv = inEnvFor(ctx, block, unit);
-      return config.transferBlock(ctx, block, inEnv, unit);
+      const inEnv = inEnvFor(factStore, block, unit);
+      return config.transferBlock(factStore, ctx, block, inEnv, unit);
     },
   };
 
-  const evictStaleBlocks = (ctx: PassCtx, unit: FunctionUnit): void => {
-    for (const b of ctx.factStore.readAll(blockKeyedPass).keys()) {
-      if (b.unit === unit) ctx.factStore.evict(blockKeyedPass, b);
+  const evictStaleBlocks = (factStore: FactStore, _ctx: PassCtx, unit: FunctionUnit): void => {
+    for (const b of factStore.readAll(blockKeyedPass).keys()) {
+      if (b.unit === unit) factStore.evict(blockKeyedPass, b);
     }
   };
 

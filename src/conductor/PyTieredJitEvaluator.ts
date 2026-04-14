@@ -14,7 +14,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { Worklist, makeJitObservers } from "../specialization";
+import { Worklist, makeJitObservers, makeDfaQuery } from "../specialization";
 
 /** Races CSE and SVML on a shared Worklist; winner's buffered I/O is flushed, loser is aborted.
  *  Shared Worklist is safe across arms because all wl.* calls are synchronous and JS is
@@ -104,7 +104,7 @@ async function runSvml(
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       envs,
-      wl.dfaQuery,
+      makeDfaQuery(wl.factStore, wl.nodeIndex),
       wl.registry,
     );
     const program = compiler.compileProgram(ast);

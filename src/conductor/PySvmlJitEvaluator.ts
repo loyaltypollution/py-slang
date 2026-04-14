@@ -4,7 +4,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { Worklist, makeJitObservers } from "../specialization";
+import { Worklist, makeJitObservers, makeDfaQuery } from "../specialization";
 import { EvaluatorError } from "./errors";
 
 /**
@@ -27,7 +27,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const compiler = SVMLCompiler.fromProgramUnit(
         ast,
         environments,
-        worklist.dfaQuery,
+        makeDfaQuery(worklist.factStore, worklist.nodeIndex),
         worklist.registry,
       );
       const program = compiler.compileProgram(ast);

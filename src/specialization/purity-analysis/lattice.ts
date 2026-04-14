@@ -49,6 +49,7 @@ export type AbsVal =
   | { readonly kind: "impure" }
   | { readonly kind: "unknown" };
 
+export const BOTTOM: AbsVal = Object.freeze({ kind: "bottom" });
 export const UNKNOWN: AbsVal = Object.freeze({ kind: "unknown" });
 export const GLOBAL: AbsVal = Object.freeze({ kind: "global" });
 export const IMPURE_MARKER: AbsVal = Object.freeze({ kind: "impure" });

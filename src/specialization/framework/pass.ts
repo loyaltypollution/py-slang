@@ -50,7 +50,7 @@ export interface BoundedLattice<V> extends Lattice<V> {
  *     to zero-or-more keys in *this* pass's key-space, enqueuing them for
  *     re-transfer. Both `on` and `wake` are required — "depends on, doesn't
  *     react" is not an auto-reactive edge; express such dependencies by
- *     reading from `ctx.read(upstream, ...)` in `transfer` without declaring
+ *     reading from `factStore.read(upstream, ...)` in `transfer` without declaring
  *     an edge.
  *
  *   - Lifecycle edge (`on: "mint" | "rebuild" | "retire"`): fires on unit
@@ -74,7 +74,7 @@ export interface FactEdge<K> {
 export interface LifecycleEdge<K> {
   readonly on: "mint" | "rebuild" | "retire";
   wake?(ctx: PassCtx, unit: FunctionUnit): Iterable<K>;
-  effect?(ctx: PassCtx, unit: FunctionUnit): void;
+  effect?(factStore: FactStore, ctx: PassCtx, unit: FunctionUnit): void;
 }
 
 /** Module-level set of passes the Worklist has registered. Populated by
@@ -100,7 +100,10 @@ export function addEdge<K>(pass: Pass<K, any>, spec: EdgeSpec<K>): void {
   (pass.edges as EdgeSpec<K>[]).push(spec);
 }
 
-/** A computation over the fact store. `transfer` returning `undefined` means "no write". */
+/** A computation over the fact store. `transfer` returning `undefined` means "no write".
+ *  `factStore` is passed explicitly so the only reads/writes a pass can perform
+ *  go through an identified parameter — PassCtx carries unit-topology lookups
+ *  only, not a backdoor to the store. */
 export interface Pass<K, V> {
   readonly id: symbol;
   readonly debugName: string;
@@ -112,22 +115,18 @@ export interface Pass<K, V> {
    *  to `"analysis"`, which was a miscompile vector for any future
    *  priority-sensitive consumer. */
   readonly tier: "runtime" | "analysis";
-  transfer(ctx: PassCtx, key: K): V | undefined;
+  transfer(factStore: FactStore, ctx: PassCtx, key: K): V | undefined;
 }
 
-/** View handed to `Pass.transfer`. */
+/** Unit-topology view handed to transfers / effects / sweeps alongside the
+ *  `FactStore`. Intentionally narrow: the store is the only read/write path,
+ *  and it is always passed as its own parameter so calls like
+ *  `ctx.factStore.evict(...)` can't slip through. */
 export interface PassCtx {
-  /** Current fact, or lattice `bottom` if no cell exists. */
-  read<K2, V2>(p: Pass<K2, V2>, key: K2): V2;
-  /** Current fact, or `undefined` if unset. */
-  tryRead<K2, V2>(p: Pass<K2, V2>, key: K2): V2 | undefined;
-  readAll<K2, V2>(p: Pass<K2, V2>): ReadonlyMap<K2, V2>;
   /** Outermost containing unit for a node. */
   unitForNode(nodeId: number): FunctionUnit | undefined;
   /** Unit for a `FunctionDef.id`. */
   unitForFdId(fdId: number): FunctionUnit | undefined;
-  /** Internal-only: reserved for DFA factory's block fixpoint. */
-  readonly factStore: FactStore;
 }
 
 /** One-shot or cascading imperative AST sweep gated on analyses. Transforms
@@ -155,5 +154,5 @@ export interface TransformRule {
   readonly autoDirtyOn?: ReadonlyArray<"mint" | "rebuild">;
   /** Returns `true` iff `unit.body` was mutated — the worklist then schedules
    *  a CFG rebuild for `unit`. */
-  sweep(unit: FunctionUnit, ctx: PassCtx): boolean;
+  sweep(unit: FunctionUnit, factStore: FactStore, ctx: PassCtx): boolean;
 }

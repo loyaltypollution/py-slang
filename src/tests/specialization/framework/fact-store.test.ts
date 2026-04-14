@@ -29,7 +29,7 @@ const firedLattice: Lattice<"fired"> = {
 function makePass<K, V>(
   name: string,
   lattice: Lattice<V>,
-  transfer: (ctx: PassCtx, key: K) => V | undefined = () => undefined,
+  transfer: (factStore: FactStore, ctx: PassCtx, key: K) => V | undefined = () => undefined,
 ): Pass<K, V> {
   return {
     id: Symbol(name),

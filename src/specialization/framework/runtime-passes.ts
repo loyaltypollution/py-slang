@@ -45,15 +45,15 @@ export const runtimeWritePass: Pass<number, RawKind> = {
   edges: [
     {
       on: "retire",
-      effect: (ctx, unit) => {
+      effect: (factStore, _ctx, unit) => {
         for (const nodeId of unit.blockOfNode.keys()) {
-          ctx.factStore.evict(runtimeWritePass, nodeId);
+          factStore.evict(runtimeWritePass, nodeId);
         }
       },
     },
   ],
   tier: "runtime",
-  transfer(_ctx: PassCtx, _key: number): RawKind | undefined {
+  transfer(_factStore: FactStore, _ctx: PassCtx, _key: number): RawKind | undefined {
     return undefined;
   },
 };
@@ -100,16 +100,16 @@ export const runtimeCallPass: Pass<number, number> = {
   edges: [
     {
       on: "retire",
-      effect: (ctx, unit) => {
+      effect: (factStore, _ctx, unit) => {
         const fd = unit.funcAst;
         if (fd instanceof StmtNS.FunctionDef) {
-          ctx.factStore.evict(runtimeCallPass, fd.id);
+          factStore.evict(runtimeCallPass, fd.id);
         }
       },
     },
   ],
   tier: "runtime",
-  transfer(_ctx: PassCtx, _key: number): number | undefined {
+  transfer(_factStore: FactStore, _ctx: PassCtx, _key: number): number | undefined {
     return undefined;
   },
 };

@@ -58,7 +58,7 @@ function makePass<K, V>(opts: {
     lattice: opts.lattice,
     edges: opts.edges ?? [],
     tier: opts.tier ?? "analysis",
-    transfer: (_ctx, key) => (opts.transfer ? opts.transfer(key as K) : undefined),
+    transfer: (_fs, _ctx, key) => (opts.transfer ? opts.transfer(key as K) : undefined),
   };
 }
 
@@ -155,7 +155,7 @@ describe("Worklist pass-graph dispatch", () => {
       name: "observer",
       lattice: intMax,
       edges: [
-        { on: "rebuild", effect: (_ctx, u) => { rebuildEvents.push(u); } },
+        { on: "rebuild", effect: (_fs, _ctx, u) => { rebuildEvents.push(u); } },
       ],
       transfer: () => undefined,
     });
@@ -224,7 +224,7 @@ describe("Worklist pass-graph dispatch", () => {
       name: "observer",
       lattice: intMax,
       edges: [
-        { on: "rebuild", effect: (_ctx, u) => { rebuilt.push(u); } },
+        { on: "rebuild", effect: (_fs, _ctx, u) => { rebuilt.push(u); } },
       ],
       transfer: () => undefined,
     });

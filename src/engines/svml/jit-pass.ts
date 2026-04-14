@@ -16,6 +16,7 @@
 import { StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../../specialization/framework/cfg";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
+import type { FactStore } from "../../specialization/framework/fact-store";
 import type { Pass, PassCtx } from "../../specialization/framework/pass";
 import { constAnalysisPass, typeAnalysisPass } from "../../specialization/framework/dfa-passes";
 import type { SVMLCompiler } from "./svml-compiler";
@@ -24,7 +25,7 @@ import { SVMLIR } from "./types";
 
 /** Snapshot of the inputs that determine a unit's compiled IR, captured at
  *  the last successful compile. Block-fact entries are reference-compared
- *  against `ctx.tryRead` on the next transfer: `FactStore.write` preserves
+ *  against `factStore.tryRead` on the next transfer: `FactStore.write` preserves
  *  the previous reference when the new value is lattice-equal, so identity
  *  inequality is exactly "the DFA fact advanced". */
 interface CompileSnapshot {
@@ -88,13 +89,13 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       },
       {
         on: "retire",
-        effect: (ctx, unit) => {
-          ctx.factStore.evict(jitPass, unit);
+        effect: (factStore, _ctx, unit) => {
+          factStore.evict(jitPass, unit);
         },
       },
     ],
     tier: "analysis",
-    transfer(ctx: PassCtx, unit: FunctionUnit): SVMLIR | undefined {
+    transfer(factStore: FactStore, _ctx: PassCtx, unit: FunctionUnit): SVMLIR | undefined {
       const scope = unit.funcAst;
       if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
       const index = compiler.indexOf(scope);
@@ -104,14 +105,14 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       if (
         prev !== undefined &&
         prev.structuralGen === unit.generation &&
-        snapshotMatches(ctx, unit, prev)
+        snapshotMatches(factStore, unit, prev)
       ) {
         return undefined;
       }
 
       const newCode = compiler.compileFunction(unit);
-      lastSnapshot.set(unit, captureSnapshot(ctx, unit));
-      const prevIR = ctx.read(jitPass, unit);
+      lastSnapshot.set(unit, captureSnapshot(factStore, unit));
+      const prevIR = factStore.read(jitPass, unit);
       if (structuralEquals(newCode, prevIR)) return undefined;
       interpreter.patchFunction(index, newCode);
       return newCode;
@@ -126,23 +127,23 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
  *  already checked by the caller, so we only reach here when block identities
  *  match the snapshot. */
 function snapshotMatches(
-  ctx: PassCtx,
+  factStore: FactStore,
   unit: FunctionUnit,
   prev: CompileSnapshot,
 ): boolean {
   for (const block of unit.blockMap.values()) {
-    if (ctx.tryRead(constAnalysisPass, block) !== prev.constFacts.get(block)) return false;
-    if (ctx.tryRead(typeAnalysisPass, block) !== prev.typeFacts.get(block)) return false;
+    if (factStore.tryRead(constAnalysisPass, block) !== prev.constFacts.get(block)) return false;
+    if (factStore.tryRead(typeAnalysisPass, block) !== prev.typeFacts.get(block)) return false;
   }
   return true;
 }
 
-function captureSnapshot(ctx: PassCtx, unit: FunctionUnit): CompileSnapshot {
+function captureSnapshot(factStore: FactStore, unit: FunctionUnit): CompileSnapshot {
   const constFacts = new Map<BasicBlock, unknown>();
   const typeFacts = new Map<BasicBlock, unknown>();
   for (const block of unit.blockMap.values()) {
-    constFacts.set(block, ctx.tryRead(constAnalysisPass, block));
-    typeFacts.set(block, ctx.tryRead(typeAnalysisPass, block));
+    constFacts.set(block, factStore.tryRead(constAnalysisPass, block));
+    typeFacts.set(block, factStore.tryRead(typeAnalysisPass, block));
   }
   return { structuralGen: unit.generation, constFacts, typeFacts };
 }

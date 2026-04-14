@@ -1,4 +1,5 @@
 import { StmtNS, ExprNS } from "../../ast-types";
+import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
 import type { PassCtx, TransformRule } from "../framework/pass";
 import { runtimeCallPass, RUNTIME_CALL_COUNT_SAT } from "../framework/runtime-passes";
@@ -98,14 +99,14 @@ export const memoizationRule: TransformRule = (() => {
         return u ? [u] : [];
       }},
     ],
-    sweep(unit: FunctionUnit, ctx: PassCtx): boolean {
+    sweep(unit: FunctionUnit, factStore: FactStore, _ctx: PassCtx): boolean {
       if (wrapped.has(unit)) return false;
       const fd = unit.funcAst;
       if (!(fd instanceof StmtNS.FunctionDef)) return false;
       // runtimeCallPass already saturates at RUNTIME_CALL_COUNT_SAT via its
-      // lattice join, so ctx.read returns the capped count directly.
-      if (ctx.read(runtimeCallPass, fd.id) < MEMOIZATION_THRESHOLD) return false;
-      if (ctx.read(purityScopePass, fd.id) !== true) return false;
+      // lattice join, so factStore.read returns the capped count directly.
+      if (factStore.read(runtimeCallPass, fd.id) < MEMOIZATION_THRESHOLD) return false;
+      if (factStore.read(purityScopePass, fd.id) !== true) return false;
       if (!applyMemoizationWrap(unit)) return false;
       wrapped.add(unit);
       return true;

@@ -20,8 +20,8 @@ function dfaPass<L>(
     valueLattice: spec,
     mergeKind: spec.mergeKind,
     seedEnv: () => new MutableEnv<L>(),
-    transferBlock: (ctx, block, inEnv, unit) =>
-      transferBlock(block, inEnv, spec, ctx.factStore, unit.slotLookup),
+    transferBlock: (factStore, _ctx, block, inEnv, unit) =>
+      transferBlock(block, inEnv, spec, factStore, unit.slotLookup),
     refineOnEdge: (env, edge) => spec.refineOnEdge(env, edge),
   });
   addEdge(pass, { on: "fact", pass: runtimeWritePass, wake: nodeIdToBlock });

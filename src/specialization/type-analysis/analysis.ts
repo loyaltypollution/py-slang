@@ -9,7 +9,7 @@ import { isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   type TypeLattice,
   ALL_KINDS_MASK,
-  boolean as booleanValue,
+  boolValue,
   BOOL_BIT,
   BOOL_FALSE,
   BOOL_TRUE,
@@ -141,7 +141,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
       return this.annotate(expr, transferCompare(opStr, left, right));
     }
 
-    return this.annotate(expr, booleanValue(BoolRef.Top));
+    return this.annotate(expr, boolValue(BoolRef.Top));
   }
 
   // Narrow `and`/`or` under Python short-circuit semantics:
@@ -306,9 +306,13 @@ function signOf(value: number): IntRef {
  *  keeps that kind; disjoint non-numeric slots (e.g. STRING) still collapse
  *  to BOTTOM, which is sound — the branch is unreachable. */
 function numericRefinement(ref: IntRef): TypeLattice {
-  // IntRef bits: Neg=1, Zero=2, Pos=4.
-  // BoolRef bits: True=1, False=2.
-  const boolRef = (((ref & 4) >> 2) | (ref & 2)) as BoolRef;
+  // IntRef bits: Neg=1, Zero=2, Pos=4. BoolRef bits: True=1, False=2.
+  // Python truthiness: nonzero int → True, zero → False. Both Neg and Pos
+  // contribute to True; only Zero contributes to False.
+  const hasTruthy = (ref & (IntRef.Neg | IntRef.Pos)) !== 0;
+  const hasFalsy = (ref & IntRef.Zero) !== 0;
+  const boolRef = (((hasTruthy ? BoolRef.True : 0) |
+    (hasFalsy ? BoolRef.False : 0)) as BoolRef);
   return {
     kinds: INT_BIT | FLOAT_BIT | BOOL_BIT,
     intRef: ref,

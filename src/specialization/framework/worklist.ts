@@ -186,17 +186,7 @@ export class Worklist {
     return this.nodeToUnit;
   }
 
-  /** Memoized DFA projection; the closure captures `factStore` and
-   *  `nodeToUnit` by reference so later writes/rebuilds are reflected. */
-  private _dfaQuery: DfaQuery | undefined;
-  get dfaQuery(): DfaQuery {
-    if (this._dfaQuery === undefined) {
-      this._dfaQuery = makeDfaQuery(this.factStore, this.nodeToUnit);
-    }
-    return this._dfaQuery;
-  }
-
-  /** Subscribe `fn` to writes against `upstream`. Called via `register` /
+/** Subscribe `fn` to writes against `upstream`. Called via `register` /
    *  `registerTransform`; not public API. */
   private subscribeFact(
     upstream: Pass<any, any>,
@@ -224,7 +214,7 @@ export class Worklist {
       if (lc.wake !== undefined) {
         for (const k of lc.wake(this.passCtx, unit)) this.enqueue(reader, k);
       }
-      if (lc.effect !== undefined) lc.effect(this.passCtx, unit);
+      if (lc.effect !== undefined) lc.effect(this.factStore, this.passCtx, unit);
     };
     for (const spec of pass.edges) {
       if (spec.on !== "fact") {
@@ -312,7 +302,7 @@ export class Worklist {
     while (!this.queue.isEmpty()) {
       const item = this.queue.dequeue()!;
       this.pendingKeysByPass.get(item.pass)?.delete(item.key);
-      const value = item.pass.transfer(this.passCtx, item.key);
+      const value = item.pass.transfer(this.factStore, this.passCtx, item.key);
       if (value !== undefined) {
         this.factStore.write(item.pass, item.key, value);
       }
@@ -329,7 +319,7 @@ export class Worklist {
       const units = Array.from(dirty);
       dirty.clear();
       for (const unit of units) {
-        if (r.sweep(unit, this.passCtx)) {
+        if (r.sweep(unit, this.factStore, this.passCtx)) {
           this.pendingRebuilds.add(unit);
           anyFired = true;
         }
@@ -339,12 +329,8 @@ export class Worklist {
   }
 
   private readonly passCtx: PassCtx = {
-    read: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.read(p, key),
-    tryRead: <K2, V2>(p: Pass<K2, V2>, key: K2) => this.factStore.tryRead(p, key),
-    readAll: <K2, V2>(p: Pass<K2, V2>) => this.factStore.readAll(p),
     unitForNode: (nodeId: number) => this.nodeToUnit.get(nodeId),
     unitForFdId: (fdId: number) => this.unitsByFdId.get(fdId),
-    factStore: this.factStore,
   };
 
   /** FactStore listener. Invariant: runs inside `FactStore.write`'s

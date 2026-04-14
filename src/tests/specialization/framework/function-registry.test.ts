@@ -24,9 +24,9 @@ function makeLifecycleObserver(): {
     debugName: "observer",
     lattice: { bottom: 0, leq: (a, b) => a <= b, join: Math.max },
     edges: [
-      { on: "mint", effect: (_ctx, u) => { minted.push(u); } },
-      { on: "rebuild", effect: (_ctx, u) => { rebuilt.push(u); } },
-      { on: "retire", effect: (_ctx, u) => {
+      { on: "mint", effect: (_fs, _ctx, u) => { minted.push(u); } },
+      { on: "rebuild", effect: (_fs, _ctx, u) => { rebuilt.push(u); } },
+      { on: "retire", effect: (_fs, _ctx, u) => {
         const fd = u.funcAst;
         const fdId = fd instanceof StmtNS.FunctionDef ? fd.id : -1;
         retired.push({ unit: u, fdId });

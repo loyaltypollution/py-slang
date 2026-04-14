@@ -31,6 +31,7 @@ import {
   makeBlockFixpointPass,
   type DfaBlockFact,
 } from "../framework/dfa-factory";
+import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
 import type { EdgeSpec, Lattice, Pass, PassCtx } from "../framework/pass";
@@ -42,6 +43,7 @@ import {
   GLOBAL,
   IMPURE_MARKER,
   IMPURE_SENTINEL_NODE_ID,
+  BOTTOM,
   UNKNOWN,
   type AbsVal,
 } from "./lattice";
@@ -94,7 +96,7 @@ class BlockState {
     readonly env: MutableEnv<AbsVal>,
     readonly slotLookup: SlotLookup,
     readonly selfName: string | undefined,
-    readonly ctx: PassCtx,
+    readonly factStore: FactStore,
   ) {}
 
   markImpure(): void {
@@ -352,7 +354,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
         state.markImpure();
         return;
       }
-      const innerPure = state.ctx.tryRead(purityScopePass, fd.id);
+      const innerPure = state.factStore.tryRead(purityScopePass, fd.id);
       // Defer on `undefined`: the inner hasn't been analyzed yet — record a
       // *pending* Closure. Call sites and escape points treat pending as
       // "deferred" (no markImpure), keeping this block's summary monotone
@@ -376,11 +378,12 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
 // assigned") and no natural meet. Typed as plain `Lattice` — the DfaConfig
 // discriminated union refuses to pair this with `mergeKind: "must"`, so
 // `meet`/`top` can be honestly absent rather than fabricated-and-thrown.
-// `bottom: UNKNOWN` is unused by the factory (per-slot absence means ⊥ in
-// MutableEnv); it satisfies `Lattice.bottom` and would only surface if a
-// reader called `factStore.read` on a non-existent cell through this lattice.
+// `bottom` is the structural `{kind:"bottom"}` variant — the true lattice
+// minimum. MutableEnv represents ⊥ as slot absence and never surfaces this
+// value today, but keeping the field honest avoids a latent miscompilation
+// if any consumer ever reads a missing cell through this lattice.
 const absValLattice: Lattice<AbsVal> = {
-  bottom: UNKNOWN,
+  bottom: BOTTOM,
   leq: absLeq,
   join: absJoin,
 };
@@ -403,10 +406,10 @@ export const purityBlockPass: Pass<
     }
     return env;
   },
-  transferBlock: (ctx, block, inEnv, unit) => {
+  transferBlock: (factStore, _ctx, block, inEnv, unit) => {
     const fd = unit.funcAst;
     const selfName = fd instanceof StmtNS.FunctionDef ? fd.name.lexeme : undefined;
-    const state = new BlockState(inEnv, unit.slotLookup, selfName, ctx);
+    const state = new BlockState(inEnv, unit.slotLookup, selfName, factStore);
     for (const stmt of block.stmts) transferStmt(stmt, state);
     // Block-global impure flag lives at a sentinel key in `exprFacts`. The
     // DFA factory's per-key lattice join handles monotone propagation; a
@@ -471,16 +474,16 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
     },
     {
       on: "retire",
-      effect: (ctx, unit) => {
+      effect: (factStore, _ctx, unit) => {
         const fd = unit.funcAst;
         if (fd instanceof StmtNS.FunctionDef) {
-          ctx.factStore.evict(purityScopePass, fd.id);
+          factStore.evict(purityScopePass, fd.id);
         }
       },
     },
   ],
   tier: "analysis",
-  transfer(ctx: PassCtx, fdId: number): boolean | undefined {
+  transfer(factStore: FactStore, ctx: PassCtx, fdId: number): boolean | undefined {
     const unit = ctx.unitForFdId(fdId);
     if (unit === undefined) return undefined;
     const fd = unit.funcAst;
@@ -492,7 +495,7 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
     // has been visited yet, defer until the inner pass has run.
     let anyVisited = false;
     for (const block of unit.cfg.blocks) {
-      const fact = ctx.tryRead(purityBlockPass, block);
+      const fact = factStore.tryRead(purityBlockPass, block);
       if (fact === undefined) continue;
       anyVisited = true;
       if (fact.exprFacts.has(IMPURE_SENTINEL_NODE_ID)) return false;

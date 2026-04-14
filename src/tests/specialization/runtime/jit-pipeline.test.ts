@@ -61,9 +61,9 @@ f()
       },
       edges: [{ on: "fact", pass: runtimeCallPass, wake: (_c, k) => [k as number] }],
       tier: "analysis",
-      transfer(ctx, key) {
+      transfer(factStore, _ctx, key) {
         transferRuns++;
-        return ctx.read(runtimeCallPass, key) ?? 0;
+        return factStore.read(runtimeCallPass, key) ?? 0;
       },
     };
     worklist.register(observer);
@@ -88,10 +88,10 @@ f()
       },
       edges: [{ on: "fact", pass: runtimeCallPass, wake: () => [unit] }],
       tier: "analysis",
-      transfer(ctx, u) {
-        const c = ctx.read(runtimeCallPass, fDef.id) ?? 0;
+      transfer(factStore, _ctx, u) {
+        const c = factStore.read(runtimeCallPass, fDef.id) ?? 0;
         if (c <= MEMOIZATION_THRESHOLD) return undefined;
-        const prev = ctx.read(jitPass, u);
+        const prev = factStore.read(jitPass, u);
         if (prev === 1) return undefined;
         patchCalls++;
         return 1;
@@ -161,7 +161,7 @@ g()
         { on: "rebuild", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },
       ],
       tier: "analysis",
-      transfer(_ctx: PassCtx, unit: FunctionUnit) {
+      transfer(_fs, _ctx: PassCtx, unit: FunctionUnit) {
         const scope = unit.funcAst;
         if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
         const index = compiler.indexOf(scope);

@@ -33,42 +33,32 @@ export interface TypeLattice {
   readonly floatRef: IntRef; // reuses IntRef enum for sign refinement
 }
 
-// IntRef/BoolRef are bit-subset lattices: join=OR, meet=AND, leq=subset.
-// All three operations are bitwise and type-agnostic over the const enums.
-function joinBits<T extends number>(a: T, b: T): T {
-  return (a | b) as T;
-}
-function meetBits<T extends number>(a: T, b: T): T {
-  return (a & b) as T;
-}
-function leqBits<T extends number>(a: T, b: T): boolean {
-  return (a & b) === a;
-}
+// IntRef/BoolRef are bit-subset lattices: join = OR, meet = AND, leq = subset.
 
 export function join(a: TypeLattice, b: TypeLattice): TypeLattice {
   if (a === b) return a;
   const kinds = a.kinds | b.kinds;
-  const intRef = kinds & INT_BIT ? joinBits(a.intRef, b.intRef) : (0 as IntRef);
-  const boolRef = kinds & BOOL_BIT ? joinBits(a.boolRef, b.boolRef) : (0 as BoolRef);
-  const floatRef = kinds & FLOAT_BIT ? joinBits(a.floatRef, b.floatRef) : (0 as IntRef);
+  const intRef = kinds & INT_BIT ? ((a.intRef | b.intRef) as IntRef) : (0 as IntRef);
+  const boolRef = kinds & BOOL_BIT ? ((a.boolRef | b.boolRef) as BoolRef) : (0 as BoolRef);
+  const floatRef = kinds & FLOAT_BIT ? ((a.floatRef | b.floatRef) as IntRef) : (0 as IntRef);
   return { kinds, intRef, boolRef, floatRef };
 }
 
 export function meet(a: TypeLattice, b: TypeLattice): TypeLattice {
   if (a === b) return a;
   const kinds = a.kinds & b.kinds;
-  const intRef = kinds & INT_BIT ? meetBits(a.intRef, b.intRef) : (0 as IntRef);
-  const boolRef = kinds & BOOL_BIT ? meetBits(a.boolRef, b.boolRef) : (0 as BoolRef);
-  const floatRef = kinds & FLOAT_BIT ? meetBits(a.floatRef, b.floatRef) : (0 as IntRef);
+  const intRef = kinds & INT_BIT ? ((a.intRef & b.intRef) as IntRef) : (0 as IntRef);
+  const boolRef = kinds & BOOL_BIT ? ((a.boolRef & b.boolRef) as BoolRef) : (0 as BoolRef);
+  const floatRef = kinds & FLOAT_BIT ? ((a.floatRef & b.floatRef) as IntRef) : (0 as IntRef);
   return { kinds, intRef, boolRef, floatRef };
 }
 
 export function leq(a: TypeLattice, b: TypeLattice): boolean {
   if (a === b) return true;
   if ((a.kinds & ~b.kinds) !== 0) return false;
-  if (a.kinds & INT_BIT && !leqBits(a.intRef, b.intRef)) return false;
-  if (a.kinds & BOOL_BIT && !leqBits(a.boolRef, b.boolRef)) return false;
-  if (a.kinds & FLOAT_BIT && !leqBits(a.floatRef, b.floatRef)) return false;
+  if (a.kinds & INT_BIT && (a.intRef & b.intRef) !== a.intRef) return false;
+  if (a.kinds & BOOL_BIT && (a.boolRef & b.boolRef) !== a.boolRef) return false;
+  if (a.kinds & FLOAT_BIT && (a.floatRef & b.floatRef) !== a.floatRef) return false;
   return true;
 }
 
@@ -126,8 +116,8 @@ export function integer(intRef: IntRef = 7 as IntRef): TypeLattice {
   return INT_SINGLETONS[intRef];
 }
 
-export function boolean(boolRef: BoolRef = 3 as BoolRef): TypeLattice {
-  return BOOL_SINGLETONS[boolRef];
+export function boolValue(ref: BoolRef = 3 as BoolRef): TypeLattice {
+  return BOOL_SINGLETONS[ref];
 }
 
 /** Default IntRef.Top covers NaN (no meaningful sign). */

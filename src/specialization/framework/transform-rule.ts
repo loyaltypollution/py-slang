@@ -22,8 +22,8 @@ export function unitSweepRule(
     id: Symbol(name),
     debugName: name,
     edges,
-    sweep(unit: FunctionUnit, ctx: PassCtx): boolean {
-      return sweep(unit, ctx.factStore);
+    sweep(unit: FunctionUnit, factStore: FactStore, _ctx: PassCtx): boolean {
+      return sweep(unit, factStore);
     },
   };
 }
