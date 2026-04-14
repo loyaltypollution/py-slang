@@ -22,10 +22,23 @@ import {
 } from "../specialization";
 
 /**
- * Experimental tiered JIT: races CSE and SVML against one shared Worklist.
- * Winner's buffered effects are flushed; loser is cooperatively aborted via
- * an `aborted` flag checked in observation callbacks and proxy input. Not
+ * ⚠️ EXPERIMENTAL — NOT FOR PRODUCTION USE ⚠️
+ *
+ * Tiered JIT: races CSE and SVML against one shared Worklist. Winner's
+ * buffered effects are flushed; loser is cooperatively aborted via an
+ * `aborted` flag checked in observation callbacks and proxy input. Not
  * preemptive — an observe-free hot loop will block abort until it yields.
+ *
+ * Known soundness gap: both arms `await` inside their run loops, so the
+ * event loop can interleave `wl.observe`, `wl.drain`, `wl.beginBatch`, and
+ * `wl.endBatch` calls against the single shared `Worklist`. `batchDepth`,
+ * `pendingRebuilds`, and `processQueue` are not re-entrant and carry no
+ * locking. Concurrent `endBatch` calls can race the outermost-drain check;
+ * mid-drain observations from the other arm can enqueue items into a
+ * partially-drained queue. Deterministic under specific interleavings only.
+ *
+ * Use for research / benchmarking. Do not wire into the production
+ * conductor registry.
  */
 
 class AbortError extends Error { constructor() { super("aborted"); } }

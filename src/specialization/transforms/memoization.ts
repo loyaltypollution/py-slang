@@ -1,6 +1,6 @@
 // Memoization: wraps a hot, pure FunctionDef body using __memo_has / __memo_get / __memo_put.
 
-import { ExprNS, StmtNS } from "../../ast-types";
+import { StmtNS, ExprNS } from "../../ast-types";
 import type { FunctionUnit } from "../framework/function-unit";
 import type { Pass, PassCtx } from "../framework/pass";
 import { structuralPass } from "../framework/structural-pass";
@@ -14,11 +14,11 @@ import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
-// Idempotent: returns false if the prelude is already present.
+// Idempotent via the structural `unit.memoizationApplied` flag.
 function applyMemoizationWrap(unit: FunctionUnit): boolean {
   const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return false;
-  if (isAlreadyWrapped(fd.body)) return false;
+  if (unit.memoizationApplied) return false;
 
   const id = `${fd.name.lexeme}@L${fd.name.line}`;
   const params = fd.parameters.map(p => mkVar(fd, p.lexeme));
@@ -35,17 +35,8 @@ function applyMemoizationWrap(unit: FunctionUnit): boolean {
 
   rewriteReturns(fd.body, fd, id, params);
   fd.body.unshift(prelude);
+  unit.memoizationApplied = true;
   return true;
-}
-
-function isAlreadyWrapped(body: StmtNS.Stmt[]): boolean {
-  if (body.length === 0) return false;
-  const first = body[0];
-  if (!(first instanceof StmtNS.If)) return false;
-  const cond = first.condition;
-  if (!(cond instanceof ExprNS.Call)) return false;
-  const callee = cond.callee;
-  return callee instanceof ExprNS.Variable && callee.name.lexeme === MEMO_HAS;
 }
 
 // AST construction helpers

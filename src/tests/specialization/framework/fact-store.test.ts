@@ -61,7 +61,7 @@ describe("FactStore", () => {
     const changed = store.write(p, "k", 3);
     expect(changed).toBe(true);
     expect(events).toHaveLength(1);
-    expect(events[0]).toEqual({ pass: p, key: "k", oldValue: null, newValue: 3 });
+    expect(events[0]).toEqual({ pass: p, key: "k", oldValue: undefined, newValue: 3 });
   });
 
   it("suppresses events on equal-value writes", () => {

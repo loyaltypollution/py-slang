@@ -1,10 +1,10 @@
 import type { Pass } from "./pass";
 
-/** Fired on value-changing `(pass, key)` writes. `oldValue` is `null` if the cell was empty. */
+/** Fired on value-changing `(pass, key)` writes. `oldValue` is `undefined` if the cell was empty. */
 export interface FactChange<K, V> {
   readonly pass: Pass<K, V>;
   readonly key: K;
-  readonly oldValue: V | null;
+  readonly oldValue: V | undefined;
   readonly newValue: V;
 }
 
@@ -48,7 +48,7 @@ export class FactStore {
     }
 
     const hadPrev = inner.has(key);
-    const prev = hadPrev ? (inner.get(key) as V) : null;
+    const prev = hadPrev ? (inner.get(key) as V) : undefined;
     const joined = hadPrev ? pass.lattice.join(prev as V, value) : value;
 
     if (hadPrev && pass.lattice.equals(prev as V, joined)) return false;

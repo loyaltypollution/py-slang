@@ -17,6 +17,22 @@ export interface FunctionUnit {
   blockOfNode: Map<number, BasicBlock>;
   generation: number;
   callCount: number;
+  /** Structural marker: memoization wrap has been applied. Replaces the
+   *  body-shape heuristic previously used to gate idempotent re-wrap. */
+  memoizationApplied: boolean;
+}
+
+/** Helper for `Pass.prune` implementations: restrict eviction to keys owned by
+ *  `unit`. `classify(k)` must return the unit the key belongs to (or
+ *  `undefined` if unscoped). Prevents cross-unit fact corruption. */
+export function pruneForUnit<K>(
+  previousKeys: Iterable<K>,
+  unit: FunctionUnit,
+  classify: (k: K) => FunctionUnit | undefined,
+): K[] {
+  const out: K[] = [];
+  for (const k of previousKeys) if (classify(k) === unit) out.push(k);
+  return out;
 }
 
 // Lambda bodies are separate scopes and not analyzed here.
@@ -44,6 +60,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       blockOfNode: new Map(),
       generation: 0,
       callCount: 0,
+      memoizationApplied: false,
       get body(): StmtNS.Stmt[] {
         return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
       },

@@ -15,6 +15,12 @@ export interface Pass<K, V> {
   readonly lattice: Lattice<V>;
   readonly reads: ReadonlyArray<Pass<any, any>>;
   readonly tier?: "runtime" | "analysis" | "transform";
+  /** If set, on any upstream write this pass re-transfers over **every
+   *  previously-written key** (O(N) per upstream change). Prefer
+   *  `affectedKeys` when you can narrow the set — `coarse: true` silently
+   *  amplifies to quadratic work when the upstream is a high-fanout source
+   *  like `runtimeWritePass` or `runtimeCallPass`. Mutually exclusive with
+   *  `affectedKeys`; one is required. */
   readonly coarse?: boolean;
   transfer(ctx: PassCtx, key: K): V | undefined;
   affectedKeys?(

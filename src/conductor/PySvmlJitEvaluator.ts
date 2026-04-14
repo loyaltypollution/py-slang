@@ -42,8 +42,10 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           worklist.observe(runtimeCallPass, scopeId, next);
           // Scope-call boundary: drain any writes buffered since the last call
           // so memoization / tier-up transforms (jitPass) can fire before the
-          // next invocation uses the unspecialized body.
-          worklist.drain();
+          // next invocation uses the unspecialized body. Gated on pending work
+          // so post-saturation calls (nothing queued) don't pay for an empty
+          // drain traversal.
+          if (worklist.hasPendingWork()) worklist.drain();
         },
       });
 

@@ -127,6 +127,11 @@ export class Worklist {
     if (this.batchDepth === 0) this.processQueue();
   }
 
+  /** True iff a subsequent `drain()` would do any work. O(1). */
+  hasPendingWork(): boolean {
+    return !this.queue.isEmpty() || this.pendingRebuilds.size > 0;
+  }
+
   /** Enqueue `(pass, key)` for re-transfer. Deduped per pair. */
   enqueue<K, V>(pass: Pass<K, V>, key: K): void {
     const p = pass as Pass<any, any>;
@@ -234,13 +239,18 @@ export class Worklist {
     return Array.from(this.factStore.readAll(reader).keys());
   }
 
-  drain(limit = Infinity): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
+  /** Drain to fixed point. `limit` caps the number of CFG rebuild iterations —
+   *  a safety valve against cascading transforms that fail to converge (e.g.
+   *  a buggy transform whose `firedLattice` gate never trips). Under the stated
+   *  termination argument (AST-size potential + one-shot memoization), the bound
+   *  is O(initialAstSize + functionCount); the default is a generous multiple.
+   *  Exceeding the limit throws. */
+  drain(limit: number = Worklist.DEFAULT_DRAIN_LIMIT): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
     const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     let processed = 0;
 
-    while (processed < limit) {
+    while (true) {
       this.processQueue();
-      // CFG rebuilds bump structuralPass, re-enqueuing downstream work.
       const rebuilt = this.flushPendingRebuilds();
 
       if (rebuilt.length === 0) break;
@@ -249,11 +259,19 @@ export class Worklist {
         changed.add(unit.funcAst);
         processed++;
       }
+
+      if (processed >= limit) {
+        throw new Error(
+          `[Worklist] drain exceeded ${limit} CFG rebuilds — likely a non-terminating transform cascade. ` +
+          `Raise the limit explicitly via drain(n) only if you've verified convergence.`,
+        );
+      }
     }
 
     return changed;
   }
 
+  static readonly DEFAULT_DRAIN_LIMIT = 1000;
 }
 
 /** Default production pass set. Tests may pass a subset for isolation. */
@@ -267,6 +285,30 @@ export const DEFAULT_PASSES: ReadonlyArray<Pass<any, any>> = [
   constAnalysisDfa,
   purityScopePass,
   callCountPass,
+  deadBranchRule,
+  constantFoldingRule,
+  memoizationRule,
+];
+
+/** Source passes (runtime observations + structural). No `reads`. */
+export const SOURCE_PASSES: ReadonlyArray<Pass<any, any>> = [
+  structuralPass,
+  runtimeWritePass,
+  runtimeCallPass,
+];
+
+/** Analysis-tier passes. */
+export const ANALYSIS_PASSES: ReadonlyArray<Pass<any, any>> = [
+  typeAnalysisPass,
+  constAnalysisPass,
+  typeAnalysisDfa,
+  constAnalysisDfa,
+  purityScopePass,
+  callCountPass,
+];
+
+/** Transform-tier passes. */
+export const TRANSFORM_PASSES: ReadonlyArray<Pass<any, any>> = [
   deadBranchRule,
   constantFoldingRule,
   memoizationRule,

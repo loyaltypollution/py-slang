@@ -104,7 +104,8 @@ abstract class PyCseJitEvaluatorBase extends BasicEvaluator {
         worklist.observe(runtimeCallPass, scopeId, next);
         // Scope-call boundary: drain any writes buffered since the last call so
         // memoization / tier-up transforms can fire before the next invocation.
-        worklist.drain();
+        // Gated on pending work to skip empty drains once facts have saturated.
+        if (worklist.hasPendingWork()) worklist.drain();
       };
 
       worklist.beginBatch();
