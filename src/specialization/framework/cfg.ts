@@ -1,15 +1,51 @@
 // BasicBlock / CFG types + builder.
+//
+// Edges are first-class values: a `CFGEdge` carries `from`, `to`, a `kind`
+// discriminant, and (for branch edges) the `condition` expression whose
+// truth value the edge reflects. Analysis passes that implement
+// `refineOnEdge` read `condition` to narrow the env at merge sites.
+//
+// The `successors` / `predecessors` arrays remain as a view over the edge
+// arrays for migration convenience — they are intended to be removed once
+// all call sites consume edges directly.
 
-import { StmtNS } from "../../ast-types";
+import type { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionUnit } from "./function-unit";
 
 export type BlockId = number;
+
+/** Control-flow edge between two blocks. The `kind` tag parallels
+ *  `EdgeSpec.on` in the scheduling layer: `"unconditional"` is the
+ *  structural default, the two `"branch-*"` variants carry the condition
+ *  whose truth value the edge reflects. Readers that don't care about the
+ *  condition treat all three uniformly via `from`/`to`. */
+export type CFGEdge =
+  | { readonly kind: "unconditional"; readonly from: BasicBlock; readonly to: BasicBlock }
+  | {
+      readonly kind: "branch-true";
+      readonly from: BasicBlock;
+      readonly to: BasicBlock;
+      readonly condition: ExprNS.Expr;
+    }
+  | {
+      readonly kind: "branch-false";
+      readonly from: BasicBlock;
+      readonly to: BasicBlock;
+      readonly condition: ExprNS.Expr;
+    };
 
 export interface BasicBlock {
   readonly id: BlockId;
   /** View into the AST's statement arrays; do not mutate. */
   readonly stmts: StmtNS.Stmt[];
+  /** Outgoing control-flow edges. Primary storage. */
+  readonly successorEdges: CFGEdge[];
+  /** Incoming control-flow edges. Primary storage. */
+  readonly predecessorEdges: CFGEdge[];
+  /** Back-compat view over `successorEdges`. Kept in sync by `linkBlocks`;
+   *  slated for removal once all call sites migrate. */
   readonly successors: BasicBlock[];
+  /** Back-compat view over `predecessorEdges`. Same deprecation path. */
   readonly predecessors: BasicBlock[];
   /** Back-pointer to owning unit; set by `buildCFG` at creation. */
   readonly unit: FunctionUnit;
@@ -31,6 +67,8 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
     const block: BasicBlock = {
       id: nextId++,
       stmts: [],
+      successorEdges: [],
+      predecessorEdges: [],
       successors: [],
       predecessors: [],
       unit,
@@ -39,7 +77,27 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
     return block;
   }
 
-  function addEdge(from: BasicBlock, to: BasicBlock): void {
+  /** Create a labeled edge between two blocks. Replaces the legacy `addEdge`
+   *  helper; callers pass the edge `kind` and (when the kind demands it)
+   *  the `condition` expression. Back-compat `successors`/`predecessors`
+   *  arrays are maintained here. */
+  function linkBlocks(
+    from: BasicBlock,
+    to: BasicBlock,
+    kind: CFGEdge["kind"] = "unconditional",
+    condition?: ExprNS.Expr,
+  ): void {
+    let edge: CFGEdge;
+    if (kind === "unconditional") {
+      edge = { kind, from, to };
+    } else {
+      if (condition === undefined) {
+        throw new Error(`linkBlocks: ${kind} edge requires a condition`);
+      }
+      edge = { kind, from, to, condition };
+    }
+    from.successorEdges.push(edge);
+    to.predecessorEdges.push(edge);
     from.successors.push(to);
     to.predecessors.push(from);
   }
@@ -58,18 +116,18 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
           (current.stmts as StmtNS.Stmt[]).push(stmt);
 
           const trueBlock = makeBlock();
-          addEdge(current, trueBlock);
+          linkBlocks(current, trueBlock, "branch-true", ifStmt.condition);
           const afterTrue = emitBlock(ifStmt.body, trueBlock);
 
           if (ifStmt.elseBlock) {
             const falseBlock = makeBlock();
-            addEdge(current, falseBlock);
+            linkBlocks(current, falseBlock, "branch-false", ifStmt.condition);
             const afterFalse = emitBlock(ifStmt.elseBlock, falseBlock);
 
             if (afterTrue || afterFalse) {
               const join = makeBlock();
-              if (afterTrue) addEdge(afterTrue, join);
-              if (afterFalse) addEdge(afterFalse, join);
+              if (afterTrue) linkBlocks(afterTrue, join);
+              if (afterFalse) linkBlocks(afterFalse, join);
               current = join;
             } else {
               // Both branches diverge.
@@ -77,8 +135,8 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
             }
           } else {
             const join = makeBlock();
-            addEdge(current, join);
-            if (afterTrue) addEdge(afterTrue, join);
+            linkBlocks(current, join, "branch-false", ifStmt.condition);
+            if (afterTrue) linkBlocks(afterTrue, join);
             current = join;
           }
           break;
@@ -87,20 +145,20 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
         case "While": {
           const whileStmt = stmt as StmtNS.While;
           const header = makeBlock();
-          addEdge(current, header);
+          linkBlocks(current, header);
           (header.stmts as StmtNS.Stmt[]).push(stmt);
 
           const loopBody = makeBlock();
-          addEdge(header, loopBody);
+          linkBlocks(header, loopBody, "branch-true", whileStmt.condition);
 
           const loopExit = makeBlock();
-          addEdge(header, loopExit);
+          linkBlocks(header, loopExit, "branch-false", whileStmt.condition);
 
           loopStack.push({ header, exit: loopExit });
           const afterBody = emitBlock(whileStmt.body, loopBody);
           loopStack.pop();
 
-          if (afterBody) addEdge(afterBody, header);
+          if (afterBody) linkBlocks(afterBody, header);
 
           current = loopExit;
           break;
@@ -109,20 +167,24 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
         case "For": {
           const forStmt = stmt as StmtNS.For;
           const header = makeBlock();
-          addEdge(current, header);
+          linkBlocks(current, header);
           (header.stmts as StmtNS.Stmt[]).push(stmt);
 
+          // `for` has no narrowable predicate; branch edges carry the
+          // iterable expression as the "condition" purely as a placeholder.
+          // Passes that implement `refineOnEdge` should ignore non-Compare
+          // conditions.
           const loopBody = makeBlock();
-          addEdge(header, loopBody);
+          linkBlocks(header, loopBody, "branch-true", forStmt.iter);
 
           const loopExit = makeBlock();
-          addEdge(header, loopExit);
+          linkBlocks(header, loopExit, "branch-false", forStmt.iter);
 
           loopStack.push({ header, exit: loopExit });
           const afterBody = emitBlock(forStmt.body, loopBody);
           loopStack.pop();
 
-          if (afterBody) addEdge(afterBody, header);
+          if (afterBody) linkBlocks(afterBody, header);
 
           current = loopExit;
           break;
@@ -133,7 +195,7 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
             throw new Error("Break outside loop — parser should have rejected this");
           }
           (current.stmts as StmtNS.Stmt[]).push(stmt);
-          addEdge(current, loopStack[loopStack.length - 1].exit);
+          linkBlocks(current, loopStack[loopStack.length - 1].exit);
           return null;
         }
 
@@ -142,13 +204,13 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
             throw new Error("Continue outside loop — parser should have rejected this");
           }
           (current.stmts as StmtNS.Stmt[]).push(stmt);
-          addEdge(current, loopStack[loopStack.length - 1].header);
+          linkBlocks(current, loopStack[loopStack.length - 1].header);
           return null;
         }
 
         case "Return": {
           (current.stmts as StmtNS.Stmt[]).push(stmt);
-          addEdge(current, exit);
+          linkBlocks(current, exit);
           return null;
         }
 
@@ -163,7 +225,7 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
 
   const lastBlock = emitBlock(body, entry);
   if (lastBlock) {
-    addEdge(lastBlock, exit);
+    linkBlocks(lastBlock, exit);
   }
 
   return { entry, exit, blocks };
