@@ -217,6 +217,7 @@ describe("memoization: SVML wiring", () => {
       environments,
       reactive.units,
       reactive.factStore,
+      reactive.nodeIndex,
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast));
     return { reactive, interpreter };
@@ -253,6 +254,7 @@ f(5)
       environments,
       reactive.units,
       reactive.factStore,
+      reactive.nodeIndex,
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast));
     await interpreter.execute();

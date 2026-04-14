@@ -6,13 +6,13 @@
 // IR itself is the lattice value, so equal writes suppress onChange.
 
 import { StmtNS } from "../../ast-types";
+import type { BasicBlock } from "../../specialization/framework/cfg";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import type { Pass, PassCtx } from "../../specialization/framework/pass";
-import { constAnalysisPass } from "../../specialization/const-analysis/analysis";
+import { constAnalysisPass, typeAnalysisPass } from "../../specialization/framework/dfa-passes";
 import { structuralPass } from "../../specialization/framework/structural-pass";
 import { callCountPass } from "../../specialization/memoization-analysis/call-count";
 import { purityScopePass } from "../../specialization/purity-analysis/analysis";
-import { typeAnalysisPass } from "../../specialization/type-analysis/analysis";
 import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
 import { SVMLIR } from "./types";
@@ -76,19 +76,14 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
         return [triggerKey as FunctionUnit];
       }
       if (triggerPass === typeAnalysisPass || triggerPass === constAnalysisPass) {
-        // A node may be indexed by multiple units (e.g. a FunctionDef body
-        // node is also indexed in the enclosing FileInput's CFG). Bump
-        // analysisGen for every containing unit so the memo invalidates
-        // correctly regardless of nesting; only enqueue FunctionDef units
-        // since jitPass only produces IR for those.
-        const nodeId = triggerKey as number;
-        const containing = ctx.unitsContainingNode(nodeId);
-        const affected: FunctionUnit[] = [];
-        for (const u of containing) {
-          analysisGen.set(u, (analysisGen.get(u) ?? 0) + 1);
-          if (u.funcAst instanceof StmtNS.FunctionDef) affected.push(u);
-        }
-        return affected;
+        // Block-keyed DFA pass: a change to the block's fact invalidates the
+        // memo for the unit that owns the block. Bump analysisGen and, if the
+        // unit is a FunctionDef, enqueue for recompile.
+        const block = triggerKey as BasicBlock;
+        const unit = block.unit;
+        if (unit === undefined) return [];
+        analysisGen.set(unit, (analysisGen.get(unit) ?? 0) + 1);
+        return unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
       }
       return Array.from(unitsOf());
     },

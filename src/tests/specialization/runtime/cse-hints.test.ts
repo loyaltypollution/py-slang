@@ -3,9 +3,8 @@ import { Context } from "../../../engines/cse/context";
 import { generateCSEMachineStateStream } from "../../../engines/cse/interpreter";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import type { FactStore } from "../../../specialization/framework/fact-store";
-import { constAnalysisPass } from "../../../specialization/const-analysis/analysis";
-import { typeAnalysisPass } from "../../../specialization/type-analysis/analysis";
+import type { Worklist } from "../../../specialization";
+import { constAnalysisPass, readExprFact, typeAnalysisPass } from "../../../specialization";
 import { INT_BIT } from "../../../specialization/type-analysis/lattice";
 import { buildTestWorklist } from "../../utils";
 
@@ -21,15 +20,16 @@ function optimise(code: string) {
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
   engine.drain();
-  return { ast, factStore: engine.factStore, context: new Context(ast) };
+  return { ast, engine, context: new Context(ast) };
 }
 
 describe("factStore contents after optimization", () => {
   test("integer literal has INT_BIT type and const(42)", () => {
-    const { ast, factStore } = optimise("x = 42");
+    const { ast, engine } = optimise("x = 42");
     const rhs = (ast.statements[0] as StmtNS.Assign).value;
-    const type = factStore.tryRead(typeAnalysisPass, rhs.id);
-    const cv = factStore.tryRead(constAnalysisPass, rhs.id);
+    const block = engine.blockOfNode(rhs.id);
+    const type = readExprFact(engine.factStore, typeAnalysisPass, block, rhs.id);
+    const cv = readExprFact(engine.factStore, constAnalysisPass, block, rhs.id);
     expect(type).toBeDefined();
     expect(type!.kinds & INT_BIT).toBeTruthy();
     expect(cv?.tag).toBe("const");
@@ -37,25 +37,48 @@ describe("factStore contents after optimization", () => {
   });
 
   test("folded binop 1 + 2 exposes const(3)", () => {
-    const { ast, factStore } = optimise("x = 1 + 2");
+    const { ast, engine } = optimise("x = 1 + 2");
     const rhs = (ast.statements[0] as StmtNS.Assign).value;
-    const cv = factStore.tryRead(constAnalysisPass, rhs.id);
+    const cv = readExprFact(
+      engine.factStore,
+      constAnalysisPass,
+      engine.blockOfNode(rhs.id),
+      rhs.id,
+    );
     expect(cv?.tag).toBe("const");
     expect((cv as { value: unknown }).value).toBe(3);
   });
 
   test("nested function body: return value has a type fact", () => {
-    const { ast, factStore } = optimise("def f():\n    return 1 + 2\nf()");
+    const { ast, engine } = optimise("def f():\n    return 1 + 2\nf()");
     const ret = (ast.statements[0] as StmtNS.FunctionDef).body[0] as StmtNS.Return;
-    expect(factStore.tryRead(typeAnalysisPass, ret.value!.id)).toBeDefined();
+    const type = readExprFact(
+      engine.factStore,
+      typeAnalysisPass,
+      engine.blockOfNode(ret.value!.id),
+      ret.value!.id,
+    );
+    expect(type).toBeDefined();
   });
 
   test("root + function scope both contribute to a single merged store", () => {
-    const { ast, factStore } = optimise("x = 10\ndef g():\n    return x + 5\ng()");
+    const { ast, engine } = optimise("x = 10\ndef g():\n    return x + 5\ng()");
     const rootRhs = (ast.statements[0] as StmtNS.Assign).value;
     const fnRet = (ast.statements[1] as StmtNS.FunctionDef).body[0] as StmtNS.Return;
-    expect(factStore.tryRead(constAnalysisPass, rootRhs.id)?.tag).toBe("const");
-    expect(factStore.tryRead(typeAnalysisPass, fnRet.value!.id)).toBeDefined();
+    const rootCv = readExprFact(
+      engine.factStore,
+      constAnalysisPass,
+      engine.blockOfNode(rootRhs.id),
+      rootRhs.id,
+    );
+    const retType = readExprFact(
+      engine.factStore,
+      typeAnalysisPass,
+      engine.blockOfNode(fnRet.value!.id),
+      fnRet.value!.id,
+    );
+    expect(rootCv?.tag).toBe("const");
+    expect(retType).toBeDefined();
   });
 });
 
@@ -64,7 +87,7 @@ describe("factStore contents after optimization", () => {
 describe("stepper ↔ factStore join", () => {
   async function stepAndCollect(
     context: Context,
-    factStore: FactStore,
+    engine: Worklist,
   ): Promise<Array<{ id: number; cv: unknown }>> {
     const gen = generateCSEMachineStateStream(
       "",
@@ -80,7 +103,12 @@ describe("stepper ↔ factStore join", () => {
     for await (const _ of gen) {
       const node = context.runtime.nodes[0];
       if (node && "id" in node && typeof node.id === "number") {
-        const cv = factStore.tryRead(constAnalysisPass, node.id);
+        const cv = readExprFact(
+          engine.factStore,
+          constAnalysisPass,
+          engine.blockOfNode(node.id),
+          node.id,
+        );
         if (cv !== undefined) hits.push({ id: node.id, cv });
       }
     }
@@ -88,8 +116,8 @@ describe("stepper ↔ factStore join", () => {
   }
 
   test("x = 42: stepper passes through a node whose fact is const(42)", async () => {
-    const { context, factStore } = optimise("x = 42");
-    const hits = await stepAndCollect(context, factStore);
+    const { context, engine } = optimise("x = 42");
+    const hits = await stepAndCollect(context, engine);
     expect(hits.length).toBeGreaterThan(0);
     const has42 = hits.some(
       h => (h.cv as { tag: string; value?: unknown })?.tag === "const" &&

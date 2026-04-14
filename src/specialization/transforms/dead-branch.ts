@@ -1,14 +1,18 @@
 // Dead branch elimination. Idempotent: spliced-out `If` nodes no longer match.
 
 import { StmtNS } from "../../ast-types";
-import { constAnalysisPass } from "../const-analysis/analysis";
+import { constAnalysisPass } from "../framework/dfa-passes";
+import { readExprFact } from "../framework/dfa-factory";
 import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
 import { unitSweepRule } from "../framework/transform-rule";
 
 class DeadBranchVisitor implements StmtNS.Visitor<void> {
   changed = false;
-  constructor(private readonly factStore: FactStore) {}
+  constructor(
+    private readonly factStore: FactStore,
+    private readonly unit: FunctionUnit,
+  ) {}
 
   sweep(stmts: StmtNS.Stmt[]): void {
     let i = 0;
@@ -28,7 +32,8 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
 
   private tryReplaceIf(stmt: StmtNS.Stmt): StmtNS.Stmt[] | null {
     if (!(stmt instanceof StmtNS.If)) return null;
-    const cv = this.factStore.tryRead(constAnalysisPass, stmt.condition.id);
+    const block = this.unit.blockOfNode.get(stmt.condition.id);
+    const cv = readExprFact(this.factStore, constAnalysisPass, block, stmt.condition.id);
     if (cv?.tag !== "const" || typeof cv.value !== "boolean") return null;
     return cv.value ? stmt.body : (stmt.elseBlock ?? []);
   }
@@ -66,7 +71,7 @@ export const deadBranchRule = unitSweepRule(
   "deadBranchRule",
   [constAnalysisPass],
   (unit: FunctionUnit, factStore: FactStore) => {
-    const v = new DeadBranchVisitor(factStore);
+    const v = new DeadBranchVisitor(factStore, unit);
     v.sweep(unit.body);
     return v.changed;
   },

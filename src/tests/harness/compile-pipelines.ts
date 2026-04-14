@@ -14,7 +14,7 @@ export function compileOptimized(code: string): SVMLProgram {
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
   engine.drain();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, engine.factStore);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, engine.factStore, engine.nodeIndex);
   return compiler.compileProgram(ast);
 }
 

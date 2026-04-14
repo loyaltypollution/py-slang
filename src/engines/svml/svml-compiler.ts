@@ -3,9 +3,10 @@ import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { ConstLattice } from "../../specialization/const-analysis/lattice";
 import type { TypeLattice } from "../../specialization/type-analysis/lattice";
 import type { FactStore } from "../../specialization/framework/fact-store";
-import { typeAnalysisPass } from "../../specialization/type-analysis/analysis";
-import { constAnalysisPass } from "../../specialization/const-analysis/analysis";
+import { typeAnalysisPass, constAnalysisPass } from "../../specialization/framework/dfa-passes";
+import { readExprFact } from "../../specialization/framework/dfa-factory";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
+import type { BasicBlock } from "../../specialization/framework/cfg";
 import { ScopeIndexMap } from "./scope-index-map";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
 import { Token } from "../../tokenizer";
@@ -54,6 +55,7 @@ export class SVMLCompiler
   private isTailCall: boolean;
   private factStore: FactStore | undefined;
   private unitMap?: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
+  private nodeIndex?: ReadonlyMap<number, FunctionUnit>;
   private _scopeIndexMap?: ScopeIndexMap;
   /**
    * Pre-computed function index assignments for every function-like node in
@@ -101,12 +103,18 @@ export class SVMLCompiler
     return this._scopeIndexMap;
   }
 
+  private blockFor(nodeId: number): BasicBlock | undefined {
+    return this.nodeIndex?.get(nodeId)?.blockOfNode.get(nodeId);
+  }
+
   private getType(node: ExprNS.Expr | StmtNS.Stmt): TypeLattice | undefined {
-    return this.factStore ? this.factStore.tryRead(typeAnalysisPass, node.id) : undefined;
+    if (!this.factStore) return undefined;
+    return readExprFact(this.factStore, typeAnalysisPass, this.blockFor(node.id), node.id);
   }
 
   private getConst(node: ExprNS.Expr | StmtNS.Stmt): ConstLattice | undefined {
-    return this.factStore ? this.factStore.tryRead(constAnalysisPass, node.id) : undefined;
+    if (!this.factStore) return undefined;
+    return readExprFact(this.factStore, constAnalysisPass, this.blockFor(node.id), node.id);
   }
 
   /**
@@ -170,6 +178,7 @@ export class SVMLCompiler
     functionEnvironments: FunctionEnvironments,
     unitMap: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
     factStore?: FactStore,
+    nodeIndex?: ReadonlyMap<number, FunctionUnit>,
   ): SVMLCompiler {
     const mainEnv = functionEnvironments.get(program);
     if (!mainEnv) {
@@ -180,6 +189,7 @@ export class SVMLCompiler
     builder.setScopeKey(program);
     const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, factStore);
     compiler.unitMap = unitMap;
+    compiler.nodeIndex = nodeIndex;
     compiler.functionIndices = functionIndices;
 
     // Populate ScopeIndexMap eagerly so it is the source of truth for NEWC
@@ -221,6 +231,7 @@ export class SVMLCompiler
       this.factStore,
     );
     compiler.unitMap = this.unitMap;
+    compiler.nodeIndex = this.nodeIndex;
     compiler._scopeIndexMap = this._scopeIndexMap;
     compiler.functionIndices = this.functionIndices;
     const slotMap = new Map<string, number>();
@@ -301,6 +312,7 @@ export class SVMLCompiler
       this.factStore,
     );
     subCompiler.unitMap = this.unitMap;
+    subCompiler.nodeIndex = this.nodeIndex;
     subCompiler._scopeIndexMap = this._scopeIndexMap;
     subCompiler.functionIndices = this.functionIndices;
 

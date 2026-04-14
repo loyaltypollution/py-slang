@@ -1,7 +1,8 @@
 // Constant folding. Idempotent: rewriting Binary/Compare to Literal removes the "const" fact match.
 
 import { ExprNS, StmtNS } from "../../ast-types";
-import { constAnalysisPass } from "../const-analysis/analysis";
+import { constAnalysisPass } from "../framework/dfa-passes";
+import { readExprFact } from "../framework/dfa-factory";
 import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
 import { unitSweepRule } from "../framework/transform-rule";
@@ -9,11 +10,15 @@ import { unitSweepRule } from "../framework/transform-rule";
 class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
 
-  constructor(private readonly factStore: FactStore) {}
+  constructor(
+    private readonly factStore: FactStore,
+    private readonly unit: FunctionUnit,
+  ) {}
 
   private tryRewrite(expr: ExprNS.Expr): ExprNS.Expr {
     if (!(expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare)) return expr;
-    const cv = this.factStore.tryRead(constAnalysisPass, expr.id);
+    const block = this.unit.blockOfNode.get(expr.id);
+    const cv = readExprFact(this.factStore, constAnalysisPass, block, expr.id);
     if (cv?.tag !== "const") return expr;
     this.changed = true;
     return new ExprNS.Literal(
@@ -106,8 +111,8 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: ConstFoldExprVisitor;
 
-  constructor(factStore: FactStore) {
-    this.exprVisitor = new ConstFoldExprVisitor(factStore);
+  constructor(factStore: FactStore, unit: FunctionUnit) {
+    this.exprVisitor = new ConstFoldExprVisitor(factStore, unit);
   }
 
   private rewriteExpr(expr: ExprNS.Expr): ExprNS.Expr {
@@ -168,7 +173,7 @@ export const constantFoldingRule = unitSweepRule(
   "constantFoldingRule",
   [constAnalysisPass],
   (unit: FunctionUnit, factStore: FactStore) => {
-    const v = new ConstFoldStmtVisitor(factStore);
+    const v = new ConstFoldStmtVisitor(factStore, unit);
     v.sweep(unit.body);
     return v.changed;
   },

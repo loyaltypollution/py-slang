@@ -1,4 +1,4 @@
-import { StmtNS } from "../../../ast-types";
+import { ExprNS, StmtNS } from "../../../ast-types";
 import { makeJitPass } from "../../../engines/svml/jit-pass";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
@@ -9,12 +9,11 @@ import {
   MEMOIZATION_THRESHOLD,
   RUNTIME_CALL_COUNT_SAT,
   callCountPass,
+  observeRuntimeWrite,
   purityScopePass,
   runtimeCallPass,
   structuralPass,
 } from "../../../specialization";
-import { constAnalysisPass } from "../../../specialization/const-analysis/analysis";
-import { typeAnalysisPass } from "../../../specialization/type-analysis/analysis";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
 import type { Pass, PassCtx } from "../../../specialization/framework/pass";
 import { buildTestWorklist } from "../../utils";
@@ -30,6 +29,7 @@ function buildUnit(code: string) {
     environments,
     reactive.units,
     reactive.factStore,
+    reactive.nodeIndex,
   );
   return { ast, environments, reactive, compiler, program: compiler.compileProgram(ast) };
 }
@@ -274,30 +274,23 @@ f(1)
     };
   }
 
-  test.each([
-    {
-      pass: "typeAnalysisPass",
-      write: (w: ReturnType<typeof setup>["worklist"], nodeId: number) =>
-        w.observe(typeAnalysisPass as Pass<unknown, unknown>, nodeId, {
-          kinds: 0xdeadbeef,
-          intRef: "x",
-          boolRef: "y",
-          floatRef: "z",
-        } as never),
-    },
-    {
-      pass: "constAnalysisPass",
-      write: (w: ReturnType<typeof setup>["worklist"], nodeId: number) =>
-        w.observe(constAnalysisPass, nodeId, { kind: "const", value: 42 } as never),
-    },
-  ])("$pass change for a unit-internal node forces recompile", ({ write }) => {
+  test("analysis fact change at a unit-internal node forces recompile", () => {
     const { worklist, unit, enqueue, counters } = setup();
     enqueue();
     const baseline = counters.compiles;
     expect(baseline).toBeGreaterThanOrEqual(1);
 
-    const nodeId = [...unit.blockOfNode.keys()][0];
-    write(worklist, nodeId);
+    // Observing a runtime write at a unit-internal expression drives the DFA
+    // pass's fact for the containing block upward, which invalidates jitPass's
+    // analysisGen memo and forces a recompile for that unit.
+    const fd = unit.funcAst as StmtNS.FunctionDef;
+    const ret = fd.body[0] as StmtNS.Return;
+    const binary = ret.value! as ExprNS.Binary; // `x + 1`
+    const literal = binary.right as ExprNS.Literal; // `1` — statically const(1), INT_POS
+    // A string observation at the literal widens its const fact
+    // from const(1) → TOP and type fact from INT_POS → join with STRING,
+    // advancing the DFA block fact and forcing a jitPass recompile.
+    observeRuntimeWrite(worklist, literal.id, "force-change");
 
     expect(counters.compiles).toBeGreaterThan(baseline);
   });

@@ -1,9 +1,8 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { FactStore } from "../framework/fact-store";
-import type { Lattice, Pass, PassCtx } from "../framework/pass";
+import type { Lattice } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
-import { structuralPass } from "../framework/structural-pass";
 import type { AnalysisPass, SlotEnv } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
 import type { SlotLookup } from "../framework/slot-table";
@@ -30,7 +29,7 @@ function constMeet(a: ConstLattice, b: ConstLattice): ConstLattice {
   return a.value === b.value ? a : constBottom();
 }
 
-const constLattice: Lattice<ConstLattice> = {
+export const constLatticeAlgebra: Lattice<ConstLattice> = {
   bottom: constBottom(),
   equals: (a, b) =>
     a === b ||
@@ -40,40 +39,19 @@ const constLattice: Lattice<ConstLattice> = {
   join: constJoin,
 };
 
-// Identity-key pass: `transfer → undefined` is intentional. Writes are performed
-// directly by `ConstAnalysisVisitor.annotate` via `factStore.write(constAnalysisPass, ...)`;
-// this Pass exists only as the FactStore namespace key and as a `reads` invalidation
-// target for downstream consumers. `affectedKeys` narrows fan-out to the single
-// observed nodeId: a runtime write at node X can only invalidate this pass's fact
-// at node X. Structural triggers carry a `FunctionUnit` key, not a nodeId — forward
-// nothing in that case; the DFA pass re-runs the visitor on rebuild and re-writes
-// facts directly.
-export const constAnalysisPass: Pass<number, ConstLattice> = {
-  id: Symbol("constAnalysisPass"),
-  debugName: "constAnalysisPass",
-  lattice: constLattice,
-  reads: [runtimeWritePass, structuralPass],
-  tier: "analysis",
-  affectedKeys(_ctx: PassCtx, triggerPass: Pass<any, any>, triggerKey: unknown): Iterable<number> {
-    return triggerPass === runtimeWritePass ? [triggerKey as number] : [];
-  },
-  transfer(_ctx: PassCtx, _key: number): ConstLattice | undefined {
-    return undefined;
-  },
-};
-
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
     private readonly factStore: FactStore,
     private readonly constEnv: SlotEnv<ConstLattice>,
     private readonly slotLookup: SlotLookup,
+    private readonly recordExprFact: (nodeId: number, val: ConstLattice) => void,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
     const observed = this.factStore.tryRead(runtimeWritePass, node.id);
     const lifted = observed !== undefined ? liftConst(observed) : undefined;
     const widened = lifted !== undefined ? constJoin(val, lifted) : val;
-    this.factStore.write(constAnalysisPass, node.id, widened);
+    this.recordExprFact(node.id, widened);
     return widened;
   }
 
@@ -259,8 +237,9 @@ export const constAnalysisModule: AnalysisPass<ConstLattice> = {
     factStore: FactStore,
     env: SlotEnv<ConstLattice>,
     slotLookup: SlotLookup,
+    recordExprFact: (nodeId: number, val: ConstLattice) => void,
   ): ExprNS.Visitor<ConstLattice> {
-    return new ConstAnalysisVisitor(factStore, env, slotLookup);
+    return new ConstAnalysisVisitor(factStore, env, slotLookup, recordExprFact);
   },
 };
 

@@ -130,7 +130,7 @@ async function runSvml(
   flag: { aborted: boolean },
 ): Promise<void> {
   try {
-    const compiler = SVMLCompiler.fromProgramUnit(ast, envs, wl.units, wl.factStore);
+    const compiler = SVMLCompiler.fromProgramUnit(ast, envs, wl.units, wl.factStore, wl.nodeIndex);
     const program = compiler.compileProgram(ast);
     const calls = new Map<number, number>();
     const interp = new SVMLInterpreter(program, {

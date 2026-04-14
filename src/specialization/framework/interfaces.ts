@@ -18,10 +18,16 @@ export interface AnalysisPass<L> {
   readonly mergeKind: "may" | "must";
   readonly direction: "forward" | "backward";
 
-  /** Per-subtree visitor: reads from `env`, writes facts via `factStore`. */
+  /** Per-subtree visitor. Reads upstream observations from `factStore`
+   *  (read-only — `runtimeWritePass` lookups for lattice widening) and
+   *  records per-node output facts into `recordExprFact`. The visitor MUST
+   *  NOT write back into `factStore` — per-node facts flow out via
+   *  `recordExprFact` and are attached to the block pass's `DfaBlockFact`
+   *  by `transferBlock`. */
   makeExprVisitor(
     factStore: FactStore,
     env: SlotEnv<L>,
     slotLookup: SlotLookup,
+    recordExprFact: (nodeId: number, val: L) => void,
   ): ExprNS.Visitor<L>;
 }

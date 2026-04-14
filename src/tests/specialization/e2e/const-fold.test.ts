@@ -2,7 +2,7 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import OpCodes from "../../../engines/svml/opcodes";
-import { constAnalysisPass } from "../../../specialization/const-analysis/analysis";
+import { constAnalysisPass, readExprFact } from "../../../specialization";
 import { buildTestWorklist } from "../../utils";
 import { runSpecCase } from "../../harness/spec-e2e";
 
@@ -63,27 +63,37 @@ describe("const fold: factStore carries constVal", () => {
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const reactive = buildTestWorklist(ast, environments);
     reactive.drain();
-    return { ast, factStore: reactive.factStore };
+    return { ast, reactive };
   }
 
   test("x = 3 + 4: RHS fact is const(7)", () => {
-    const { ast, factStore } = analyse("x = 3 + 4");
+    const { ast, reactive } = analyse("x = 3 + 4");
     const assign = ast.statements[0] as StmtNS.Assign;
-    const cv = factStore.tryRead(constAnalysisPass, assign.value.id);
+    const cv = readExprFact(
+      reactive.factStore,
+      constAnalysisPass,
+      reactive.blockOfNode(assign.value.id),
+      assign.value.id,
+    );
     expect(cv?.tag).toBe("const");
     expect((cv as { value: unknown }).value).toBe(7);
   });
 
   test("variable propagation: y = x + 2 has const(7)", () => {
-    const { ast, factStore } = analyse("x = 5\ny = x + 2");
+    const { ast, reactive } = analyse("x = 5\ny = x + 2");
     const assign = ast.statements[1] as StmtNS.Assign;
-    const cv = factStore.tryRead(constAnalysisPass, assign.value.id);
+    const cv = readExprFact(
+      reactive.factStore,
+      constAnalysisPass,
+      reactive.blockOfNode(assign.value.id),
+      assign.value.id,
+    );
     expect(cv?.tag).toBe("const");
     expect((cv as { value: unknown }).value).toBe(7);
   });
 
   test("nested folds: 1 + 2 + 3 resolves to const(6) at root", () => {
-    const { ast, factStore } = analyse("x = 1 + 2 + 3");
+    const { ast, reactive } = analyse("x = 1 + 2 + 3");
     const assign = ast.statements[0] as StmtNS.Assign;
     // After folding, the Assign's value is a Literal(6) — but if folding
     // ran node-local, the root binop is also const(6).
@@ -91,7 +101,12 @@ describe("const fold: factStore carries constVal", () => {
     if (rhs instanceof ExprNS.Literal) {
       expect(rhs.value).toBe(6);
     } else {
-      const cv = factStore.tryRead(constAnalysisPass, rhs.id);
+      const cv = readExprFact(
+        reactive.factStore,
+        constAnalysisPass,
+        reactive.blockOfNode(rhs.id),
+        rhs.id,
+      );
       expect(cv?.tag).toBe("const");
       expect((cv as { value: unknown }).value).toBe(6);
     }

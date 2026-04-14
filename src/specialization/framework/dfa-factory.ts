@@ -1,14 +1,23 @@
 import type { BasicBlock } from "./cfg";
+import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
 import type { Lattice, Pass, PassCtx } from "./pass";
 import { structuralPass } from "./structural-pass";
 
-/** Packages a Kildall block DFA as a `Pass<BasicBlock, MutableEnv<L>>` over block OUT envs.
- *  `transferBlock` MUST be pure — block outputs flow through `processQueue`,
- *  not via side-channel `factStore.write` calls. FactStore now enforces
- *  monotonicity on writes, so a stray write won't corrupt the lattice; but it
- *  would still bypass the worklist's scheduling and dedup. */
+/** Packages a Kildall block DFA as a `Pass<BasicBlock, DfaBlockFact<L>>`.
+ *  The fact carries both the block's OUT env (used for CFG successor
+ *  propagation) and the per-expression lattice facts the transfer computed
+ *  inside this block. Per-node facts are queried via `readExprFact` — they
+ *  live inside the block fact rather than in a side-channel per-node pass. */
+
+/** Output fact for one block under an analysis pass. */
+export interface DfaBlockFact<L> {
+  /** Slot-keyed OUT env for forward successor / backward predecessor merging. */
+  readonly outEnv: MutableEnv<L>;
+  /** NodeId → lattice value for expressions visited in this block's transfer. */
+  readonly exprFacts: ReadonlyMap<number, L>;
+}
 
 type DfaDirection = "forward" | "backward";
 
@@ -20,30 +29,61 @@ interface DfaConfig<L> {
   readonly join: (a: L, b: L) => L;
   readonly meet: (a: L, b: L) => L;
   readonly mergeKind: "may" | "must";
-  /** Pure: IN env → OUT env. No fact-store writes. */
+  /** Pure: IN env → OUT env + per-node exprFacts. No fact-store writes. */
   readonly transferBlock: (
     ctx: PassCtx,
     block: BasicBlock,
     inEnv: MutableEnv<L>,
     unit: FunctionUnit,
-  ) => MutableEnv<L>;
+  ) => DfaBlockFact<L>;
   /** Seed the entry (forward) / exit (backward) block's IN env. */
   readonly seedEnv: (unit: FunctionUnit) => MutableEnv<L>;
   readonly reads: ReadonlyArray<Pass<any, any>>;
 }
 
-export function makeBlockFixpointPass<L>(config: DfaConfig<L>): Pass<BasicBlock, MutableEnv<L>> {
-  const envLattice: Lattice<MutableEnv<L>> = {
-    bottom: new MutableEnv<L>(),
-    equals: (a, b) => a.equals(b, config.leq),
+export function makeBlockFixpointPass<L>(
+  config: DfaConfig<L>,
+): Pass<BasicBlock, DfaBlockFact<L>> {
+  const bottomFact: DfaBlockFact<L> = {
+    outEnv: new MutableEnv<L>(),
+    exprFacts: new Map<number, L>(),
+  };
+
+  const exprFactsEqual = (
+    a: ReadonlyMap<number, L>,
+    b: ReadonlyMap<number, L>,
+  ): boolean => {
+    if (a === b) return true;
+    if (a.size !== b.size) return false;
+    for (const [k, va] of a) {
+      const vb = b.get(k);
+      if (vb === undefined) return false;
+      if (!config.leq(va, vb) || !config.leq(vb, va)) return false;
+    }
+    return true;
+  };
+
+  const envLattice: Lattice<DfaBlockFact<L>> = {
+    bottom: bottomFact,
+    // exprFacts must be compared too: a block whose stmts produce no slot
+    // writes (e.g. bare `return e`) has an invariant outEnv, but runtime
+    // observations widen the per-expression lattice inside `e` — readers of
+    // the per-node projection must wake on those.
+    equals: (a, b) =>
+      a.outEnv.equals(b.outEnv, config.leq) && exprFactsEqual(a.exprFacts, b.exprFacts),
     join: (a, b) => {
-      const merged = a.snapshot();
+      const merged = a.outEnv.snapshot();
       if (config.mergeKind === "must") {
-        merged.meetWith(b, config.meet, config.top);
+        merged.meetWith(b.outEnv, config.meet, config.top);
       } else {
-        merged.joinWith(b, config.join);
+        merged.joinWith(b.outEnv, config.join);
       }
-      return merged;
+      // exprFacts of a joined fact are only ever re-consumed as an IN env seed
+      // by transferBlock, which produces fresh exprFacts from scratch — so the
+      // merged exprFacts value is never observed. Pass `b`'s through for
+      // monotonicity of reference equality; downstream readers always key by
+      // the specific block, not by a joined aggregate.
+      return { outEnv: merged, exprFacts: b.exprFacts };
     },
   };
 
@@ -54,8 +94,16 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): Pass<BasicBlock,
     if (preds.length === 0) return config.seedEnv(unit);
     let env: MutableEnv<L> | undefined;
     for (const pred of preds) {
-      const predOut = ctx.read(blockKeyedPass, pred);
-      env = env === undefined ? predOut.snapshot() : envLattice.join(env, predOut);
+      const predOut = ctx.read(blockKeyedPass, pred).outEnv;
+      if (env === undefined) {
+        env = predOut.snapshot();
+      } else {
+        if (config.mergeKind === "must") {
+          env.meetWith(predOut, config.meet, config.top);
+        } else {
+          env.joinWith(predOut, config.join);
+        }
+      }
     }
     return env ?? config.seedEnv(unit);
   }
@@ -63,7 +111,7 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): Pass<BasicBlock,
   // Self-reference appended below so block-OUT changes wake CFG-successors.
   const readsArr: Pass<any, any>[] = [...config.reads, structuralPass];
   // eslint-disable-next-line prefer-const
-  let blockKeyedPass: Pass<BasicBlock, MutableEnv<L>>;
+  let blockKeyedPass: Pass<BasicBlock, DfaBlockFact<L>>;
   blockKeyedPass = {
     id: blockPassId,
     debugName: `${config.debugName}:blocks`,
@@ -71,7 +119,7 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): Pass<BasicBlock,
     reads: readsArr,
     tier: "analysis",
     coarse: false,
-    transfer(ctx: PassCtx, block: BasicBlock): MutableEnv<L> | undefined {
+    transfer(ctx: PassCtx, block: BasicBlock): DfaBlockFact<L> | undefined {
       const unit = block.unit;
       const inEnv = inEnvFor(ctx, block, unit);
       return config.transferBlock(ctx, block, inEnv, unit);
@@ -105,4 +153,18 @@ export function makeBlockFixpointPass<L>(config: DfaConfig<L>): Pass<BasicBlock,
   Object.freeze(readsArr);
 
   return blockKeyedPass;
+}
+
+/** Resolve a per-expression fact from the DFA block pass.
+ *  `block` must be the BasicBlock that contains `nodeId` in the unit whose
+ *  `transferBlock` visited this expression — usually `unit.blockOfNode.get(nodeId)`
+ *  where `unit` is the innermost unit containing the node. */
+export function readExprFact<L>(
+  factStore: FactStore,
+  pass: Pass<BasicBlock, DfaBlockFact<L>>,
+  block: BasicBlock | undefined,
+  nodeId: number,
+): L | undefined {
+  if (block === undefined) return undefined;
+  return factStore.tryRead(pass, block)?.exprFacts.get(nodeId);
 }

@@ -1,5 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "./cfg";
+import type { DfaBlockFact } from "./dfa-factory";
 import type { FactStore } from "./fact-store";
 import type { AnalysisPass } from "./interfaces";
 import type { MutableEnv } from "./mutable-env";
@@ -71,18 +72,22 @@ export function transferBlock<L>(
   module: AnalysisPass<L>,
   factStore: FactStore,
   slotLookup: SlotLookup,
-): MutableEnv<L> {
-  const env = inEnv.snapshot();
-  const visitor = module.makeExprVisitor(factStore, env, slotLookup);
+): DfaBlockFact<L> {
+  const outEnv = inEnv.snapshot();
+  const exprFacts = new Map<number, L>();
+  const recordExprFact = (nodeId: number, val: L): void => {
+    exprFacts.set(nodeId, val);
+  };
+  const visitor = module.makeExprVisitor(factStore, outEnv, slotLookup, recordExprFact);
   const stmts = block.stmts;
   if (module.direction === "backward") {
     for (let i = stmts.length - 1; i >= 0; i--) {
-      transferStmt(stmts[i], env, visitor, module, slotLookup);
+      transferStmt(stmts[i], outEnv, visitor, module, slotLookup);
     }
   } else {
     for (const stmt of stmts) {
-      transferStmt(stmt, env, visitor, module, slotLookup);
+      transferStmt(stmt, outEnv, visitor, module, slotLookup);
     }
   }
-  return env;
+  return { outEnv, exprFacts };
 }

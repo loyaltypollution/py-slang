@@ -5,15 +5,13 @@ import { Context } from "../../../engines/cse/context";
 import { evaluate } from "../../../engines/cse/interpreter";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
-import { typeAnalysisPass } from "../../../specialization/type-analysis/analysis";
 import {
   observeRuntimeWrite,
   runtimeCallPass,
 } from "../../../specialization/framework/runtime-passes";
 import { STR_BIT } from "../../../specialization/type-analysis/lattice";
-import { Worklist } from "../../../specialization";
-import { Resolver } from "../../../resolver";
-import { buildTestWorklist, toPythonAstAndResolve } from "../../utils";
+import { readExprFact, typeAnalysisPass } from "../../../specialization";
+import { buildTestWorklist } from "../../utils";
 
 function build(code: string) {
   const script = code + "\n";
@@ -50,6 +48,7 @@ describe.each([
         environments,
         reactive.units,
         reactive.factStore,
+        reactive.nodeIndex,
       );
       const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
         observeNodeWrite: (nodeId, value) => observeRuntimeWrite(reactive, nodeId, value),
@@ -66,7 +65,12 @@ x = 1
 x = "hello"
 `);
     const secondAssign = ast.statements[1] as StmtNS.Assign;
-    const type = reactive.factStore.tryRead(typeAnalysisPass, secondAssign.value.id);
+    const type = readExprFact(
+      reactive.factStore,
+      typeAnalysisPass,
+      reactive.blockOfNode(secondAssign.value.id),
+      secondAssign.value.id,
+    );
     expect(type).toBeDefined();
     expect(type!.kinds & STR_BIT).toBeTruthy();
   });
@@ -80,9 +84,10 @@ describe("observation: idempotence", () => {
     const { ast, reactive } = build("x = 42");
     reactive.drain();
     const assign = ast.statements[0] as StmtNS.Assign;
-    const before = reactive.factStore.tryRead(typeAnalysisPass, assign.value.id);
+    const block = reactive.blockOfNode(assign.value.id);
+    const before = readExprFact(reactive.factStore, typeAnalysisPass, block, assign.value.id);
     observeRuntimeWrite(reactive, assign.value.id, 42);
-    const after = reactive.factStore.tryRead(typeAnalysisPass, assign.value.id);
+    const after = readExprFact(reactive.factStore, typeAnalysisPass, block, assign.value.id);
     expect(after).toEqual(before);
   });
 });
@@ -106,6 +111,7 @@ f()
       environments,
       reactive.units,
       reactive.factStore,
+      reactive.nodeIndex,
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
       observeScopeCall: scopeId => {
@@ -119,25 +125,5 @@ f()
     await interpreter.execute();
     reactive.drain();
     expect(calls).toContain(fDef.id);
-  });
-});
-
-// Synchrony tripwire: the sink surface must be sync. TypeScript accepts
-// () => Promise<void> where () => void is expected, so Worklist's constructor
-// enforces this at runtime.
-describe("Worklist sink synchrony tripwire", () => {
-  test("constructor throws when observe is declared async", () => {
-    const ast = toPythonAstAndResolve("1\n", 1) as StmtNS.FileInput;
-    const resolver = new Resolver("1\n", ast, []);
-    resolver.resolve(ast);
-    const orig = Worklist.prototype.observe;
-    (Worklist.prototype as unknown as Record<string, unknown>).observe = async function () {};
-    try {
-      expect(() => new Worklist(ast, resolver.functionEnvironments)).toThrow(
-        /observe.*synchronous/,
-      );
-    } finally {
-      Worklist.prototype.observe = orig;
-    }
   });
 });

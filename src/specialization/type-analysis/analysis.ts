@@ -1,9 +1,8 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { FactStore } from "../framework/fact-store";
-import type { Lattice, Pass, PassCtx } from "../framework/pass";
+import type { Lattice } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
-import { structuralPass } from "../framework/structural-pass";
 import type { AnalysisPass, SlotEnv } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
 import type { SlotLookup } from "../framework/slot-table";
@@ -34,7 +33,7 @@ import {
 } from "./lattice";
 import { transferBinaryOp, transferCompare, transferNot, transferUnaryNeg } from "./transfer";
 
-const typeLattice: Lattice<TypeLattice> = {
+export const typeLatticeAlgebra: Lattice<TypeLattice> = {
   bottom: BOTTOM,
   equals: (a, b) =>
     a === b ||
@@ -43,28 +42,6 @@ const typeLattice: Lattice<TypeLattice> = {
       a.boolRef === b.boolRef &&
       a.floatRef === b.floatRef),
   join,
-};
-
-// Identity-key pass: `transfer → undefined` is intentional. Writes are performed
-// directly by `TypeAnalysisVisitor.annotate` via `factStore.write(typeAnalysisPass, ...)`;
-// this Pass exists only as the FactStore namespace key and as a `reads` invalidation
-// target for downstream consumers. `affectedKeys` narrows fan-out to the single
-// observed nodeId: a runtime write at node X can only invalidate this pass's fact
-// at node X. Structural triggers carry a `FunctionUnit` key, not a nodeId — forward
-// nothing in that case; the DFA pass re-runs the visitor on rebuild and re-writes
-// facts directly.
-export const typeAnalysisPass: Pass<number, TypeLattice> = {
-  id: Symbol("typeAnalysisPass"),
-  debugName: "typeAnalysisPass",
-  lattice: typeLattice,
-  reads: [runtimeWritePass, structuralPass],
-  tier: "analysis",
-  affectedKeys(_ctx: PassCtx, triggerPass: Pass<any, any>, triggerKey: unknown): Iterable<number> {
-    return triggerPass === runtimeWritePass ? [triggerKey as number] : [];
-  },
-  transfer(_ctx: PassCtx, _key: number): TypeLattice | undefined {
-    return undefined;
-  },
 };
 
 const BINARY_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
@@ -90,6 +67,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     private readonly factStore: FactStore,
     private readonly slotTypes: SlotEnv<TypeLattice>,
     private readonly slotLookup: SlotLookup,
+    private readonly recordExprFact: (nodeId: number, val: TypeLattice) => void,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
@@ -97,7 +75,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     const widened = observed !== undefined
       ? join(val, liftType(observed) ?? BOTTOM)
       : val;
-    this.factStore.write(typeAnalysisPass, node.id, widened);
+    this.recordExprFact(node.id, widened);
     return widened;
   }
 
@@ -271,8 +249,9 @@ export const typeAnalysisModule: AnalysisPass<TypeLattice> = {
     factStore: FactStore,
     env: SlotEnv<TypeLattice>,
     slotLookup: SlotLookup,
+    recordExprFact: (nodeId: number, val: TypeLattice) => void,
   ): ExprNS.Visitor<TypeLattice> {
-    return new TypeAnalysisVisitor(factStore, env, slotLookup);
+    return new TypeAnalysisVisitor(factStore, env, slotLookup, recordExprFact);
   },
 };
 

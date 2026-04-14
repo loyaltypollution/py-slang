@@ -10,14 +10,12 @@ import { buildFunctionUnits, indexCFG, type FunctionUnit } from "./function-unit
 import type { Pass, PassCtx } from "./pass";
 import { structuralPass } from "./structural-pass";
 import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
-import { constAnalysisPass } from "../const-analysis/analysis";
 import { callCountPass } from "../memoization-analysis/call-count";
 import { purityScopePass } from "../purity-analysis/analysis";
 import { constantFoldingRule } from "../transforms/constant-folding";
 import { deadBranchRule } from "../transforms/dead-branch";
 import { memoizationRule } from "../transforms/memoization";
-import { typeAnalysisPass } from "../type-analysis/analysis";
-import { typeAnalysisDfa, constAnalysisDfa } from "./dfa-passes";
+import { typeAnalysisPass, constAnalysisPass } from "./dfa-passes";
 
 type QItem = { pass: Pass<any, any>; key: unknown; seq: number };
 
@@ -33,7 +31,7 @@ export class Worklist {
   readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
   /** funcAst.id → owning unit. */
   private readonly unitsByFdId: Map<number, FunctionUnit> = new Map();
-  /** nodeId → outermost containing unit. */
+  /** nodeId → innermost containing unit. */
   private readonly nodeToUnit: Map<number, FunctionUnit> = new Map();
   /** nodeId → every containing unit. */
   private readonly nodeToUnits: Map<number, FunctionUnit[]> = new Map();
@@ -73,12 +71,18 @@ export class Worklist {
     for (const unit of this.units.values()) {
       this.factStore.write(structuralPass, unit, 0);
     }
+  }
 
-    // Synchrony tripwire.
-    const fn = (this as unknown as Record<string, unknown>)["observe"];
-    if (typeof fn !== "function" || (fn as Function).constructor.name === "AsyncFunction") {
-      throw new Error(`Worklist.observe must be synchronous`);
-    }
+  /** nodeId → innermost containing unit's BasicBlock for that node. */
+  blockOfNode(nodeId: number): BasicBlock | undefined {
+    return this.nodeToUnit.get(nodeId)?.blockOfNode.get(nodeId);
+  }
+
+  /** Read-only view of the nodeId → innermost-unit index. Exposed so
+   *  out-of-framework consumers (e.g. SVMLCompiler) can resolve per-node
+   *  DFA facts via `readExprFact` without each re-scanning `units`. */
+  get nodeIndex(): ReadonlyMap<number, FunctionUnit> {
+    return this.nodeToUnit;
   }
 
   /** Register a pass. Idempotent. Requires `affectedKeys` or `coarse: true`. */
@@ -214,13 +218,15 @@ export class Worklist {
     return rebuilt;
   }
 
-  /** Rebuild nodeId → unit indexes (first-write-wins for outermost). */
+  /** Rebuild nodeId → unit indexes. Innermost-containing unit wins for the
+   *  `nodeToUnit` lookup: unit iteration runs outer → inner (FileInput first,
+   *  then nested FunctionDefs), so last-write-wins picks the innermost. */
   private rebuildNodeToUnit(): void {
     this.nodeToUnit.clear();
     this.nodeToUnits.clear();
     for (const unit of this.units.values()) {
       for (const nodeId of unit.blockOfNode.keys()) {
-        if (!this.nodeToUnit.has(nodeId)) this.nodeToUnit.set(nodeId, unit);
+        this.nodeToUnit.set(nodeId, unit);
         const list = this.nodeToUnits.get(nodeId);
         if (list === undefined) this.nodeToUnits.set(nodeId, [unit]);
         else list.push(unit);
@@ -281,8 +287,6 @@ export const DEFAULT_PASSES: ReadonlyArray<Pass<any, any>> = [
   runtimeCallPass,
   typeAnalysisPass,
   constAnalysisPass,
-  typeAnalysisDfa,
-  constAnalysisDfa,
   purityScopePass,
   callCountPass,
   deadBranchRule,
@@ -301,8 +305,6 @@ export const SOURCE_PASSES: ReadonlyArray<Pass<any, any>> = [
 export const ANALYSIS_PASSES: ReadonlyArray<Pass<any, any>> = [
   typeAnalysisPass,
   constAnalysisPass,
-  typeAnalysisDfa,
-  constAnalysisDfa,
   purityScopePass,
   callCountPass,
 ];
