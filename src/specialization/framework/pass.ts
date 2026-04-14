@@ -27,25 +27,29 @@ export interface BoundedLattice<V> extends Lattice<V> {
   meet(a: V, b: V): V;
 }
 
-/** An edge into a pass. Two shapes, discriminated by `on`:
+/** An edge into a pass. Two shapes, discriminated by the mandatory `on` tag:
  *
- *   - Fact edge (default, `on?: "fact"` or omitted): `wake` projects an
- *     upstream pass's key-change to zero-or-more keys in *this* pass's
- *     key-space, enqueuing them for re-transfer. `wake` is required —
- *     "depends on, doesn't react" is not an auto-reactive edge; express
- *     such dependencies by reading from `ctx.read(upstream, ...)` in
- *     `transfer` without declaring an edge.
+ *   - Fact edge (`on: "fact"`): `wake` projects an upstream pass's key-change
+ *     to zero-or-more keys in *this* pass's key-space, enqueuing them for
+ *     re-transfer. Both `on` and `wake` are required — "depends on, doesn't
+ *     react" is not an auto-reactive edge; express such dependencies by
+ *     reading from `ctx.read(upstream, ...)` in `transfer` without declaring
+ *     an edge.
  *
  *   - Lifecycle edge (`on: "mint" | "rebuild" | "retire"`): fires on unit
  *     lifecycle transitions. `wake(ctx, unit)` yields keys to enqueue;
  *     `effect(ctx, unit)` runs arbitrary side effects (typically
  *     `factStore.evict` for passes with unit-scoped facts). At least one of
  *     `wake` / `effect` must be defined.
- */
+ *
+ *  `on` is mandatory on both shapes so discriminated narrowing in consumers
+ *  (worklist.ts's subscribe loop) works without a cast. Construction-site
+ *  cost is one extra `on: "fact"` field per edge literal — acceptable for
+ *  the guarantee that the union narrowing actually refines. */
 export type EdgeSpec<K> = FactEdge<K> | LifecycleEdge<K>;
 
 export interface FactEdge<K> {
-  readonly on?: "fact";
+  readonly on: "fact";
   readonly pass: Pass<any, any>;
   wake(ctx: PassCtx, key: unknown): Iterable<K>;
 }

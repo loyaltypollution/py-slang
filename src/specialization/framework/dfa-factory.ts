@@ -175,6 +175,7 @@ export function makeBlockFixpointPass<L>(
   // Config-supplied upstreams are node-fact sources (runtime observations,
   // node-keyed analyses). Project each to its containing block.
   const configEdges: EdgeSpec<BasicBlock>[] = config.reads.map(p => ({
+    on: "fact",
     pass: p,
     wake: nodeIdToBlock,
   }));
@@ -225,6 +226,7 @@ export function makeBlockFixpointPass<L>(
   // Self-wake: block OUT change → CFG successors recompute IN. Appended after
   // construction so we can reference `blockKeyedPass` directly, no getter.
   edgesArr.push({
+    on: "fact",
     pass: blockKeyedPass as Pass<any, any>,
     wake: (_ctx, key) => {
       const b = key as BasicBlock;

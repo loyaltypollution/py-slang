@@ -455,6 +455,7 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
   lattice: outerLattice,
   edges: [
     {
+      on: "fact",
       pass: purityBlockPass,
       wake: (_ctx, key) => {
         const fd = (key as BasicBlock).unit.funcAst;
@@ -506,6 +507,7 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
 // to the outer block containing that `def` stmt via `unitForNode` +
 // `blockOfNode`.
 const scopeToBlock: EdgeSpec<BasicBlock> = {
+  on: "fact",
   pass: purityScopePass,
   wake: (ctx, key) => {
     if (typeof key !== "number") return [];

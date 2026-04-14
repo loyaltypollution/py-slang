@@ -74,8 +74,8 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       // the memo of the owning unit. `transfer` decides whether the change
       // materially differs from the last compile via reference-identity
       // compare against `lastSnapshot`.
-      { pass: typeAnalysisPass, wake: blockToOwningUnit },
-      { pass: constAnalysisPass, wake: blockToOwningUnit },
+      { on: "fact", pass: typeAnalysisPass, wake: blockToOwningUnit },
+      { on: "fact", pass: constAnalysisPass, wake: blockToOwningUnit },
       {
         on: "mint",
         wake: (_ctx, unit) =>

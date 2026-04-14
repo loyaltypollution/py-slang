@@ -42,7 +42,7 @@ function saturatingBucket(ceiling: number): Lattice<number> {
 }
 
 function identityWake<K>(pass: Pass<any, any>): EdgeSpec<K> {
-  return { pass, wake: (_c, k) => [k as K] };
+  return { on: "fact", pass, wake: (_c, k) => [k as K] };
 }
 
 function makePass<K, V>(opts: {
@@ -286,7 +286,7 @@ describe("Worklist pass-graph dispatch", () => {
     const reader = makePass<number, number>({
       name: "reader",
       lattice: intMax,
-      edges: [{ pass: producer, wake: (_c, k) => [k as number] }],
+      edges: [{ on: "fact", pass: producer, wake: (_c, k) => [k as number] }],
       transfer: (k) => {
         seenKeys.push(k);
         return undefined;
@@ -317,7 +317,7 @@ describe("Worklist pass-graph dispatch", () => {
       const reader = makePass<number, number>({
         name: "reader",
         lattice: intMax,
-        edges: [{ pass: producer, wake: (_c, k) => [k as number] }],
+        edges: [{ on: "fact", pass: producer, wake: (_c, k) => [k as number] }],
         transfer: (k) => {
           order.push(k);
           return undefined;

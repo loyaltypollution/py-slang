@@ -16,7 +16,7 @@ import {
   wireCFG,
   type FunctionUnit,
 } from "./function-unit";
-import type { Pass, PassCtx, TransformRule, LifecycleEdge, FactEdge } from "./pass";
+import type { Pass, PassCtx, TransformRule, LifecycleEdge } from "./pass";
 import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
 import { callCountPass } from "../memoization-analysis/call-count";
 import { purityBlockPass, purityScopePass } from "../purity-analysis/analysis";
@@ -207,19 +207,15 @@ export class Worklist {
       if (lc.effect !== undefined) lc.effect(this.passCtx, unit);
     };
     for (const spec of pass.edges) {
-      if (spec.on === "mint" || spec.on === "rebuild" || spec.on === "retire") {
-        const lifecycle = spec;
-        this.lifecycleSubs[spec.on].push((_ctx, unit) => fireLifecycleEdge(lifecycle, unit));
+      if (spec.on !== "fact") {
+        // Lifecycle edge: `spec.on` narrows to "mint" | "rebuild" | "retire".
+        this.lifecycleSubs[spec.on].push((_ctx, unit) => fireLifecycleEdge(spec, unit));
         continue;
       }
-      // Fact edge. Dependency-only (no `wake`) edges produce no subscriber —
-      // they'd be skipped at dispatch anyway. Cast is load-bearing: `on?` is
-      // optional on FactEdge so the discriminated narrowing above doesn't
-      // refine `spec` — explicit assertion preserves the fact-edge shape.
-      const fact = spec as FactEdge<K>;
-      if (fact.wake === undefined) continue;
-      const wake = fact.wake;
-      this.subscribeFact(fact.pass, (_ctx, key) => {
+      // Fact edge. `on: "fact"` is mandatory on FactEdge, so narrowing leaves
+      // `spec` as FactEdge<K> with no cast required. `wake` is mandatory too.
+      const wake = spec.wake;
+      this.subscribeFact(spec.pass, (_ctx, key) => {
         for (const k of wake(this.passCtx, key)) this.enqueue(reader, k);
       });
     }

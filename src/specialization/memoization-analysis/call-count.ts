@@ -11,7 +11,7 @@ export const callCountPass: Pass<number, number> = {
   debugName: "callCountPass",
   lattice: saturatingCountLattice,
   edges: [
-    { pass: runtimeCallPass, wake: (_ctx, key) => [key as number] },
+    { on: "fact", pass: runtimeCallPass, wake: (_ctx, key) => [key as number] },
   ],
   tier: "analysis",
   transfer(ctx: PassCtx, key: number): number | undefined {

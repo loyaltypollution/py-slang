@@ -59,7 +59,7 @@ f()
         leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
       },
-      edges: [{ pass: callCountPass, wake: (_c, k) => [k as number] }],
+      edges: [{ on: "fact", pass: callCountPass, wake: (_c, k) => [k as number] }],
       tier: "analysis",
       transfer(ctx, key) {
         transferRuns++;
@@ -86,7 +86,7 @@ f()
         leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
       },
-      edges: [{ pass: callCountPass, wake: () => [unit] }],
+      edges: [{ on: "fact", pass: callCountPass, wake: () => [unit] }],
       tier: "analysis",
       transfer(ctx, u) {
         const c = ctx.read(callCountPass, fDef.id) ?? 0;
@@ -155,8 +155,8 @@ g()
         join: (a, b) => a ?? b,
       },
       edges: [
-        { pass: callCountPass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
-        { pass: purityScopePass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
+        { on: "fact", pass: callCountPass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
+        { on: "fact", pass: purityScopePass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
         { on: "mint", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },
         { on: "rebuild", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },
       ],
