@@ -1,9 +1,12 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
+import { Resolver } from "../../../resolver";
 import {
   FunctionRegistry,
   buildFunctionRegistry,
 } from "../../../specialization/framework/function-registry";
+import { structuralPass } from "../../../specialization/framework/structural-pass";
+import { Worklist } from "../../../specialization/framework/worklist";
 
 function parseProgram(code: string): StmtNS.FileInput {
   return parse(code + "\n") as StmtNS.FileInput;
@@ -101,5 +104,68 @@ describe("FunctionRegistry", () => {
     const registry = new FunctionRegistry();
     expect(registry.size).toBe(0);
     expect(registry.snapshot().size).toBe(0);
+  });
+});
+
+describe("FunctionRegistry ↔ Worklist listener wiring", () => {
+  // Pins the mint/retire → structuralPass contract. No production transform
+  // mints or retires today, so this is scaffold — but the plumbing must hold
+  // before the first caller arrives, otherwise the silent-miscompile failure
+  // mode returns.
+  function build(src: string): {
+    ast: StmtNS.FileInput;
+    worklist: Worklist;
+  } {
+    const ast = parseProgram(src);
+    const resolver = new Resolver(src + "\n", ast);
+    resolver.resolve(ast);
+    const worklist = new Worklist(ast, resolver.functionEnvironments, []);
+    return { ast, worklist };
+  }
+
+  it("retire drops the unit and evicts its structuralPass fact", () => {
+    const { ast, worklist } = build(
+      ["def f():", "    return 1", "def g():", "    return 2"].join("\n"),
+    );
+    const g = ast.statements[1] as StmtNS.FunctionDef;
+
+    const gUnit = worklist.units.get(g);
+    expect(gUnit).toBeDefined();
+    expect(worklist.factStore.tryRead(structuralPass, gUnit!)).toBe(0);
+
+    worklist.registry.retire(g.id);
+
+    expect(worklist.units.has(g)).toBe(false);
+    expect(worklist.factStore.tryRead(structuralPass, gUnit!)).toBeUndefined();
+    expect(() => worklist.registry.slotOf(g.id)).toThrow(/not registered/);
+  });
+
+  it("markStructuralChange bumps structuralPass on the named unit", () => {
+    const { ast, worklist } = build("def f():\n    return 1");
+    const f = ast.statements[0] as StmtNS.FunctionDef;
+    const fUnit = worklist.units.get(f)!;
+
+    const before = worklist.factStore.read(structuralPass, fUnit);
+    worklist.markStructuralChange(f.id);
+    const after = worklist.factStore.read(structuralPass, fUnit);
+
+    expect(after).toBe(before + 1);
+    expect(worklist.hasPendingWork()).toBe(true);
+  });
+
+  it("mint after retire re-materializes a unit with fresh structuralPass", () => {
+    const { ast, worklist } = build(
+      ["def f():", "    return 1", "def g():", "    return 2"].join("\n"),
+    );
+    const g = ast.statements[1] as StmtNS.FunctionDef;
+
+    worklist.registry.retire(g.id);
+    expect(worklist.units.has(g)).toBe(false);
+
+    const newSlot = worklist.registry.mint(g);
+    const reborn = worklist.units.get(g);
+    expect(reborn).toBeDefined();
+    expect(reborn!.slot).toBe(newSlot);
+    expect(worklist.factStore.read(structuralPass, reborn!)).toBe(0);
   });
 });

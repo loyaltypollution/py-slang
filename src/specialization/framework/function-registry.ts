@@ -7,6 +7,15 @@ export type FunctionScopeNode =
   | ExprNS.Lambda
   | ExprNS.MultiLambda;
 
+/** Observes structural events on the registry. The owning Worklist (if any)
+ *  attaches itself here so that mint/retire wake downstream passes for the
+ *  affected units. Registry does not know about structuralPass; it only
+ *  dispatches "what happened to whom". */
+export interface FunctionRegistryListener {
+  onMint(node: FunctionScopeNode, slot: number): void;
+  onRetire(fdId: number, node: FunctionScopeNode): void;
+}
+
 /**
  * Canonical owner of function identity and bytecode slot layout.
  *
@@ -15,15 +24,32 @@ export type FunctionScopeNode =
  * registry instance. Callers look up by either the node or the node.id; both
  * resolve to the same slot.
  *
- * Transforms that structurally add a FunctionDef/Lambda/MultiLambda MUST call
- * `mint`. Transforms that remove one MUST call `retire`. Skipping either turns
- * a silent miscompile (slot out of sync with bytecode layout) into a loud
- * throw at the first slot lookup.
+ * ## mint / retire contract
+ *
+ * Structural transforms that add a FunctionDef/Lambda/MultiLambda MUST call
+ * `mint`. Transforms that remove one MUST call `retire`. Skipping either
+ * diverges the registry from the worklist/compiler silently and miscompiles.
+ * The throws in this class convert the silent-miscompile failure mode into a
+ * loud "not registered" at the first slot lookup.
+ *
+ * Callers operating on a live Worklist MUST also bump structuralPass for the
+ * *enclosing* unit via `worklist.markStructuralChange(enclosingFdId)` — the
+ * registry knows which function was added/removed, but the enclosing context
+ * is the transform's responsibility. The registry's `listener` hook wakes the
+ * newly-minted unit or retires the removed one; it does NOT wake the
+ * enclosing unit whose body structurally changed.
  */
 export class FunctionRegistry {
   private nextSlot = 0;
   private readonly byFdId = new Map<number, { node: FunctionScopeNode; slot: number }>();
   private readonly nodeToFdId = new WeakMap<FunctionScopeNode, number>();
+  private listener: FunctionRegistryListener | undefined;
+
+  /** Attach the single structural-event listener (the owning Worklist).
+   *  Replaces any prior listener. Pass `undefined` to detach. */
+  setListener(listener: FunctionRegistryListener | undefined): void {
+    this.listener = listener;
+  }
 
   /** Allocate and record a slot for `node`. Throws if already registered. */
   mint(node: FunctionScopeNode): number {
@@ -33,6 +59,7 @@ export class FunctionRegistry {
     const slot = this.nextSlot++;
     this.byFdId.set(node.id, { node, slot });
     this.nodeToFdId.set(node, node.id);
+    this.listener?.onMint(node, slot);
     return slot;
   }
 
@@ -44,6 +71,7 @@ export class FunctionRegistry {
     }
     this.byFdId.delete(fdId);
     this.nodeToFdId.delete(entry.node);
+    this.listener?.onRetire(fdId, entry.node);
   }
 
   slotOf(fdId: number): number {

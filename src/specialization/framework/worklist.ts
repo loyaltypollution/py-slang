@@ -3,10 +3,19 @@
 import { PriorityQueue } from "@datastructures-js/priority-queue";
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
-import { FunctionRegistry, buildFunctionRegistry } from "./function-registry";
+import {
+  FunctionRegistry,
+  buildFunctionRegistry,
+  type FunctionScopeNode,
+} from "./function-registry";
 import type { BasicBlock } from "./cfg";
 import { FactStore, type FactChange } from "./fact-store";
-import { buildFunctionUnits, wireCFG, type FunctionUnit } from "./function-unit";
+import {
+  buildFunctionUnits,
+  buildOneFunctionUnit,
+  wireCFG,
+  type FunctionUnit,
+} from "./function-unit";
 import type { Pass, PassCtx } from "./pass";
 import { structuralPass } from "./structural-pass";
 import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
@@ -28,7 +37,8 @@ const compareItems = (a: QItem, b: QItem): number => {
 };
 
 export class Worklist {
-  readonly units: ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>;
+  /** Mutated on mint/retire; exposed read-only via `units`. */
+  private readonly _units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> = new Map();
   /** funcAst.id → owning unit. */
   private readonly unitsByFdId: Map<number, FunctionUnit> = new Map();
   /** nodeId → innermost containing unit. */
@@ -52,6 +62,14 @@ export class Worklist {
   private batchDepth = 0;
 
   readonly registry: FunctionRegistry;
+  private readonly functionEnvironments: FunctionEnvironments;
+
+  /** Read-only view of scope-node → unit. Internally mutable via on-mint /
+   *  on-retire handlers; external consumers must not depend on identity of
+   *  the underlying map. */
+  get units(): ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
+    return this._units;
+  }
 
   /**
    * @param registry  Optional shared identity source. Pass when a downstream
@@ -67,8 +85,10 @@ export class Worklist {
     registry?: FunctionRegistry,
   ) {
     this.registry = registry ?? buildFunctionRegistry(ast);
-    this.units = buildFunctionUnits(ast, functionEnvironments, this.registry);
-    for (const unit of this.units.values()) {
+    this.functionEnvironments = functionEnvironments;
+    const built = buildFunctionUnits(ast, functionEnvironments, this.registry);
+    for (const [node, unit] of built) {
+      this._units.set(node, unit);
       if (unit.funcAst instanceof StmtNS.FunctionDef) {
         this.unitsByFdId.set(unit.funcAst.id, unit);
       }
@@ -87,9 +107,63 @@ export class Worklist {
     this.factStore.onChange(c => this.handleFactChange(c));
 
     // Seed structuralPass for every unit to wake downstream passes.
-    for (const unit of this.units.values()) {
+    for (const unit of this._units.values()) {
       this.factStore.write(structuralPass, unit, 0);
     }
+
+    // Subscribe to mint/retire AFTER initial construction so the build-pass
+    // mints that already happened don't re-enter handlers.
+    this.registry.setListener({
+      onMint: (node, slot) => this.onRegistryMint(node, slot),
+      onRetire: (fdId, node) => this.onRegistryRetire(fdId, node),
+    });
+  }
+
+  /** Bump structuralPass for the unit owning `fdId` and schedule its CFG
+   *  to be rebuilt on next drain. Callers that mint/retire a nested function
+   *  MUST invoke this for the enclosing unit — the registry listener wakes
+   *  the new/removed unit, but not the enclosing scope whose body changed. */
+  markStructuralChange(fdId: number): void {
+    const unit = this.unitsByFdId.get(fdId);
+    if (unit === undefined) {
+      throw new Error(`[Worklist] markStructuralChange: no unit for fdId=${fdId}`);
+    }
+    this.pendingRebuilds.add(unit);
+    const cur = this.factStore.read(structuralPass, unit);
+    this.factStore.write(structuralPass, unit, cur + 1);
+  }
+
+  /** Registry listener: a new function scope was minted. Lambda / MultiLambda
+   *  do not have FunctionUnits in this codebase, so we only materialize a unit
+   *  for FunctionDef. The caller remains responsible for also calling
+   *  `markStructuralChange(enclosingFdId)` to rebuild the enclosing body. */
+  private onRegistryMint(node: FunctionScopeNode, _slot: number): void {
+    if (!(node instanceof StmtNS.FunctionDef)) return;
+    const unit = buildOneFunctionUnit(node, this.functionEnvironments, this.registry);
+    this._units.set(node, unit);
+    this.unitsByFdId.set(node.id, unit);
+    this.rebuildNodeToUnit();
+    this.factStore.write(structuralPass, unit, 0);
+  }
+
+  /** Registry listener: a function scope was retired. Drop its unit and
+   *  evict every fact keyed on it. Enclosing-unit bookkeeping is the
+   *  caller's responsibility (`markStructuralChange`). */
+  private onRegistryRetire(fdId: number, node: FunctionScopeNode): void {
+    const unit = this.unitsByFdId.get(fdId);
+    if (unit === undefined) return; // Lambda/MultiLambda or already gone.
+    this.unitsByFdId.delete(fdId);
+    this._units.delete(node as StmtNS.FileInput | StmtNS.FunctionDef);
+    this.pendingRebuilds.delete(unit);
+    // Evict unit-keyed facts so stale lookups return undefined rather than lie.
+    // structuralPass is seeded unconditionally in the constructor, so evict it
+    // explicitly — it may not be in registeredPasses if the caller passed a
+    // pass subset.
+    this.factStore.evict(structuralPass, unit);
+    for (const p of this.registeredPasses) {
+      this.factStore.evict(p, unit);
+    }
+    this.rebuildNodeToUnit();
   }
 
   /** nodeId → innermost containing unit's BasicBlock for that node. */

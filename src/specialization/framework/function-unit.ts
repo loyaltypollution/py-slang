@@ -24,6 +24,40 @@ export interface FunctionUnit {
   callCount: number;
 }
 
+/** Build a single FunctionUnit for `funcAst` — no recursion into nested
+ *  scopes. The initial construction walk (`ScopeDiscoveryVisitor`) drives
+ *  recursion itself; mid-run on-mint handling wants exactly one unit per
+ *  mint event. */
+export function buildOneFunctionUnit(
+  funcAst: StmtNS.FileInput | StmtNS.FunctionDef,
+  functionEnvironments: FunctionEnvironments,
+  registry: FunctionRegistry,
+): FunctionUnit {
+  const env = functionEnvironments.get(funcAst);
+  if (!env) {
+    throw new Error(`Environment not found for scope node ${funcAst.kind}`);
+  }
+  const paramNames =
+    funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
+  // blocks hold unit back-pointers; unit owns cfg. Build shell, then wireCFG.
+  const unit = {
+    funcAst,
+    slotLookup: buildSlotTable(env, paramNames),
+    blockMap: new Map(),
+    blockOfNode: new Map(),
+    generation: 0,
+    callCount: 0,
+    get body(): StmtNS.Stmt[] {
+      return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
+    },
+    get slot(): number {
+      return registry.slotOfNode(funcAst);
+    },
+  } as Omit<FunctionUnit, "cfg"> as FunctionUnit;
+  wireCFG(unit);
+  return unit;
+}
+
 // Lambda bodies are separate scopes and not analyzed here.
 class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   constructor(
@@ -33,29 +67,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   ) {}
 
   register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
-    const env = this.functionEnvironments.get(funcAst);
-    if (!env) {
-      throw new Error(`Environment not found for scope node ${funcAst.kind}`);
-    }
-    const paramNames =
-      funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
-    const registry = this.registry;
-    // blocks hold unit back-pointers; unit owns cfg. Build shell, then wireCFG.
-    const unit = {
-      funcAst,
-      slotLookup: buildSlotTable(env, paramNames),
-      blockMap: new Map(),
-      blockOfNode: new Map(),
-      generation: 0,
-      callCount: 0,
-      get body(): StmtNS.Stmt[] {
-        return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
-      },
-      get slot(): number {
-        return registry.slotOfNode(funcAst);
-      },
-    } as Omit<FunctionUnit, "cfg"> as FunctionUnit;
-    wireCFG(unit);
+    const unit = buildOneFunctionUnit(funcAst, this.functionEnvironments, this.registry);
     this.units.set(funcAst, unit);
     for (const stmt of unit.body) stmt.accept(this);
   }
