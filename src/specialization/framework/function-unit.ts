@@ -1,6 +1,6 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
-import type { FunctionRegistry } from "../../engines/svml/function-registry";
+import type { FunctionRegistry } from "./function-registry";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import type { SlotLookup } from "./slot-table";

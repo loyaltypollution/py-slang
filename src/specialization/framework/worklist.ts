@@ -3,7 +3,7 @@
 import { PriorityQueue } from "@datastructures-js/priority-queue";
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
-import { FunctionRegistry, buildFunctionRegistry } from "../../engines/svml/function-registry";
+import { FunctionRegistry, buildFunctionRegistry } from "./function-registry";
 import type { BasicBlock } from "./cfg";
 import { FactStore, type FactChange } from "./fact-store";
 import { buildFunctionUnits, wireCFG, type FunctionUnit } from "./function-unit";
@@ -53,6 +53,13 @@ export class Worklist {
 
   readonly registry: FunctionRegistry;
 
+  /**
+   * @param registry  Optional shared identity source. Pass when a downstream
+   *   compiler must observe the same slot assignment (JIT pipelines). Omit to
+   *   build one internally from `ast`. When supplied externally, it MUST have
+   *   been built from the same `ast` — the registered-node assertion below
+   *   is the only guard against a mismatched pair.
+   */
   constructor(
     ast: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
@@ -65,11 +72,12 @@ export class Worklist {
       if (unit.funcAst instanceof StmtNS.FunctionDef) {
         this.unitsByFdId.set(unit.funcAst.id, unit);
       }
-      // Assert each unit's function is registered. Fails loudly if registry
-      // and units disagree — the contract the registry is here to enforce.
+      // Guards against a caller-supplied registry built from a different AST.
+      // Dead in the internal-fallback path — `buildFunctionRegistry` mints
+      // every scope by construction.
       if (!this.registry.hasNode(unit.funcAst)) {
         throw new Error(
-          `[Worklist] unit for fdId=${unit.funcAst.id} missing from FunctionRegistry`,
+          `[Worklist] unit for fdId=${unit.funcAst.id} missing from FunctionRegistry — registry likely built from a different AST`,
         );
       }
     }

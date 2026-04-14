@@ -3,7 +3,7 @@ import { parse } from "../../../parser/parser-adapter";
 import {
   FunctionRegistry,
   buildFunctionRegistry,
-} from "../../../engines/svml/function-registry";
+} from "../../../specialization/framework/function-registry";
 
 function parseProgram(code: string): StmtNS.FileInput {
   return parse(code + "\n") as StmtNS.FileInput;

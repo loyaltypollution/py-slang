@@ -12,7 +12,10 @@ import { SVMLIRBuilder } from "./SVMLIRBuilder";
 import { PRIMITIVE_FUNCTIONS } from "./builtins";
 import OpCodes from "./opcodes";
 import { SVMLIR, SVMLProgram } from "./types";
-import { FunctionRegistry, buildFunctionRegistry } from "./function-registry";
+import {
+  FunctionRegistry,
+  buildFunctionRegistry,
+} from "../../specialization/framework/function-registry";
 
 /** Signed 32-bit integer bounds used to decide LGCI vs LGCF64 encoding. */
 const I32_MIN = -2_147_483_648;

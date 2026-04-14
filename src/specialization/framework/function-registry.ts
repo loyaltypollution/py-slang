@@ -81,12 +81,12 @@ export class FunctionRegistry {
     return out;
   }
 
-  /** Iterate entries in mint order (slot-ascending). */
+  /** Iterate entries in mint order (slot-ascending). Map iteration is
+   *  insertion-order, and `mint` assigns `nextSlot++`, so this matches
+   *  slot order without an explicit sort — `retire` only removes entries,
+   *  it does not reorder survivors. */
   *entries(): IterableIterator<{ fdId: number; node: FunctionScopeNode; slot: number }> {
-    const sorted = Array.from(this.byFdId.entries()).sort((a, b) => a[1].slot - b[1].slot);
-    for (const [fdId, { node, slot }] of sorted) {
-      yield { fdId, node, slot };
-    }
+    for (const [fdId, { node, slot }] of this.byFdId) yield { fdId, node, slot };
   }
 
   get size(): number {
