@@ -42,11 +42,21 @@ export type AbsVal =
       readonly fdId: number;
       readonly pure: boolean | undefined;
     }
+  // Block-global "impure" marker. Never stored in a slot; stashed in the
+  // block fact's `exprFacts` at sentinel key `IMPURE_SENTINEL_NODE_ID` so the
+  // DFA factory's per-key lattice join propagates it monotonically. Consumers
+  // aggregate via `exprFacts.has(IMPURE_SENTINEL_NODE_ID)`.
+  | { readonly kind: "impure" }
   | { readonly kind: "unknown" };
 
 export const BOTTOM: AbsVal = Object.freeze({ kind: "bottom" });
 export const UNKNOWN: AbsVal = Object.freeze({ kind: "unknown" });
 export const GLOBAL: AbsVal = Object.freeze({ kind: "global" });
+export const IMPURE_MARKER: AbsVal = Object.freeze({ kind: "impure" });
+
+/** Reserved `exprFacts` key where the per-block impure marker lives. Negative
+ *  so it can never collide with a real AST nodeId. */
+export const IMPURE_SENTINEL_NODE_ID = -1;
 
 export function fresh(origin: number): AbsVal {
   return { kind: "fresh", origin };
@@ -105,28 +115,4 @@ export function absJoin(a: AbsVal, b: AbsVal): AbsVal {
  *  mutation is pure iff the target slot holds such a value. */
 export function isFresh(v: AbsVal | undefined): boolean {
   return v !== undefined && v.kind === "fresh";
-}
-
-// Block-global sticky summary. Monotone OR on join: once any path through the
-// function has an observable side effect, the function is impure.
-export interface PurityBlockSummary {
-  readonly impure: boolean;
-}
-
-export const PURE_SUMMARY: PurityBlockSummary = Object.freeze({ impure: false });
-export const IMPURE_SUMMARY: PurityBlockSummary = Object.freeze({ impure: true });
-
-export function summaryJoin(
-  a: PurityBlockSummary,
-  b: PurityBlockSummary,
-): PurityBlockSummary {
-  if (a.impure || b.impure) return IMPURE_SUMMARY;
-  return PURE_SUMMARY;
-}
-
-export function summaryEquals(
-  a: PurityBlockSummary,
-  b: PurityBlockSummary,
-): boolean {
-  return a.impure === b.impure;
 }

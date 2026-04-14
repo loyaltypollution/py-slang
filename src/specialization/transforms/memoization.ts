@@ -2,9 +2,7 @@
 
 import { StmtNS, ExprNS } from "../../ast-types";
 import type { FunctionUnit } from "../framework/function-unit";
-import type { Pass, PassCtx } from "../framework/pass";
-import { structuralPass } from "../framework/structural-pass";
-import { firedLattice, type Fired } from "../framework/transform-rule";
+import type { PassCtx, TransformRule } from "../framework/pass";
 import { callCountPass, MEMOIZATION_THRESHOLD } from "../memoization-analysis/call-count";
 import { purityScopePass } from "../purity-analysis/analysis";
 import { Token } from "../../tokenizer/tokenizer";
@@ -13,10 +11,6 @@ import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
-// Idempotency is enforced by the caller gating on the `firedLattice` cell;
-// the cell is top-only with no `prune`, so it stays "fired" across structural
-// rebuilds — a single source of truth replacing the previous
-// `FunctionUnit.memoizationApplied` duplicate flag.
 function applyMemoizationWrap(unit: FunctionUnit): boolean {
   const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return false;
@@ -83,33 +77,26 @@ function rewriteReturns(
   }
 }
 
-// Gated on callCount threshold and purity. Keyed by FunctionDef.id via structuralPass.
-// One-shot per unit: the `firedLattice` cell (top-only, no prune) is both the
-// idempotency gate and the observable "memoization fired" signal. Reacting to
-// `callCountPass` / `purityScopePass` writes requires a custom `affectedKeys`
-// (the stock `unitSweepRule` only wakes on `structuralPass`).
-export const memoizationRule: Pass<FunctionUnit, Fired> = {
-  id: Symbol("memoizationRule"),
-  debugName: "memoizationRule",
-  lattice: firedLattice,
-  edges: [
-    { pass: structuralPass, wake: (_ctx, key) => [key as FunctionUnit] },
-    { pass: callCountPass, wake: (ctx, key) => { const u = ctx.unitForFdId(key as number); return u === undefined ? [] : [u]; } },
-    { pass: purityScopePass, wake: (ctx, key) => { const u = ctx.unitForFdId(key as number); return u === undefined ? [] : [u]; } },
-  ],
-  tier: "transform",
-  // No `prune`: one-shot — pruning would self-trigger via structuralPass.
-  transfer(ctx: PassCtx, key: FunctionUnit): Fired {
-    // Idempotency gate: if this cell is already "fired", do not re-wrap.
-    // Replaces the old `unit.memoizationApplied` flag — the cell is the
-    // single source of truth, top-only + no-prune = sticky one-shot.
-    if (ctx.tryRead(memoizationRule, key) === "fired") return undefined;
-    const fd = key.funcAst;
-    if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
-    const count = ctx.read(callCountPass, fd.id);
-    if (count < MEMOIZATION_THRESHOLD) return undefined;
-    if (ctx.read(purityScopePass, fd.id) !== true) return undefined;
-    if (!applyMemoizationWrap(key)) return undefined;
-    return "fired";
-  },
-};
+// Closure-scoped idempotency set: one wrapped-set per rule instance, not a
+// module-level global. Wrapping persists across CFG rebuilds (unlike
+// dead-branch / const-fold, which are naturally idempotent via AST shape).
+// Replaces the old `firedLattice` cell that was kept sticky by having no
+// `prune`. Units are identified by reference; re-minted units (same AST
+// node, fresh FunctionUnit) fall outside the set and may be re-wrapped.
+export const memoizationRule: TransformRule = (() => {
+  const wrapped = new WeakSet<FunctionUnit>();
+  return {
+    id: Symbol("memoizationRule"),
+    debugName: "memoizationRule",
+    sweep(unit: FunctionUnit, ctx: PassCtx): boolean {
+      if (wrapped.has(unit)) return false;
+      const fd = unit.funcAst;
+      if (!(fd instanceof StmtNS.FunctionDef)) return false;
+      if (ctx.read(callCountPass, fd.id) < MEMOIZATION_THRESHOLD) return false;
+      if (ctx.read(purityScopePass, fd.id) !== true) return false;
+      if (!applyMemoizationWrap(unit)) return false;
+      wrapped.add(unit);
+      return true;
+    },
+  };
+})();

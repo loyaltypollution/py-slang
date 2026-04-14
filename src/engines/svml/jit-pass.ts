@@ -8,17 +8,16 @@
 // callCount / purity are deliberately NOT tuple inputs: compileFunction does
 // not read them. Their effect on the emitted IR is indirect — memoizationRule
 // reads them and, on fire, wraps the body. That wrap is a structural edit
-// which propagates to jitPass via `structuralPass`. Including them directly
-// would force a recompile on every observed call (up to RUNTIME_CALL_COUNT_SAT)
-// for a function whose IR does not change, which dominated runtime on tight
-// hot loops.
+// which propagates to jitPass via the worklist's `onUnitRebuilt` hook.
+// Including them directly would force a recompile on every observed call (up
+// to RUNTIME_CALL_COUNT_SAT) for a function whose IR does not change, which
+// dominated runtime on tight hot loops.
 
 import { StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../../specialization/framework/cfg";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
-import type { Pass, PassCtx } from "../../specialization/framework/pass";
+import type { Pass, PassCtx, WorklistLifecycle } from "../../specialization/framework/pass";
 import { constAnalysisPass, typeAnalysisPass } from "../../specialization/framework/dfa-passes";
-import { structuralPass } from "../../specialization/framework/structural-pass";
 import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
 import { SVMLIR } from "./types";
@@ -71,7 +70,6 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       join: (_a, b) => b,
     },
     edges: [
-      { pass: structuralPass, wake: (_ctx, key) => [key as FunctionUnit] },
       // Block-keyed DFA pass: a fact-advancing change on a block invalidates
       // the memo of the owning unit. `transfer` decides whether the change
       // materially differs from the last compile via reference-identity
@@ -79,7 +77,14 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       { pass: typeAnalysisPass, wake: blockToOwningUnit },
       { pass: constAnalysisPass, wake: blockToOwningUnit },
     ],
-    tier: "transform",
+    tier: "analysis",
+    onRegister(lifecycle: WorklistLifecycle): void {
+      const enqueue = (unit: FunctionUnit): void => {
+        if (unit.funcAst instanceof StmtNS.FunctionDef) lifecycle.enqueue(jitPass, unit);
+      };
+      lifecycle.onUnitMinted(enqueue);
+      lifecycle.onUnitRebuilt(enqueue);
+    },
     transfer(ctx: PassCtx, unit: FunctionUnit): SVMLIR | undefined {
       const scope = unit.funcAst;
       if (!(scope instanceof StmtNS.FunctionDef)) return undefined;

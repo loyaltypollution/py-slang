@@ -17,12 +17,13 @@ import type { SlotLookup } from "./slot-table";
  *   1. Populate `functionEnvironments` for the new node (if adding).
  *   2. `registry.mint(newNode)` / `registry.retire(oldNode.id)` — this updates
  *      slot layout and fires the worklist's onMint/onRetire listener, which
- *      builds (or drops) the corresponding FunctionUnit and seeds (or evicts)
- *      its structuralPass fact.
- *   3. `worklist.markStructuralChange(enclosingFdId)` — wakes downstream
- *      passes for the enclosing scope whose body structurally changed. The
- *      registry knows *which* function was added/removed, not *where*; the
- *      enclosing-unit bump is the transform's responsibility.
+ *      builds (or drops) the corresponding FunctionUnit and fires the
+ *      `onUnitMinted` / `onUnitRetired` lifecycle event.
+ *   3. `worklist.markStructuralChange(enclosingFdId)` — schedules the
+ *      enclosing unit for CFG rebuild so downstream analyses re-run against
+ *      the updated body. The registry knows *which* function was
+ *      added/removed, not *where*; the enclosing-unit bump is the
+ *      transform's responsibility.
  *
  * Skipping step 2 is undefined behavior (stale slot map, missing unit).
  * Skipping step 3 leaves downstream analyses observing stale per-node facts

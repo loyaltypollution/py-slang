@@ -29,16 +29,13 @@ export interface BoundedLattice<V> extends Lattice<V> {
 
 /** An edge to an upstream pass. `wake` projects an upstream key-change to
  *  zero-or-more keys in *this* pass's key-space, enqueuing them for
- *  re-transfer. `evict` projects to keys to delete from this pass's fact
- *  store (used for stale-cell cleanup on structural rebuild). Both fire
- *  on every upstream write to the named pass; absence means "no reaction
- *  of that kind." An edge with neither is a dependency-only declaration —
- *  the pass reads from `ctx.read(upstream, ...)` in `transfer` but does
- *  not auto-react to upstream writes. */
+ *  re-transfer. An edge without `wake` is a dependency-only declaration —
+ *  the pass reads from `ctx.read(upstream, ...)` in `transfer` but does not
+ *  auto-react to upstream writes. Cross-unit / lifecycle dispatch lives on
+ *  `Pass.onRegister`, not here. */
 export interface EdgeSpec<K> {
   readonly pass: Pass<any, any>;
   wake?(ctx: PassCtx, key: unknown): Iterable<K>;
-  evict?(ctx: PassCtx, key: unknown): Iterable<K>;
 }
 
 /** Append an `EdgeSpec` to a pass's `edges` after construction. Encapsulates
@@ -57,8 +54,18 @@ export interface Pass<K, V> {
   readonly debugName: string;
   readonly lattice: Lattice<V>;
   readonly edges: ReadonlyArray<EdgeSpec<K>>;
-  readonly tier?: "runtime" | "analysis" | "transform";
+  /** Priority tier. Runtime observations settle before analyses within a
+   *  `processQueue` drain. Transforms are no longer passes — see
+   *  `TransformRule`. Mandatory: a forgotten tier used to silently default
+   *  to `"analysis"`, which was a miscompile vector for any future
+   *  priority-sensitive consumer. */
+  readonly tier: "runtime" | "analysis";
   transfer(ctx: PassCtx, key: K): V | undefined;
+  /** Optional lifecycle hook. Called once when the pass is registered with
+   *  a worklist. Passes that need to react to unit mint / rebuild / retire
+   *  (e.g. block-keyed DFA passes seeding from `unit.cfg.entry` on rebuild)
+   *  subscribe here instead of declaring a cross-keyspace edge. */
+  onRegister?(lifecycle: WorklistLifecycle): void;
 }
 
 /** View handed to `Pass.transfer`. */
@@ -76,4 +83,34 @@ export interface PassCtx {
   unitForFdId(fdId: number): FunctionUnit | undefined;
   /** Internal-only: reserved for DFA factory's block fixpoint. */
   readonly factStore: FactStore;
+}
+
+/** Unit lifecycle observer API exposed to `Pass.onRegister`. Subscribers
+ *  react to unit mint (fresh unit, empty CFG just wired), rebuild (existing
+ *  unit, new CFG after transform-triggered rewire), and retire (unit being
+ *  dropped). Listeners MUST be read-only with respect to the fact store
+ *  except via `evict` and `enqueue`; any new writes belong in a pass
+ *  transfer, not a lifecycle callback. */
+export interface WorklistLifecycle {
+  readonly factStore: FactStore;
+  onUnitMinted(cb: (unit: FunctionUnit) => void): void;
+  onUnitRebuilt(cb: (unit: FunctionUnit) => void): void;
+  onUnitRetired(cb: (unit: FunctionUnit, fdId: number) => void): void;
+  enqueue<K>(pass: Pass<K, any>, key: K): void;
+}
+
+/** One-shot or cascading imperative AST sweep gated on analyses. Transforms
+ *  are not `Pass<_, _>` — they have no lattice, no transfer, and do not
+ *  participate in the fact-store fixpoint. Worklist runs registered rules
+ *  over dirty units after `processQueue` drains, records which units
+ *  rewrote, and schedules those for CFG rebuild. Idempotency across
+ *  rebuilds is the rule's responsibility: dead-branch / const-folding are
+ *  naturally idempotent (rewriting removes the precondition); memoization
+ *  must track its own wrapped-set. */
+export interface TransformRule {
+  readonly id: symbol;
+  readonly debugName: string;
+  /** Returns `true` iff `unit.body` was mutated — the worklist then schedules
+   *  a CFG rebuild for `unit`. */
+  sweep(unit: FunctionUnit, ctx: PassCtx): boolean;
 }

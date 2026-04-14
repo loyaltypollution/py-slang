@@ -2,8 +2,8 @@
 // const-fold, across multiple levels. Verifies `drain()` converges and does
 // not hit the iteration cap. Guards the informal termination argument:
 // AST-size strictly decreases across dead-branch / const-fold fires, and
-// memoization is one-shot per unit via the `firedLattice` cell
-// (top-only, no prune → sticky across structural rebuilds).
+// memoization is one-shot per unit via the rule's internal `wrapped`
+// WeakSet (sticky across structural rebuilds).
 
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";

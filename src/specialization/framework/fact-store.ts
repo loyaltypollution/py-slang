@@ -18,8 +18,7 @@ type FactChangeListener = (change: FactChange<unknown, unknown>) => void;
  *  (value ⊏ prev) collapse to no-ops instead of silently corrupting state. */
 export class FactStore {
   private readonly cells = new Map<Pass<unknown, unknown>, Map<unknown, unknown>>();
-  private listener: FactChangeListener | undefined;
-  private postDispatch: (() => void) | undefined;
+  private readonly listeners: FactChangeListener[] = [];
 
   read<K, V>(pass: Pass<K, V>, key: K): V {
     const inner = this.cells.get(pass as Pass<unknown, unknown>);
@@ -66,20 +65,8 @@ export class FactStore {
       oldValue: prev,
       newValue: joined,
     };
-    this.listener?.(change as FactChange<unknown, unknown>);
-    this.postDispatch?.();
+    for (const l of this.listeners) l(change as FactChange<unknown, unknown>);
     return true;
-  }
-
-  /** Register a callback fired after every `write`'s listener call. */
-  onPostDispatch(cb: () => void): () => void {
-    if (this.postDispatch !== undefined) {
-      throw new Error(`[FactStore] onPostDispatch already registered; only one subscriber supported`);
-    }
-    this.postDispatch = cb;
-    return () => {
-      if (this.postDispatch === cb) this.postDispatch = undefined;
-    };
   }
 
   /** Delete a cell. Silent if absent; no event emitted. */
@@ -88,12 +75,10 @@ export class FactStore {
   }
 
   onChange(listener: FactChangeListener): () => void {
-    if (this.listener !== undefined) {
-      throw new Error(`[FactStore] onChange already registered; only one subscriber supported`);
-    }
-    this.listener = listener;
+    this.listeners.push(listener);
     return () => {
-      if (this.listener === listener) this.listener = undefined;
+      const idx = this.listeners.indexOf(listener);
+      if (idx !== -1) this.listeners.splice(idx, 1);
     };
   }
 }

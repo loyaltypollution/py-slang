@@ -33,24 +33,20 @@ import {
 } from "../framework/dfa-factory";
 import type { FunctionUnit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
-import type { EdgeSpec, Lattice, Pass, PassCtx } from "../framework/pass";
+import type { EdgeSpec, Lattice, Pass, PassCtx, WorklistLifecycle } from "../framework/pass";
 import { addEdge } from "../framework/pass";
 import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
-import { structuralPass } from "../framework/structural-pass";
 import {
   absJoin,
   absLeq,
   closure,
   fresh,
   GLOBAL,
+  IMPURE_MARKER,
+  IMPURE_SENTINEL_NODE_ID,
   param,
-  PURE_SUMMARY,
-  IMPURE_SUMMARY,
-  summaryEquals,
-  summaryJoin,
   UNKNOWN,
   type AbsVal,
-  type PurityBlockSummary,
 } from "./lattice";
 
 // Memo-safe builtins (deterministic, no I/O, don't capture or mutate args).
@@ -406,31 +402,27 @@ const absValLattice: Lattice<AbsVal> = {
   join: absJoin,
 };
 
-const summaryLattice: Lattice<PurityBlockSummary> = {
-  bottom: PURE_SUMMARY,
-  leq: (a, b) => summaryEquals(a, b) || b === IMPURE_SUMMARY,
-  join: summaryJoin,
-};
-
 export const purityBlockPass: Pass<
   BasicBlock,
-  DfaBlockFact<AbsVal, PurityBlockSummary>
-> = makeBlockFixpointPass<AbsVal, PurityBlockSummary>({
+  DfaBlockFact<AbsVal>
+> = makeBlockFixpointPass<AbsVal>({
   debugName: "purityAnalysis",
   direction: "forward",
   valueLattice: absValLattice,
   mergeKind: "may",
-  summaryLattice,
   reads: [],
   seedEnv,
   transferBlock: (ctx, block, inEnv, unit) => {
     const state = new BlockState(inEnv, unit.slotLookup, selfNameOf(unit), ctx);
     for (const stmt of block.stmts) transferStmt(stmt, state);
-    return {
-      outEnv: state.env,
-      exprFacts: EMPTY_EXPR_FACTS,
-      summary: state.impure ? IMPURE_SUMMARY : PURE_SUMMARY,
-    };
+    // Block-global impure flag lives at a sentinel key in `exprFacts`. The
+    // DFA factory's per-key lattice join handles monotone propagation; a
+    // present sentinel joined with an absent one stays present (any-impure
+    // semantics), two presents join to IMPURE_MARKER.
+    const exprFacts = state.impure
+      ? new Map<number, AbsVal>([[IMPURE_SENTINEL_NODE_ID, IMPURE_MARKER]])
+      : EMPTY_EXPR_FACTS;
+    return { outEnv: state.env, exprFacts };
   },
 });
 
@@ -460,13 +452,6 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
   lattice: outerLattice,
   edges: [
     {
-      pass: structuralPass,
-      wake: (_ctx, key) => {
-        const fd = (key as FunctionUnit).funcAst;
-        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
-      },
-    },
-    {
       pass: purityBlockPass,
       wake: (_ctx, key) => {
         const fd = (key as BasicBlock).unit.funcAst;
@@ -475,6 +460,14 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
     },
   ],
   tier: "analysis",
+  onRegister(lifecycle: WorklistLifecycle): void {
+    const enqueueForUnit = (unit: FunctionUnit): void => {
+      const fd = unit.funcAst;
+      if (fd instanceof StmtNS.FunctionDef) lifecycle.enqueue(purityScopePass, fd.id);
+    };
+    lifecycle.onUnitMinted(enqueueForUnit);
+    lifecycle.onUnitRebuilt(enqueueForUnit);
+  },
   transfer(ctx: PassCtx, fdId: number): boolean | undefined {
     const unit = ctx.unitForFdId(fdId);
     if (unit === undefined) return undefined;
@@ -490,7 +483,7 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
       const fact = ctx.tryRead(purityBlockPass, block);
       if (fact === undefined) continue;
       anyVisited = true;
-      if (fact.summary.impure) return false;
+      if (fact.exprFacts.has(IMPURE_SENTINEL_NODE_ID)) return false;
     }
     return anyVisited ? true : undefined;
   },

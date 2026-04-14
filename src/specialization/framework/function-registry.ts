@@ -9,8 +9,8 @@ export type FunctionScopeNode =
 
 /** Observes structural events on the registry. The owning Worklist (if any)
  *  attaches itself here so that mint/retire wake downstream passes for the
- *  affected units. Registry does not know about structuralPass; it only
- *  dispatches "what happened to whom". */
+ *  affected units. Registry does not know about the Worklist lifecycle API;
+ *  it only dispatches "what happened to whom". */
 export interface FunctionRegistryListener {
   onMint(node: FunctionScopeNode, slot: number): void;
   onRetire(fdId: number, node: FunctionScopeNode): void;
@@ -32,12 +32,12 @@ export interface FunctionRegistryListener {
  * The throws in this class convert the silent-miscompile failure mode into a
  * loud "not registered" at the first slot lookup.
  *
- * Callers operating on a live Worklist MUST also bump structuralPass for the
- * *enclosing* unit via `worklist.markStructuralChange(enclosingFdId)` — the
- * registry knows which function was added/removed, but the enclosing context
- * is the transform's responsibility. The registry's `listener` hook wakes the
- * newly-minted unit or retires the removed one; it does NOT wake the
- * enclosing unit whose body structurally changed.
+ * Callers operating on a live Worklist MUST also schedule a CFG rebuild for
+ * the *enclosing* unit via `worklist.markStructuralChange(enclosingFdId)` —
+ * the registry knows which function was added/removed, but the enclosing
+ * context is the transform's responsibility. The registry's `listener` hook
+ * fires onUnitMinted/onUnitRetired for the newly-minted or removed unit; it
+ * does NOT rebuild the enclosing unit whose body structurally changed.
  */
 export class FunctionRegistry {
   private nextSlot = 0;

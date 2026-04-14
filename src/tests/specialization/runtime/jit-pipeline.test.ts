@@ -13,7 +13,6 @@ import {
 } from "../../../specialization/framework/runtime-passes";
 import { constAnalysisPass, typeAnalysisPass } from "../../../specialization/framework/dfa-passes";
 import { purityScopePass } from "../../../specialization/purity-analysis/analysis";
-import { structuralPass } from "../../../specialization/framework/structural-pass";
 import { CONST_TOP } from "../../../specialization/const-analysis/lattice";
 import { TOP as TYPE_TOP } from "../../../specialization/type-analysis/lattice";
 import { MutableEnv } from "../../../specialization/framework/mutable-env";
@@ -61,7 +60,7 @@ f()
         join: (a, b) => Math.max(a, b),
       },
       edges: [{ pass: callCountPass, wake: (_c, k) => [k as number] }],
-      tier: "transform",
+      tier: "analysis",
       transfer(ctx, key) {
         transferRuns++;
         return ctx.read(callCountPass, key) ?? 0;
@@ -88,7 +87,7 @@ f()
         join: (a, b) => Math.max(a, b),
       },
       edges: [{ pass: callCountPass, wake: () => [unit] }],
-      tier: "transform",
+      tier: "analysis",
       transfer(ctx, u) {
         const c = ctx.read(callCountPass, fDef.id) ?? 0;
         if (c <= MEMOIZATION_THRESHOLD) return undefined;
@@ -158,9 +157,12 @@ g()
       edges: [
         { pass: callCountPass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
         { pass: purityScopePass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
-        { pass: structuralPass, wake: (_c, k) => [k as FunctionUnit] },
       ],
-      tier: "transform",
+      tier: "analysis",
+      onRegister(lifecycle) {
+        lifecycle.onUnitMinted(u => { if (u.funcAst instanceof StmtNS.FunctionDef) lifecycle.enqueue(jitPass, u); });
+        lifecycle.onUnitRebuilt(u => { if (u.funcAst instanceof StmtNS.FunctionDef) lifecycle.enqueue(jitPass, u); });
+      },
       transfer(_ctx: PassCtx, unit: FunctionUnit) {
         const scope = unit.funcAst;
         if (!(scope instanceof StmtNS.FunctionDef)) return undefined;

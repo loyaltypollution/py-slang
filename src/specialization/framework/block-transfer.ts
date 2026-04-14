@@ -89,5 +89,5 @@ export function transferBlock<L>(
       transferStmt(stmt, outEnv, visitor, module, slotLookup);
     }
   }
-  return { outEnv, exprFacts, summary: undefined };
+  return { outEnv, exprFacts };
 }

@@ -2,7 +2,6 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import { MEMOIZATION_THRESHOLD } from "../../../specialization/memoization-analysis/call-count";
-import { memoizationRule } from "../../../specialization/transforms/memoization";
 import {
   clearMemoCache,
   memoCacheSnapshot,
@@ -38,8 +37,15 @@ function observeCallsTo(reactive: Worklist, fd: StmtNS.FunctionDef, n: number): 
   for (let i = 1; i <= n; i++) reactive.observe(runtimeCallPass, fd.id, i);
 }
 
-function memoFired(reactive: Worklist, unit: FunctionUnit): boolean {
-  return reactive.factStore.read(memoizationRule, unit) === "fired";
+function memoFired(_reactive: Worklist, unit: FunctionUnit): boolean {
+  const fd = unit.funcAst;
+  if (!(fd instanceof StmtNS.FunctionDef)) return false;
+  const first = fd.body[0];
+  if (!(first instanceof StmtNS.If)) return false;
+  const cond = first.condition;
+  if (!(cond instanceof ExprNS.Call)) return false;
+  const callee = cond.callee;
+  return callee instanceof ExprNS.Variable && callee.name.lexeme === "__memo_has";
 }
 
 describe("memoization: call-count → threshold → AST rewrite", () => {

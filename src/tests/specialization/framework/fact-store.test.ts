@@ -36,6 +36,7 @@ function makePass<K, V>(
     debugName: name,
     lattice,
     edges: [],
+    tier: "analysis",
     transfer,
   };
 }

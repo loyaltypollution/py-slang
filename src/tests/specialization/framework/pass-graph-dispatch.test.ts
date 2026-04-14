@@ -1,23 +1,15 @@
 /**
- * PR-2a tests: Worklist's pass-graph dispatch layer.
+ * Worklist pass-graph dispatch layer.
  *
- * These tests exercise `register` / `enqueue` / `drain` without
- * touching any production analysis / transform. Every pass is constructed
- * inline with minimal lattices so the test isolates the dispatch rule —
- * "a lattice-change write fans out to declared readers only".
- *
- * Coverage:
- *   (a) saturating lattice at ceiling suppresses consumer re-enqueue;
- *   (b) write to an unread pass wakes no consumers;
- *   (c) structural write fans out to declared readers only;
- *   (d) transform defers while analysis is queued for the same unit;
- *   (e) prune hook evicts stale BlockId-shaped keys on CFG rebuild.
+ * Exercises `register` / `enqueue` / `drain` without touching any production
+ * analysis / transform. Every pass is constructed inline with minimal lattices
+ * so the test isolates the dispatch rule — "a lattice-change write fans out
+ * to declared readers only".
  */
 import { parse } from "../../../parser/parser-adapter";
 import { Resolver } from "../../../resolver";
 import { Worklist } from "../../../specialization/framework/worklist";
-import { structuralPass } from "../../../specialization/framework/structural-pass";
-import type { EdgeSpec, Lattice, Pass } from "../../../specialization/framework/pass";
+import type { EdgeSpec, Lattice, Pass, TransformRule, WorklistLifecycle } from "../../../specialization/framework/pass";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -26,7 +18,7 @@ function buildWorklist(src = "x = 1\n"): Worklist {
   const ast = parse(src);
   const resolver = new Resolver(src, ast);
   resolver.resolve(ast);
-  return new Worklist(ast, resolver.functionEnvironments);
+  return new Worklist(ast, resolver.functionEnvironments, [], undefined, []);
 }
 
 const intMax: Lattice<number> = {
@@ -41,7 +33,6 @@ const topOnly: Lattice<"fired"> = {
   join: () => "fired",
 };
 
-/** Saturating bucket: clamps at `ceiling`; equality gate suppresses writes past ceiling. */
 function saturatingBucket(ceiling: number): Lattice<number> {
   return {
     bottom: 0,
@@ -50,9 +41,6 @@ function saturatingBucket(ceiling: number): Lattice<number> {
   };
 }
 
-/** Default wake: identity projection from upstream key → [same key]. Mirrors
- *  the semantics of pre-edge `coarse:true` for tests whose consumer key-space
- *  matches the upstream's. */
 function identityWake<K>(pass: Pass<any, any>): EdgeSpec<K> {
   return { pass, wake: (_c, k) => [k as K] };
 }
@@ -61,16 +49,18 @@ function makePass<K, V>(opts: {
   name: string;
   lattice: Lattice<V>;
   edges?: ReadonlyArray<EdgeSpec<K>>;
-  tier?: "runtime" | "analysis" | "transform";
+  tier?: "runtime" | "analysis";
   transfer?: (key: K) => V | undefined;
+  onRegister?: (lifecycle: WorklistLifecycle) => void;
 }): Pass<K, V> {
   return {
     id: Symbol(opts.name),
     debugName: opts.name,
     lattice: opts.lattice,
     edges: opts.edges ?? [],
-    tier: opts.tier,
+    tier: opts.tier ?? "analysis",
     transfer: (_ctx, key) => (opts.transfer ? opts.transfer(key as K) : undefined),
+    onRegister: opts.onRegister,
   };
 }
 
@@ -104,13 +94,10 @@ describe("Worklist pass-graph dispatch", () => {
     const runsAfterFirst = consumerRuns;
     expect(runsAfterFirst).toBeGreaterThan(0);
 
-    // Push bucket to ceiling.
     wl.factStore.write(producer, "k", 3);
     wl.drain();
     const runsAtCeiling = consumerRuns;
 
-    // Further writes at ceiling must be no-ops (equal under lattice.equals);
-    // no onChange fires → consumer not re-enqueued.
     wl.factStore.write(producer, "k", 3);
     wl.factStore.write(producer, "k", 3);
     wl.drain();
@@ -163,126 +150,88 @@ describe("Worklist pass-graph dispatch", () => {
     expect(consumerRan).toBe(false);
   });
 
-  test("(c) structural write fans out to declared readers only", () => {
-    const wl = buildWorklist();
-    const reader = makePass<FunctionUnit, number>({
-      name: "struct-reader",
+  test("(c) onUnitRebuilt fires once per pending rebuild, with fresh CFG", () => {
+    const wl = buildWorklist("def f():\n    return 1\n");
+    const rebuildEvents: FunctionUnit[] = [];
+    const observer = makePass<FunctionUnit, number>({
+      name: "observer",
       lattice: intMax,
-      edges: [identityWake(structuralPass)],
-      transfer: () => 1,
-    });
-    const nonReader = makePass<FunctionUnit, number>({
-      name: "non-reader",
-      lattice: intMax,
-      edges: [],
-      transfer: () => 1,
-    });
-    wl.register(reader);
-    wl.register(nonReader);
-
-    const [unit] = [...wl.units.values()];
-    wl.factStore.write(reader, unit, 1);
-    wl.factStore.write(nonReader, unit, 1);
-
-    let readerRuns = 0;
-    let nonReaderRuns = 0;
-    const readerSpy = makePass<FunctionUnit, number>({
-      name: "reader-spy",
-      lattice: intMax,
-      edges: [identityWake(structuralPass)],
-      transfer: () => {
-        readerRuns++;
-        return undefined;
+      transfer: () => undefined,
+      onRegister(lifecycle) {
+        lifecycle.onUnitRebuilt(u => rebuildEvents.push(u));
       },
     });
-    const nonReaderSpy = makePass<FunctionUnit, number>({
-      name: "non-reader-spy",
-      lattice: intMax,
-      edges: [],
-      transfer: () => {
-        nonReaderRuns++;
-        return undefined;
-      },
-    });
-    wl.register(readerSpy);
-    wl.register(nonReaderSpy);
-    wl.factStore.write(readerSpy, unit, 1);
-    wl.factStore.write(nonReaderSpy, unit, 1);
+    wl.register(observer);
 
-    wl.factStore.write(structuralPass, unit, 42);
+    const fDef = [...wl.units.keys()].find(
+      n => n.constructor.name === "FunctionDef",
+    )!;
+    const fUnit = wl.units.get(fDef)!;
+    wl.markStructuralChange((fDef as { id: number }).id);
     wl.drain();
 
-    expect(readerRuns).toBeGreaterThan(0);
-    expect(nonReaderRuns).toBe(0);
+    expect(rebuildEvents).toEqual([fUnit]);
   });
 
-  test("(d) transform defers while analysis is queued for same unit", () => {
+  test("(d) transform sweeps after analyses converge within a drain iteration", () => {
     const wl = buildWorklist();
     const order: string[] = [];
     const analysis = makePass<FunctionUnit, number>({
       name: "analysis",
       lattice: intMax,
-      edges: [identityWake(structuralPass)],
       tier: "analysis",
       transfer: () => {
         order.push("analysis");
         return undefined;
       },
-    });
-    const transform = makePass<FunctionUnit, number>({
-      name: "transform",
-      lattice: intMax,
-      edges: [identityWake(structuralPass)],
-      tier: "transform",
-      transfer: () => {
-        order.push("transform");
-        return undefined;
+      onRegister(lifecycle) {
+        lifecycle.onUnitMinted(u => lifecycle.enqueue(analysis, u));
       },
     });
+    const transform: TransformRule = {
+      id: Symbol("transform"),
+      debugName: "transform",
+      sweep() {
+        order.push("transform");
+        return false;
+      },
+    };
     wl.register(analysis);
-    wl.register(transform);
-
-    const [unit] = [...wl.units.values()];
-    wl.factStore.write(analysis, unit, 1);
-    wl.factStore.write(transform, unit, 1);
-
-    wl.factStore.write(structuralPass, unit, 7);
+    wl.registerTransform(transform);
     wl.drain();
 
-    const a = order.indexOf("analysis");
-    const t = order.indexOf("transform");
-    expect(a).toBeGreaterThanOrEqual(0);
-    expect(t).toBeGreaterThan(a);
+    expect(order[0]).toBe("analysis");
+    expect(order).toContain("transform");
+    expect(order.lastIndexOf("analysis")).toBeLessThan(order.indexOf("transform"));
   });
 
-  test("(e) evict edge removes stale BlockId-shaped keys on CFG rebuild", () => {
+  test("(e) transform that fires triggers CFG rebuild and onUnitRebuilt", () => {
     const wl = buildWorklist();
-    // eslint-disable-next-line prefer-const
-    let blockKeyed: Pass<string, number>;
-    blockKeyed = makePass<string, number>({
-      name: "block-keyed",
+    const rebuilt: FunctionUnit[] = [];
+    const observer = makePass<FunctionUnit, number>({
+      name: "observer",
       lattice: intMax,
-      edges: [
-        {
-          pass: structuralPass,
-          wake: (_c, k) => [k as unknown as string],
-          // On structural rebuild, evict every previous key (simulating "all
-          // BlockIds belonged to the old CFG").
-          evict: (ctx) => Array.from(ctx.readAll(blockKeyed).keys()),
-        },
-      ],
       transfer: () => undefined,
+      onRegister(lifecycle) {
+        lifecycle.onUnitRebuilt(u => rebuilt.push(u));
+      },
     });
-    wl.register(blockKeyed);
+    let fired = false;
+    const transform: TransformRule = {
+      id: Symbol("one-shot"),
+      debugName: "one-shot",
+      sweep() {
+        if (fired) return false;
+        fired = true;
+        return true;
+      },
+    };
+    wl.register(observer);
+    wl.registerTransform(transform);
+    wl.drain();
 
-    wl.factStore.write(blockKeyed, "b0", 1);
-    wl.factStore.write(blockKeyed, "b1", 2);
-    expect(wl.factStore.readAll(blockKeyed).size).toBe(2);
-
-    const [unit] = [...wl.units.values()];
-    wl.factStore.write(structuralPass, unit, 99);
-
-    expect(wl.factStore.readAll(blockKeyed).size).toBe(0);
+    expect(fired).toBe(true);
+    expect(rebuilt.length).toBe(1);
   });
 
   test("top-only lattice: re-write of 'fired' suppresses re-enqueue", () => {

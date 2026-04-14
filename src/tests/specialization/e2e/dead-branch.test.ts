@@ -2,7 +2,6 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import OpCodes from "../../../engines/svml/opcodes";
-import { structuralPass } from "../../../specialization/framework/structural-pass";
 import { buildTestWorklist } from "../../utils";
 import { runSpecCase } from "../../harness/spec-e2e";
 
@@ -61,29 +60,25 @@ describe("dead-branch elimination", () => {
   });
 });
 
-// Idempotence and versioning: the worklist reaches a stable state and
-// records whether any structural rewrite happened.
+// Idempotence: the worklist reaches a stable state and reports which units
+// rewrote via `drain()`'s return value.
 describe("worklist stability", () => {
-  test("no-transform code leaves structuralVersion at 0", () => {
+  test("no-transform code reports no changed units", () => {
     const script = "x = 1\ny = 2\n";
     const ast = parse(script) as StmtNS.FileInput;
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const reactive = buildTestWorklist(ast, environments);
-    reactive.drain();
-    for (const unit of reactive.units.values()) {
-      expect(reactive.factStore.read(structuralPass, unit)).toBe(0);
-    }
+    const changed = reactive.drain();
+    expect(changed.size).toBe(0);
   });
 
-  test("dead branch bumps structuralVersion > 0", () => {
+  test("dead branch reports the FileInput unit as changed", () => {
     const script = "if True:\n  x = 1\nelse:\n  x = 2\n";
     const ast = parse(script) as StmtNS.FileInput;
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const reactive = buildTestWorklist(ast, environments);
-    reactive.drain();
-    expect(
-      reactive.factStore.read(structuralPass, reactive.units.get(ast)!),
-    ).toBeGreaterThan(0);
+    const changed = reactive.drain();
+    expect(changed.has(ast)).toBe(true);
   });
 
   test("drain() size reports pending work", () => {

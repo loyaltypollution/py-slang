@@ -4,7 +4,7 @@ import { typeAnalysisModule } from "../type-analysis/analysis";
 import type { TypeLattice } from "../type-analysis/lattice";
 import { transferBlock } from "./block-transfer";
 import type { BasicBlock } from "./cfg";
-import { type DfaBlockFact, makeBlockFixpointPass, VOID_SUMMARY } from "./dfa-factory";
+import { type DfaBlockFact, makeBlockFixpointPass } from "./dfa-factory";
 import type { AnalysisPass } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
 import type { Pass } from "./pass";
@@ -19,7 +19,6 @@ function dfaPass<L>(
     direction: spec.direction,
     valueLattice: spec,
     mergeKind: spec.mergeKind,
-    summaryLattice: VOID_SUMMARY,
     reads: [runtimeWritePass],
     seedEnv: () => new MutableEnv<L>(),
     transferBlock: (ctx, block, inEnv, unit) =>

@@ -2,50 +2,36 @@ import type { BasicBlock } from "./cfg";
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
-import { latticeEquals, type BoundedLattice, type EdgeSpec, type Lattice, type Pass, type PassCtx } from "./pass";
-import { structuralPass } from "./structural-pass";
+import { latticeEquals, type BoundedLattice, type EdgeSpec, type Lattice, type Pass, type PassCtx, type WorklistLifecycle } from "./pass";
 
-/** Packages a Kildall block DFA as a `Pass<BasicBlock, DfaBlockFact<L, S>>`.
- *  The fact carries the block's OUT env (used for CFG successor propagation),
- *  the per-expression lattice facts the transfer computed inside this block,
- *  and an optional per-block *summary* lattice value `S` for analyses that
- *  track block-global facts orthogonal to the slot env (e.g. a sticky
- *  "impure" bit for purity analysis). `S` defaults to `void` — analyses that
- *  don't need summaries use the default and ignore it. Per-node facts are
- *  queried via `readExprFact` — they live inside the block fact rather than
- *  in a side-channel per-node pass. */
+/** Packages a Kildall block DFA as a `Pass<BasicBlock, DfaBlockFact<L>>`.
+ *  The fact carries the block's OUT env (used for CFG successor propagation)
+ *  and the per-node lattice facts the transfer computed inside this block.
+ *  Analyses that need block-global sticky state (e.g. purity's "impure" bit)
+ *  stash it in `exprFacts` at a sentinel nodeId — exprFacts is joined
+ *  per-key via the value lattice, so the sentinel participates in the
+ *  usual monotone propagation without a separate summary channel. */
 
 /** Output fact for one block under an analysis pass. */
-export interface DfaBlockFact<L, S = void> {
+export interface DfaBlockFact<L> {
   /** Slot-keyed OUT env for forward successor / backward predecessor merging. */
   readonly outEnv: MutableEnv<L>;
   /** NodeId → lattice value for expressions visited in this block's transfer. */
   readonly exprFacts: ReadonlyMap<number, L>;
-  /** Block-global summary value (e.g. sticky flags). Defaults to `undefined`. */
-  readonly summary: S;
 }
 
 type DfaDirection = "forward" | "backward";
 
-interface DfaConfigBase<L, S> {
+interface DfaConfigBase<L> {
   readonly debugName: string;
   readonly direction: DfaDirection;
-  /** Lattice for the per-block summary. Use `VOID_SUMMARY` for analyses that
-   *  don't need one — it treats all values as equal and has `undefined` bottom. */
-  readonly summaryLattice: Lattice<S>;
-  /** Pure: IN env → OUT env + per-node exprFacts + per-block summary.
-   *  The summary is *local* to this block — it is not seeded from predecessor
-   *  OUT summaries. Consumers that want a whole-unit view (e.g. "any reachable
-   *  block impure?") aggregate across `unit.cfg.blocks` in their own pass.
-   *  For summaries that genuinely need flow-sensitivity, encode the relevant
-   *  state inside `L` where the env's slot-wise join handles it. No
-   *  fact-store writes. */
+  /** Pure: IN env → OUT env + per-node exprFacts. No fact-store writes. */
   readonly transferBlock: (
     ctx: PassCtx,
     block: BasicBlock,
     inEnv: MutableEnv<L>,
     unit: FunctionUnit,
-  ) => DfaBlockFact<L, S>;
+  ) => DfaBlockFact<L>;
   /** Seed the entry (forward) / exit (backward) block's IN env. */
   readonly seedEnv: (unit: FunctionUnit) => MutableEnv<L>;
   readonly reads: ReadonlyArray<Pass<any, any>>;
@@ -56,21 +42,14 @@ interface DfaConfigBase<L, S> {
  *  discriminated union lets `purityBlockPass` (may-merge) pass a plain
  *  `Lattice` without fabricating unused `top`/`meet` — the type system
  *  refuses a must-merge config paired with a non-bounded lattice. */
-type DfaConfig<L, S = void> = DfaConfigBase<L, S> & (
+type DfaConfig<L> = DfaConfigBase<L> & (
   | { readonly mergeKind: "may"; readonly valueLattice: Lattice<L> }
   | { readonly mergeKind: "must"; readonly valueLattice: BoundedLattice<L> }
 );
 
-/** No-op summary lattice for analyses that don't carry block-global state. */
-export const VOID_SUMMARY: Lattice<void> = {
-  bottom: undefined,
-  leq: () => true,
-  join: () => undefined,
-};
-
-export function makeBlockFixpointPass<L, S = void>(
-  config: DfaConfig<L, S>,
-): Pass<BasicBlock, DfaBlockFact<L, S>> {
+export function makeBlockFixpointPass<L>(
+  config: DfaConfig<L>,
+): Pass<BasicBlock, DfaBlockFact<L>> {
   // Frozen singleton: `FactStore.read` returns this for unwritten cells. Any
   // caller that mutates `outEnv` or `exprFacts` in place corrupts every other
   // unwritten read through the same pass. `Object.freeze` prevents
@@ -78,10 +57,9 @@ export function makeBlockFixpointPass<L, S = void>(
   // slot array mutators throw — callers MUST `snapshot()` before mutation.
   // `inEnvFor` does exactly that; `readExprFact` only reads via `tryRead`/
   // `.get`, which never touches the bottom object.
-  const bottomFact: DfaBlockFact<L, S> = Object.freeze({
+  const bottomFact: DfaBlockFact<L> = Object.freeze({
     outEnv: new MutableEnv<L>().freeze(),
     exprFacts: new Map<number, L>(),
-    summary: config.summaryLattice.bottom,
   });
 
   const exprFactsEqual = (
@@ -112,28 +90,27 @@ export function makeBlockFixpointPass<L, S = void>(
     return merged;
   };
 
-  // All three parts participate in change detection — exprFacts or summary
-  // can advance while outEnv stays invariant (e.g. runtime observation
-  // widening a sub-expression in `return e`), and readers of any projection
-  // must wake on those. Ripple cost is bounded: a change to exprFacts/summary
-  // alone still wakes CFG successors via the self-reader edge, but each
-  // successor's transfer then produces an unchanged OUT, so the ripple dies
-  // after one hop per successor — O(|CFG|) per observation.
+  // Both parts participate in change detection — exprFacts can advance while
+  // outEnv stays invariant (e.g. runtime observation widening a sub-expression
+  // in `return e`), and readers of any projection must wake on those. Ripple
+  // cost is bounded: a change to exprFacts alone still wakes CFG successors
+  // via the self-reader edge, but each successor's transfer then produces an
+  // unchanged OUT, so the ripple dies after one hop per successor — O(|CFG|)
+  // per observation.
   //
   // `leq` is conservative (= equals): a true point-wise leq would let
   // strictly-smaller writes skip `join` allocation, but the compound
   // structure makes that fiddly and the FactStore.write `latticeEquals`
   // backstop still suppresses the listener event for no-op writes.
-  const compoundEquals = (a: DfaBlockFact<L, S>, b: DfaBlockFact<L, S>): boolean =>
+  const compoundEquals = (a: DfaBlockFact<L>, b: DfaBlockFact<L>): boolean =>
     a.outEnv.equals(b.outEnv, config.valueLattice) &&
-    exprFactsEqual(a.exprFacts, b.exprFacts) &&
-    latticeEquals(config.summaryLattice, a.summary, b.summary);
-  const envLattice: Lattice<DfaBlockFact<L, S>> = {
+    exprFactsEqual(a.exprFacts, b.exprFacts);
+  const envLattice: Lattice<DfaBlockFact<L>> = {
     bottom: bottomFact,
     leq: compoundEquals,
     // Commutative monotone join: outEnv merges slot-wise, exprFacts merge
-    // per-nodeId, summary merges via its own lattice. Under the DFA's expected
-    // monotone transfer, FactStore.write's join(prev, new) collapses to `new`;
+    // per-nodeId via the value lattice. Under the DFA's expected monotone
+    // transfer, FactStore.write's join(prev, new) collapses to `new`;
     // commutativity makes that independent of operand order.
     join: (a, b) => {
       const merged = a.outEnv.snapshot();
@@ -145,7 +122,6 @@ export function makeBlockFixpointPass<L, S = void>(
       return {
         outEnv: merged,
         exprFacts: exprFactsJoin(a.exprFacts, b.exprFacts),
-        summary: config.summaryLattice.join(a.summary, b.summary),
       };
     },
   };
@@ -189,57 +165,55 @@ export function makeBlockFixpointPass<L, S = void>(
     wake: nodeIdToBlock,
   }));
 
-  // Structural change: seed entry (forward) / exit (backward); self-wake
-  // walks the CFG from there. Evict every previously-written block-key
-  // belonging to the rebuilt unit — the prior CFG's `BasicBlock` identities
-  // are orphaned after `wireCFG(unit)`, so their facts are stale by key.
-  const structuralEdge: EdgeSpec<BasicBlock> = {
-    pass: structuralPass,
-    wake: (_ctx, key) => {
-      const unit = key as FunctionUnit;
-      return [config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit];
-    },
-    evict: (ctx, key) => {
-      const unit = key as FunctionUnit;
-      const out: BasicBlock[] = [];
-      for (const b of ctx.readAll(blockKeyedPass).keys()) {
-        if (b.unit === unit) out.push(b);
-      }
-      return out;
-    },
-  };
+  // `edges` is a live array passed to the pass; construct the pass first,
+  // then push the self-edge referring to `blockKeyedPass` directly. Callers
+  // with cross-pass cycles (e.g. purity block ↔ scope) amend `edges`
+  // post-construction via `addEdge` for the same reason — the array stays
+  // unfrozen to make that safe.
+  const edgesArr: EdgeSpec<BasicBlock>[] = [...configEdges];
 
-  const edgesArr: EdgeSpec<BasicBlock>[] = [...configEdges, structuralEdge];
-  // eslint-disable-next-line prefer-const
-  let blockKeyedPass: Pass<BasicBlock, DfaBlockFact<L, S>>;
-  // Self-wake: block OUT change → CFG successors recompute IN.
-  const selfEdge: EdgeSpec<BasicBlock> = {
-    // `pass` is bound below via closure; the worklist reads this at register time.
-    get pass() {
-      return blockKeyedPass as Pass<any, any>;
-    },
-    wake: (_ctx, key) => {
-      const b = key as BasicBlock;
-      return config.direction === "forward" ? b.successors : b.predecessors;
-    },
-  };
-  edgesArr.push(selfEdge);
-  // Intentionally not frozen: callers with cross-pass edge cycles (e.g. a
-  // block pass that needs to wake on an outer projection pass defined later)
-  // amend `edges` post-construction with an additional EdgeSpec.
+  function seedUnit(lifecycle: WorklistLifecycle, unit: FunctionUnit): void {
+    const seed = config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
+    lifecycle.enqueue(blockKeyedPass, seed);
+  }
+  function evictStaleBlocks(lifecycle: WorklistLifecycle, unit: FunctionUnit): void {
+    const all = lifecycle.factStore.readAll(blockKeyedPass);
+    for (const b of all.keys()) {
+      if (b.unit === unit) lifecycle.factStore.evict(blockKeyedPass, b);
+    }
+  }
 
-  blockKeyedPass = {
+  const blockKeyedPass: Pass<BasicBlock, DfaBlockFact<L>> = {
     id: blockPassId,
     debugName: `${config.debugName}:blocks`,
     lattice: envLattice,
     edges: edgesArr,
     tier: "analysis",
-    transfer(ctx: PassCtx, block: BasicBlock): DfaBlockFact<L, S> | undefined {
+    transfer(ctx: PassCtx, block: BasicBlock): DfaBlockFact<L> | undefined {
       const unit = block.unit;
       const inEnv = inEnvFor(ctx, block, unit);
       return config.transferBlock(ctx, block, inEnv, unit);
     },
+    onRegister(lifecycle: WorklistLifecycle): void {
+      lifecycle.onUnitMinted(unit => seedUnit(lifecycle, unit));
+      lifecycle.onUnitRebuilt(unit => {
+        evictStaleBlocks(lifecycle, unit);
+        seedUnit(lifecycle, unit);
+      });
+      lifecycle.onUnitRetired(unit => evictStaleBlocks(lifecycle, unit));
+    },
   };
+
+  // Self-wake: block OUT change → CFG successors recompute IN. Appended after
+  // construction so we can reference `blockKeyedPass` directly, no getter.
+  edgesArr.push({
+    pass: blockKeyedPass as Pass<any, any>,
+    wake: (_ctx, key) => {
+      const b = key as BasicBlock;
+      return config.direction === "forward" ? b.successors : b.predecessors;
+    },
+  });
+
   return blockKeyedPass;
 }
 
@@ -247,9 +221,9 @@ export function makeBlockFixpointPass<L, S = void>(
  *  `block` must be the BasicBlock that contains `nodeId` in the unit whose
  *  `transferBlock` visited this expression — usually `unit.blockOfNode.get(nodeId)`
  *  where `unit` is the innermost unit containing the node. */
-export function readExprFact<L, S = void>(
+export function readExprFact<L>(
   factStore: FactStore,
-  pass: Pass<BasicBlock, DfaBlockFact<L, S>>,
+  pass: Pass<BasicBlock, DfaBlockFact<L>>,
   block: BasicBlock | undefined,
   nodeId: number,
 ): L | undefined {

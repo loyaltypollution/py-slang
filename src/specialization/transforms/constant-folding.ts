@@ -171,7 +171,6 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
 
 export const constantFoldingRule = unitSweepRule(
   "constantFoldingRule",
-  [constAnalysisPass],
   (unit: FunctionUnit, factStore: FactStore) => {
     const v = new ConstFoldStmtVisitor(factStore, unit);
     v.sweep(unit.body);

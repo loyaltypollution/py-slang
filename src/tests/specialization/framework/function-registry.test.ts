@@ -5,8 +5,35 @@ import {
   FunctionRegistry,
   buildFunctionRegistry,
 } from "../../../specialization/framework/function-registry";
-import { structuralPass } from "../../../specialization/framework/structural-pass";
+import type { FunctionUnit } from "../../../specialization/framework/function-unit";
+import type { Pass, WorklistLifecycle } from "../../../specialization/framework/pass";
 import { Worklist } from "../../../specialization/framework/worklist";
+
+/** Test helper: a pass that records mint/rebuild/retire events via onRegister. */
+function makeLifecycleObserver(): {
+  pass: Pass<FunctionUnit, number>;
+  minted: FunctionUnit[];
+  rebuilt: FunctionUnit[];
+  retired: Array<{ unit: FunctionUnit; fdId: number }>;
+} {
+  const minted: FunctionUnit[] = [];
+  const rebuilt: FunctionUnit[] = [];
+  const retired: Array<{ unit: FunctionUnit; fdId: number }> = [];
+  const pass: Pass<FunctionUnit, number> = {
+    id: Symbol("observer"),
+    debugName: "observer",
+    lattice: { bottom: 0, leq: (a, b) => a <= b, join: Math.max },
+    edges: [],
+    tier: "analysis",
+    transfer: () => undefined,
+    onRegister(lifecycle: WorklistLifecycle): void {
+      lifecycle.onUnitMinted(u => minted.push(u));
+      lifecycle.onUnitRebuilt(u => rebuilt.push(u));
+      lifecycle.onUnitRetired((u, fdId) => retired.push({ unit: u, fdId }));
+    },
+  };
+  return { pass, minted, rebuilt, retired };
+}
 
 function parseProgram(code: string): StmtNS.FileInput {
   return parse(code + "\n") as StmtNS.FileInput;
@@ -108,64 +135,66 @@ describe("FunctionRegistry", () => {
 });
 
 describe("FunctionRegistry ↔ Worklist listener wiring", () => {
-  // Pins the mint/retire → structuralPass contract. No production transform
+  // Pins the mint/retire → lifecycle-event contract. No production transform
   // mints or retires today, so this is scaffold — but the plumbing must hold
   // before the first caller arrives, otherwise the silent-miscompile failure
   // mode returns.
-  function build(src: string): {
+  function build(src: string, extraPasses: Pass<any, any>[] = []): {
     ast: StmtNS.FileInput;
     worklist: Worklist;
   } {
     const ast = parseProgram(src);
     const resolver = new Resolver(src + "\n", ast);
     resolver.resolve(ast);
-    const worklist = new Worklist(ast, resolver.functionEnvironments, []);
+    const worklist = new Worklist(ast, resolver.functionEnvironments, extraPasses, undefined, []);
     return { ast, worklist };
   }
 
-  it("retire drops the unit and evicts its structuralPass fact", () => {
+  it("retire drops the unit and fires onUnitRetired", () => {
+    const obs = makeLifecycleObserver();
     const { ast, worklist } = build(
       ["def f():", "    return 1", "def g():", "    return 2"].join("\n"),
+      [obs.pass],
     );
     const g = ast.statements[1] as StmtNS.FunctionDef;
 
     const gUnit = worklist.units.get(g);
     expect(gUnit).toBeDefined();
-    expect(worklist.factStore.tryRead(structuralPass, gUnit!)).toBe(0);
+    expect(obs.minted).toContain(gUnit);
 
     worklist.registry.retire(g.id);
 
     expect(worklist.units.has(g)).toBe(false);
-    expect(worklist.factStore.tryRead(structuralPass, gUnit!)).toBeUndefined();
+    expect(obs.retired.map(r => r.fdId)).toContain(g.id);
     expect(() => worklist.registry.slotOf(g.id)).toThrow(/not registered/);
   });
 
-  it("markStructuralChange bumps structuralPass on the named unit", () => {
+  it("markStructuralChange marks the unit pending for rebuild", () => {
     const { ast, worklist } = build("def f():\n    return 1");
     const f = ast.statements[0] as StmtNS.FunctionDef;
-    const fUnit = worklist.units.get(f)!;
 
-    const before = worklist.factStore.read(structuralPass, fUnit);
+    expect(worklist.hasPendingWork()).toBe(false);
     worklist.markStructuralChange(f.id);
-    const after = worklist.factStore.read(structuralPass, fUnit);
-
-    expect(after).toBe(before + 1);
     expect(worklist.hasPendingWork()).toBe(true);
   });
 
-  it("mint after retire re-materializes a unit with fresh structuralPass", () => {
+  it("mint after retire re-materializes a unit and fires onUnitMinted again", () => {
+    const obs = makeLifecycleObserver();
     const { ast, worklist } = build(
       ["def f():", "    return 1", "def g():", "    return 2"].join("\n"),
+      [obs.pass],
     );
     const g = ast.statements[1] as StmtNS.FunctionDef;
 
     worklist.registry.retire(g.id);
     expect(worklist.units.has(g)).toBe(false);
+    const beforeMintCount = obs.minted.length;
 
     const newSlot = worklist.registry.mint(g);
     const reborn = worklist.units.get(g);
     expect(reborn).toBeDefined();
     expect(reborn!.slot).toBe(newSlot);
-    expect(worklist.factStore.read(structuralPass, reborn!)).toBe(0);
+    expect(obs.minted.length).toBe(beforeMintCount + 1);
+    expect(obs.minted[obs.minted.length - 1]).toBe(reborn);
   });
 });
