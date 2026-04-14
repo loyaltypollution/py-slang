@@ -19,7 +19,9 @@ import type { ExprNS, StmtNS } from "../../ast-types";
 
 /**
  * Structural sink surface the interpreter calls at STORE / CALL sites.
- * `Worklist` implements this shape; standalone runs use `NULL_SINK`.
+ * Currently always `NULL_SINK` — the legacy push path was dissolved in
+ * Phase 6; observations now reach the runtime via `observeNodeWrite` /
+ * `observeScopeCall` hooks writing directly into the Db's Inputs.
  */
 type RuntimeObservationSink = {
   observeWrite(

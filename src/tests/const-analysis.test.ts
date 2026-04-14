@@ -2,8 +2,9 @@
  * Unit tests for ConstLattice algebraic operations (leq/join/meet).
  *
  * End-to-end const-analysis behaviour (e.g. `x = 3 + 4 → const(7)`,
- * variable propagation, while-loop convergence) is covered in
- * `reactive-optimization.test.ts` via Worklist.
+ * variable propagation, while-loop convergence) is covered by
+ * `runtime/const-of.test.ts`, `runtime/block-envs.test.ts`, and
+ * `runtime/lowering.test.ts`.
  */
 
 import {

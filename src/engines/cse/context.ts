@@ -3,8 +3,10 @@ import { StmtNS } from "../../ast-types";
 import { ModuleContext, NativeStorage } from "../../types";
 
 /**
- * Structural sink surface interpreters call at STORE / CALL sites. `Worklist`
- * implements this shape; standalone runs use `NULL_SINK`.
+ * Structural sink surface interpreters call at STORE / CALL sites.
+ * Currently always `NULL_SINK` — the legacy push path was dissolved in
+ * Phase 6; observations now reach the runtime via `observeNodeWrite` /
+ * `observeScopeCall` hooks writing directly into the Db's Inputs.
  */
 type RuntimeObservationSink = {
   observeWrite(
@@ -66,16 +68,17 @@ export class Context {
     breakpointSteps: number[];
     changepointSteps: number[];
     /**
-     * Push-side for runtime observations. Always set — defaults to
-     * `NULL_SINK` for standalone execution; JIT-capable evaluators
-     * swap in the `Worklist` for the duration of a run. The LBD interpreter
-     * contract makes call-time pin accounting unnecessary.
+     * Legacy push-side surface; always `NULL_SINK` post-Phase-6. Kept
+     * as a shape so callsites that used to pin observations here don't
+     * need a separate null check. New observation flow goes through
+     * `observeNodeWrite` / `observeScopeCall` below.
      */
     observationSink: RuntimeObservationSink;
     /**
-     * PR-5: optional fact-store push hooks. Wired by `PyCseEvaluator`
-     * alongside `observationSink`; `null` for standalone runs. Both
-     * paths stay live until PR-6 demolishes the legacy sink.
+     * Runtime-observation hooks wired by Db-owning evaluators
+     * (`PyCseEvaluator`, `PySvmlJitEvaluator`); `undefined` for
+     * standalone runs. These write directly into the Db's Inputs
+     * (`runtimeWrite`, `runtimeCall`).
      */
     observeNodeWrite?: (nodeId: number, value: unknown) => void;
     observeScopeCall?: (scopeId: number) => void;
