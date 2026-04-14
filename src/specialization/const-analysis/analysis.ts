@@ -229,6 +229,11 @@ export const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
   ): ExprNS.Visitor<ConstLattice> {
     return new ConstAnalysisVisitor(factStore, env, slotLookup, recordExprFact);
   },
+  // Identity: const propagation across `if x == 5` edges is a possible
+  // follow-up; none wired today.
+  refineOnEdge(env, _edge) {
+    return env;
+  },
 };
 
 function liftConst(rawKind: RawKind): ConstLattice | undefined {

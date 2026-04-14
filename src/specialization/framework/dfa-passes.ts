@@ -23,6 +23,7 @@ function dfaPass<L>(
     seedEnv: () => new MutableEnv<L>(),
     transferBlock: (ctx, block, inEnv, unit) =>
       transferBlock(block, inEnv, spec, ctx.factStore, unit.slotLookup),
+    refineOnEdge: (env, edge) => spec.refineOnEdge(env, edge),
   });
 }
 

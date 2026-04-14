@@ -1,5 +1,7 @@
 import type { ExprNS } from "../../ast-types";
+import type { CFGEdge } from "./cfg";
 import type { FactStore } from "./fact-store";
+import type { MutableEnv } from "./mutable-env";
 import type { BoundedLattice } from "./pass";
 import type { SlotLookup } from "./slot-table";
 
@@ -53,4 +55,18 @@ export interface BlockDfaSpec<L> extends BoundedLattice<L> {
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: number, val: L) => void,
   ): ExprNS.Visitor<L>;
+
+  /** Per-edge env refinement. Called by the DFA factory before a predecessor
+   *  block's OUT env is merged into the current block's IN env. Must be
+   *  monotone: the returned env is ⊑ the input.
+   *
+   *  Contract: MUST NOT mutate `env` in place. To refine, `env.snapshot()`
+   *  first, mutate the snapshot, and return it. To opt out of refinement,
+   *  return `env` unchanged — the factory detects identity and elides a
+   *  redundant snapshot.
+   *
+   *  Parallels `EdgeSpec.wake`: each pass opts in by providing a body.
+   *  Modules that don't narrow return `env` — identity is mandatory, not
+   *  optional, to catch forgotten implementations at compile time. */
+  refineOnEdge(env: MutableEnv<L>, edge: CFGEdge): MutableEnv<L>;
 }

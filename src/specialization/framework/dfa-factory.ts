@@ -1,4 +1,4 @@
-import type { BasicBlock } from "./cfg";
+import type { BasicBlock, CFGEdge } from "./cfg";
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
@@ -35,6 +35,10 @@ interface DfaConfigBase<L> {
   /** Seed the entry (forward) / exit (backward) block's IN env. */
   readonly seedEnv: (unit: FunctionUnit) => MutableEnv<L>;
   readonly reads: ReadonlyArray<Pass<any, any>>;
+  /** Per-edge env refinement. See `BlockDfaSpec.refineOnEdge` for the contract.
+   *  Mandatory so forgotten implementations surface at compile time; passes
+   *  that don't narrow return `env` unchanged. */
+  readonly refineOnEdge: (env: MutableEnv<L>, edge: CFGEdge) => MutableEnv<L>;
 }
 
 /** May-merge analyses only need `Lattice<L>` (join + leq). Must-merge needs
@@ -126,21 +130,34 @@ export function makeBlockFixpointPass<L>(
   const blockPassId = Symbol(`${config.debugName}:blocks`);
 
   function inEnvFor(ctx: PassCtx, block: BasicBlock, unit: FunctionUnit): MutableEnv<L> {
-    const preds = config.direction === "forward" ? block.predecessors : block.successors;
+    // Iterate predecessor *edges* so `refineOnEdge` sees the labeled edge
+    // (branch-true/false + condition). For backward analyses, predecessors
+    // are the block's successors in the CFG.
+    const preds = config.direction === "forward"
+      ? block.predecessorEdges
+      : block.successorEdges;
     if (preds.length === 0) return config.seedEnv(unit);
     let env: MutableEnv<L> | undefined;
-    for (const pred of preds) {
-      // `ctx.read` returns the (frozen) bottomFact for unwritten cells. We
-      // always `snapshot()` before mutating — never touch the shared outEnv
-      // directly.
-      const predOut = ctx.read(blockKeyedPass, pred).outEnv;
+    for (const edge of preds) {
+      // For forward analyses, the pred-out is edge.from.outEnv; for backward,
+      // the pred-out is edge.to.outEnv. `ctx.read` returns the (frozen)
+      // bottomFact for unwritten cells — we never mutate it in place.
+      const predBlock = config.direction === "forward" ? edge.from : edge.to;
+      const predOut = ctx.read(blockKeyedPass, predBlock).outEnv;
+      // Refine across the edge. Identity returns are common and must not
+      // allocate; the factory absorbs that by snapshotting only when the
+      // refinement returned a truly different env.
+      const refined = config.refineOnEdge(predOut, edge);
       if (env === undefined) {
-        env = predOut.snapshot();
+        // If `refined` is the frozen bottomFact env or the pred's shared
+        // outEnv, we must snapshot before mutation downstream. If the
+        // refinement returned a fresh snapshot already, reuse it.
+        env = refined === predOut ? predOut.snapshot() : refined;
       } else {
         if (config.mergeKind === "must") {
-          env.meetWith(predOut, config.valueLattice);
+          env.meetWith(refined, config.valueLattice);
         } else {
-          env.joinWith(predOut, config.valueLattice);
+          env.joinWith(refined, config.valueLattice);
         }
       }
     }

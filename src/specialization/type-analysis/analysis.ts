@@ -260,6 +260,10 @@ export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
   ): ExprNS.Visitor<TypeLattice> {
     return new TypeAnalysisVisitor(factStore, env, slotLookup, recordExprFact);
   },
+  // Identity: type narrowing from `if x > 0` etc. lands in a later commit.
+  refineOnEdge(env, _edge) {
+    return env;
+  },
 };
 
 function liftType(rawKind: RawKind): TypeLattice | undefined {

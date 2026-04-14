@@ -424,6 +424,9 @@ export const purityBlockPass: Pass<
       : EMPTY_EXPR_FACTS;
     return { outEnv: state.env, exprFacts };
   },
+  // Purity does not narrow across predicate edges — a slot's freshness /
+  // origin doesn't depend on whether `if x > 0` was true.
+  refineOnEdge: (env, _edge) => env,
 });
 
 const EMPTY_EXPR_FACTS: ReadonlyMap<number, AbsVal> = new Map();
