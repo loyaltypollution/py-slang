@@ -8,12 +8,40 @@ export interface Lattice<V> {
   join(a: V, b: V): V;
 }
 
+/** A read declaration: either a bare `Pass` (legacy — same key-space identity
+ *  projection, or user provides `affectedKeys`) or `{ pass, project }` where
+ *  the projector maps an upstream key to zero-or-more keys in *this* pass's
+ *  key-space. When every entry carries a projector AND the pass omits
+ *  `affectedKeys`, the worklist synthesizes dispatch automatically — one
+ *  source of truth per upstream dependency. */
+export type ReadSpec<K> =
+  | Pass<any, any>
+  | ProjectorRead<K>;
+
+export interface ProjectorRead<K> {
+  readonly pass: Pass<any, any>;
+  readonly project: (ctx: PassCtx, key: unknown) => Iterable<K>;
+}
+
+/** Discriminate `ReadSpec`: a projector entry has a callable `project` field.
+ *  Checking for `project` (not `pass`) is load-bearing — `Pass` has no
+ *  `project` field, and this narrows safely even if `Pass` ever grows a
+ *  `pass` property. */
+export function isProjectorRead<K>(spec: ReadSpec<K>): spec is ProjectorRead<K> {
+  return typeof (spec as ProjectorRead<K>).project === "function";
+}
+
+/** Extract the underlying upstream `Pass` from a `ReadSpec`. */
+export function readSpecPass(spec: ReadSpec<any>): Pass<any, any> {
+  return isProjectorRead(spec) ? spec.pass : spec;
+}
+
 /** A computation over the fact store. `transfer` returning `undefined` means "no write". */
 export interface Pass<K, V> {
   readonly id: symbol;
   readonly debugName: string;
   readonly lattice: Lattice<V>;
-  readonly reads: ReadonlyArray<Pass<any, any>>;
+  readonly reads: ReadonlyArray<ReadSpec<K>>;
   readonly tier?: "runtime" | "analysis" | "transform";
   /** If set, on any upstream write this pass re-transfers over **every
    *  previously-written key** (O(N) per upstream change). Prefer

@@ -9,8 +9,12 @@ import { callCountPass, MEMOIZATION_THRESHOLD } from "../memoization-analysis/ca
 import { purityScopePass } from "../purity-analysis/analysis";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokens";
-
 import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
+
+function fdIdToUnit(ctx: PassCtx, key: unknown): Iterable<FunctionUnit> {
+  const unit = ctx.unitForFdId(key as number);
+  return unit === undefined ? [] : [unit];
+}
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
@@ -97,16 +101,12 @@ export const memoizationRule: Pass<FunctionUnit, Fired> = {
   id: Symbol("memoizationRule"),
   debugName: "memoizationRule",
   lattice: firedLattice,
-  reads: [callCountPass, purityScopePass, structuralPass],
+  reads: [
+    { pass: structuralPass, project: (_ctx, key) => [key as FunctionUnit] },
+    { pass: callCountPass, project: fdIdToUnit },
+    { pass: purityScopePass, project: fdIdToUnit },
+  ],
   tier: "transform",
-  affectedKeys(ctx, triggerPass, triggerKey) {
-    if (triggerPass === (structuralPass as Pass<any, any>)) {
-      return [triggerKey as FunctionUnit];
-    }
-    const fdId = triggerKey as number;
-    const unit = ctx.unitForFdId(fdId);
-    return unit === undefined ? [] : [unit];
-  },
   // No `prune`: one-shot — pruning would self-trigger via structuralPass.
   transfer(ctx: PassCtx, key: FunctionUnit): Fired {
     // Idempotency gate: if this cell is already "fired", do not re-wrap.

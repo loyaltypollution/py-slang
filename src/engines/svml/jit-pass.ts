@@ -39,6 +39,13 @@ export interface JitPassDeps {
   readonly interpreter: SVMLInterpreter;
 }
 
+function blockToOwningUnit(_ctx: PassCtx, key: unknown): Iterable<FunctionUnit> {
+  const block = key as BasicBlock;
+  const unit = block.unit;
+  if (unit === undefined) return [];
+  return unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
+}
+
 /** Sentinel "not yet compiled" — a unique SVMLIR instance distinct from every real one by reference. */
 const UNCOMPILED: SVMLIR = new SVMLIR(
   new Int32Array(0),
@@ -63,24 +70,16 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       equals: structuralEquals,
       join: (_a, b) => b,
     },
-    reads: [structuralPass, typeAnalysisPass, constAnalysisPass],
+    reads: [
+      { pass: structuralPass, project: (_ctx, key) => [key as FunctionUnit] },
+      // Block-keyed DFA pass: a fact-advancing change on a block invalidates
+      // the memo of the owning unit. `transfer` decides whether the change
+      // materially differs from the last compile via reference-identity
+      // compare against `lastSnapshot`.
+      { pass: typeAnalysisPass, project: blockToOwningUnit },
+      { pass: constAnalysisPass, project: blockToOwningUnit },
+    ],
     tier: "transform",
-    affectedKeys(_ctx, triggerPass, triggerKey) {
-      if (triggerPass === structuralPass) {
-        return [triggerKey as FunctionUnit];
-      }
-      if (triggerPass === typeAnalysisPass || triggerPass === constAnalysisPass) {
-        // Block-keyed DFA pass: a fact-advancing change on a block invalidates
-        // the memo of the owning unit. Pure projection — no side-effects.
-        // `transfer` decides whether the change materially differs from the
-        // last compile via reference-identity compare against `lastSnapshot`.
-        const block = triggerKey as BasicBlock;
-        const unit = block.unit;
-        if (unit === undefined) return [];
-        return unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
-      }
-      return [];
-    },
     transfer(ctx: PassCtx, unit: FunctionUnit): SVMLIR | undefined {
       const scope = unit.funcAst;
       if (!(scope instanceof StmtNS.FunctionDef)) return undefined;

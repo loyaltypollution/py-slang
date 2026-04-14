@@ -27,7 +27,7 @@ import {
 } from "../framework/dfa-factory";
 import type { FunctionUnit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
-import type { Lattice, Pass, PassCtx } from "../framework/pass";
+import type { Lattice, Pass, PassCtx, ReadSpec } from "../framework/pass";
 import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
 import { structuralPass } from "../framework/structural-pass";
 import {
@@ -421,22 +421,24 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
   id: Symbol("purityScopePass"),
   debugName: "purityScopePass",
   lattice: outerLattice,
-  reads: [purityBlockPass, structuralPass],
+  reads: [
+    {
+      pass: structuralPass,
+      project: (_ctx, key) => {
+        const fd = (key as FunctionUnit).funcAst;
+        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
+      },
+    },
+    {
+      pass: purityBlockPass,
+      project: (_ctx, key) => {
+        const fd = (key as BasicBlock).unit.funcAst;
+        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
+      },
+    },
+  ],
   tier: "analysis",
   coarse: false,
-  affectedKeys(_ctx, triggerPass, triggerKey) {
-    if (triggerPass === (structuralPass as Pass<any, any>)) {
-      const fd = (triggerKey as FunctionUnit).funcAst;
-      if (fd instanceof StmtNS.FunctionDef) return [fd.id];
-      return [];
-    }
-    if (triggerPass === (purityBlockPass as Pass<any, any>)) {
-      const block = triggerKey as BasicBlock;
-      const fd = block.unit.funcAst;
-      if (fd instanceof StmtNS.FunctionDef) return [fd.id];
-    }
-    return [];
-  },
   transfer(ctx: PassCtx, fdId: number): boolean | undefined {
     const unit = ctx.unitForFdId(fdId);
     if (unit === undefined) return undefined;
@@ -462,9 +464,16 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
 // nested `FunctionDef` stmt (to learn the nested function's purity verdict).
 // Declared post-hoc because both passes reference each other. The factory
 // returns `reads` as a plain (unfrozen) array so late amendments are safe.
-// Wake-up path: when the nested fd's scope-pass writes, the worklist fires
-// `purityBlockPass.affectedKeys(purityScopePass, fdId)`. The factory-supplied
-// default maps a numeric triggerKey to the block containing that node via
-// `unitForNode` + `blockOfNode`, which is exactly the outer block holding
-// the `def g(): ...` stmt.
-(purityBlockPass.reads as Pass<any, any>[]).push(purityScopePass);
+// Wake-up path: when the nested fd's scope-pass writes for `fdId`, project
+// to the outer block containing that `def` stmt via `unitForNode` +
+// `blockOfNode`.
+const scopeToBlock: ReadSpec<BasicBlock> = {
+  pass: purityScopePass,
+  project: (ctx, key) => {
+    if (typeof key !== "number") return [];
+    const u = ctx.unitForNode(key);
+    const block = u?.blockOfNode.get(key);
+    return block === undefined ? [] : [block];
+  },
+};
+(purityBlockPass.reads as ReadSpec<BasicBlock>[]).push(scopeToBlock);

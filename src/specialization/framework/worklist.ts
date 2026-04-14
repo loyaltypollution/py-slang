@@ -7,6 +7,7 @@ import type { BasicBlock } from "./cfg";
 import { FactStore, type FactChange } from "./fact-store";
 import { buildFunctionUnits, wireCFG, type FunctionUnit } from "./function-unit";
 import type { Pass, PassCtx } from "./pass";
+import { readSpecPass, isProjectorRead } from "./pass";
 import { structuralPass } from "./structural-pass";
 import { runtimeCallPass, runtimeWritePass } from "./runtime-passes";
 import { callCountPass } from "../memoization-analysis/call-count";
@@ -42,6 +43,12 @@ export class Worklist {
   readonly factStore = new FactStore();
   private readonly registeredPasses: Pass<any, any>[] = [];
   private readonly passReaders = new Map<Pass<any, any>, Pass<any, any>[]>();
+  /** reader → (upstream pass → projector). Populated only when the reader
+   *  declares projector-reads and omits `affectedKeys`. */
+  private readonly passProjectors = new Map<
+    Pass<any, any>,
+    Map<Pass<any, any>, (ctx: PassCtx, key: unknown) => Iterable<unknown>>
+  >();
   /** Global priority queue: tier rank (runtime < analysis < transform), FIFO within tier. */
   private readonly queue = new PriorityQueue<QItem>(compareItems);
   private seqCounter = 0;
@@ -84,12 +91,22 @@ export class Worklist {
     return this.nodeToUnit;
   }
 
-  /** Register a pass. Idempotent. Requires `affectedKeys` or `coarse: true`. */
+  /** Register a pass. Idempotent. Requires one of:
+   *   - `affectedKeys` (custom per-pass dispatch),
+   *   - `coarse: true` (re-run over all previously-written keys),
+   *   - every `reads` entry is a `{pass, project}` ReadSpec (synthesized
+   *     dispatch via per-upstream projector). */
   register<K, V>(pass: Pass<K, V>): void {
     if (this.registeredPasses.indexOf(pass as Pass<any, any>) !== -1) return;
-    if (pass.affectedKeys === undefined && pass.coarse !== true) {
+    const allProjectors =
+      pass.reads.length > 0 && pass.reads.every(isProjectorRead);
+    if (
+      pass.affectedKeys === undefined &&
+      pass.coarse !== true &&
+      !allProjectors
+    ) {
       throw new Error(
-        `[Worklist] pass "${pass.debugName}" must declare affectedKeys or coarse:true`,
+        `[Worklist] pass "${pass.debugName}" must declare affectedKeys, coarse:true, or projector-reads`,
       );
     }
     if (pass.affectedKeys !== undefined && pass.coarse === true) {
@@ -98,10 +115,23 @@ export class Worklist {
       );
     }
     this.registeredPasses.push(pass as Pass<any, any>);
-    for (const reader of pass.reads) {
-      const list = this.passReaders.get(reader) ?? [];
-      list.push(pass as Pass<any, any>);
-      this.passReaders.set(reader, list);
+    const reader = pass as Pass<any, any>;
+    const useProjectors = pass.affectedKeys === undefined && allProjectors;
+    let projMap:
+      | Map<Pass<any, any>, (ctx: PassCtx, key: unknown) => Iterable<unknown>>
+      | undefined;
+    if (useProjectors) {
+      projMap = new Map();
+      this.passProjectors.set(reader, projMap);
+    }
+    for (const spec of pass.reads) {
+      const upstream = readSpecPass(spec);
+      const list = this.passReaders.get(upstream) ?? [];
+      list.push(reader);
+      this.passReaders.set(upstream, list);
+      if (projMap !== undefined && isProjectorRead(spec)) {
+        projMap.set(upstream, spec.project as (ctx: PassCtx, key: unknown) => Iterable<unknown>);
+      }
     }
   }
 
@@ -245,6 +275,11 @@ export class Worklist {
   ): Iterable<unknown> {
     if (reader.affectedKeys !== undefined) {
       return reader.affectedKeys(this.passCtx, change.pass, change.key);
+    }
+    const projMap = this.passProjectors.get(reader);
+    if (projMap !== undefined) {
+      const proj = projMap.get(change.pass as Pass<any, any>);
+      return proj === undefined ? [] : proj(this.passCtx, change.key);
     }
     // coarse pass: re-run on all previously-written keys.
     return Array.from(this.factStore.readAll(reader).keys());
