@@ -9,7 +9,6 @@ export interface SlotEnv<L> {
 
 /** Expression-level DFA module for block-fixpoint analyses. */
 export interface AnalysisPass<L> {
-  readonly name: string;
   top(): L;
   bottom(): L;
   join(a: L, b: L): L;

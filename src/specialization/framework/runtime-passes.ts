@@ -3,29 +3,12 @@
 import type { FactStore } from "./fact-store";
 import type { Lattice, Pass, PassCtx } from "./pass";
 import { classifyRawValue, type RawKind } from "./raw-value";
+import type { Worklist } from "./worklist";
 
 // Saturation ceiling; post-saturation writes compare equal and suppress cascade.
 export const RUNTIME_CALL_COUNT_SAT = 11;
 
 const RAW_TOP: RawKind = { kind: "unknown" };
-
-function rawEquals(a: RawKind, b: RawKind): boolean {
-  if (a === b) return true;
-  if (a.kind !== b.kind) return false;
-  switch (a.kind) {
-    case "number":
-    case "bool":
-    case "string":
-      return a.value === (b as typeof a).value;
-    default:
-      return true;
-  }
-}
-
-function rawJoin(a: RawKind, b: RawKind): RawKind {
-  if (a.kind === "unknown" || b.kind === "unknown") return RAW_TOP;
-  return rawEquals(a, b) ? a : RAW_TOP;
-}
 
 // Monotone observation lattice: ⊥ (never stored; tryRead returns undefined)
 // < singletons (one observed RawKind) < ⊤ ({kind:"unknown"}, conflict-absorbing).
@@ -33,8 +16,22 @@ function rawJoin(a: RawKind, b: RawKind): RawKind {
 // pass (only `tryRead`), so `bottom`'s value is never observed as a lattice ⊥.
 const rawValueLattice: Lattice<RawKind> = {
   bottom: RAW_TOP,
-  equals: rawEquals,
-  join: rawJoin,
+  equals(a: RawKind, b: RawKind): boolean {
+    if (a === b) return true;
+    if (a.kind !== b.kind) return false;
+    switch (a.kind) {
+      case "number":
+      case "bool":
+      case "string":
+        return a.value === (b as typeof a).value;
+      default:
+        return true;
+    }
+  },
+  join(a: RawKind, b: RawKind): RawKind {
+    if (a.kind === "unknown" || b.kind === "unknown") return RAW_TOP;
+    return rawValueLattice.equals(a, b) ? a : RAW_TOP;
+  },
 };
 
 /** Runtime observation of per-node value writes. Key = NodeId, value = RawKind. */
@@ -86,3 +83,37 @@ export const runtimeCallPass: Pass<number, number> = {
     return undefined;
   },
 };
+
+/** Builds the pair of runtime-observation callbacks used by every JIT evaluator.
+ *  Per-callee counts live in the returned closure; saturation at
+ *  `RUNTIME_CALL_COUNT_SAT` suppresses further cascades, and the scope-call
+ *  boundary drains buffered writes so memoization / tier-up transforms fire
+ *  before the next invocation uses the unspecialized body.
+ *
+ *  `beforeObserve` (optional) runs at the head of each callback. The Tiered
+ *  evaluator uses it to throw an AbortError when its arm has lost the race;
+ *  it must be cheap and may throw to short-circuit the host interpreter. */
+export function makeJitObservers(
+  worklist: Worklist,
+  beforeObserve?: () => void,
+): {
+  observeNodeWrite: (nodeId: number, value: unknown) => void;
+  observeScopeCall: (scopeId: number) => void;
+} {
+  const callCounts = new Map<number, number>();
+  return {
+    observeNodeWrite: (nodeId, value) => {
+      beforeObserve?.();
+      observeRuntimeWrite(worklist, nodeId, value);
+    },
+    observeScopeCall: (scopeId) => {
+      beforeObserve?.();
+      const cur = callCounts.get(scopeId) ?? 0;
+      if (cur >= RUNTIME_CALL_COUNT_SAT) return;
+      const next = cur + 1;
+      callCounts.set(scopeId, next);
+      worklist.observe(runtimeCallPass, scopeId, next);
+      if (worklist.hasPendingWork()) worklist.drain();
+    },
+  };
+}

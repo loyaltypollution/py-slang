@@ -3,8 +3,9 @@ import { Context } from "../../../engines/cse/context";
 import { generateCSEMachineStateStream } from "../../../engines/cse/interpreter";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import type { Worklist } from "../../../specialization";
-import { constAnalysisPass, readExprFact, typeAnalysisPass } from "../../../specialization";
+import type { Worklist } from "../../../specialization/framework/worklist";
+import { constAnalysisPass, typeAnalysisPass } from "../../../specialization/framework/dfa-passes";
+import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import { INT_BIT } from "../../../specialization/type-analysis/lattice";
 import { buildTestWorklist } from "../../utils";
 

@@ -4,7 +4,7 @@ import type { DfaBlockFact } from "./dfa-factory";
 import type { FactStore } from "./fact-store";
 import type { AnalysisPass } from "./interfaces";
 import type { MutableEnv } from "./mutable-env";
-import type { SlotLookup } from "./slot-table";
+import { isLocal, type SlotLookup } from "./slot-table";
 
 /** Statement-level transfer; updates `env` in place. If/While/For headers evaluate condition/iter only. */
 function transferStmt<L>(
@@ -20,14 +20,14 @@ function transferStmt<L>(
       const val = a.value.accept(visitor);
       if (!(a.target instanceof ExprNS.Variable)) return;
       const info = slotLookup(a.target.name);
-      if (!info.isPrimitive && info.envLevel === 0) env.set(info.slot, val);
+      if (isLocal(info)) env.set(info.slot, val);
       return;
     }
     case "AnnAssign": {
       const a = stmt as StmtNS.AnnAssign;
       const val = a.value.accept(visitor);
       const info = slotLookup(a.target.name);
-      if (!info.isPrimitive && info.envLevel === 0) env.set(info.slot, val);
+      if (isLocal(info)) env.set(info.slot, val);
       return;
     }
     case "If":
@@ -40,7 +40,7 @@ function transferStmt<L>(
       const f = stmt as StmtNS.For;
       f.iter.accept(visitor);
       const info = slotLookup(f.target);
-      if (!info.isPrimitive && info.envLevel === 0) env.set(info.slot, module.top());
+      if (isLocal(info)) env.set(info.slot, module.top());
       return;
     }
     case "Return": {
@@ -89,5 +89,5 @@ export function transferBlock<L>(
       transferStmt(stmt, outEnv, visitor, module, slotLookup);
     }
   }
-  return { outEnv, exprFacts };
+  return { outEnv, exprFacts, summary: undefined };
 }

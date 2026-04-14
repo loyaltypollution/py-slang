@@ -4,7 +4,7 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import type { FunctionUnit } from "../framework/function-unit";
 import type { Lattice, Pass, PassCtx } from "../framework/pass";
-import type { SlotInfo, SlotLookup } from "../framework/slot-table";
+import { isLocal, type SlotLookup } from "../framework/slot-table";
 import { structuralPass } from "../framework/structural-pass";
 import {
   BOTTOM_FACT,
@@ -37,8 +37,6 @@ const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
 
 // 3-point lattice: ⊥ = undefined, true/false, ⊤ = "contested".
 export type PurityLattice = boolean | "contested" | undefined;
-
-const isLocal = (info: SlotInfo) => !info.isPrimitive && info.envLevel === 0;
 
 const purityLattice: Lattice<PurityLattice> = {
   bottom: undefined,

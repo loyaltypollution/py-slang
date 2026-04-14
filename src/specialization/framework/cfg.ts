@@ -11,8 +11,8 @@ export interface BasicBlock {
   readonly stmts: StmtNS.Stmt[];
   readonly successors: BasicBlock[];
   readonly predecessors: BasicBlock[];
-  /** Set by `indexCFG` after `buildCFG`. */
-  unit: FunctionUnit;
+  /** Back-pointer to owning unit; set by `buildCFG` at creation. */
+  readonly unit: FunctionUnit;
 }
 
 export interface CFG {
@@ -21,8 +21,9 @@ export interface CFG {
   readonly blocks: ReadonlyArray<BasicBlock>;
 }
 
-/** Build CFG from a flat stmt list. Single entry/exit; unreachable tails not represented. */
-export function buildCFG(body: StmtNS.Stmt[]): CFG {
+/** Build CFG from a flat stmt list. Single entry/exit; unreachable tails not represented.
+ *  `unit` is the owning FunctionUnit; every block's `unit` back-pointer is set at creation. */
+export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
   let nextId = 0;
   const blocks: BasicBlock[] = [];
 
@@ -32,8 +33,7 @@ export function buildCFG(body: StmtNS.Stmt[]): CFG {
       stmts: [],
       successors: [],
       predecessors: [],
-      // Populated by indexCFG.
-      unit: undefined as unknown as FunctionUnit,
+      unit,
     };
     blocks.push(block);
     return block;

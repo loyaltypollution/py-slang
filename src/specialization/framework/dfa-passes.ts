@@ -4,13 +4,16 @@ import { typeAnalysisModule } from "../type-analysis/analysis";
 import type { TypeLattice } from "../type-analysis/lattice";
 import { transferBlock } from "./block-transfer";
 import type { BasicBlock } from "./cfg";
-import { type DfaBlockFact, makeBlockFixpointPass } from "./dfa-factory";
+import { type DfaBlockFact, makeBlockFixpointPass, VOID_SUMMARY } from "./dfa-factory";
 import type { AnalysisPass } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
 import type { Pass } from "./pass";
 import { runtimeWritePass } from "./runtime-passes";
 
-function makeDfa<L>(debugName: string, spec: AnalysisPass<L>): Pass<BasicBlock, DfaBlockFact<L>> {
+function dfaPass<L>(
+  debugName: string,
+  spec: AnalysisPass<L>,
+): Pass<BasicBlock, DfaBlockFact<L>> {
   return makeBlockFixpointPass<L>({
     debugName,
     direction: spec.direction,
@@ -19,6 +22,7 @@ function makeDfa<L>(debugName: string, spec: AnalysisPass<L>): Pass<BasicBlock, 
     join: spec.join,
     meet: spec.meet,
     mergeKind: spec.mergeKind,
+    summaryLattice: VOID_SUMMARY,
     reads: [runtimeWritePass],
     seedEnv: () => new MutableEnv<L>(),
     transferBlock: (ctx, block, inEnv, unit) =>
@@ -26,11 +30,7 @@ function makeDfa<L>(debugName: string, spec: AnalysisPass<L>): Pass<BasicBlock, 
   });
 }
 
-export const typeAnalysisPass: Pass<BasicBlock, DfaBlockFact<TypeLattice>> = makeDfa(
-  "typeAnalysis",
-  typeAnalysisModule,
-);
-export const constAnalysisPass: Pass<BasicBlock, DfaBlockFact<ConstLattice>> = makeDfa(
-  "constAnalysis",
-  constAnalysisModule,
-);
+export const typeAnalysisPass: Pass<BasicBlock, DfaBlockFact<TypeLattice>> =
+  dfaPass("typeAnalysis", typeAnalysisModule);
+export const constAnalysisPass: Pass<BasicBlock, DfaBlockFact<ConstLattice>> =
+  dfaPass("constAnalysis", constAnalysisModule);

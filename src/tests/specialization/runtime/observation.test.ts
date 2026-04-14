@@ -10,7 +10,9 @@ import {
   runtimeCallPass,
 } from "../../../specialization/framework/runtime-passes";
 import { STR_BIT } from "../../../specialization/type-analysis/lattice";
-import { readExprFact, typeAnalysisPass } from "../../../specialization";
+import { readExprFact } from "../../../specialization/framework/dfa-factory";
+import { typeAnalysisPass } from "../../../specialization/framework/dfa-passes";
+import { makeDfaQuery } from "../../../specialization";
 import { buildTestWorklist } from "../../utils";
 
 function build(code: string) {
@@ -46,9 +48,7 @@ describe.each([
       const compiler = SVMLCompiler.fromProgramUnit(
         ast,
         environments,
-        reactive.units,
-        reactive.factStore,
-        reactive.nodeIndex,
+        makeDfaQuery(reactive.factStore, reactive.nodeIndex),
       );
       const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
         observeNodeWrite: (nodeId, value) => observeRuntimeWrite(reactive, nodeId, value),
@@ -109,9 +109,7 @@ f()
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      reactive.units,
-      reactive.factStore,
-      reactive.nodeIndex,
+      makeDfaQuery(reactive.factStore, reactive.nodeIndex),
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
       observeScopeCall: scopeId => {

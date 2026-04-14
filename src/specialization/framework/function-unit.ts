@@ -17,22 +17,6 @@ export interface FunctionUnit {
   blockOfNode: Map<number, BasicBlock>;
   generation: number;
   callCount: number;
-  /** Structural marker: memoization wrap has been applied. Replaces the
-   *  body-shape heuristic previously used to gate idempotent re-wrap. */
-  memoizationApplied: boolean;
-}
-
-/** Helper for `Pass.prune` implementations: restrict eviction to keys owned by
- *  `unit`. `classify(k)` must return the unit the key belongs to (or
- *  `undefined` if unscoped). Prevents cross-unit fact corruption. */
-export function pruneForUnit<K>(
-  previousKeys: Iterable<K>,
-  unit: FunctionUnit,
-  classify: (k: K) => FunctionUnit | undefined,
-): K[] {
-  const out: K[] = [];
-  for (const k of previousKeys) if (classify(k) === unit) out.push(k);
-  return out;
 }
 
 // Lambda bodies are separate scopes and not analyzed here.
@@ -51,21 +35,22 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
     const body: StmtNS.Stmt[] =
       funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
-    const cfg = buildCFG(body);
-    const unit: FunctionUnit = {
+    // Mutual recursion: blocks back-point to the unit, unit owns the cfg.
+    // Build the shell first, then `buildCFG(body, unit)` wires block.unit at creation,
+    // then we assign unit.cfg. The single cast is confined to this bootstrap.
+    const unit = {
       funcAst,
       slotLookup: buildSlotTable(env, paramNames),
-      cfg,
       blockMap: new Map(),
       blockOfNode: new Map(),
       generation: 0,
       callCount: 0,
-      memoizationApplied: false,
       get body(): StmtNS.Stmt[] {
         return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
       },
-    };
-    const { blockMap, blockOfNode } = indexCFG(cfg, unit);
+    } as FunctionUnit;
+    unit.cfg = buildCFG(body, unit);
+    const { blockMap, blockOfNode } = indexCFG(unit.cfg);
     unit.blockMap = blockMap;
     unit.blockOfNode = blockOfNode;
     this.units.set(funcAst, unit);
@@ -103,15 +88,15 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-/** Populates `blockMap`, `blockOfNode`, and each block's `unit` back-pointer. */
-export function indexCFG(cfg: CFG, unit: FunctionUnit): {
+/** Populates `blockMap` and `blockOfNode`. Each block's `unit` back-pointer
+ *  is already set by `buildCFG`. */
+export function indexCFG(cfg: CFG): {
   blockMap: Map<BlockId, BasicBlock>;
   blockOfNode: Map<number, BasicBlock>;
 } {
   const blockMap = new Map<BlockId, BasicBlock>();
   const blockOfNode = new Map<number, BasicBlock>();
   for (const block of cfg.blocks) {
-    block.unit = unit;
     blockMap.set(block.id, block);
     for (const stmt of block.stmts) populateBlockOfNode(stmt, block, blockOfNode);
   }

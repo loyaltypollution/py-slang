@@ -172,6 +172,15 @@ export class Worklist {
     factStore: this.factStore,
   };
 
+  /** FactStore listener. Invariant: this runs inside `FactStore.write`'s
+   *  listener-dispatch loop, so it (and anything it calls) MUST NOT invoke
+   *  `factStore.write` — re-entrant writes would let listener fan-out observe
+   *  mid-iteration state and break the "one event per value-changing write"
+   *  contract that `affectedKeys` single-call consumers (e.g. jit-pass's
+   *  `analysisGen` bump) rely on. `factStore.evict` is permitted: it is a
+   *  silent, event-free, non-lattice escape hatch used here for prune. New
+   *  writes triggered by a change belong in `enqueue` → `processQueue`, not
+   *  in this handler. `FactStore.write` throws on re-entry to enforce this. */
   private handleFactChange(change: FactChange<unknown, unknown>): void {
     const readers = this.passReaders.get(change.pass as Pass<any, any>);
     // Structural change: let every pass evict stale keys.
@@ -205,8 +214,8 @@ export class Worklist {
     const rebuilt: FunctionUnit[] = [];
     for (const unit of this.pendingRebuilds) {
       unit.generation++;
-      unit.cfg = buildCFG(unit.body);
-      const { blockMap, blockOfNode } = indexCFG(unit.cfg, unit);
+      unit.cfg = buildCFG(unit.body, unit);
+      const { blockMap, blockOfNode } = indexCFG(unit.cfg);
       unit.blockMap = blockMap;
       unit.blockOfNode = blockOfNode;
       const cur = this.factStore.read(structuralPass, unit);
@@ -294,24 +303,3 @@ export const DEFAULT_PASSES: ReadonlyArray<Pass<any, any>> = [
   memoizationRule,
 ];
 
-/** Source passes (runtime observations + structural). No `reads`. */
-export const SOURCE_PASSES: ReadonlyArray<Pass<any, any>> = [
-  structuralPass,
-  runtimeWritePass,
-  runtimeCallPass,
-];
-
-/** Analysis-tier passes. */
-export const ANALYSIS_PASSES: ReadonlyArray<Pass<any, any>> = [
-  typeAnalysisPass,
-  constAnalysisPass,
-  purityScopePass,
-  callCountPass,
-];
-
-/** Transform-tier passes. */
-export const TRANSFORM_PASSES: ReadonlyArray<Pass<any, any>> = [
-  deadBranchRule,
-  constantFoldingRule,
-  memoizationRule,
-];

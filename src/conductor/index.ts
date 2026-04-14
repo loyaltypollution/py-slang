@@ -14,3 +14,4 @@ export { PySvmlEvaluator } from "./PySvmlEvaluator";
 export { PySvmlJitEvaluator } from "./PySvmlJitEvaluator";
 export { PyWasmEvaluator } from "./PyWasmEvaluator";
 export { PySvmlSinterEvaluator } from "./PySvmlSinterEvaluator";
+export { PyTieredJitEvaluator } from "./PyTieredJitEvaluator";

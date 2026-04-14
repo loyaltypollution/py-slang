@@ -10,7 +10,7 @@ import { RuntimeSourceError } from "../errors";
 import { parse } from "../parser/parser-adapter";
 import { Resolver } from "../resolver";
 import type { FunctionEnvironments } from "../resolver";
-import { Worklist } from "../specialization";
+import { Worklist } from "../specialization/framework/worklist";
 import { Group } from "../stdlib/utils";
 import { RecursivePartial, Result } from "../types";
 import { PyComplexNumber } from "../types";

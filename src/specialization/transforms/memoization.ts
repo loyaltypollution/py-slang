@@ -14,11 +14,13 @@ import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
-// Idempotent via the structural `unit.memoizationApplied` flag.
+// Idempotency is enforced by the caller gating on the `firedLattice` cell;
+// the cell is top-only with no `prune`, so it stays "fired" across structural
+// rebuilds — a single source of truth replacing the previous
+// `FunctionUnit.memoizationApplied` duplicate flag.
 function applyMemoizationWrap(unit: FunctionUnit): boolean {
   const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return false;
-  if (unit.memoizationApplied) return false;
 
   const id = `${fd.name.lexeme}@L${fd.name.line}`;
   const params = fd.parameters.map(p => mkVar(fd, p.lexeme));
@@ -35,7 +37,6 @@ function applyMemoizationWrap(unit: FunctionUnit): boolean {
 
   rewriteReturns(fd.body, fd, id, params);
   fd.body.unshift(prelude);
-  unit.memoizationApplied = true;
   return true;
 }
 
@@ -88,6 +89,10 @@ function rewriteReturns(
 }
 
 // Gated on callCount threshold and purity. Keyed by FunctionDef.id via structuralPass.
+// One-shot per unit: the `firedLattice` cell (top-only, no prune) is both the
+// idempotency gate and the observable "memoization fired" signal. Reacting to
+// `callCountPass` / `purityScopePass` writes requires a custom `affectedKeys`
+// (the stock `unitSweepRule` only wakes on `structuralPass`).
 export const memoizationRule: Pass<FunctionUnit, Fired> = {
   id: Symbol("memoizationRule"),
   debugName: "memoizationRule",
@@ -104,6 +109,10 @@ export const memoizationRule: Pass<FunctionUnit, Fired> = {
   },
   // No `prune`: one-shot — pruning would self-trigger via structuralPass.
   transfer(ctx: PassCtx, key: FunctionUnit): Fired {
+    // Idempotency gate: if this cell is already "fired", do not re-wrap.
+    // Replaces the old `unit.memoizationApplied` flag — the cell is the
+    // single source of truth, top-only + no-prune = sticky one-shot.
+    if (ctx.tryRead(memoizationRule, key) === "fired") return undefined;
     const fd = key.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
     const count = ctx.read(callCountPass, fd.id);

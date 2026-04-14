@@ -1,9 +1,10 @@
-// Public API barrel.
+// Conductor-facing public surface.
+//
+// Barrel policy: this module re-exports only what `src/conductor/*` needs to
+// wire up a JIT evaluator. Engines (`src/engines/*`) and tests import directly
+// from `./framework/*` and sibling subpaths — the barrel is not the canonical
+// internal entry point.
 
 export { Worklist } from "./framework/worklist";
-export { runtimeWritePass, runtimeCallPass, RUNTIME_CALL_COUNT_SAT, observeRuntimeWrite } from "./framework/runtime-passes";
-export { structuralPass } from "./framework/structural-pass";
-export { callCountPass, MEMOIZATION_THRESHOLD } from "./memoization-analysis/call-count";
-export { purityScopePass } from "./purity-analysis/analysis";
-export { typeAnalysisPass, constAnalysisPass } from "./framework/dfa-passes";
-export { readExprFact, type DfaBlockFact } from "./framework/dfa-factory";
+export { makeJitObservers } from "./framework/runtime-passes";
+export { makeDfaQuery, type DfaQuery } from "./query";

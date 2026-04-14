@@ -12,7 +12,7 @@
 import { StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import { Worklist } from "../../../specialization";
+import { Worklist } from "../../../specialization/framework/worklist";
 import { purityScopePass } from "../../../specialization/purity-analysis/analysis";
 
 function purityOf(code: string, fnName: string): boolean | undefined {

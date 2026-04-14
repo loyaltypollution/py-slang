@@ -1,6 +1,5 @@
 import { ErrorType } from "@sourceacademy/conductor/common";
-import { BasicEvaluator, IRunnerPlugin } from "@sourceacademy/conductor/runner";
-import { Context } from "../engines/cse/context";
+import { IRunnerPlugin } from "@sourceacademy/conductor/runner";
 import { evaluate } from "../engines/cse/interpreter";
 import {
   createErrorStream,
@@ -11,55 +10,15 @@ import {
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import {
-  RUNTIME_CALL_COUNT_SAT,
-  Worklist,
-  observeRuntimeWrite,
-  runtimeCallPass,
-} from "../specialization";
+import { Worklist, makeJitObservers } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import pairmutator from "../stdlib/pairmutator";
 import parser from "../stdlib/parser";
 import stream from "../stdlib/stream";
-import { Group } from "../stdlib/utils";
+import { PyCseEvaluatorBase } from "./PyCseEvaluator";
 
-function once<T>(fn: () => Promise<T>): () => Promise<T> {
-  let promise: Promise<T> | undefined;
-  return () => (promise ??= fn());
-}
-
-abstract class PyCseJitEvaluatorBase extends BasicEvaluator {
-  private context = new Context();
-  private readonly variant: number;
-  private readonly groups: Group[];
-  private readonly ensurePreludesLoaded: () => Promise<void>;
-
-  protected constructor(conductor: IRunnerPlugin, variant: number, groups: Group[]) {
-    super(conductor);
-    this.variant = variant;
-    this.groups = groups;
-
-    for (const group of this.groups) {
-      for (const [name, value] of group.builtins) {
-        this.context.nativeStorage.builtins.set(name, value);
-      }
-    }
-
-    this.ensurePreludesLoaded = once(async () => {
-      for (const group of this.groups) {
-        if (group.prelude) {
-          const ast = parse(group.prelude + "\n");
-          await evaluate("", ast, this.context, {
-            isPrelude: true,
-            variant: this.variant,
-            groups: [],
-          });
-        }
-      }
-    });
-  }
-
+abstract class PyCseJitEvaluatorBase extends PyCseEvaluatorBase {
   async evaluateChunk(chunk: string): Promise<void> {
     try {
       this.context.streams = {
@@ -91,22 +50,9 @@ abstract class PyCseJitEvaluatorBase extends BasicEvaluator {
       worklist.drain();
 
       this.context.runtime.rootScope = ast;
-      // Per-callee raw counters live in the closure for this evaluation.
-      const callCounts = new Map<number, number>();
-      this.context.runtime.observeNodeWrite = (nodeId, value) => {
-        observeRuntimeWrite(worklist, nodeId, value);
-      };
-      this.context.runtime.observeScopeCall = (scopeId) => {
-        const cur = callCounts.get(scopeId) ?? 0;
-        if (cur >= RUNTIME_CALL_COUNT_SAT) return;
-        const next = cur + 1;
-        callCounts.set(scopeId, next);
-        worklist.observe(runtimeCallPass, scopeId, next);
-        // Scope-call boundary: drain any writes buffered since the last call so
-        // memoization / tier-up transforms can fire before the next invocation.
-        // Gated on pending work to skip empty drains once facts have saturated.
-        if (worklist.hasPendingWork()) worklist.drain();
-      };
+      const observers = makeJitObservers(worklist);
+      this.context.runtime.observeNodeWrite = observers.observeNodeWrite;
+      this.context.runtime.observeScopeCall = observers.observeScopeCall;
 
       worklist.beginBatch();
       try {

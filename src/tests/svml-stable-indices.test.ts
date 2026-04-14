@@ -10,6 +10,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import OpCodes from "../engines/svml/opcodes";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
+import { makeDfaQuery } from "../specialization";
 import { buildTestWorklist } from "./utils";
 
 function build(code: string) {
@@ -20,7 +21,7 @@ function build(code: string) {
   const engine = buildTestWorklist(ast, environments);
   engine.drain();
   const units = engine.units;
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, engine.factStore, engine.nodeIndex);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, makeDfaQuery(engine.factStore, engine.nodeIndex));
   return { ast, environments, units, compiler };
 }
 

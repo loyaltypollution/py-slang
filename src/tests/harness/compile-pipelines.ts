@@ -3,6 +3,7 @@ import { analyzeWithEnvironments } from "../../resolver";
 import { SVMLCompiler } from "../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../engines/svml/svml-interpreter";
 import type { SVMLProgram } from "../../engines/svml/types";
+import { makeDfaQuery } from "../../specialization";
 import { buildTestWorklist } from "../utils";
 
 const CHAPTER = 4;
@@ -14,7 +15,7 @@ export function compileOptimized(code: string): SVMLProgram {
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
   engine.drain();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, engine.units, engine.factStore, engine.nodeIndex);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, makeDfaQuery(engine.factStore, engine.nodeIndex));
   return compiler.compileProgram(ast);
 }
 

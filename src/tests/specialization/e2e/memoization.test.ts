@@ -1,7 +1,7 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import { MEMOIZATION_THRESHOLD } from "../../../specialization";
+import { MEMOIZATION_THRESHOLD } from "../../../specialization/memoization-analysis/call-count";
 import { memoizationRule } from "../../../specialization/transforms/memoization";
 import {
   clearMemoCache,
@@ -12,10 +12,11 @@ import {
 } from "../../../runtime/memo";
 import { runtimeCallPass } from "../../../specialization/framework/runtime-passes";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
-import type { Worklist } from "../../../specialization";
+import type { Worklist } from "../../../specialization/framework/worklist";
 import { callCountPass } from "../../../specialization/memoization-analysis/call-count";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
+import { makeDfaQuery } from "../../../specialization";
 import { buildTestWorklist } from "../../utils";
 
 function setup(code: string) {
@@ -215,9 +216,7 @@ describe("memoization: SVML wiring", () => {
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      reactive.units,
-      reactive.factStore,
-      reactive.nodeIndex,
+      makeDfaQuery(reactive.factStore, reactive.nodeIndex),
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast));
     return { reactive, interpreter };
@@ -252,9 +251,7 @@ f(5)
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      reactive.units,
-      reactive.factStore,
-      reactive.nodeIndex,
+      makeDfaQuery(reactive.factStore, reactive.nodeIndex),
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast));
     await interpreter.execute();

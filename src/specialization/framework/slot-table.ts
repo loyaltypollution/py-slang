@@ -9,6 +9,13 @@ export interface SlotInfo {
 
 export type SlotLookup = (token: Token) => SlotInfo;
 
+/** A slot is "local" iff it's a real variable (not a primitive binding) at the
+ *  current function's envLevel. Shared across const/type/purity analyses and
+ *  block-transfer's assignment-effect filter. */
+export function isLocal(info: SlotInfo): boolean {
+  return !info.isPrimitive && info.envLevel === 0;
+}
+
 /** Build a SlotLookup. Params → 0..n-1, locals → n..m; non-locals resolve via env chain. */
 export function buildSlotTable(env: Environment, paramNames: string[]): SlotLookup {
   const slots = new Map<string, SlotInfo>();

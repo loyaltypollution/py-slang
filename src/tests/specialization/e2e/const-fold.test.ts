@@ -2,7 +2,8 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import OpCodes from "../../../engines/svml/opcodes";
-import { constAnalysisPass, readExprFact } from "../../../specialization";
+import { constAnalysisPass } from "../../../specialization/framework/dfa-passes";
+import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import { buildTestWorklist } from "../../utils";
 import { runSpecCase } from "../../harness/spec-e2e";
 

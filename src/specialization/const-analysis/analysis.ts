@@ -1,11 +1,10 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { FactStore } from "../framework/fact-store";
-import type { Lattice } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
 import type { AnalysisPass, SlotEnv } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
-import type { SlotLookup } from "../framework/slot-table";
+import { isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   type ConstLattice,
   CONST_TOP,
@@ -13,31 +12,6 @@ import {
   constJoin,
   constOf,
 } from "./lattice";
-
-function constLeq(a: ConstLattice, b: ConstLattice): boolean {
-  if (a.tag === "bottom") return true;
-  if (b.tag === "top") return true;
-  if (a.tag === "top") return false;
-  if (b.tag === "bottom") return false;
-  return a.value === b.value;
-}
-
-function constMeet(a: ConstLattice, b: ConstLattice): ConstLattice {
-  if (a.tag === "top") return b;
-  if (b.tag === "top") return a;
-  if (a.tag === "bottom" || b.tag === "bottom") return constBottom();
-  return a.value === b.value ? a : constBottom();
-}
-
-export const constLatticeAlgebra: Lattice<ConstLattice> = {
-  bottom: constBottom(),
-  equals: (a, b) =>
-    a === b ||
-    (a.tag !== "const"
-      ? a.tag === b.tag
-      : b.tag === "const" && a.value === b.value),
-  join: constJoin,
-};
 
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
@@ -69,7 +43,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
 
   visitVariableExpr(expr: ExprNS.Variable): ConstLattice {
     const info = this.slotLookup(expr.name);
-    if (info.isPrimitive || info.envLevel !== 0) return this.annotate(expr, CONST_TOP);
+    if (!isLocal(info)) return this.annotate(expr, CONST_TOP);
     return this.annotate(expr, this.constEnv.get(info.slot) ?? CONST_TOP);
   }
 
@@ -225,14 +199,24 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
 }
 
 export const constAnalysisModule: AnalysisPass<ConstLattice> = {
-  name: "constVal",
   mergeKind: "may",
   direction: "forward",
   top: () => CONST_TOP,
   bottom: constBottom,
   join: constJoin,
-  meet: constMeet,
-  leq: constLeq,
+  meet: (a, b) => {
+    if (a.tag === "top") return b;
+    if (b.tag === "top") return a;
+    if (a.tag === "bottom" || b.tag === "bottom") return constBottom();
+    return a.value === b.value ? a : constBottom();
+  },
+  leq: (a, b) => {
+    if (a.tag === "bottom") return true;
+    if (b.tag === "top") return true;
+    if (a.tag === "top") return false;
+    if (b.tag === "bottom") return false;
+    return a.value === b.value;
+  },
   makeExprVisitor(
     factStore: FactStore,
     env: SlotEnv<ConstLattice>,

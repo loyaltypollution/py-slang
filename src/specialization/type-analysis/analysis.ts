@@ -5,7 +5,7 @@ import type { Lattice } from "../framework/pass";
 import { runtimeWritePass } from "../framework/runtime-passes";
 import type { AnalysisPass, SlotEnv } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
-import type { SlotLookup } from "../framework/slot-table";
+import { isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   type TypeLattice,
   BOOL_BIT,
@@ -105,12 +105,9 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 
   visitVariableExpr(expr: ExprNS.Variable): TypeLattice {
     const info = this.slotLookup(expr.name);
-    if (info.isPrimitive) return this.annotate(expr, TOP);
-    if (info.envLevel === 0) {
-      const slotInfo = this.slotTypes.get(info.slot) ?? TOP;
-      return this.annotate(expr, slotInfo);
-    }
-    return this.annotate(expr, TOP);
+    if (!isLocal(info)) return this.annotate(expr, TOP);
+    const slotInfo = this.slotTypes.get(info.slot) ?? TOP;
+    return this.annotate(expr, slotInfo);
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): TypeLattice {
@@ -237,7 +234,6 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 
 // Forward may-analysis: env join = union; specialize only when numeric on all paths.
 export const typeAnalysisModule: AnalysisPass<TypeLattice> = {
-  name: "type",
   mergeKind: "may",
   direction: "forward",
   top: () => TOP,

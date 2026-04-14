@@ -19,6 +19,11 @@ type FactChangeListener = (change: FactChange<unknown, unknown>) => void;
 export class FactStore {
   private readonly cells = new Map<Pass<unknown, unknown>, Map<unknown, unknown>>();
   private readonly listeners = new Set<FactChangeListener>();
+  /** True while iterating `listeners` inside `write`. Guards against re-entrant
+   *  `write` from a listener — which would let listener fan-out observe
+   *  mid-iteration state and silently violate the "one event per value-changing
+   *  write" contract. `evict` remains allowed (silent, event-free, non-lattice). */
+  private inListenerDispatch = false;
 
   read<K, V>(pass: Pass<K, V>, key: K): V {
     const inner = this.cells.get(pass as Pass<unknown, unknown>);
@@ -41,6 +46,13 @@ export class FactStore {
    *  not advance the lattice is a no-op. Returns `true` iff the cell advanced
    *  and a listener event fired. */
   write<K, V>(pass: Pass<K, V>, key: K, value: V): boolean {
+    if (this.inListenerDispatch) {
+      throw new Error(
+        `[FactStore] re-entrant write from listener dispatch (pass="${pass.debugName}"). ` +
+          `Listeners must be read-only observers; "evict" is the only permitted mutation. ` +
+          `Writes from listeners would cause fan-out to observe mid-iteration state.`,
+      );
+    }
     let inner = this.cells.get(pass as Pass<unknown, unknown>);
     if (inner === undefined) {
       inner = new Map();
@@ -60,8 +72,13 @@ export class FactStore {
       oldValue: prev,
       newValue: joined,
     };
-    for (const listener of this.listeners) {
-      listener(change as FactChange<unknown, unknown>);
+    this.inListenerDispatch = true;
+    try {
+      for (const listener of this.listeners) {
+        listener(change as FactChange<unknown, unknown>);
+      }
+    } finally {
+      this.inListenerDispatch = false;
     }
     return true;
   }

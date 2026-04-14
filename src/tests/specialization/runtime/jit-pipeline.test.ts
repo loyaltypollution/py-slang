@@ -5,22 +5,21 @@ import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import { SVMLIR } from "../../../engines/svml/types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
+import { MEMOIZATION_THRESHOLD, callCountPass } from "../../../specialization/memoization-analysis/call-count";
 import {
-  MEMOIZATION_THRESHOLD,
   RUNTIME_CALL_COUNT_SAT,
-  callCountPass,
-  constAnalysisPass,
   observeRuntimeWrite,
-  purityScopePass,
   runtimeCallPass,
-  structuralPass,
-  typeAnalysisPass,
-} from "../../../specialization";
+} from "../../../specialization/framework/runtime-passes";
+import { constAnalysisPass, typeAnalysisPass } from "../../../specialization/framework/dfa-passes";
+import { purityScopePass } from "../../../specialization/purity-analysis/analysis";
+import { structuralPass } from "../../../specialization/framework/structural-pass";
 import { CONST_TOP } from "../../../specialization/const-analysis/lattice";
 import { TOP as TYPE_TOP } from "../../../specialization/type-analysis/lattice";
 import { MutableEnv } from "../../../specialization/framework/mutable-env";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
 import type { Pass, PassCtx } from "../../../specialization/framework/pass";
+import { makeDfaQuery } from "../../../specialization";
 import { buildTestWorklist } from "../../utils";
 
 function buildUnit(code: string) {
@@ -32,9 +31,7 @@ function buildUnit(code: string) {
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    reactive.units,
-    reactive.factStore,
-    reactive.nodeIndex,
+    makeDfaQuery(reactive.factStore, reactive.nodeIndex),
   );
   return { ast, environments, reactive, compiler, program: compiler.compileProgram(ast) };
 }

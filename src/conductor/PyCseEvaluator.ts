@@ -23,15 +23,11 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
   return () => (promise ??= fn());
 }
 
-/**
- * The abstract class PyCseEvaluatorBase implements the common logic for all variants of
- * the CSE evaluator, which includes setting up the context, loading preludes, and evaluating chunks of code.
- */
-abstract class PyCseEvaluatorBase extends BasicEvaluator {
-  private context = new Context();
-  private readonly variant: number;
-  private readonly groups: Group[];
-  private readonly ensurePreludesLoaded: () => Promise<void>;
+export abstract class PyCseEvaluatorBase extends BasicEvaluator {
+  protected context = new Context();
+  protected readonly variant: number;
+  protected readonly groups: Group[];
+  protected readonly ensurePreludesLoaded: () => Promise<void>;
 
   protected constructor(conductor: IRunnerPlugin, variant: number, groups: Group[]) {
     super(conductor);

@@ -14,32 +14,11 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import {
-  RUNTIME_CALL_COUNT_SAT,
-  Worklist,
-  observeRuntimeWrite,
-  runtimeCallPass,
-} from "../specialization";
+import { Worklist, makeDfaQuery, makeJitObservers } from "../specialization";
 
-/**
- * ⚠️ EXPERIMENTAL — NOT FOR PRODUCTION USE ⚠️
- *
- * Tiered JIT: races CSE and SVML against one shared Worklist. Winner's
- * buffered effects are flushed; loser is cooperatively aborted via an
- * `aborted` flag checked in observation callbacks and proxy input. Not
- * preemptive — an observe-free hot loop will block abort until it yields.
- *
- * Known soundness gap: both arms `await` inside their run loops, so the
- * event loop can interleave `wl.observe`, `wl.drain`, `wl.beginBatch`, and
- * `wl.endBatch` calls against the single shared `Worklist`. `batchDepth`,
- * `pendingRebuilds`, and `processQueue` are not re-entrant and carry no
- * locking. Concurrent `endBatch` calls can race the outermost-drain check;
- * mid-drain observations from the other arm can enqueue items into a
- * partially-drained queue. Deterministic under specific interleavings only.
- *
- * Use for research / benchmarking. Do not wire into the production
- * conductor registry.
- */
+/** Races CSE and SVML on a shared Worklist; winner's buffered I/O is flushed, loser is aborted.
+ *  Shared Worklist is safe across arms because all wl.* calls are synchronous and JS is
+ *  single-threaded; batch composition defers drains, which monotone lattices tolerate. */
 
 class AbortError extends Error { constructor() { super("aborted"); } }
 
@@ -91,19 +70,11 @@ async function runCse(chunk: string, variant: number, wl: Worklist, c: IRunnerPl
   try {
     const ast = parse(chunk + "\n");
     ctx.runtime.rootScope = ast;
-    const calls = new Map<number, number>();
-    ctx.runtime.observeNodeWrite = (id, v) => {
+    const observers = makeJitObservers(wl, () => {
       if (flag.aborted) throw new AbortError();
-      observeRuntimeWrite(wl, id, v);
-    };
-    ctx.runtime.observeScopeCall = id => {
-      if (flag.aborted) throw new AbortError();
-      const cur = calls.get(id) ?? 0;
-      if (cur >= RUNTIME_CALL_COUNT_SAT) return;
-      calls.set(id, cur + 1);
-      wl.observe(runtimeCallPass, id, cur + 1);
-      wl.drain();
-    };
+    });
+    ctx.runtime.observeNodeWrite = observers.observeNodeWrite;
+    ctx.runtime.observeScopeCall = observers.observeScopeCall;
     wl.beginBatch();
     try {
       await evaluate("", ast, ctx, { variant, groups: [] });
@@ -130,23 +101,13 @@ async function runSvml(
   flag: { aborted: boolean },
 ): Promise<void> {
   try {
-    const compiler = SVMLCompiler.fromProgramUnit(ast, envs, wl.units, wl.factStore, wl.nodeIndex);
+    const compiler = SVMLCompiler.fromProgramUnit(ast, envs, makeDfaQuery(wl.factStore, wl.nodeIndex));
     const program = compiler.compileProgram(ast);
-    const calls = new Map<number, number>();
     const interp = new SVMLInterpreter(program, {
       sendOutput: c.sendOutput.bind(c),
-      observeNodeWrite: (id, v) => {
+      ...makeJitObservers(wl, () => {
         if (flag.aborted) throw new AbortError();
-        observeRuntimeWrite(wl, id, v);
-      },
-      observeScopeCall: id => {
-        if (flag.aborted) throw new AbortError();
-        const cur = calls.get(id) ?? 0;
-        if (cur >= RUNTIME_CALL_COUNT_SAT) return;
-        calls.set(id, cur + 1);
-        wl.observe(runtimeCallPass, id, cur + 1);
-        wl.drain();
-      },
+      }),
     });
     wl.register(makeJitPass({ compiler, interpreter: interp }));
     wl.beginBatch();

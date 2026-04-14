@@ -17,6 +17,7 @@ const allTargets = [
   "PySvmlEvaluator",
   "PySvmlJitEvaluator",
   "PySvmlSinterEvaluator",
+  "PyTieredJitEvaluator",
 ] as const;
 
 type EvaluatorName = string;
