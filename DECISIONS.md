@@ -1021,3 +1021,83 @@ Kildall on the current non-goals. The honest value is:
 3. No new correctness traps were introduced; the previously-shipped
    Kildall precision is preserved bit-for-bit.
 
+
+---
+
+## Round 4 — Phase 9 retrospective
+
+### Scope actually shipped (HEAD = d8f7621)
+
+- 9-A: architecture note (DECISIONS §9-A).
+- 9-B: `src/specialization/runtime/datalog/semi-naive.ts` evaluator +
+  `src/tests/runtime/semi-naive.test.ts` unit tests.
+- 9-C: `typeBlockEnvs` body delegates to `semiNaive`.
+- 9-D: `constBlockEnvs` ported too; `kildall.ts` deleted; runtime index
+  re-export dropped; block-envs iteration-cap test absorbed into
+  semi-naive.test.ts.
+- 9-E: deferred (structural blocker documented).
+- Final: **38/38 suites, 2592 tests passing.** Net delta vs Round 4 base:
+  6 commits, ~350 LoC added, 118 LoC removed.
+
+### What this refactor actually changed
+
+1. **Module boundary**: `src/specialization/runtime/datalog/` now owns
+   all forward-DFA fixpoint iteration. Extensions (cross-analysis
+   rules, delete-rederive incrementality, per-block invalidation) have
+   an obvious landing zone.
+2. **`changedBlocks` signal exposed**: every run of the evaluator
+   surfaces the set of blocks whose OUT strictly increased. Today it
+   is discarded at the call site; any future refactor wanting per-block
+   invalidation, stratified iteration feedback, or telemetry has this
+   signal for free.
+3. **Single iteration engine**: `kildall.ts` is gone. One function
+   (`semiNaive`) handles every per-unit fixpoint the specialization
+   framework runs.
+
+### What this refactor did not change
+
+- Iteration complexity: identical to the former Kildall worklist.
+- Precision: identical — bottom-init + leq-gated re-enqueue is the
+  same Kildall least fixpoint.
+- Invalidation granularity: unchanged — `typeBlockEnvs(unit)` still
+  has one cell per unit; any `runtimeWrite` on any node reds it.
+- Cell dep graph: same `astOf(unit)`, `cfgOf(unit)`, and per-node
+  `runtimeWriteInput` edges.
+- External API: every `db.get(typeBlockEnvs, …)`, `db.get(typeOf, …)`,
+  etc. call site is bit-for-bit unchanged.
+
+### Honest verdict
+
+The path Y "Datalog substrate" claim is aspirational framing against
+the IncA/DRedL/IncIDFA literature, not a semantic change over Kildall
+on the current non-goals. On a monotone single-lattice forward DFA with
+TypeScript closure transfer and no rule DSL, semi-naive Datalog collapses
+to the Kildall worklist. The refactor's value is structural preparation:
+a module boundary and a surfaced signal that make per-block invalidation
+(the genuine payoff both Phase 8 and Round 3 named) a more tractable
+future change, not today's change.
+
+If a future maintainer reads the plan expecting Datalog-grade precision
+or automatic per-block incrementality, they should read DECISIONS §9-A
+("Honest framing up front") and §9-E ("What shipping per-block
+invalidation would require") before starting. The plan's §Steelman #2
+was correct: Salsa-style demand-driven memoization for Kildall at
+py-slang's scale is not the wrong substrate; it is already the right one.
+The question was always whether to go further, and Round 4 concluded the
+answer is "not without a new runtime primitive for declaring deps on
+never-read cells, which is out of overnight scope."
+
+### Follow-on triggers (when to reopen)
+
+- Profiler shows per-unit `typeBlockEnvs`/`constBlockEnvs` re-runs
+  dominating hot-path cost on realistic programs.
+- A new analysis needs per-block granularity for correctness (e.g.
+  path-sensitive analysis where unit-level join over-widens).
+- The evaluator's `changedBlocks` signal acquires a downstream consumer
+  (e.g. incremental codegen patching specific block's opcodes).
+- Conductor grows a persistent-interpreter evaluator that re-uses the
+  same Db across chunks, making cross-chunk per-block caching worth
+  the complexity.
+
+Until any of these fire: the shipped architecture is architecturally
+stable — a deliberate choice, not a compromise.
