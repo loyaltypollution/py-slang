@@ -21,7 +21,12 @@ function build(code: string) {
   const engine = buildTestWorklist(ast, environments);
   engine.drain();
   const units = engine.units;
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, makeDfaQuery(engine.factStore, engine.nodeIndex));
+  const compiler = SVMLCompiler.fromProgramUnit(
+    ast,
+    environments,
+    makeDfaQuery(engine.factStore, engine.nodeIndex),
+    engine.registry,
+  );
   return { ast, environments, units, compiler };
 }
 

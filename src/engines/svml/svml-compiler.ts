@@ -12,7 +12,10 @@ import { SVMLIRBuilder } from "./SVMLIRBuilder";
 import { PRIMITIVE_FUNCTIONS } from "./builtins";
 import OpCodes from "./opcodes";
 import { SVMLIR, SVMLProgram } from "./types";
-import { traverseAST } from "../../validator/traverse";
+import {
+  FunctionRegistry,
+  buildFunctionRegistry,
+} from "../../specialization/framework/function-registry";
 
 /** Signed 32-bit integer bounds used to decide LGCI vs LGCF64 encoding. */
 const I32_MIN = -2_147_483_648;
@@ -53,17 +56,15 @@ export class SVMLCompiler
   private dfaQuery: DfaQuery | undefined;
   private _scopeIndexMap?: ScopeIndexMap;
   /**
-   * Pre-computed function index assignments for every function-like node in
-   * the program (FileInput, FunctionDef, Lambda, MultiLambda). Built once at
-   * top-level compiler construction and shared with child compilers through
-   * `fromFunctionNode`. Stable across recompiles — the critical invariant
-   * that lets `compileFunction()` produce a patched IR whose `NEWC` operands
-   * still match sibling functions.
+   * Shared canonical registry of function identity and slot layout. Built
+   * once at top-level compiler construction from the AST (or supplied by the
+   * caller so Worklist and compiler observe the same identity), inherited by
+   * child compilers through `fromFunctionNode`. Transforms that structurally
+   * add or remove function scopes must `mint`/`retire` through it — a missing
+   * entry here throws at slot lookup, converting silent miscompiles into
+   * loud failures.
    */
-  private functionIndices!: Map<
-    StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda,
-    number
-  >;
+  private registry!: FunctionRegistry;
 
   private tokenAnnotations = new WeakMap<Token, CompilerAnnotation>();
   private envSlotCounters = new WeakMap<Environment, number>();
@@ -103,44 +104,14 @@ export class SVMLCompiler
   }
 
   /**
-   * Pre-compute a deterministic `node → functionIndex` map for every function-like
-   * node in `program` (FileInput plus nested FunctionDef/Lambda/MultiLambda).
-   *
-   * Traversal order matches the compiler's recursive `compile()` visitor
-   * (pre-order DFS via `traverseAST`), so the indices this assigns are
-   * byte-for-byte identical to what the old static counter produced — but
-   * they are now knowable *before* compilation begins, which is what makes
-   * per-function recompile (`compileFunction`) produce a patched IR whose
-   * `NEWC` operands still match every other sibling.
-   */
-  private static computeFunctionIndices(
-    program: StmtNS.FileInput,
-  ): Map<StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda, number> {
-    const indices = new Map<
-      StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda,
-      number
-    >();
-    let next = 0;
-    indices.set(program, next++);
-    traverseAST(program, node => {
-      if (
-        node instanceof StmtNS.FunctionDef ||
-        node instanceof ExprNS.Lambda ||
-        node instanceof ExprNS.MultiLambda
-      ) {
-        indices.set(node, next++);
-      }
-    });
-    return indices;
-  }
-
-  /**
    * Create SVMLCompiler from program AST.
    * Pass pre-computed environments (from analyzeWithEnvironments) to avoid a second resolver run.
+   * Pass `registry` when sharing identity with a Worklist (JIT pipelines); omit to build one internally.
    */
   static fromProgram(
     program: StmtNS.FileInput,
     functionEnvironments?: FunctionEnvironments,
+    registry?: FunctionRegistry,
   ): SVMLCompiler {
     if (!functionEnvironments) {
       const resolver = new Resolver("", program);
@@ -150,11 +121,11 @@ export class SVMLCompiler
     if (!mainEnv) {
       throw new Error("Main program environment not found");
     }
-    const functionIndices = SVMLCompiler.computeFunctionIndices(program);
-    const builder = new SVMLIRBuilder(0, functionIndices.get(program)!);
+    const reg = registry ?? buildFunctionRegistry(program);
+    const builder = new SVMLIRBuilder(0, reg.slotOfNode(program));
     builder.setScopeKey(program);
     const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder);
-    compiler.functionIndices = functionIndices;
+    compiler.registry = reg;
     return compiler;
   }
 
@@ -162,25 +133,26 @@ export class SVMLCompiler
     program: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
     dfaQuery?: DfaQuery,
+    registry?: FunctionRegistry,
   ): SVMLCompiler {
     const mainEnv = functionEnvironments.get(program);
     if (!mainEnv) {
       throw new Error("Main program environment not found");
     }
-    const functionIndices = SVMLCompiler.computeFunctionIndices(program);
-    const builder = new SVMLIRBuilder(0, functionIndices.get(program)!);
+    const reg = registry ?? buildFunctionRegistry(program);
+    const builder = new SVMLIRBuilder(0, reg.slotOfNode(program));
     builder.setScopeKey(program);
     const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, dfaQuery);
-    compiler.functionIndices = functionIndices;
+    compiler.registry = reg;
 
     // Populate ScopeIndexMap eagerly so it is the source of truth for NEWC
     // emissions on the very first compile (and matches lookups during any
     // subsequent compileFunction). Only FunctionDef/FileInput qualify as
     // ScopeKeys — Lambda/MultiLambda carry indices but are not DFA units.
     compiler._scopeIndexMap = new ScopeIndexMap();
-    for (const [node, index] of functionIndices) {
+    for (const { node, slot } of reg.entries()) {
       if (node instanceof StmtNS.FileInput || node instanceof StmtNS.FunctionDef) {
-        compiler._scopeIndexMap.register(node, index);
+        compiler._scopeIndexMap.register(node, slot);
       }
     }
     return compiler;
@@ -195,10 +167,7 @@ export class SVMLCompiler
       nextEnvironment.lookupNameCurrentEnvWithError(param);
     }
     const numArgs = node.parameters.length;
-    const childIndex = this.functionIndices.get(node);
-    if (childIndex === undefined) {
-      throw new Error("Function index not pre-computed for nested function");
-    }
+    const childIndex = this.registry.slotOfNode(node);
     const builder = this.builder.createChildBuilder(numArgs, childIndex);
     // Only FunctionDef bodies are ScopeKeys; Lambda/MultiLambda are not DFA units.
     if (node instanceof StmtNS.FunctionDef) {
@@ -212,7 +181,7 @@ export class SVMLCompiler
       this.dfaQuery,
     );
     compiler._scopeIndexMap = this._scopeIndexMap;
-    compiler.functionIndices = this.functionIndices;
+    compiler.registry = this.registry;
     const slotMap = new Map<string, number>();
     compiler.envSlotMaps.set(nextEnvironment, slotMap);
 
@@ -244,7 +213,7 @@ export class SVMLCompiler
    * having run.
    */
   indexOf(scope: StmtNS.FileInput | StmtNS.FunctionDef): number | undefined {
-    return this.functionIndices.get(scope);
+    return this.registry.hasNode(scope) ? this.registry.slotOfNode(scope) : undefined;
   }
 
   /**
@@ -272,10 +241,7 @@ export class SVMLCompiler
     for (const param of funcAst.parameters) {
       nextEnvironment.lookupNameCurrentEnvWithError(param);
     }
-    const index = this.functionIndices.get(funcAst);
-    if (index === undefined) {
-      throw new Error("Function index not pre-computed for unit");
-    }
+    const index = this.registry.slotOfNode(funcAst);
 
     // Fresh standalone builder — NOT attached as a child of `this.builder`.
     // That keeps compileProgram idempotent and leaves sibling builders
@@ -291,7 +257,7 @@ export class SVMLCompiler
       this.dfaQuery,
     );
     subCompiler._scopeIndexMap = this._scopeIndexMap;
-    subCompiler.functionIndices = this.functionIndices;
+    subCompiler.registry = this.registry;
 
     const slotMap = new Map<string, number>();
     subCompiler.envSlotMaps.set(nextEnvironment, slotMap);

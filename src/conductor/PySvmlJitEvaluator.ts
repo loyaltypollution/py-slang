@@ -24,7 +24,12 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const worklist = new Worklist(ast, environments);
       worklist.drain();
 
-      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, makeDfaQuery(worklist.factStore, worklist.nodeIndex));
+      const compiler = SVMLCompiler.fromProgramUnit(
+        ast,
+        environments,
+        makeDfaQuery(worklist.factStore, worklist.nodeIndex),
+        worklist.registry,
+      );
       const program = compiler.compileProgram(ast);
 
       const interpreter = new SVMLInterpreter(program, {

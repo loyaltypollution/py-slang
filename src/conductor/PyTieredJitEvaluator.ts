@@ -101,7 +101,12 @@ async function runSvml(
   flag: { aborted: boolean },
 ): Promise<void> {
   try {
-    const compiler = SVMLCompiler.fromProgramUnit(ast, envs, makeDfaQuery(wl.factStore, wl.nodeIndex));
+    const compiler = SVMLCompiler.fromProgramUnit(
+      ast,
+      envs,
+      makeDfaQuery(wl.factStore, wl.nodeIndex),
+      wl.registry,
+    );
     const program = compiler.compileProgram(ast);
     const interp = new SVMLInterpreter(program, {
       sendOutput: c.sendOutput.bind(c),

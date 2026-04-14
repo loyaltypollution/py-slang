@@ -2,6 +2,34 @@ import type { ExprNS } from "../../ast-types";
 import type { FactStore } from "./fact-store";
 import type { SlotLookup } from "./slot-table";
 
+/**
+ * Structural-mutation contract for transforms.
+ *
+ * Function identity is owned by `FunctionRegistry` (fdId ↔ node ↔ slot).
+ * Worklist and SVMLCompiler consume the registry; they do not re-derive slot
+ * layout from AST traversal order. Any transform that adds or removes a
+ * FunctionDef / Lambda / MultiLambda MUST cooperate with the registry or the
+ * compiler and worklist diverge silently.
+ *
+ * Required steps, in order, inside a transform that mutates function structure:
+ *
+ *   1. Populate `functionEnvironments` for the new node (if adding).
+ *   2. `registry.mint(newNode)` / `registry.retire(oldNode.id)` — this updates
+ *      slot layout and fires the worklist's onMint/onRetire listener, which
+ *      builds (or drops) the corresponding FunctionUnit and seeds (or evicts)
+ *      its structuralPass fact.
+ *   3. `worklist.markStructuralChange(enclosingFdId)` — wakes downstream
+ *      passes for the enclosing scope whose body structurally changed. The
+ *      registry knows *which* function was added/removed, not *where*; the
+ *      enclosing-unit bump is the transform's responsibility.
+ *
+ * Skipping step 2 is undefined behavior (stale slot map, missing unit).
+ * Skipping step 3 leaves downstream analyses observing stale per-node facts
+ * for the enclosing body. Both convert to noisy throws at the first slot
+ * lookup or pass re-transfer under the current contract — never silent
+ * miscompile.
+ */
+
 /** Read-only slot → lattice-value view (the minimum a visitor needs from `MutableEnv<L>`). */
 export interface SlotEnv<L> {
   get(slot: number): L | undefined;

@@ -1,16 +1,21 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
+import type { FunctionRegistry } from "./function-registry";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
 /** Per-scope optimization unit. CFG fields are scheduler-owned and replaced
- *  by `Worklist.flushPendingRebuilds`. `body` is a live getter onto the AST. */
+ *  by `Worklist.flushPendingRebuilds`. `body` is a live getter onto the AST.
+ *  `slot` delegates to the shared `FunctionRegistry` so slot identity is
+ *  single-sourced: worklist and compiler cannot disagree. */
 export interface FunctionUnit {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
+  /** Bytecode slot — delegated to the shared FunctionRegistry. */
+  readonly slot: number;
   cfg: CFG;
   blockMap: Map<BlockId, BasicBlock>;
   /** NodeId → containing BasicBlock. */
@@ -19,33 +24,50 @@ export interface FunctionUnit {
   callCount: number;
 }
 
+/** Build a single FunctionUnit for `funcAst` — no recursion into nested
+ *  scopes. The initial construction walk (`ScopeDiscoveryVisitor`) drives
+ *  recursion itself; mid-run on-mint handling wants exactly one unit per
+ *  mint event. */
+export function buildOneFunctionUnit(
+  funcAst: StmtNS.FileInput | StmtNS.FunctionDef,
+  functionEnvironments: FunctionEnvironments,
+  registry: FunctionRegistry,
+): FunctionUnit {
+  const env = functionEnvironments.get(funcAst);
+  if (!env) {
+    throw new Error(`Environment not found for scope node ${funcAst.kind}`);
+  }
+  const paramNames =
+    funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
+  // blocks hold unit back-pointers; unit owns cfg. Build shell, then wireCFG.
+  const unit = {
+    funcAst,
+    slotLookup: buildSlotTable(env, paramNames),
+    blockMap: new Map(),
+    blockOfNode: new Map(),
+    generation: 0,
+    callCount: 0,
+    get body(): StmtNS.Stmt[] {
+      return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
+    },
+    get slot(): number {
+      return registry.slotOfNode(funcAst);
+    },
+  } as Omit<FunctionUnit, "cfg"> as FunctionUnit;
+  wireCFG(unit);
+  return unit;
+}
+
 // Lambda bodies are separate scopes and not analyzed here.
 class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   constructor(
     private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
     private readonly functionEnvironments: FunctionEnvironments,
+    private readonly registry: FunctionRegistry,
   ) {}
 
   register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
-    const env = this.functionEnvironments.get(funcAst);
-    if (!env) {
-      throw new Error(`Environment not found for scope node ${funcAst.kind}`);
-    }
-    const paramNames =
-      funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
-    // blocks hold unit back-pointers; unit owns cfg. Build shell, then wireCFG.
-    const unit = {
-      funcAst,
-      slotLookup: buildSlotTable(env, paramNames),
-      blockMap: new Map(),
-      blockOfNode: new Map(),
-      generation: 0,
-      callCount: 0,
-      get body(): StmtNS.Stmt[] {
-        return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
-      },
-    } as Omit<FunctionUnit, "cfg"> as FunctionUnit;
-    wireCFG(unit);
+    const unit = buildOneFunctionUnit(funcAst, this.functionEnvironments, this.registry);
     this.units.set(funcAst, unit);
     for (const stmt of unit.body) stmt.accept(this);
   }
@@ -120,9 +142,10 @@ function populateBlockOfNode(
 export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
+  registry: FunctionRegistry,
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
-  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments);
+  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, registry);
   visitor.register(ast);
   return units;
 }
