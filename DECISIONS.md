@@ -646,6 +646,111 @@ architecturally-stable choice, not a compromise.
 
 No code changes this phase. `yarn test`: still 36/36 / 2572.
 
+---
+
+## Round 3 — path selection for Phase 8
+
+User requested Phase 8 implementation. Worked the five open design
+questions to pin whether path X (SCC engine + prewarm) or path Y
+(semi-naive Datalog prototype) is an overnight-scale fit.
+
+### Questions, provisional answers
+
+1. **Prewarm scope ownership.** Caller-side. Analysis knows its CFG;
+   runtime shouldn't learn CFG shape. The leader-block's query body
+   walks the CFG once and registers siblings.
+
+2. **SCC participation.** Explicit: the leader's body, while
+   prewarming, also declares the participant set to the runtime. Ties
+   analysis to runtime but pays for precision over coarser
+   "any-same-query-cell-is-a-participant" rule.
+
+3. **Termination.** Track dirty participants (those whose value
+   changed since last iteration); terminate when dirty-set is empty.
+   Unread cells stay at bottom-green and never enter the dirty set —
+   correct by construction.
+
+4. **Dep recording for never-read blocks.** *Unresolved.* Prewarm
+   creates green cells with no deps. If a later `runtimeWrite` lands
+   on a node inside such a block, the cell must still invalidate —
+   but the reverse-index has no edge to it. Two fixes on the table,
+   both with costs:
+   - (a) Eagerly read all participants during the leader's first
+     iteration to force dep registration. Costs an extra full CFG
+     walk worth of reads.
+   - (b) Introduce a new runtime primitive — "prewarm with declared
+     deps" — where the prewarm call registers the block's inputs
+     (runtimeWrite on its nodes, etc.) as deps without executing the
+     body. This grows the runtime API.
+   Neither is small. Picking requires a design decision I'd rather
+   make in daylight.
+
+5. **Invalidation granularity.** *Partially resolved.* For blocks
+   inside an SCC, invalidation still drains the whole SCC's
+   iteration — same coarseness as per-unit Kildall for the loop
+   body. For blocks outside the SCC (entry prologue, post-loop
+   epilogue, acyclic tails), per-block invalidation is a genuine
+   win. Typical py-slang function: 50–70% of blocks are
+   acyclic-after-the-loop, so the win is real but not dramatic.
+
+### The spike's structural trap is still there
+
+Pass-1 of the previous spike (DECISIONS §Phase 8) built an SCC
+engine that processed participants in DFS registration order; a
+forward DFA's transfer over `bottom_env` pessimistically widens to
+TOP, so the first participant pass produced all-TOP values that then
+propagated. Pre-warm fixes this for the *first* iteration's reads
+(green-bottom instead of provisional-from-stack), but the SCC engine
+itself was reverted — reintroducing it is part of path X's scope, not
+a standalone prerequisite.
+
+### Honest scope accounting
+
+Path X requires, at minimum:
+- Re-introduce the reverted SCC engine from the prior spike (~150 LoC
+  in `db.ts`).
+- Add a `prewarm` primitive with dep-registration semantics per
+  question 4 (another ~50 LoC in `db.ts`, or a protocol change).
+- Migrate `typeBlockEnvs`/`constBlockEnvs` to per-block queries with
+  a leader-block responsible for prewarm + participation declaration
+  (~200 LoC across analysis modules).
+- New tests: verify per-block invalidation independence on a
+  loop-heavy program, verify the SCC engine doesn't hit the
+  provisional-bottom trap.
+
+Path Y requires, at minimum:
+- A JS-native semi-naive Datalog evaluator over a lattice semiring
+  (~300–500 LoC in a new `runtime/datalog/` directory).
+- Rule-set encoding of the type + const analyses (~100 LoC).
+- Query wrapper so `typeBlockEnvs` delegates to the evaluator.
+- Same test coverage as path X.
+
+Either is multi-session work. Path Y has cleaner termination and
+sidesteps question 4 entirely (Datalog rules natively have deps on
+their atoms via the rule body; no "prewarm with deps" protocol
+needed). Path X has smaller diff but more subtle correctness
+surfaces.
+
+### This session's decision
+
+Do **neither path in this session.** Writing a half-implementation
+of Phase 8 with a known correctness trap (question 4 unresolved) is
+worse than leaving it deferred. Instead, use the remaining time for
+a genuinely complete end-to-end trace through `PySvmlJitEvaluator`
+itself — the python-trace test added this session exercises each
+query layer in isolation but does *not* run the interpreter and
+observe memoize installation in anger. Closing that gap is concrete
+value, independent of Phase 8.
+
+Phase 8 recommendation for the next session (or an in-daylight
+design sprint): **pick path Y**. The question-4 resolution comes for
+free from Datalog's dep-on-body-atoms semantics, and the Phase 8
+failure mode does not exist in a semi-naive evaluator because IDB
+facts are initialized to bottom and iterated stratum-by-stratum —
+structurally identical to Kildall's worklist. This matches the
+RETROSPECTIVE.md finding on substrate fit.
+
+
 
 
 

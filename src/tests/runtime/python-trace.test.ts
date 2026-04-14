@@ -14,9 +14,13 @@
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import { parse } from "../../parser/parser-adapter";
-import { Resolver } from "../../resolver";
+import { Resolver, analyzeWithEnvironments } from "../../resolver";
 import { MEMOIZATION_THRESHOLD } from "../../specialization/memoization-analysis/call-count";
 import { INT_BIT } from "../../specialization/type-analysis/lattice";
+import { SVMLCompiler } from "../../engines/svml/svml-compiler";
+import { SVMLInterpreter } from "../../engines/svml/svml-interpreter";
+import { buildFunctionUnits } from "../../specialization";
+import { clearMemoCache, memoCacheSnapshot } from "../../specialization";
 import {
   Db,
   astOf,
@@ -306,5 +310,146 @@ print(s)
     const after = db.get(typeOf, binaryId);
     expect(before).toBeDefined();
     expect(after).toBeDefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// End-to-end: drive the SVML interpreter with the full specialization
+// loop attached. Mirrors PySvmlJitEvaluator.evaluateChunk but in a test
+// so every boundary can be asserted directly.
+// ─────────────────────────────────────────────────────────────────────
+
+describe("python-trace: interpreter execution with live specialization loop", () => {
+  beforeEach(() => clearMemoCache());
+
+  // fib(9) = 55 invocations of fib — enough to exceed MEMOIZATION_THRESHOLD
+  // (50) on the recursive case, yet small enough to run instantly.
+  const FIB_PROGRAM = `
+def fib(n):
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+fib(9)
+`;
+
+  test("running fib(9) through SVMLInterpreter triggers memoize install and the wrapped body executes", async () => {
+    const script = FIB_PROGRAM + "\n";
+    const ast = parse(script) as StmtNS.FileInput;
+    const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
+    if (errors.length > 0) throw errors[0];
+
+    const db = new Db();
+    astOf.set(db, 0, ast);
+    environmentsOf.set(db, 0, environments);
+    const units = buildFunctionUnits(ast, environments);
+
+    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, db);
+    const program = compiler.compileProgram(ast);
+
+    // Hook observation into the Db and drive the recompile loop inline.
+    const callCounts = new Map<number, number>();
+    let lastCompiledAst: StmtNS.FileInput | undefined = ast;
+    let recompileCount = 0;
+    let wrappedBodyInstalled = false;
+
+    const interpreter = new SVMLInterpreter(program, {
+      observeNodeWrite: (nodeId, value) => {
+        runtimeWrite.set(db, nodeId, value);
+      },
+      observeScopeCall: (scopeId) => {
+        const next = (callCounts.get(scopeId) ?? 0) + 1;
+        callCounts.set(scopeId, next);
+        runtimeCall.set(db, scopeId, next);
+
+        const lowered = db.get(optimizedLoweredOf, 0);
+        if (lowered !== undefined && lowered.ast !== lastCompiledAst) {
+          lastCompiledAst = lowered.ast;
+          recompileCount += 1;
+          // Recompile the lowered AST with the carried env map — no
+          // analyzeWithEnvironments re-run, per Round 2 Phase B.
+          const newDb = new Db();
+          astOf.set(newDb, 0, lowered.ast);
+          environmentsOf.set(newDb, 0, lowered.environments);
+          const newCompiler = SVMLCompiler.fromProgram(
+            lowered.ast,
+            newDb,
+            lowered.environments,
+          );
+          const newProgram = newCompiler.compileProgram(lowered.ast);
+          for (let i = 0; i < newProgram.functions.length; i++) {
+            interpreter.patchFunction(i, newProgram.functions[i]);
+          }
+          wrappedBodyInstalled = true;
+        }
+      },
+    });
+
+    await interpreter.execute();
+
+    const fib = findFib(ast);
+
+    // Assertion 1 — the interpreter ran long enough to saturate. fib(9) is
+    // >= 55 recursive calls.
+    const fibCallCount = callCounts.get(fib.id) ?? 0;
+    expect(fibCallCount).toBeGreaterThanOrEqual(MEMOIZATION_THRESHOLD);
+
+    // Assertion 2 — the Db's saturating counter pins at MEMOIZATION_THRESHOLD
+    // (plus however many bumps past it, which the lattice caps).
+    expect(db.get(callCountOf, fib.id)).toBe(MEMOIZATION_THRESHOLD);
+
+    // Assertion 3 — shouldMemoize flipped to true.
+    expect(db.get(shouldMemoize, fib.id)).toBe(true);
+
+    // Assertion 4 — recompile fired exactly once. The whole point of early
+    // cutoff past saturation: AST reference stabilizes, pull is O(1), no
+    // further recompiles.
+    expect(recompileCount).toBe(1);
+    expect(wrappedBodyInstalled).toBe(true);
+
+    // Assertion 5 — the memoize cache has entries. The wrapped body, once
+    // installed, writes to the shared memo slab via __memo_put on each
+    // successful return; proof that the patched bytecode is actually
+    // dispatching through the wrapped body.
+    const cache = memoCacheSnapshot();
+    expect(cache.size).toBeGreaterThan(0);
+    // The cache key is mint via mintMemoId = `${name}@L${line}`; fib is on
+    // line 2 of the script (leading newline at line 1).
+    const fibBucket = [...cache.keys()].find((k) => k.startsWith("fib@"));
+    expect(fibBucket).toBeDefined();
+
+    // Assertion 6 — the final optimizedLoweredOf is reference-equal across
+    // post-saturation reads (O(1)-per-call contract).
+    const finalLowered = db.get(optimizedLoweredOf, 0);
+    expect(db.get(optimizedLoweredOf, 0)).toBe(finalLowered);
+  });
+
+  test("linear program (no recursion) never triggers memoize install", async () => {
+    const script = "x = 1\ny = 2\nz = x + y\n";
+    const ast = parse(script) as StmtNS.FileInput;
+    const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
+    if (errors.length > 0) throw errors[0];
+
+    const db = new Db();
+    astOf.set(db, 0, ast);
+    environmentsOf.set(db, 0, environments);
+    const units = buildFunctionUnits(ast, environments);
+    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, units, db);
+    const program = compiler.compileProgram(ast);
+
+    let recompileCount = 0;
+    let lastAst: StmtNS.FileInput | undefined = ast;
+    const interpreter = new SVMLInterpreter(program, {
+      observeScopeCall: (scopeId) => {
+        runtimeCall.set(db, scopeId, (runtimeCall.get(db, scopeId) ?? 0) + 1);
+        const lowered = db.get(optimizedLoweredOf, 0);
+        if (lowered !== undefined && lowered.ast !== lastAst) {
+          lastAst = lowered.ast;
+          recompileCount += 1;
+        }
+      },
+    });
+    await interpreter.execute();
+    expect(recompileCount).toBe(0);
   });
 });
