@@ -284,9 +284,11 @@ f(1)
     const baseline = counters.compiles;
     expect(baseline).toBeGreaterThanOrEqual(1);
 
-    // Observing a runtime write at a unit-internal expression drives the DFA
-    // pass's fact for the containing block upward, which invalidates jitPass's
-    // analysisGen memo and forces a recompile for that unit.
+    // Observing a runtime write at a unit-internal expression advances the
+    // DFA pass's fact for the containing block. jitPass's CompileSnapshot
+    // does a reference-identity compare via `tryRead`, and FactStore.write
+    // replaces the stored reference on any lattice-advancing write — so the
+    // snapshot mismatches and the unit recompiles.
     const fd = unit.funcAst as StmtNS.FunctionDef;
     const ret = fd.body[0] as StmtNS.Return;
     const binary = ret.value! as ExprNS.Binary; // `x + 1`
@@ -332,6 +334,39 @@ f(1)
     enqueue();
     const baseline = counters.compiles;
     enqueue();
+    expect(counters.compiles).toBe(baseline);
+  });
+
+  // Pins the load-bearing invariant of the reference-identity snapshot: a
+  // lattice-equal FactStore.write (one that does not advance the lattice)
+  // must NOT trigger a recompile. FactStore.write short-circuits on
+  // `lattice.equals(prev, joined)` and keeps the prior reference; the
+  // CompileSnapshot's identity-compare therefore matches and transfer
+  // short-circuits before invoking compileFunction. If anyone ever changes
+  // FactStore.write to replace the reference on equal writes, or the
+  // snapshot to deep-compare values, this test catches the regression.
+  test("lattice-equal DFA write does not recompile", () => {
+    const { worklist, unit, enqueue, counters } = setup();
+    enqueue();
+    const baseline = counters.compiles;
+    expect(baseline).toBeGreaterThanOrEqual(1);
+
+    const block = unit.cfg.entry;
+    const currentConst = worklist.factStore.tryRead(constAnalysisPass, block);
+    expect(currentConst).toBeDefined();
+
+    // Re-observe the exact same fact value. FactStore.write joins with
+    // prev; identical input → identical join → lattice.equals returns true
+    // → write returns false, no listener fan-out. We drive a drain anyway
+    // to prove that, even if a transfer did fire, the snapshot still
+    // matches by reference.
+    worklist.observe(
+      constAnalysisPass as unknown as Pass<unknown, unknown>,
+      block,
+      currentConst as never,
+    );
+    worklist.drain();
+
     expect(counters.compiles).toBe(baseline);
   });
 });
