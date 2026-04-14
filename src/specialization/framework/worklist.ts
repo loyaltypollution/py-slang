@@ -3,6 +3,7 @@
 import { PriorityQueue } from "@datastructures-js/priority-queue";
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
+import { FunctionRegistry, buildFunctionRegistry } from "../../engines/svml/function-registry";
 import type { BasicBlock } from "./cfg";
 import { FactStore, type FactChange } from "./fact-store";
 import { buildFunctionUnits, wireCFG, type FunctionUnit } from "./function-unit";
@@ -50,15 +51,26 @@ export class Worklist {
   /** Re-entrant batch depth. While >0, `observe` skips `processQueue`. */
   private batchDepth = 0;
 
+  readonly registry: FunctionRegistry;
+
   constructor(
     ast: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
     passes: ReadonlyArray<Pass<any, any>> = DEFAULT_PASSES,
+    registry?: FunctionRegistry,
   ) {
-    this.units = buildFunctionUnits(ast, functionEnvironments);
+    this.registry = registry ?? buildFunctionRegistry(ast);
+    this.units = buildFunctionUnits(ast, functionEnvironments, this.registry);
     for (const unit of this.units.values()) {
       if (unit.funcAst instanceof StmtNS.FunctionDef) {
         this.unitsByFdId.set(unit.funcAst.id, unit);
+      }
+      // Assert each unit's function is registered. Fails loudly if registry
+      // and units disagree — the contract the registry is here to enforce.
+      if (!this.registry.hasNode(unit.funcAst)) {
+        throw new Error(
+          `[Worklist] unit for fdId=${unit.funcAst.id} missing from FunctionRegistry`,
+        );
       }
     }
     this.rebuildNodeToUnit();

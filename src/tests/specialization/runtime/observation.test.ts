@@ -49,6 +49,7 @@ describe.each([
         ast,
         environments,
         makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+        reactive.registry,
       );
       const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
         observeNodeWrite: (nodeId, value) => observeRuntimeWrite(reactive, nodeId, value),
@@ -110,6 +111,7 @@ f()
       ast,
       environments,
       makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+      reactive.registry,
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
       observeScopeCall: scopeId => {

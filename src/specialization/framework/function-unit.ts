@@ -1,16 +1,21 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
+import type { FunctionRegistry } from "../../engines/svml/function-registry";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
 /** Per-scope optimization unit. CFG fields are scheduler-owned and replaced
- *  by `Worklist.flushPendingRebuilds`. `body` is a live getter onto the AST. */
+ *  by `Worklist.flushPendingRebuilds`. `body` is a live getter onto the AST.
+ *  `slot` delegates to the shared `FunctionRegistry` so slot identity is
+ *  single-sourced: worklist and compiler cannot disagree. */
 export interface FunctionUnit {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
+  /** Bytecode slot — delegated to the shared FunctionRegistry. */
+  readonly slot: number;
   cfg: CFG;
   blockMap: Map<BlockId, BasicBlock>;
   /** NodeId → containing BasicBlock. */
@@ -24,6 +29,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
   constructor(
     private readonly units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>,
     private readonly functionEnvironments: FunctionEnvironments,
+    private readonly registry: FunctionRegistry,
   ) {}
 
   register(funcAst: StmtNS.FileInput | StmtNS.FunctionDef): void {
@@ -33,6 +39,7 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
     }
     const paramNames =
       funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
+    const registry = this.registry;
     // blocks hold unit back-pointers; unit owns cfg. Build shell, then wireCFG.
     const unit = {
       funcAst,
@@ -43,6 +50,9 @@ class ScopeDiscoveryVisitor implements StmtNS.Visitor<void> {
       callCount: 0,
       get body(): StmtNS.Stmt[] {
         return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
+      },
+      get slot(): number {
+        return registry.slotOfNode(funcAst);
       },
     } as Omit<FunctionUnit, "cfg"> as FunctionUnit;
     wireCFG(unit);
@@ -120,9 +130,10 @@ function populateBlockOfNode(
 export function buildFunctionUnits(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
+  registry: FunctionRegistry,
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit>();
-  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments);
+  const visitor = new ScopeDiscoveryVisitor(units, functionEnvironments, registry);
   visitor.register(ast);
   return units;
 }

@@ -217,6 +217,7 @@ describe("memoization: SVML wiring", () => {
       ast,
       environments,
       makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+      reactive.registry,
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast));
     return { reactive, interpreter };
@@ -252,6 +253,7 @@ f(5)
       ast,
       environments,
       makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+      reactive.registry,
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast));
     await interpreter.execute();

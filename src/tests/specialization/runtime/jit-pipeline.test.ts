@@ -32,6 +32,7 @@ function buildUnit(code: string) {
     ast,
     environments,
     makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+    reactive.registry,
   );
   return { ast, environments, reactive, compiler, program: compiler.compileProgram(ast) };
 }

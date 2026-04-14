@@ -15,7 +15,12 @@ export function compileOptimized(code: string): SVMLProgram {
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
   engine.drain();
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, makeDfaQuery(engine.factStore, engine.nodeIndex));
+  const compiler = SVMLCompiler.fromProgramUnit(
+    ast,
+    environments,
+    makeDfaQuery(engine.factStore, engine.nodeIndex),
+    engine.registry,
+  );
   return compiler.compileProgram(ast);
 }
 
