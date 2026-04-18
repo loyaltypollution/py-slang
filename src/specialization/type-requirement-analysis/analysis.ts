@@ -36,22 +36,17 @@ import {
   findAssumption,
   type Context,
 } from "../framework/context";
-import {
-  addEdge,
-  type Analysis,
-  type AnalysisCtx,
-  type Narrowing,
+import type {
+  Analysis,
+  AnalysisCtx,
+  Narrowing,
 } from "../framework/analysis";
 import {
   makeBlockFixpointAnalysis,
-  nodeIdToBlock,
   type DfaBlockFact,
 } from "../framework/dfa-factory";
 import { MutableEnv } from "../framework/mutable-env";
-import {
-  runtimeReturnAnalysis,
-  runtimeWriteAnalysis,
-} from "../framework/runtime-analyses";
+import { runtimeReturnAnalysis } from "../framework/runtime-analyses";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import { liftType } from "../type-analysis/analysis";
 import {
@@ -277,16 +272,6 @@ export const typeRequirementAnalysis: Analysis<BasicBlock, DfaBlockFact<TypeLatt
     },
     refineOnEdge: (env, _edge) => env,
   });
-
-// Monotone widening edge: a ROOT observation change wakes the containing
-// block so downstream analyses that read requirement facts under ROOT pick
-// up any propagation. Speculative seeding flows through the Context
-// dimension as with forward typeAnalysis.
-addEdge(typeRequirementAnalysis, {
-  on: "fact",
-  analysis: runtimeWriteAnalysis,
-  wake: nodeIdToBlock,
-});
 
 /** Narrowing dimension: runtime return observations. An observation at
  *  `fdId` (classified via `liftType`) extends the called unit's context
