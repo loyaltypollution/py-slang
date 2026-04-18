@@ -7,7 +7,8 @@
 // the compiler consults when emitting guards. Numeric-kind speculation
 // (GUARD_KIND / MULF) was disabled — see svml-compiler.ts `numericMode`.
 
-import { ExprNS, StmtNS } from "../../../ast-types";
+import { ExprNS, StmtNS, resetNodeIds } from "../../../ast-types";
+import { ROOT_CONTEXT } from "../../../specialization/framework/context";
 import { SpeculationViolation } from "../../../engines/svml/errors";
 import { makeJitAnalysis } from "../../../engines/svml/jit-analysis";
 import OpCodes, { SVMLKindBits } from "../../../engines/svml/opcodes";
@@ -427,5 +428,87 @@ describe("SVMLKindBits sanity", () => {
   test("NUMBER bit matches what svmlKindToBit returns for typeof number", () => {
     expect(SVMLKindBits.NUMBER).toBe(1);
     expect(SVMLKindBits.BOOLEAN).toBe(2);
+  });
+});
+
+describe("canonical context interning (observation-pipeline level)", () => {
+  // Proves the payoff of context interning + canonical chain order at the
+  // worklist observation-translator level: observations arriving in swapped
+  // orders converge on the same canonical Context, and the fact-store holds
+  // a single cell per (analysis, canonical-context, key).
+
+  test("observations in swapped arrival order produce ref-equal spec contexts", () => {
+    const code = `
+def hot(x, y):
+    return x + y
+`;
+
+    // Worklist A: observe x, then y.
+    resetNodeIds();
+    const { ast: astA, worklist: wlA } = build(code);
+    const fnA = astA.statements[0] as StmtNS.FunctionDef;
+    const returnA = fnA.body[0] as StmtNS.Return;
+    const binA = returnA.value as ExprNS.Binary;
+    const xReadA = binA.left as ExprNS.Variable;
+    const yReadA = binA.right as ExprNS.Variable;
+    wlA.observe(runtimeWriteAnalysis, xReadA.id, { kind: "number", value: 5 });
+    wlA.observe(runtimeWriteAnalysis, yReadA.id, { kind: "number", value: 10 });
+    const unitA = wlA.nodeIndex.get(xReadA.id)!;
+    const ctxA = wlA.specContextFor(unitA);
+
+    // Worklist B: observe y, then x (swapped).
+    resetNodeIds();
+    const { ast: astB, worklist: wlB } = build(code);
+    const fnB = astB.statements[0] as StmtNS.FunctionDef;
+    const returnB = fnB.body[0] as StmtNS.Return;
+    const binB = returnB.value as ExprNS.Binary;
+    const xReadB = binB.left as ExprNS.Variable;
+    const yReadB = binB.right as ExprNS.Variable;
+
+    // Sanity: resetNodeIds() gives identical node IDs across parses.
+    expect(xReadB.id).toBe(xReadA.id);
+    expect(yReadB.id).toBe(yReadA.id);
+
+    wlB.observe(runtimeWriteAnalysis, yReadB.id, { kind: "number", value: 10 });
+    wlB.observe(runtimeWriteAnalysis, xReadB.id, { kind: "number", value: 5 });
+    const unitB = wlB.nodeIndex.get(xReadB.id)!;
+    const ctxB = wlB.specContextFor(unitB);
+
+    // Not vacuous: both observations landed, so the context is non-ROOT.
+    expect(ctxA).not.toBe(ROOT_CONTEXT);
+    expect(ctxB).not.toBe(ROOT_CONTEXT);
+    // The payoff: module-scoped interner + canonical chain order ⇒ identity.
+    expect(ctxA).toBe(ctxB);
+  });
+
+  test("fact-store dedup: a single canonical context holds one cell, not two", () => {
+    const code = `
+def hot(x, y):
+    return x + y
+`;
+    resetNodeIds();
+    const { ast, worklist } = build(code);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const ret = fn.body[0] as StmtNS.Return;
+    const bin = ret.value as ExprNS.Binary;
+    const xRead = bin.left as ExprNS.Variable;
+    const yRead = bin.right as ExprNS.Variable;
+
+    worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
+    worklist.observe(runtimeWriteAnalysis, yRead.id, { kind: "number", value: 10 });
+    const ctxForward = worklist.specContextFor(worklist.nodeIndex.get(xRead.id)!);
+
+    // Re-observe the same values. Under canonical interning the context does
+    // not shift (the translator's valueEqual check skips the extend) and no
+    // new fact-store cell is allocated.
+    const xBlock = worklist.blockOfNode(xRead.id)!;
+    const cellsBefore = worklist.factStore.readAll(typeAnalysis, ctxForward).size;
+    worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
+    worklist.observe(runtimeWriteAnalysis, yRead.id, { kind: "number", value: 10 });
+    const cellsAfter = worklist.factStore.readAll(typeAnalysis, ctxForward).size;
+
+    expect(cellsAfter).toBe(cellsBefore);
+    // And the narrowed fact is present under exactly the canonical context.
+    expect(worklist.factStore.tryRead(typeAnalysis, xBlock, ctxForward)).toBeDefined();
   });
 });
