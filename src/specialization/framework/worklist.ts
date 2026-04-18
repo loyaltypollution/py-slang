@@ -34,63 +34,6 @@ import {
 } from "./dfa-analyses";
 import { readExprFact } from "./dfa-factory";
 import type { RawKind } from "./raw-value";
-import type { TypeLattice } from "../type-analysis/lattice";
-import type { ConstLattice } from "../const-analysis/lattice";
-
-/** Transform-safe projection of the DFA fact-store: only reads that are
- *  sound to consume during AST mutation. Excludes speculative readers —
- *  a narrowed fact at a node can become ⊤ on the next observation (deopt),
- *  and a transform that rewrote the AST based on the narrowed fact cannot
- *  safely un-rewrite. Anything mutating the AST MUST accept only this
- *  sub-interface; the type gate is the enforcement mechanism for P3. */
-export interface StaticDfaQuery {
-  typeOf(nodeId: number): TypeLattice | undefined;
-  constOf(nodeId: number): ConstLattice | undefined;
-  /** Purity verdict for a FunctionDef scope. `true` = no observable side
-   *  effects ⇒ safe to whole-call deopt re-entry. `false` = impure.
-   *  `undefined` = not yet computed (treat as impure for safety). */
-  isPureScope(scopeId: number): boolean | undefined;
-}
-
-/** Full DfaQuery extends `StaticDfaQuery` with speculation readers — intended
- *  for backend emission (svml-compiler, jit-analysis) where a runtime guard
- *  protects against violation of the narrowed fact. NOT sound for AST
- *  mutation; transforms should be typed against `StaticDfaQuery` only.
- *
- *  Guard violations retract speculation by pruning the unit's active spec
- *  context (see `Worklist.widenUnitSpeculation`). Once pruned, the same
- *  `speculative{Type,Const}Of` calls return the non-narrowed ROOT facts,
- *  and the compiler naturally falls back to generic opcodes — no separate
- *  blacklist gate. */
-export interface DfaQuery extends StaticDfaQuery {
-  /** Speculatively-narrowed type fact (observation `meet`'d with static).
-   *  Consumers MUST emit a runtime guard at any specialization decision
-   *  that depends on a tighter answer than `typeOf` would give. */
-  speculativeTypeOf(nodeId: number): TypeLattice | undefined;
-  speculativeConstOf(nodeId: number): ConstLattice | undefined;
-}
-
-export function makeDfaQuery(
-  factStore: FactStore,
-  nodeIndex: ReadonlyMap<number, FunctionUnit>,
-  /** Resolve the active speculation context for a node's owning unit, or
-   *  ROOT_CONTEXT if nothing has been speculated yet. Both
-   *  `speculativeTypeOf` and `speculativeConstOf` read the respective
-   *  analysis under the returned context — same analyses, same storage
-   *  dimension, no parallel twins. */
-  specContextForNode: (nodeId: number) => Context = () => ROOT_CONTEXT,
-): DfaQuery {
-  const blockFor = (id: number) => nodeIndex.get(id)?.blockOfNode.get(id);
-  return {
-    typeOf: id => readExprFact(factStore, typeAnalysis, blockFor(id), id),
-    constOf: id => readExprFact(factStore, constAnalysis, blockFor(id), id),
-    speculativeTypeOf: id =>
-      readExprFact(factStore, typeAnalysis, blockFor(id), id, specContextForNode(id)),
-    speculativeConstOf: id =>
-      readExprFact(factStore, constAnalysis, blockFor(id), id, specContextForNode(id)),
-    isPureScope: scopeId => factStore.tryRead(purityScopeAnalysis, scopeId),
-  };
-}
 
 type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq: number };
 

@@ -7,12 +7,14 @@
 
 export {
   Worklist,
-  makeDfaQuery,
-  type DfaQuery,
-  type StaticDfaQuery,
   type SpecFactRef,
   type GuardRegistrar,
 } from "./framework/worklist";
+export {
+  makeDfaQuery,
+  type DfaQuery,
+  type StaticDfaQuery,
+} from "./dfa-query";
 export {
   makeJitObservers,
   widenWriteObservation,
