@@ -216,9 +216,9 @@ export class Worklist {
   /** Single lifecycle dispatch index, one list per event kind. Analyses'
    *  `LifecycleEdge`s and transforms' mint/rebuild auto-dirtying both
    *  compile into callbacks here. */
-  private readonly lifecycleSubs: Record<"mint" | "rebuild" | "retire",
+  private readonly lifecycleSubs: Record<"mint" | "rebuild" | "retire" | "specContextChange",
     Array<(ctx: AnalysisCtx, unit: FunctionUnit) => void>
-  > = { mint: [], rebuild: [], retire: [] };
+  > = { mint: [], rebuild: [], retire: [], specContextChange: [] };
 
   readonly registry: FunctionRegistry;
   private readonly functionEnvironments: FunctionEnvironments;
@@ -312,7 +312,7 @@ export class Worklist {
     return s;
   }
 
-  private fireLifecycle(kind: "mint" | "rebuild" | "retire", unit: FunctionUnit): void {
+  private fireLifecycle(kind: "mint" | "rebuild" | "retire" | "specContextChange", unit: FunctionUnit): void {
     for (const sub of this.lifecycleSubs[kind]) sub(this.passCtx, unit);
   }
 
@@ -564,6 +564,7 @@ export class Worklist {
       else this.currentSpecContext.set(unit, pruned);
       this.enqueue(typeAnalysis, unit.cfg.entry, pruned);
       this.enqueue(constAnalysis, unit.cfg.entry, pruned);
+      this.fireLifecycle("specContextChange", unit);
       return;
     }
 
@@ -594,6 +595,7 @@ export class Worklist {
     this.currentSpecContext.set(unit, newCtx);
     this.enqueue(typeAnalysis, unit.cfg.entry, newCtx);
     this.enqueue(constAnalysis, unit.cfg.entry, newCtx);
+    this.fireLifecycle("specContextChange", unit);
   }
 
   /** Active speculation context for a unit. Readers of `typeAnalysis`
@@ -619,11 +621,10 @@ export class Worklist {
    *  facts, and the compiler emits generic opcodes on the next recompile.
    *
    *  Returns the unit that was widened, or `undefined` if no unit owns the
-   *  node or the unit already has no active speculation. Callers that also
-   *  need to trigger a unit-keyed analysis (e.g. `jitAnalysis`) should
-   *  `enqueue` that analysis explicitly on the returned unit — a pure
-   *  context reset produces no fact-advance and therefore wakes no
-   *  fact-edge subscribers. */
+   *  node or the unit already has no active speculation. Analyses whose
+   *  output depends on the spec context (e.g. backend JIT recompile)
+   *  receive a `specContextChange` lifecycle event and wake themselves —
+   *  callers only need to `drain()` afterwards. */
   widenUnitSpeculation(nodeIdOrUnit: number | FunctionUnit): FunctionUnit | undefined {
     const unit = typeof nodeIdOrUnit === "number"
       ? this.nodeToUnit.get(nodeIdOrUnit)
@@ -634,6 +635,7 @@ export class Worklist {
     this.guardProvenance.get(unit)?.clear();
     this.enqueue(typeAnalysis, unit.cfg.entry, ROOT_CONTEXT);
     this.enqueue(constAnalysis, unit.cfg.entry, ROOT_CONTEXT);
+    this.fireLifecycle("specContextChange", unit);
     return unit;
   }
 
@@ -703,6 +705,7 @@ export class Worklist {
     }
     this.enqueue(typeAnalysis, unit.cfg.entry, pruned);
     this.enqueue(constAnalysis, unit.cfg.entry, pruned);
+    this.fireLifecycle("specContextChange", unit);
     return unit;
   }
 

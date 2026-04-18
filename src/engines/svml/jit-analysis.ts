@@ -115,6 +115,19 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
         wake: (_ctx, unit) =>
           unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [],
       },
+      // A pure spec-context shift (lineage-precise widen or whole-unit widen)
+      // advances no DFA facts — the fact edges above would stay silent and
+      // the JIT would never recompile into the guard-free IR. This edge is
+      // what makes deopt declarative: backends throw `SpeculationViolation`
+      // and call `worklist.widenGuard(nodeId)`; the worklist fires this
+      // signal, which enqueues `jitAnalysis.transfer`, which re-reads
+      // `specContextFor(unit)` (now the pruned context) and patches the
+      // function table.
+      {
+        on: "specContextChange",
+        wake: (_ctx, unit) =>
+          unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [],
+      },
       {
         on: "retire",
         effect: (factStore, _ctx, unit) => {

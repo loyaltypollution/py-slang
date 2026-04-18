@@ -47,11 +47,11 @@ export interface BoundedLattice<V> extends Lattice<V> {
  *     reading from `factStore.read(upstream, ...)` in `transfer` without declaring
  *     an edge.
  *
- *   - Lifecycle edge (`on: "mint" | "rebuild" | "retire"`): fires on unit
- *     lifecycle transitions. `wake(ctx, unit)` yields keys to enqueue;
- *     `effect(ctx, unit)` runs arbitrary side effects (typically
- *     `factStore.evict` for analyses with unit-scoped facts). At least one of
- *     `wake` / `effect` must be defined.
+ *   - Lifecycle edge (`on: "mint" | "rebuild" | "retire" | "specContextChange"`):
+ *     fires on unit lifecycle transitions or spec-context mutations.
+ *     `wake(ctx, unit)` yields keys to enqueue; `effect(ctx, unit)` runs
+ *     arbitrary side effects (typically `factStore.evict` for analyses with
+ *     unit-scoped facts). At least one of `wake` / `effect` must be defined.
  *
  *  `on` is mandatory on both shapes so discriminated narrowing in consumers
  *  (worklist.ts's subscribe loop) works without a cast. Construction-site
@@ -80,7 +80,17 @@ export interface FactEdge<K> {
 }
 
 export interface LifecycleEdge<K> {
-  readonly on: "mint" | "rebuild" | "retire";
+  /** Event kinds:
+   *   - `mint` / `rebuild` / `retire` — unit-lifecycle transitions.
+   *   - `specContextChange` — the owning unit's active speculation context
+   *     (`Worklist.specContextFor`) has changed. Fires on observation-driven
+   *     extend, on lineage-precise widen (`Worklist.widenGuard`), and on
+   *     whole-unit widen (`Worklist.widenUnitSpeculation`). A pure context
+   *     reset advances no facts, so fact-edge subscribers don't wake on their
+   *     own — analyses whose output depends on `specContextFor(unit)` (e.g.
+   *     backend JIT recompile) subscribe here so deopt handlers don't have to
+   *     enqueue them manually. */
+  readonly on: "mint" | "rebuild" | "retire" | "specContextChange";
   wake?(ctx: AnalysisCtx, unit: FunctionUnit): Iterable<K>;
   effect?(factStore: FactStore, ctx: AnalysisCtx, unit: FunctionUnit): void;
 }

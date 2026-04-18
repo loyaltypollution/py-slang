@@ -62,7 +62,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
 
       worklist.beginBatch();
       try {
-        const returnValue = await runWithDeopt(interpreter, worklist, jitAnalysis);
+        const returnValue = await runWithDeopt(interpreter, worklist);
         this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
       } finally {
         worklist.endBatch();
@@ -74,17 +74,13 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
 }
 
 /** Drive `interpreter.execute()` with deopt-and-retry. On `SpeculationViolation`,
- *  retract the offending unit's speculation by collapsing its context to
- *  ROOT (see `Worklist.widenUnitSpeculation`). A pure context reset advances
- *  no facts, so `jitAnalysis` is enqueued explicitly for the unit; on the
- *  subsequent drain, `jitAnalysis.transfer` observes `specContext` shifted
- *  to ROOT, recompiles without guards, and patches the function table.
- *  Bounded by `MAX_DEOPT_RETRIES` to avoid infinite loops on a buggy
- *  speculator. */
+ *  call `worklist.widenGuard(nodeId)` to prune the load-bearing assumptions;
+ *  the worklist fires `specContextChange`, which wakes `jitAnalysis` and
+ *  patches the function table on the next drain. Bounded by
+ *  `MAX_DEOPT_RETRIES` to avoid infinite loops on a buggy speculator. */
 async function runWithDeopt(
   interpreter: SVMLInterpreter,
   worklist: Worklist,
-  jitAnalysis: Parameters<Worklist["enqueue"]>[0],
 ): Promise<SVMLBoxType> {
   let attempts = 0;
   // eslint-disable-next-line no-constant-condition
@@ -98,8 +94,7 @@ async function runWithDeopt(
           `JIT deopt budget exhausted (${MAX_DEOPT_RETRIES}); last violation at node ${e.nodeId} (${e.witnessedKind})`,
         );
       }
-      const unit = worklist.widenGuard(e.nodeId);
-      if (unit !== undefined) worklist.enqueue(jitAnalysis, unit);
+      worklist.widenGuard(e.nodeId);
       // observe() drains automatically when batchDepth permits; inside
       // beginBatch we need to drain explicitly so jit-analysis.transfer fires
       // and patches the function table before retry.

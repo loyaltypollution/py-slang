@@ -233,8 +233,7 @@ hot(0)
     }
     expect(violation).toBeDefined();
 
-    const unit = worklist.widenUnitSpeculation(violation!.nodeId);
-    if (unit !== undefined) worklist.enqueue(jitAnalysis, unit);
+    worklist.widenUnitSpeculation(violation!.nodeId);
     worklist.drain();
 
     const currentProgram = (interpreter as unknown as { program: typeof program }).program;
@@ -311,8 +310,7 @@ hot(1, 0)
     expect(violation).toBeDefined();
     expect(violation!.nodeId).toBe(cond2Id); // the y>0 guard fired
 
-    const unit = worklist.widenGuard(violation!.nodeId);
-    if (unit !== undefined) worklist.enqueue(jitAnalysis, unit);
+    worklist.widenGuard(violation!.nodeId);
     worklist.drain();
 
     const currentProgram = (interpreter as unknown as { program: typeof program }).program;

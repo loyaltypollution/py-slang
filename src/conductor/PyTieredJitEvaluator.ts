@@ -134,7 +134,7 @@ async function runSvml(
     wl.register(jitAnalysis);
     wl.beginBatch();
     try {
-      c.sendResult(SVMLInterpreter.toJSValue(await runSvmlWithDeopt(interp, wl, jitAnalysis)));
+      c.sendResult(SVMLInterpreter.toJSValue(await runSvmlWithDeopt(interp, wl)));
     } finally {
       wl.endBatch();
     }
@@ -149,7 +149,6 @@ async function runSvml(
 async function runSvmlWithDeopt(
   interp: SVMLInterpreter,
   wl: Worklist,
-  jitAnalysis: Parameters<Worklist["enqueue"]>[0],
 ): Promise<Awaited<ReturnType<SVMLInterpreter["execute"]>>> {
   let attempts = 0;
   // eslint-disable-next-line no-constant-condition
@@ -164,8 +163,7 @@ async function runSvmlWithDeopt(
           `JIT deopt budget exhausted (${MAX_DEOPT_RETRIES}); last violation at node ${e.nodeId} (${e.witnessedKind})`,
         );
       }
-      const unit = wl.widenGuard(e.nodeId);
-      if (unit !== undefined) wl.enqueue(jitAnalysis, unit);
+      wl.widenGuard(e.nodeId);
       wl.drain();
     }
   }
