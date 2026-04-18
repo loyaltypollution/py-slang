@@ -8,8 +8,16 @@
 // never lattice-valued (join, meet). Two contexts are not combined. Siblings
 // represent independent speculations; a path from root to a leaf is the
 // chain one compiled version depends on.
+//
+// Chains are canonicalized and interned: `extendContext` / `excludeAssumption`
+// return a canonical Context keyed by the assumption *set*. Two call paths
+// that converge on the same set produce `===` references, so every Context-
+// keyed structure downstream (fact store, JIT cache, worklist pending set)
+// de-fragments automatically. Canonical order is `(analysis.debugName, key)`
+// ascending; the interner lives in `./context-interner.ts`.
 
 import type { Analysis } from "./analysis";
+import { defaultInterner } from "./context-interner";
 
 export interface Assumption<K = unknown, V = unknown> {
   readonly analysis: Analysis<K, V>;
@@ -33,24 +41,24 @@ export function isRoot(ctx: Context): boolean {
   return ctx.parent === undefined;
 }
 
-/** Build a child context. Returns a fresh object each call; callers that
- *  need identity-equality across sites must cache the result themselves
- *  (or go through an interner). Freezing prevents post-hoc mutation. */
+/** Build a canonical child context. Equivalent calls (same `parent`, same
+ *  `(analysis, key)`, and `valueEqual`-equal value) return the same object —
+ *  identity is a sound proxy for structural equality. `valueEqual` is
+ *  consulted only for the new link's value; omit it when values are
+ *  reference-stable (e.g. interned lattice singletons like `INT_POS`).
+ *
+ *  Chains are stored in canonical order by `(analysis.debugName, key)`, so
+ *  adding an assumption that sorts before an existing link triggers a
+ *  silent rebuild — the returned chain may not have `parent` as its literal
+ *  `.parent` pointer when the sort order requires insertion mid-chain. */
 export function extendContext<K, V>(
   parent: Context,
   analysis: Analysis<K, V>,
   key: K,
   value: V,
+  valueEqual?: (a: V, b: V) => boolean,
 ): Context {
-  return Object.freeze({
-    parent,
-    assumption: Object.freeze({
-      analysis: analysis as Analysis<unknown, unknown>,
-      key: key as unknown,
-      value: value as unknown,
-    }),
-    depth: parent.depth + 1,
-  });
+  return defaultInterner.extend(parent, analysis, key, value, valueEqual);
 }
 
 /** Walk parent pointers looking for an assumption bound against
@@ -80,27 +88,17 @@ export function hasAncestor(ctx: Context, anc: Context): boolean {
 }
 
 /** Return a context derived from `ctx` with every assumption at
- *  `(analysis, key)` removed — any chain link matching the target is
- *  skipped; all other links are rebuilt in original order. Used to retract
- *  a speculation when the underlying observation widens (e.g. runtime
- *  value widens to ⊤ on conflict). Identity-returns `ctx` unchanged when
- *  no link matched — callers can short-circuit on reference equality. */
+ *  `(analysis, key)` removed. Identity-returns `ctx` unchanged when no link
+ *  matched — callers can short-circuit on reference equality. The canonical
+ *  invariant guarantees at most one match (collisions at the same
+ *  `(analysis, key)` are replaced at extend-time, not layered), so "every"
+ *  is 0 or 1 in practice — the wording is preserved for the historical
+ *  contract. The returned chain is canonical; a prune that leaves a subset
+ *  any prior compilation was built under returns the `===` pre-built sibling. */
 export function excludeAssumption<K, V>(
   ctx: Context,
   analysis: Analysis<K, V>,
   key: K,
 ): Context {
-  if (ctx.parent === undefined) return ctx;
-  const prunedParent = excludeAssumption(ctx.parent, analysis, key);
-  const a = ctx.assumption!;
-  const target = analysis as Analysis<unknown, unknown>;
-  if (a.analysis === target && a.key === key) {
-    return prunedParent;
-  }
-  if (prunedParent === ctx.parent) return ctx;
-  return Object.freeze({
-    parent: prunedParent,
-    assumption: a,
-    depth: prunedParent.depth + 1,
-  });
+  return defaultInterner.exclude(ctx, analysis, key);
 }
