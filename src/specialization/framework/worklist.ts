@@ -44,12 +44,13 @@ type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq
  *  narrowing's block analysis, keyed by node id); no value is carried — the
  *  live value is read at deopt time from the fact store.
  *
- *  Typed against `Narrowing<V>` rather than a raw `Analysis`: only
- *  registered narrowings can back a guard, and a narrowing is a whole
- *  object with block analysis + lift + valueEqual, so the lineage walk
- *  never has to check whether a pairing is present. */
-export interface SpecFactRef<V = unknown> {
-  readonly narrowing: Narrowing<V>;
+ *  Typed against `Narrowing<unknown>`: the lineage walk only calls
+ *  `narrowing.valueEqual` / `narrowing.blockAnalysis()`, neither of which
+ *  needs the specific V. Keeping the interface ungenericized matches actual
+ *  usage (every caller erases V to unknown) and removes a cosmetic type
+ *  parameter. */
+export interface SpecFactRef {
+  readonly narrowing: Narrowing<unknown>;
   readonly key: number;
 }
 
@@ -57,7 +58,7 @@ export interface SpecFactRef<V = unknown> {
  *  as a separate type so backends can hold a capability-restricted reference
  *  (instead of the full `Worklist`) and so test doubles stay small. */
 export interface GuardRegistrar {
-  registerGuard<V>(guardNodeId: number, ref: SpecFactRef<V>): void;
+  registerGuard(guardNodeId: number, ref: SpecFactRef): void;
 }
 
 /** Identity-key for an assumption. `analysis` is compared by symbol identity
@@ -70,7 +71,7 @@ function assumptionKey(a: Assumption): string {
 /** Identity-key for a speculative fact ref — same encoding as
  *  `assumptionKey` so a pruned-assumption set can be checked against
  *  a guard's ref in O(1). */
-function specRefKey(r: SpecFactRef<any>): string {
+function specRefKey(r: SpecFactRef): string {
   return `${r.narrowing.handle.debugName}:${String(r.key)}`;
 }
 
@@ -566,12 +567,12 @@ export class Worklist {
    *  `widenGuard` on deopt to compute the load-bearing assumption set. Keyed
    *  by `guardNodeId` — the AST node id the backend baked into the guard
    *  opcode; that's the id `SpeculationViolation` carries. */
-  private readonly guardProvenance: Map<FunctionUnit, Map<number, SpecFactRef<any>>> = new Map();
+  private readonly guardProvenance: Map<FunctionUnit, Map<number, SpecFactRef>> = new Map();
 
   /** Backend-facing hook, called once per emitted guard. Identifies the
    *  speculative fact whose narrowing the guard is protecting. No-op if
    *  `guardNodeId` doesn't resolve to a known unit. */
-  registerGuard<V>(guardNodeId: number, ref: SpecFactRef<V>): void {
+  registerGuard(guardNodeId: number, ref: SpecFactRef): void {
     const unit = this.nodeToUnit.get(guardNodeId);
     if (unit === undefined) return;
     let perUnit = this.guardProvenance.get(unit);
@@ -579,7 +580,7 @@ export class Worklist {
       perUnit = new Map();
       this.guardProvenance.set(unit, perUnit);
     }
-    perUnit.set(guardNodeId, ref as SpecFactRef<any>);
+    perUnit.set(guardNodeId, ref);
   }
 
   /** Lineage-precise deopt handle. Given a guard that fired at
@@ -642,7 +643,7 @@ export class Worklist {
    *  the speculation strategy (`countBasedStrategy`, etc.) which throttles
    *  extension; deep chains are the outlier case. */
   private lineageOf(
-    ref: SpecFactRef<any>,
+    ref: SpecFactRef,
     ctx: Context,
     unit: FunctionUnit,
   ): Assumption[] {
