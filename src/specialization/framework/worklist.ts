@@ -30,8 +30,10 @@ import { livenessAnalysis } from "../liveness-analysis/analysis";
 import {
   typeAnalysis,
   constAnalysis,
+  typeRequirementAnalysis,
   DEFAULT_NARROWINGS,
 } from "./dfa-analyses";
+import { runtimeReturnAnalysis } from "./runtime-analyses";
 import { readExprFact } from "./dfa-factory";
 import type { RawKind } from "./raw-value";
 
@@ -114,10 +116,9 @@ export class Worklist {
   /** Per-unit active speculation context. Grows as `runtimeWriteAnalysis`
    *  observations land — each observation adds one assumption per
    *  registered narrowing whose `lift` accepts it (see `this.narrowings`).
-   *  `widenWriteObservation` retracts per-observation;
-   *  `widenUnitSpeculation` collapses the chain to ROOT on guard violation
-   *  (coarser handle, used when the guard's consumer nodeId doesn't match
-   *  any observation site — lineage-precise pruning is deferred). Unset or
+   *  `widenWriteObservation` retracts per-observation; `widenFullChain`
+   *  collapses the chain to ROOT when lineage can't be localized to a
+   *  single link (see `widenGuard` for when that happens). Unset or
    *  ROOT_CONTEXT means the unit is currently emitting unspeculated IR.
    *  The tree structure is sibling-capable by construction; sibling
    *  materialization and subtree pruning follow in a later step. */
@@ -337,8 +338,12 @@ export class Worklist {
    *  wrapper around the worklist's private observation entry points;
    *  analyses don't receive the full `Worklist`. */
   private readonly observationHost = {
-    handleObservationForSpec: (nodeId: number, observed: RawKind): void => {
-      this.handleObservationForSpec(nodeId, observed);
+    handleObservationForSpec: (
+      source: Analysis<number, RawKind>,
+      key: number,
+      observed: RawKind,
+    ): void => {
+      this.handleObservationForSpec(source, key, observed);
     },
   };
 
@@ -449,34 +454,56 @@ export class Worklist {
    *  widen-unit, lineageOf synthesis). */
   private enqueueNarrowingEntry(unit: FunctionUnit, context: Context): void {
     for (const n of this.narrowings) {
-      this.enqueue(n.blockAnalysis(), unit.cfg.entry, context);
+      const seed = n.direction === "backward" ? unit.cfg.exit : unit.cfg.entry;
+      this.enqueue(n.blockAnalysis(), seed, context);
     }
   }
 
-  /** Translator: converts `runtimeWriteAnalysis` observations into Context
+  /** Translator: converts runtime observations from `source` into Context
    *  mutations on the owning unit, then re-seeds Kildall for each
    *  registered narrowing under the new context. An observation binds at
    *  most one assumption per narrowing — all bindings share the same
    *  Context chain so one compiled version depends on one chain (matches
    *  the artifact-tree model in the brief).
    *
+   *  `source` identifies which observation analysis produced the event;
+   *  only narrowings whose `observationSource === source` participate. A
+   *  node-keyed observation from `runtimeWriteAnalysis` therefore drives
+   *  only the node-keyed narrowings; an fdId-keyed observation from
+   *  `runtimeReturnAnalysis` drives only the return-kind narrowing. `key`
+   *  is in that narrowing's key-space — nodeId for writes, fdId for
+   *  returns — and `n.resolveUnit` (default `unitForNode`) maps it to the
+   *  owning unit.
+   *
    *  Invoked directly from `observe` (not via factStore.onChange) so count-
    *  based strategies see every observed call, including repeats the
    *  monotone fact-store would collapse.
    *
    *  Behavior:
+   *  - No applicable narrowings for `source` → no-op.
    *  - Non-liftable raws → no-op.
-   *  - `unknown` (⊤ widening, e.g. from `widenWriteObservation` on deopt) →
-   *    prune any assumption at this nodeId from the unit's current context.
-   *    Bypasses the strategy — widening is a correctness retraction, not
-   *    a policy choice.
+   *  - `unknown` (⊤ widening) → prune any applicable-narrowing assumption
+   *    at this key from the unit's current context. Bypasses the strategy
+   *    — widening is a correctness retraction, not a policy choice.
    *  - Concrete lifts → strategy consulted; extensions gated on its verdict.
    *  - Concrete lifts matching existing assumptions → no-op (idempotent).
    *  - New / differing lifts → remove any conflicting assumption at this
-   *    nodeId, extend with the new bindings, update `currentSpecContext[unit]`,
-   *    enqueue entry block on both analyses. */
-  private handleObservationForSpec(nodeId: number, observed: RawKind): void {
-    const unit = this.nodeToUnit.get(nodeId);
+   *    key, extend with the new bindings, update `currentSpecContext[unit]`,
+   *    enqueue entry block on each applicable narrowing's analysis. */
+  private handleObservationForSpec(
+    source: Analysis<number, RawKind>,
+    key: number,
+    observed: RawKind,
+  ): void {
+    const applicable = this.narrowings.filter(n => n.observationSource === source);
+    if (applicable.length === 0) return;
+
+    // All applicable narrowings must agree on the owning unit; use the first
+    // narrowing's resolver (defaulting to node-keyed lookup). In practice
+    // each observation source has a single unit-resolution convention.
+    const resolveUnit = applicable[0].resolveUnit
+      ?? ((ctx: AnalysisCtx, k: number) => ctx.unitForNode(k));
+    const unit = resolveUnit(this.passCtx, key);
     if (unit === undefined) return;
 
     const parentCtx = this.currentSpecContext.get(unit) ?? ROOT_CONTEXT;
@@ -484,7 +511,7 @@ export class Worklist {
     if (observed.kind !== "unknown") {
       const accept = this.specStrategy.onObservation({
         unit,
-        nodeId,
+        nodeId: key,
         observed,
         parentContext: parentCtx,
       });
@@ -493,8 +520,8 @@ export class Worklist {
 
     if (observed.kind === "unknown") {
       let pruned = parentCtx;
-      for (const n of this.narrowings) {
-        pruned = excludeAssumption(pruned, n.handle, nodeId);
+      for (const n of applicable) {
+        pruned = excludeAssumption(pruned, n.handle, key);
       }
       if (pruned === parentCtx) return;
       if (pruned === ROOT_CONTEXT) this.currentSpecContext.delete(unit);
@@ -505,15 +532,15 @@ export class Worklist {
     }
 
     let newCtx = parentCtx;
-    for (const n of this.narrowings) {
+    for (const n of applicable) {
       const lifted = n.lift(observed);
       if (lifted === undefined) continue;
-      const existing = findAssumption(newCtx, n.handle, nodeId);
+      const existing = findAssumption(newCtx, n.handle, key);
       if (existing !== undefined && n.handle.lattice.eq(existing, lifted)) continue;
       const cleaned = existing !== undefined
-        ? excludeAssumption(newCtx, n.handle, nodeId)
+        ? excludeAssumption(newCtx, n.handle, key)
         : newCtx;
-      newCtx = extendContext(cleaned, n.handle, nodeId, lifted);
+      newCtx = extendContext(cleaned, n.handle, key, lifted);
     }
 
     if (newCtx === parentCtx) return;
@@ -536,23 +563,24 @@ export class Worklist {
     return unit === undefined ? ROOT_CONTEXT : this.specContextFor(unit);
   }
 
-  /** Retract ALL speculation for the unit owning `nodeIdOrUnit`. Private
-   *  soundness fallback invoked by `widenGuard` when (a) no provenance was
-   *  registered for the guard's nodeId (backend hasn't opted into
-   *  `registerGuard`) or (b) `lineageOf` returned empty because trial-
-   *  exclusion couldn't find a single load-bearing link (joint narrowing).
-   *  Both cases require the coarser whole-chain reset to stay sound.
+  /** Retract ALL speculation for `unit`. The sound-but-coarse widen used by
+   *  `widenGuard` when `lineageOf` can't localize the violation to a single
+   *  chain link. Two reasons that happens today:
+   *
+   *    1. Genuinely joint/redundant narrowing — no single assumption is
+   *       load-bearing alone, so the minimum-sound prune is the whole chain.
+   *    2. `lineageOf` uses `unit.blockOfNode.get(ref.key)` for its Kildall
+   *       re-seed, which fails for narrowings keyed outside the node-id
+   *       space (return-kind's key is an fdId). A `resolveBlock`-style hook
+   *       on `Narrowing` would fix this and let lineage localize return-kind
+   *       deopts — tracked as orthogonal follow-up in `next-steps.md`.
    *
    *  Collapsing the chain to ROOT: Kildall re-runs under ROOT produce the
    *  non-narrowed facts, the `specContextChange` lifecycle fires, and jit-
    *  keyed analyses re-seed themselves on the next drain. Returns the unit
-   *  that was widened, or `undefined` if no unit owns the node or the unit
-   *  already has no active speculation. */
-  private widenUnitSpeculation(nodeIdOrUnit: number | FunctionUnit): FunctionUnit | undefined {
-    const unit = typeof nodeIdOrUnit === "number"
-      ? this.nodeToUnit.get(nodeIdOrUnit)
-      : nodeIdOrUnit;
-    if (unit === undefined) return undefined;
+   *  that was widened, or `undefined` if the unit already has no active
+   *  speculation. */
+  private widenFullChain(unit: FunctionUnit): FunctionUnit | undefined {
     if (!this.currentSpecContext.has(unit)) return undefined;
     this.currentSpecContext.delete(unit);
     this.guardProvenance.get(unit)?.clear();
@@ -587,24 +615,33 @@ export class Worklist {
    *  chain whose removal would widen the speculative fact at `ref`. Sibling
    *  assumptions (load-bearing for OTHER guards in the same unit) survive.
    *
-   *  Falls back to `widenUnitSpeculation` when no provenance was recorded
-   *  for `guardNodeId` (safe default for backends that haven't opted in)
-   *  or when the computed lineage is empty (can happen if the fact at `ref`
-   *  reached its narrowed value via chain links whose handle doesn't match
-   *  `ref.narrowing.handle` — a conservative signal to fall back).
+   *  Missing provenance is a backend bug — every guard-emitting backend is
+   *  required to call `registerGuard` at emission. Silently collapsing to
+   *  ROOT used to paper over the omission; now we throw so the bug surfaces
+   *  at its source instead of manifesting as a mysterious whole-unit widen.
+   *
+   *  Delegates to `widenFullChain` when the computed lineage is empty —
+   *  that happens for genuinely joint/redundant narrowings (no single
+   *  assumption is load-bearing alone) and, today, for return-kind refs
+   *  because `lineageOf` can't resolve a seed block from an fdId (see
+   *  `widenFullChain` docstring for the follow-up).
    *
    *  Returns the widened unit, or `undefined` if no unit owns `guardNodeId`. */
   widenGuard(guardNodeId: number): FunctionUnit | undefined {
     const unit = this.nodeToUnit.get(guardNodeId);
     if (unit === undefined) return undefined;
     const ref = this.guardProvenance.get(unit)?.get(guardNodeId);
-    if (ref === undefined) return this.widenUnitSpeculation(unit);
+    if (ref === undefined) {
+      throw new Error(
+        `[widenGuard] no provenance for guard at node ${guardNodeId}. The backend that emitted this guard must call Worklist.registerGuard at emission — see svml-compiler.ts for the reference wiring.`,
+      );
+    }
 
     const ctx = this.currentSpecContext.get(unit);
     if (ctx === undefined || ctx === ROOT_CONTEXT) return undefined;
 
     const loadBearing = this.lineageOf(ref, ctx, unit);
-    if (loadBearing.length === 0) return this.widenUnitSpeculation(unit);
+    if (loadBearing.length === 0) return this.widenFullChain(unit);
 
     let pruned: Context = ctx;
     for (const a of loadBearing) {
@@ -745,9 +782,11 @@ export class Worklist {
 /** Default production analysis set. Tests may use a subset for isolation. */
 export const DEFAULT_PASSES: ReadonlyArray<Analysis<any, any>> = [
   runtimeWriteAnalysis,
+  runtimeReturnAnalysis,
   runtimeCallAnalysis,
   typeAnalysis,
   constAnalysis,
+  typeRequirementAnalysis,
   purityBlockAnalysis,
   purityScopeAnalysis,
   livenessAnalysis,

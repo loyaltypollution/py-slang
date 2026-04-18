@@ -147,7 +147,13 @@ export interface Analysis<K, V> {
    *  participates in speculation-context extension is a property the
    *  analysis declares here. */
   onObserve?(
-    host: { handleObservationForSpec(nodeId: number, observed: RawKind): void },
+    host: {
+      handleObservationForSpec(
+        source: Analysis<number, RawKind>,
+        key: number,
+        observed: RawKind,
+      ): void;
+    },
     key: K,
     value: V,
     context: Context,
@@ -170,10 +176,34 @@ export interface Analysis<K, V> {
  *
  *  `blockAnalysis` is a thunk so the narrowing can be constructed in
  *  `dfa-analyses.ts` in the same source position as the block analysis
- *  without hitting temporal-dead-zone issues on the self-reference. */
+ *  without hitting temporal-dead-zone issues on the self-reference.
+ *
+ *  `observationSource` ties this narrowing to a specific observation
+ *  analysis — the runtime analysis whose writes feed this narrowing's
+ *  extension pipeline. Narrowings over per-expression writes set
+ *  `runtimeWriteAnalysis`; narrowings over per-function return kinds set
+ *  `runtimeReturnAnalysis`. Observation→context translation filters
+ *  narrowings by identity of the incoming observation's source so two
+ *  narrowings keyed in different spaces (nodeId vs fdId) do not trigger
+ *  each other's extension.
+ *
+ *  `resolveUnit` answers "whose speculation context does an observation at
+ *  this key mutate?" Defaults to `ctx.unitForNode(key)` — correct for
+ *  node-keyed observations. Return-kind-style narrowings whose key is an
+ *  fdId set `ctx.unitForFdId` so the extension lands on the called
+ *  function's unit rather than the enclosing caller's. */
 export interface Narrowing<V> {
   readonly handle: Analysis<number, V>;
   readonly blockAnalysis: () => Analysis<any, any>;
+  readonly observationSource: Analysis<number, RawKind>;
+  /** Direction of the underlying block DFA. The observation→context
+   *  translator re-seeds Kildall at the direction-appropriate block:
+   *  `unit.cfg.entry` for forward, `unit.cfg.exit` for backward. Forward
+   *  is the default and can be omitted for brevity — backward narrowings
+   *  MUST declare `"backward"` or their fixpoint seeds at the wrong end of
+   *  the CFG and silently converges on the identity fact. */
+  readonly direction?: "forward" | "backward";
+  resolveUnit?(ctx: AnalysisCtx, key: number): FunctionUnit | undefined;
   lift(observed: RawKind): V | undefined;
 }
 

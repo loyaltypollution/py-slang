@@ -61,7 +61,7 @@ export const runtimeWriteAnalysis: Analysis<number, RawKind> = {
   tier: "runtime",
   onObserve(host, key, value, context) {
     if (context !== ROOT_CONTEXT) return;
-    host.handleObservationForSpec(key, value);
+    host.handleObservationForSpec(runtimeWriteAnalysis, key, value);
   },
   transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): RawKind | undefined {
     return undefined;
@@ -93,6 +93,60 @@ export function widenWriteObservation(
   nodeId: number,
 ): void {
   observer.observe(runtimeWriteAnalysis, nodeId, RAW_TOP);
+}
+
+/** Runtime observation of per-function return kinds. Key = FunctionDef.id
+ *  (fdId). Feeds the return-kind narrowing dimension: a stable observation
+ *  at fdId extends the called unit's speculation context with a
+ *  per-function return-type assumption, which the must-backward type-
+ *  requirement analysis seeds at the unit's Return statements.
+ *
+ *  Keyed by fdId rather than the Return statement's node id because the
+ *  narrowing's lattice value is a summary across *all* return paths — a
+ *  function with two Returns carries one assumption, not two. `onObserve`
+ *  forwards to `handleObservationForSpec` with `runtimeReturnAnalysis` as
+ *  the source, so the observation→context translator routes only to
+ *  narrowings declaring this same source. */
+export const runtimeReturnAnalysis: Analysis<number, RawKind> = {
+  id: Symbol("runtimeReturnAnalysis"),
+  debugName: "runtimeReturnAnalysis",
+  lattice: rawValueLattice,
+  edges: [
+    {
+      on: "retire",
+      effect: (factStore, _ctx, unit) => {
+        const fd = unit.funcAst;
+        if (fd instanceof StmtNS.FunctionDef) {
+          factStore.evict(runtimeReturnAnalysis, fd.id);
+        }
+      },
+    },
+  ],
+  tier: "runtime",
+  onObserve(host, key, value, context) {
+    if (context !== ROOT_CONTEXT) return;
+    host.handleObservationForSpec(runtimeReturnAnalysis, key, value);
+  },
+  transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): RawKind | undefined {
+    return undefined;
+  },
+};
+
+/** Emit a return-kind observation for `fdId`. Mirrors `observeRuntimeWrite`:
+ *  classifies the raw JS value, short-circuits when the cell has already
+ *  saturated to ⊤, otherwise forwards to the worklist. Backends call this
+ *  once per completed function return. */
+export function observeRuntimeReturn(
+  observer: {
+    observe: (p: Analysis<number, RawKind>, k: number, v: RawKind) => void;
+    factStore: FactStore;
+  },
+  fdId: number,
+  raw: unknown,
+): void {
+  const prev = observer.factStore.tryRead(runtimeReturnAnalysis, fdId);
+  if (prev !== undefined && prev.kind === "unknown") return;
+  observer.observe(runtimeReturnAnalysis, fdId, classifyRawValue(raw));
 }
 
 /** Saturating call-count lattice: `bottom=0`, join clamped at

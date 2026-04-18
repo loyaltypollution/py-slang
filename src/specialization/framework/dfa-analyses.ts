@@ -2,6 +2,11 @@ import { constAnalysisModule, constExprHandle, liftConst } from "../const-analys
 import type { ConstLattice } from "../const-analysis/lattice";
 import { liftType, typeAnalysisModule, typeExprHandle } from "../type-analysis/analysis";
 import type { TypeLattice } from "../type-analysis/lattice";
+import {
+  returnKindHandle,
+  returnKindNarrowing,
+  typeRequirementAnalysis,
+} from "../type-requirement-analysis/analysis";
 import { transferBlock } from "./block-transfer";
 import type { BasicBlock } from "./cfg";
 import { nodeIdToBlock, type DfaBlockFact, makeBlockFixpointAnalysis } from "./dfa-factory";
@@ -44,17 +49,27 @@ export const constAnalysis: Analysis<BasicBlock, DfaBlockFact<ConstLattice>> =
 export const typeNarrowing: Narrowing<TypeLattice> = {
   handle: typeExprHandle,
   blockAnalysis: () => typeAnalysis,
+  observationSource: runtimeWriteAnalysis,
   lift: liftType,
 };
 export const constNarrowing: Narrowing<ConstLattice> = {
   handle: constExprHandle,
   blockAnalysis: () => constAnalysis,
+  observationSource: runtimeWriteAnalysis,
   lift: liftConst,
 };
 
 /** Default narrowing set. Worklist callers that omit the constructor's
- *  `narrowings` parameter get this list. */
+ *  `narrowings` parameter get this list.
+ *
+ *  The return-kind dimension is keyed in a different space (fdId, sourced
+ *  from `runtimeReturnAnalysis`) than the node-keyed type/const dimensions
+ *  (sourced from `runtimeWriteAnalysis`). The observation translator
+ *  filters on `observationSource` so they never cross-trigger. */
 export const DEFAULT_NARROWINGS: ReadonlyArray<Narrowing<any>> = [
   typeNarrowing,
   constNarrowing,
+  returnKindNarrowing,
 ];
+
+export { returnKindHandle, returnKindNarrowing, typeRequirementAnalysis };

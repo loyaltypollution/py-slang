@@ -331,11 +331,11 @@ hot(1, 0)
     // assumption does not (const analysis doesn't consult type narrowings).
     //
     // Post-deopt, `widenGuard` must retain `typeExprHandle@modeRead` —
-    // whole-unit reset would drop both and land at ROOT. This test is the
+    // whole-chain reset would drop both and land at ROOT. This test is the
     // regression guard: if `compileFunction` ever stops passing the
-    // guardRegistrar through to its sub-compiler, `registerGuard` silently
-    // no-ops during jit recompile, `widenGuard` falls back to
-    // `widenUnitSpeculation`, and ctx collapses to ROOT.
+    // guardRegistrar through to its sub-compiler, `registerGuard` no-ops
+    // during jit recompile and `widenGuard` throws on missing provenance,
+    // surfacing the wiring bug immediately instead of silently collapsing.
     const { ast, environments, worklist } = build(`
 def hot(mode):
     y = mode
@@ -381,7 +381,7 @@ hot(0)
     const unit = worklist.nodeIndex.get(modeRead.id)!;
     const ctx = worklist.specContextFor(unit);
     // Lineage-precise: only the load-bearing const assumption was pruned.
-    // Under whole-unit reset (the widenUnitSpeculation fallback), ctx === ROOT.
+    // Under whole-chain reset (the widenFullChain branch), ctx === ROOT.
     expect(ctx).not.toBe(ROOT_CONTEXT);
     expect(findAssumption(ctx, constExprHandle, modeRead.id)).toBeUndefined();
     expect(findAssumption(ctx, typeExprHandle, modeRead.id)).toBeDefined();
