@@ -643,11 +643,14 @@ export class Worklist {
     const loadBearing = this.lineageOf(ref, ctx, unit);
     if (loadBearing.length === 0) return this.widenFullChain(unit);
 
+    // `lineageOf` only pushes assumptions whose exclusion from `ctx` changes
+    // the chain, so the first iteration below is guaranteed to advance
+    // `pruned` off of `ctx`; the canonical interner has no cycle that could
+    // bring it back. A `pruned === ctx` guard here would be unreachable.
     let pruned: Context = ctx;
     for (const a of loadBearing) {
       pruned = excludeAssumption(pruned, a.analysis, a.key);
     }
-    if (pruned === ctx) return undefined;
 
     if (pruned === ROOT_CONTEXT) this.currentSpecContext.delete(unit);
     else this.currentSpecContext.set(unit, pruned);
