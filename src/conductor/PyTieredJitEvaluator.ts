@@ -9,7 +9,6 @@ import {
   destroyStreams,
   displayError,
 } from "../engines/cse/streams";
-import { SpeculationViolation } from "../engines/svml/errors";
 import { makeJitAnalysis } from "../engines/svml/jit-analysis";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
@@ -20,8 +19,7 @@ import {
   makeJitObservers,
   makeDfaQuery,
 } from "../specialization";
-
-const MAX_DEOPT_RETRIES = 32;
+import { runWithDeopt } from "./jit-deopt";
 
 /** Races CSE and SVML on a shared Worklist; winner's buffered I/O is flushed, loser is aborted.
  *  Shared Worklist is safe across arms because all wl.* calls are synchronous and JS is
@@ -134,38 +132,17 @@ async function runSvml(
     wl.register(jitAnalysis);
     wl.beginBatch();
     try {
-      c.sendResult(SVMLInterpreter.toJSValue(await runSvmlWithDeopt(interp, wl)));
+      const result = await runWithDeopt(
+        () => interp.execute(),
+        wl,
+        e => e instanceof AbortError,
+      );
+      c.sendResult(SVMLInterpreter.toJSValue(result));
     } finally {
       wl.endBatch();
     }
   } catch (e) {
     if (!(e instanceof AbortError)) throw e;
-  }
-}
-
-/** See PySvmlJitEvaluator.runWithDeopt — same protocol, duplicated to keep
- *  the AbortError plumbing local to this file. Aborts (race-loser signal)
- *  propagate; SpeculationViolation triggers context retract + recompile + retry. */
-async function runSvmlWithDeopt(
-  interp: SVMLInterpreter,
-  wl: Worklist,
-): Promise<Awaited<ReturnType<SVMLInterpreter["execute"]>>> {
-  let attempts = 0;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    try {
-      return await interp.execute();
-    } catch (e) {
-      if (e instanceof AbortError) throw e;
-      if (!(e instanceof SpeculationViolation)) throw e;
-      if (++attempts > MAX_DEOPT_RETRIES) {
-        throw new Error(
-          `JIT deopt budget exhausted (${MAX_DEOPT_RETRIES}); last violation at node ${e.nodeId} (${e.witnessedKind})`,
-        );
-      }
-      wl.widenGuard(e.nodeId);
-      wl.drain();
-    }
   }
 }
 

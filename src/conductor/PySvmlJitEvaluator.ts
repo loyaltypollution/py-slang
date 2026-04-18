@@ -1,9 +1,7 @@
 import { BasicEvaluator } from "@sourceacademy/conductor/runner";
-import { SpeculationViolation } from "../engines/svml/errors";
 import { makeJitAnalysis } from "../engines/svml/jit-analysis";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
-import type { SVMLBoxType } from "../engines/svml/types";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
@@ -12,11 +10,7 @@ import {
   makeDfaQuery,
 } from "../specialization";
 import { EvaluatorError } from "./errors";
-
-/** Cap on consecutive deopts before giving up. A speculation that violates
- *  on every retry indicates a bug in the speculative analysis or in our widening
- *  protocol — running forever would just hang. */
-const MAX_DEOPT_RETRIES = 32;
+import { runWithDeopt } from "./jit-deopt";
 
 /**
  * SVML evaluator with JIT specialization. After static convergence and
@@ -62,43 +56,13 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
 
       worklist.beginBatch();
       try {
-        const returnValue = await runWithDeopt(interpreter, worklist);
+        const returnValue = await runWithDeopt(() => interpreter.execute(), worklist);
         this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
       } finally {
         worklist.endBatch();
       }
     } catch (e) {
       this.conductor.sendError(new EvaluatorError(e));
-    }
-  }
-}
-
-/** Drive `interpreter.execute()` with deopt-and-retry. On `SpeculationViolation`,
- *  call `worklist.widenGuard(nodeId)` to prune the load-bearing assumptions;
- *  the worklist fires `specContextChange`, which wakes `jitAnalysis` and
- *  patches the function table on the next drain. Bounded by
- *  `MAX_DEOPT_RETRIES` to avoid infinite loops on a buggy speculator. */
-async function runWithDeopt(
-  interpreter: SVMLInterpreter,
-  worklist: Worklist,
-): Promise<SVMLBoxType> {
-  let attempts = 0;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    try {
-      return await interpreter.execute();
-    } catch (e) {
-      if (!(e instanceof SpeculationViolation)) throw e;
-      if (++attempts > MAX_DEOPT_RETRIES) {
-        throw new Error(
-          `JIT deopt budget exhausted (${MAX_DEOPT_RETRIES}); last violation at node ${e.nodeId} (${e.witnessedKind})`,
-        );
-      }
-      worklist.widenGuard(e.nodeId);
-      // observe() drains automatically when batchDepth permits; inside
-      // beginBatch we need to drain explicitly so jit-analysis.transfer fires
-      // and patches the function table before retry.
-      worklist.drain();
     }
   }
 }
