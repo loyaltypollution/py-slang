@@ -66,8 +66,6 @@ context under which an analysis runs, not a property of the fact:
   per-slot entry requirement. `requirementAtEntry` returns a split
   `{ provable, unprovable }` — provable slots are guard candidates,
   unprovable slots signal "speculation can't hold for any input."
-  `ObservationEvent.requirementsAt()` exposes the entry fact to
-  strategies as a stability signal.
 
 Tests: `npx tsc --noEmit && npx jest` — 2695 green.
 
@@ -138,6 +136,12 @@ where noted.
   (`int ⊗ int = int` for `+`, `-`, `*`, `//`, `%`; ternary). Sign-axis
   inverses (e.g. `pos * pos = pos`) are deferred. Worth it once a guard
   consumer can exploit tighter-than-kind refinements.
+- **Strategy access to must-backward facts.** An earlier iteration
+  added `ObservationEvent.requirementsAt()` as a stability hint for
+  strategies, then removed it as premature — no concrete strategy used
+  it. When a strategy genuinely wants to read backward facts before
+  deciding to extend, land the accessor and the consuming strategy in
+  the same PR so the surface earns its keep.
 - **Runtime integration test.** Mirror `speculative-narrowing.test.ts`'s
   "lineage-precise widen" through `observeRuntimeReturn`: observe int
   return ×N → entry guard emitted → observe str once → widenGuard →

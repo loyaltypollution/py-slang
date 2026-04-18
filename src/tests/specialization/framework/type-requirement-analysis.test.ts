@@ -42,9 +42,7 @@ import {
   returnKindHandle,
   returnKindNarrowing,
   typeRequirementAnalysis,
-  type EntryRequirement,
 } from "../../../specialization/type-requirement-analysis/analysis";
-import type { SpeculationStrategy } from "../../../specialization/framework/speculation-strategy";
 import {
   DEFAULT_PASSES,
   DEFAULT_TRANSFORMS,
@@ -261,47 +259,6 @@ def hot(x):
     expect(reqs.provable.get(12)).toEqual(INT_POS);
     expect(reqs.provable.has(10)).toBe(false);
     expect(reqs.provable.has(11)).toBe(false);
-  });
-
-  test("ObservationEvent.requirementsAt reports entry requirement under parent context", () => {
-    // First observation: parentContext is ROOT, analysis hasn't seeded,
-    // requirementsAt() returns empty. Strategy accepts, context extends
-    // to INT_POS, entry requirement populates. Second observation on the
-    // same fdId with the same value is idempotent (no further extension)
-    // but still calls the strategy — at which point parentContext is the
-    // extended chain and requirementsAt() reflects the populated fact.
-    const seen: EntryRequirement[] = [];
-    const strategy: SpeculationStrategy = {
-      onObservation(event) {
-        seen.push(event.requirementsAt());
-        return true;
-      },
-    };
-
-    const script = "def hot(x):\n    return x + 1\n";
-    const ast = parse(script) as StmtNS.FileInput;
-    const { environments } = analyzeWithEnvironments(ast, script, 4);
-    const worklist = new Worklist(
-      ast,
-      environments,
-      DEFAULT_PASSES,
-      undefined,
-      DEFAULT_TRANSFORMS,
-      strategy,
-    );
-    worklist.drain();
-
-    const fn = ast.statements[0] as StmtNS.FunctionDef;
-
-    observeRuntimeReturn(worklist, fn.id, 7);
-    worklist.drain();
-    observeRuntimeReturn(worklist, fn.id, 7);
-    worklist.drain();
-
-    expect(seen).toHaveLength(2);
-    expect(seen[0].provable.size).toBe(0);
-    expect(seen[0].unprovable.size).toBe(0);
-    expect(seen[1].provable.get(0)?.kinds).toBe(INT_BIT);
   });
 
   test("Worklist construction throws when narrowings on one source disagree on resolveUnit", () => {

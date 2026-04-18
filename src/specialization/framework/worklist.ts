@@ -36,10 +36,6 @@ import {
 import { runtimeReturnAnalysis } from "./runtime-analyses";
 import { readExprFact } from "./dfa-factory";
 import type { RawKind } from "./raw-value";
-import {
-  requirementAtEntry,
-  type EntryRequirement,
-} from "../type-requirement-analysis/analysis";
 
 type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq: number };
 
@@ -557,14 +553,11 @@ export class Worklist {
     const parentCtx = this.currentSpecContext.get(unit) ?? ROOT_CONTEXT;
 
     if (observed.kind !== "unknown") {
-      let cachedRequirements: EntryRequirement | undefined;
       const accept = this.specStrategy.onObservation({
         unit,
         nodeId: key,
         observed,
         parentContext: parentCtx,
-        requirementsAt: () =>
-          cachedRequirements ??= requirementAtEntry(this.factStore, unit, parentCtx),
       });
       if (!accept) return;
     }
