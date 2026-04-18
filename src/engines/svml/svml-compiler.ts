@@ -5,7 +5,7 @@ import type { TypeLattice } from "../../specialization/type-analysis/lattice";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import type { DfaQuery } from "../../specialization/dfa-query";
 import type { GuardRegistrar } from "../../specialization/framework/worklist";
-import { constExprHandle } from "../../specialization/const-analysis/analysis";
+import { constNarrowing } from "../../specialization/framework/dfa-analyses";
 import { ScopeIndexMap } from "./scope-index-map";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
 import { Token } from "../../tokenizer";
@@ -837,7 +837,7 @@ export class SVMLCompiler
       // it back to load-bearing assumptions on deopt (see
       // `Worklist.widenGuard`). No-op when no registrar was supplied.
       this.guardRegistrar?.registerGuard(stmt.condition.id, {
-        analysis: constExprHandle,
+        narrowing: constNarrowing,
         key: stmt.condition.id,
       });
       const taken = specTruth ? stmt.body : stmt.elseBlock;

@@ -16,7 +16,7 @@ import {
   wireCFG,
   type FunctionUnit,
 } from "./function-unit";
-import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type NarrowingSpec, type ObservationHost, type TransformRule, type LifecycleEdge } from "./analysis";
+import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type Narrowing, type TransformRule, type LifecycleEdge } from "./analysis";
 import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Assumption, type Context } from "./context";
 import { immediateStrategy, type SpeculationStrategy } from "./speculation-strategy";
 import { runtimeCallAnalysis, runtimeWriteAnalysis } from "./runtime-analyses";
@@ -37,24 +37,27 @@ import type { RawKind } from "./raw-value";
 
 type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq: number };
 
-/** Reference to a speculative fact site. A backend emitting a guard for this
- *  fact publishes this ref via `Worklist.registerGuard` so the engine can
- *  trace back to the assumption(s) that drove the narrowing when the guard
- *  fires. `analysis` and `key` together name the fact-store cell; no value
- *  is carried (the live value is read at deopt time from the fact store).
- *  `analysis` must carry a `specAnchor` (wired in `dfa-analyses.ts`);
- *  `Worklist.widenGuard` → `lineageOf` throws loudly if the pairing is
- *  missing, which is louder than the old silent fallback-to-whole-unit. */
-export interface SpecFactRef<K = unknown, V = unknown> {
-  readonly analysis: Analysis<K, V>;
-  readonly key: K;
+/** Reference to a speculative fact site. A backend emitting a guard for
+ *  this fact publishes this ref via `Worklist.registerGuard` so the engine
+ *  can trace back to the assumption(s) that drove the narrowing when the
+ *  guard fires. `narrowing` + `key` together name the fact-store cell (the
+ *  narrowing's block analysis, keyed by node id); no value is carried — the
+ *  live value is read at deopt time from the fact store.
+ *
+ *  Typed against `Narrowing<V>` rather than a raw `Analysis`: only
+ *  registered narrowings can back a guard, and a narrowing is a whole
+ *  object with block analysis + lift + valueEqual, so the lineage walk
+ *  never has to check whether a pairing is present. */
+export interface SpecFactRef<V = unknown> {
+  readonly narrowing: Narrowing<V>;
+  readonly key: number;
 }
 
 /** Narrow backend-facing interface for publishing guard provenance. Exposed
  *  as a separate type so backends can hold a capability-restricted reference
  *  (instead of the full `Worklist`) and so test doubles stay small. */
 export interface GuardRegistrar {
-  registerGuard<K, V>(guardNodeId: number, ref: SpecFactRef<K, V>): void;
+  registerGuard<V>(guardNodeId: number, ref: SpecFactRef<V>): void;
 }
 
 /** Identity-key for an assumption. `analysis` is compared by symbol identity
@@ -67,8 +70,8 @@ function assumptionKey(a: Assumption): string {
 /** Identity-key for a speculative fact ref — same encoding as
  *  `assumptionKey` so a pruned-assumption set can be checked against
  *  a guard's ref in O(1). */
-function specRefKey(r: SpecFactRef<any, any>): string {
-  return `${(r.analysis as Analysis<unknown, unknown>).debugName}:${String(r.key)}`;
+function specRefKey(r: SpecFactRef<any>): string {
+  return `${r.narrowing.handle.debugName}:${String(r.key)}`;
 }
 
 
@@ -149,7 +152,7 @@ export class Worklist {
   /** Registered speculation-narrowing dimensions. The observation translator,
    *  widen primitives, and `lineageOf` iterate this list — adding a new
    *  narrowing is a one-line registration here, not a framework edit. */
-  private readonly narrowings: ReadonlyArray<NarrowingSpec<any>>;
+  private readonly narrowings: ReadonlyArray<Narrowing<any>>;
 
   constructor(
     ast: StmtNS.FileInput,
@@ -158,7 +161,7 @@ export class Worklist {
     registry?: FunctionRegistry,
     transforms: ReadonlyArray<TransformRule> = DEFAULT_TRANSFORMS,
     specStrategy: SpeculationStrategy = immediateStrategy,
-    narrowings: ReadonlyArray<NarrowingSpec<any>> = DEFAULT_NARROWINGS,
+    narrowings: ReadonlyArray<Narrowing<any>> = DEFAULT_NARROWINGS,
   ) {
     this.specStrategy = specStrategy;
     this.narrowings = narrowings;
@@ -332,7 +335,7 @@ export class Worklist {
   /** Capability surface handed to `Analysis.onObserve` hooks. Narrow
    *  wrapper around the worklist's private observation entry points;
    *  analyses don't receive the full `Worklist`. */
-  private readonly observationHost: ObservationHost = {
+  private readonly observationHost = {
     handleObservationForSpec: (nodeId: number, observed: RawKind): void => {
       this.handleObservationForSpec(nodeId, observed);
     },
@@ -439,27 +442,13 @@ export class Worklist {
     for (const sub of subs) sub(ctx, change.key);
   }
 
-  /** Block analysis bound to a narrowing via its handle's `specAnchor`.
-   *  Throws if the handle was never declared as a spec anchor — the loud
-   *  equivalent of silent fallback to whole-unit widen. */
-  private blockAnalysisOf(n: NarrowingSpec<any>): Analysis<any, any> {
-    const anchor = n.handle.specAnchor;
-    if (anchor === undefined) {
-      throw new Error(
-        `[Worklist] narrowing "${n.handle.debugName}" has no specAnchor — ` +
-        `declare its block-DFA/valueEqual pairing in dfa-analyses.ts.`,
-      );
-    }
-    return anchor.blockAnalysis();
-  }
-
   /** Re-seed Kildall for every registered narrowing's block analysis at
    *  `unit`'s entry block under `context`. Used whenever the unit's active
    *  speculation context shifts (observation-extend, widen-guard,
    *  widen-unit, lineageOf synthesis). */
   private enqueueNarrowingEntry(unit: FunctionUnit, context: Context): void {
     for (const n of this.narrowings) {
-      this.enqueue(this.blockAnalysisOf(n), unit.cfg.entry, context);
+      this.enqueue(n.blockAnalysis(), unit.cfg.entry, context);
     }
   }
 
@@ -519,10 +508,7 @@ export class Worklist {
       const lifted = n.lift(observed);
       if (lifted === undefined) continue;
       const existing = findAssumption(newCtx, n.handle, nodeId);
-      const valueEqual = n.handle.specAnchor?.valueEqual;
-      const unchanged =
-        existing !== undefined && valueEqual !== undefined && valueEqual(existing, lifted);
-      if (unchanged) continue;
+      if (existing !== undefined && n.valueEqual(existing, lifted)) continue;
       const cleaned = existing !== undefined
         ? excludeAssumption(newCtx, n.handle, nodeId)
         : newCtx;
@@ -580,12 +566,12 @@ export class Worklist {
    *  `widenGuard` on deopt to compute the load-bearing assumption set. Keyed
    *  by `guardNodeId` — the AST node id the backend baked into the guard
    *  opcode; that's the id `SpeculationViolation` carries. */
-  private readonly guardProvenance: Map<FunctionUnit, Map<number, SpecFactRef<any, any>>> = new Map();
+  private readonly guardProvenance: Map<FunctionUnit, Map<number, SpecFactRef<any>>> = new Map();
 
   /** Backend-facing hook, called once per emitted guard. Identifies the
    *  speculative fact whose narrowing the guard is protecting. No-op if
    *  `guardNodeId` doesn't resolve to a known unit. */
-  registerGuard<K, V>(guardNodeId: number, ref: SpecFactRef<K, V>): void {
+  registerGuard<V>(guardNodeId: number, ref: SpecFactRef<V>): void {
     const unit = this.nodeToUnit.get(guardNodeId);
     if (unit === undefined) return;
     let perUnit = this.guardProvenance.get(unit);
@@ -593,7 +579,7 @@ export class Worklist {
       perUnit = new Map();
       this.guardProvenance.set(unit, perUnit);
     }
-    perUnit.set(guardNodeId, ref as SpecFactRef<any, any>);
+    perUnit.set(guardNodeId, ref as SpecFactRef<any>);
   }
 
   /** Lineage-precise deopt handle. Given a guard that fired at
@@ -604,8 +590,8 @@ export class Worklist {
    *  Falls back to `widenUnitSpeculation` when no provenance was recorded
    *  for `guardNodeId` (safe default for backends that haven't opted in)
    *  or when the computed lineage is empty (can happen if the fact at `ref`
-   *  reached its narrowed value via chain links whose analysis doesn't
-   *  match `ref.analysis` — a conservative signal to fall back).
+   *  reached its narrowed value via chain links whose handle doesn't match
+   *  `ref.narrowing.handle` — a conservative signal to fall back).
    *
    *  Returns the widened unit, or `undefined` if no unit owns `guardNodeId`. */
   widenGuard(guardNodeId: number): FunctionUnit | undefined {
@@ -656,20 +642,12 @@ export class Worklist {
    *  the speculation strategy (`countBasedStrategy`, etc.) which throttles
    *  extension; deep chains are the outlier case. */
   private lineageOf(
-    ref: SpecFactRef<any, any>,
+    ref: SpecFactRef<any>,
     ctx: Context,
     unit: FunctionUnit,
   ): Assumption[] {
-    const anchor = ref.analysis.specAnchor;
-    if (anchor === undefined) {
-      throw new Error(
-        `[Worklist.widenGuard] analysis "${ref.analysis.debugName}" has no specAnchor — ` +
-        `declare its block-DFA/valueEqual pairing in dfa-analyses.ts before registering guards against it.`,
-      );
-    }
-    const blockAnalysis = anchor.blockAnalysis();
-    const valueEqual = anchor.valueEqual;
-    const nodeId = ref.key as number;
+    const { narrowing, key: nodeId } = ref;
+    const blockAnalysis = narrowing.blockAnalysis();
     const block = unit.blockOfNode.get(nodeId);
     if (block === undefined) return [];
     const current = readExprFact(this.factStore, blockAnalysis, block, nodeId, ctx);
@@ -682,7 +660,7 @@ export class Worklist {
       this.enqueueNarrowingEntry(unit, without);
       this.processQueue();
       const widened = readExprFact(this.factStore, blockAnalysis, block, nodeId, without);
-      if (!valueEqual(current, widened)) loadBearing.push(a);
+      if (!narrowing.valueEqual(current, widened)) loadBearing.push(a);
     }
     return loadBearing;
   }

@@ -18,7 +18,7 @@ import type { BasicBlock } from "../../specialization/framework/cfg";
 import { ROOT_CONTEXT, type Context } from "../../specialization/framework/context";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import type { FactStore } from "../../specialization/framework/fact-store";
-import type { Analysis, AnalysisCtx, EdgeSpec, NarrowingSpec } from "../../specialization/framework/analysis";
+import type { Analysis, AnalysisCtx, EdgeSpec, Narrowing } from "../../specialization/framework/analysis";
 import { DEFAULT_NARROWINGS } from "../../specialization/framework/dfa-analyses";
 import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
@@ -39,8 +39,8 @@ interface CompileSnapshot {
    *  by reference — a new observation produces a new Context object, so
    *  `prev.specContext !== now` short-circuits the full block-fact walk. */
   specContext: Context;
-  rootFacts: Map<NarrowingSpec<any>, Map<BasicBlock, unknown>>;
-  speculativeFacts: Map<NarrowingSpec<any>, Map<BasicBlock, unknown>>;
+  rootFacts: Map<Narrowing<any>, Map<BasicBlock, unknown>>;
+  speculativeFacts: Map<Narrowing<any>, Map<BasicBlock, unknown>>;
 }
 
 export interface JitPassDeps {
@@ -56,7 +56,7 @@ export interface JitPassDeps {
    *  `DEFAULT_NARROWINGS`. A backend that registers additional narrowings
    *  passes the extended list here so its fact edges and snapshot maps
    *  widen accordingly. */
-  readonly narrowings?: ReadonlyArray<NarrowingSpec<any>>;
+  readonly narrowings?: ReadonlyArray<Narrowing<any>>;
 }
 
 function blockToOwningUnit(_ctx: AnalysisCtx, key: unknown): Iterable<FunctionUnit> {
@@ -82,14 +82,6 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
   const specContextFor = deps.specContextFor ?? ((_: FunctionUnit) => ROOT_CONTEXT);
   const narrowings = deps.narrowings ?? DEFAULT_NARROWINGS;
 
-  const blockAnalysisOf = (n: NarrowingSpec<any>): Analysis<any, any> => {
-    const anchor = n.handle.specAnchor;
-    if (anchor === undefined) {
-      throw new Error(`[jit-analysis] narrowing "${n.handle.debugName}" has no specAnchor`);
-    }
-    return anchor.blockAnalysis();
-  };
-
   const lastSnapshot = new WeakMap<FunctionUnit, CompileSnapshot>();
 
   // Block-keyed DFA analysis: a fact-advancing change on a block invalidates
@@ -104,7 +96,7 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
   // lands the recompile request on the single IR cell per unit.
   const edges: EdgeSpec<FunctionUnit>[] = narrowings.map(n => ({
     on: "fact",
-    analysis: blockAnalysisOf(n),
+    analysis: n.blockAnalysis(),
     wake: blockToOwningUnit,
     contextPolicy: "root",
   }));
@@ -155,13 +147,13 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
       if (
         prev !== undefined &&
         prev.structuralGen === unit.generation &&
-        snapshotMatches(factStore, unit, prev, specContext, narrowings, blockAnalysisOf)
+        snapshotMatches(factStore, unit, prev, specContext, narrowings)
       ) {
         return undefined;
       }
 
       const newCode = compiler.compileFunction(unit);
-      lastSnapshot.set(unit, captureSnapshot(factStore, unit, specContext, narrowings, blockAnalysisOf));
+      lastSnapshot.set(unit, captureSnapshot(factStore, unit, specContext, narrowings));
       const prevIR = factStore.read(jitAnalysis, unit);
       if (structuralEquals(newCode, prevIR)) return undefined;
       interpreter.patchFunction(index, newCode);
@@ -195,12 +187,11 @@ function snapshotMatches(
   unit: FunctionUnit,
   prev: CompileSnapshot,
   specContext: Context,
-  narrowings: ReadonlyArray<NarrowingSpec<any>>,
-  blockAnalysisOf: (n: NarrowingSpec<any>) => Analysis<any, any>,
+  narrowings: ReadonlyArray<Narrowing<any>>,
 ): boolean {
   if (prev.specContext !== specContext) return false;
   for (const n of narrowings) {
-    const blockAnalysis = blockAnalysisOf(n);
+    const blockAnalysis = n.blockAnalysis();
     const rootMap = prev.rootFacts.get(n);
     const specMap = prev.speculativeFacts.get(n);
     if (rootMap === undefined || specMap === undefined) return false;
@@ -216,13 +207,12 @@ function captureSnapshot(
   factStore: FactStore,
   unit: FunctionUnit,
   specContext: Context,
-  narrowings: ReadonlyArray<NarrowingSpec<any>>,
-  blockAnalysisOf: (n: NarrowingSpec<any>) => Analysis<any, any>,
+  narrowings: ReadonlyArray<Narrowing<any>>,
 ): CompileSnapshot {
-  const rootFacts = new Map<NarrowingSpec<any>, Map<BasicBlock, unknown>>();
-  const speculativeFacts = new Map<NarrowingSpec<any>, Map<BasicBlock, unknown>>();
+  const rootFacts = new Map<Narrowing<any>, Map<BasicBlock, unknown>>();
+  const speculativeFacts = new Map<Narrowing<any>, Map<BasicBlock, unknown>>();
   for (const n of narrowings) {
-    const blockAnalysis = blockAnalysisOf(n);
+    const blockAnalysis = n.blockAnalysis();
     const rootMap = new Map<BasicBlock, unknown>();
     const specMap = new Map<BasicBlock, unknown>();
     for (const block of unit.blockMap.values()) {

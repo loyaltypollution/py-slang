@@ -119,30 +119,6 @@ export function addEdge<K>(analysis: Analysis<K, any>, spec: EdgeSpec<K>): void 
   (analysis.edges as EdgeSpec<K>[]).push(spec);
 }
 
-/** Pairing required to back a speculation context assumption. Carries the
- *  block DFA whose per-expression cells store the lattice value named by
- *  the handle, plus an equality predicate over that value type. Consumed by
- *  `Worklist.widenGuard` → `lineageOf` to diff the narrowed fact against
- *  the widen-candidate fact on each chain-link exclusion. `blockAnalysis`
- *  is a thunk to tolerate the circular import between a handle's defining
- *  module and the block-analysis factory (`dfa-analyses.ts`). */
-export interface SpecAnchorInfo<V> {
-  readonly blockAnalysis: () => Analysis<any, any>;
-  // Method-shorthand form so V stays bivariant on inputs — matches the
-  // variance the rest of `Analysis<K, V>` (Lattice's leq/join) already has,
-  // so `Analysis<number, RawKind>` remains assignable to `Analysis<number,
-  // unknown>` where callers parameterize V from an unknown-typed value.
-  valueEqual(a: V | undefined, b: V | undefined): boolean;
-}
-
-/** Capability surface handed to `Analysis.onObserve` hooks. A thin wrapper
- *  around the worklist's observation-handling entry points — lets analyses
- *  participate in observe-time routing (e.g. speculation-context extension)
- *  without importing `Worklist` or receiving the full scheduler. */
-export interface ObservationHost {
-  handleObservationForSpec(nodeId: number, observed: RawKind): void;
-}
-
 /** A computation over the fact store. `transfer` returning `undefined` means "no write". */
 export interface Analysis<K, V> {
   readonly id: symbol;
@@ -155,12 +131,6 @@ export interface Analysis<K, V> {
    *  to `"analysis"`, which was a miscompile vector for any future
    *  priority-sensitive consumer. */
   readonly tier: "runtime" | "analysis";
-  /** Present iff this analysis is usable as a speculation-context anchor
-   *  (i.e. is a valid `SpecFactRef.analysis`). Populated at construction by
-   *  handles that want backends to register guards against them; absence
-   *  makes the analysis structurally unusable as a guard anchor — the
-   *  compile-time error is how `SpecAnchor<K, V>` narrows the type. */
-  readonly specAnchor?: SpecAnchorInfo<V>;
   /** Optional hook invoked at every `Worklist.observe` for this analysis,
    *  BEFORE the fact-store write. Fires once per observe call, including
    *  repeats the monotone fact store would collapse — appropriate for
@@ -169,31 +139,40 @@ export interface Analysis<K, V> {
    *  analysis-identity branches in `observe`; whether an observation
    *  participates in speculation-context extension is a property the
    *  analysis declares here. */
-  onObserve?(host: ObservationHost, key: K, value: V, context: Context): void;
+  onObserve?(
+    host: { handleObservationForSpec(nodeId: number, observed: RawKind): void },
+    key: K,
+    value: V,
+    context: Context,
+  ): void;
   transfer(factStore: FactStore, ctx: AnalysisCtx, key: K): V | undefined;
 }
 
-/** An `Analysis` that carries a `specAnchor`. `SpecFactRef` refines to this
- *  type so backends can only publish guards against analyses with the
- *  pairing declared — a forgotten pairing becomes a compile error at the
- *  `registerGuard` call site instead of a silent degradation inside
- *  `Worklist.widenGuard`. */
-export type SpecAnchor<K, V> = Analysis<K, V> & { readonly specAnchor: SpecAnchorInfo<V> };
-
 /** A single dimension along which runtime observations can extend a
- *  speculation context. Bundles the assumption-anchor handle (whose
- *  `specAnchor.blockAnalysis` is the Kildall analysis that must re-run
- *  when assumptions change) with the lifting function that maps a raw
- *  observation into this dimension's value type.
+ *  speculation context. Bundles everything needed to participate as a
+ *  speculation anchor: the identity (`handle`) named in Context assumption
+ *  chains; the block DFA whose per-expression cells store the lattice
+ *  value; the lift from raw observation to lattice value; and the equality
+ *  predicate the lineage walk uses to diff facts on assumption exclusion.
  *
- *  The worklist iterates a registered list of `NarrowingSpec`s in four
+ *  The worklist iterates a registered list of `Narrowing`s in four
  *  data-driven sites: observation→context translation, `widenGuard` and
  *  `widenUnitSpeculation`'s re-seed loops, and `lineageOf`'s synthetic
  *  Kildall runs. Adding a new narrowing dimension is a one-line
- *  registration; the framework does not name individual analyses. */
-export interface NarrowingSpec<V> {
+ *  registration; the framework does not name individual analyses.
+ *
+ *  `blockAnalysis` is a thunk so the narrowing can be constructed in
+ *  `dfa-analyses.ts` in the same source position as the block analysis
+ *  without hitting temporal-dead-zone issues on the self-reference. */
+export interface Narrowing<V> {
   readonly handle: Analysis<number, V>;
+  readonly blockAnalysis: () => Analysis<any, any>;
   lift(observed: RawKind): V | undefined;
+  // Method-shorthand form so V stays bivariant on inputs — matches the
+  // variance the rest of `Analysis<K, V>` (Lattice's leq/join) already has,
+  // so `Narrowing<RawKind>` remains assignable to `Narrowing<unknown>`
+  // where callers parameterize V from an unknown-typed value.
+  valueEqual(a: V | undefined, b: V | undefined): boolean;
 }
 
 /** Unit-topology lookups; store access goes through the `FactStore` parameter.
