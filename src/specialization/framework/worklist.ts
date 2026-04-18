@@ -536,20 +536,19 @@ export class Worklist {
     return unit === undefined ? ROOT_CONTEXT : this.specContextFor(unit);
   }
 
-  /** Retract ALL speculation for the unit owning `nodeIdOrUnit`. Fallback
-   *  path when guard provenance wasn't recorded; `widenGuard` is the
-   *  preferred deopt primitive (prunes just the load-bearing assumptions).
+  /** Retract ALL speculation for the unit owning `nodeIdOrUnit`. Private
+   *  soundness fallback invoked by `widenGuard` when (a) no provenance was
+   *  registered for the guard's nodeId (backend hasn't opted into
+   *  `registerGuard`) or (b) `lineageOf` returned empty because trial-
+   *  exclusion couldn't find a single load-bearing link (joint narrowing).
+   *  Both cases require the coarser whole-chain reset to stay sound.
    *
-   *  Collapsing the chain to ROOT is coarser than lineage-precise widen but
-   *  strictly sound: Kildall re-runs under ROOT produce the non-narrowed
-   *  facts, and the compiler emits generic opcodes on the next recompile.
-   *
-   *  Returns the unit that was widened, or `undefined` if no unit owns the
-   *  node or the unit already has no active speculation. Analyses whose
-   *  output depends on the spec context (e.g. backend JIT recompile)
-   *  receive a `specContextChange` lifecycle event and wake themselves —
-   *  callers only need to `drain()` afterwards. */
-  widenUnitSpeculation(nodeIdOrUnit: number | FunctionUnit): FunctionUnit | undefined {
+   *  Collapsing the chain to ROOT: Kildall re-runs under ROOT produce the
+   *  non-narrowed facts, the `specContextChange` lifecycle fires, and jit-
+   *  keyed analyses re-seed themselves on the next drain. Returns the unit
+   *  that was widened, or `undefined` if no unit owns the node or the unit
+   *  already has no active speculation. */
+  private widenUnitSpeculation(nodeIdOrUnit: number | FunctionUnit): FunctionUnit | undefined {
     const unit = typeof nodeIdOrUnit === "number"
       ? this.nodeToUnit.get(nodeIdOrUnit)
       : nodeIdOrUnit;

@@ -233,7 +233,7 @@ hot(0)
     }
     expect(violation).toBeDefined();
 
-    worklist.widenUnitSpeculation(violation!.nodeId);
+    worklist.widenGuard(violation!.nodeId);
     worklist.drain();
 
     const currentProgram = (interpreter as unknown as { program: typeof program }).program;
