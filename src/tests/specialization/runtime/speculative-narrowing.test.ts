@@ -440,6 +440,37 @@ def hot(mode):
   });
 });
 
+describe("widenGuard contract", () => {
+  test("throws when a guard fires with no registered provenance", () => {
+    // Contract: every guard-emitting backend must call `registerGuard` at
+    // emission. `widenGuard` used to silently collapse the whole chain when
+    // provenance was missing, hiding the wiring bug behind a sound-but-
+    // coarse recovery. It now throws so the bug surfaces at the deopt site
+    // instead of as a mysterious whole-unit widen.
+    const { ast, worklist } = build(`
+def hot(x):
+    y = x
+    return y
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const yAssign = fn.body[0] as StmtNS.Assign;
+    const xRead = yAssign.value as ExprNS.Variable;
+
+    // `xRead.id` belongs to a known unit, but no `registerGuard` was ever
+    // called for it — this is exactly the "backend emitted a guard without
+    // registering provenance" scenario.
+    expect(() => worklist.widenGuard(xRead.id)).toThrow(/no provenance/);
+  });
+
+  test("returns undefined for a nodeId outside every known unit", () => {
+    // Unowned nodeId isn't a wiring bug — it's a garbage input (e.g. a
+    // stale id from a prior CFG generation). Silent no-op is the right
+    // response; only the "known unit + missing provenance" case throws.
+    const { worklist } = build(`x = 1`);
+    expect(worklist.widenGuard(0xdead_beef)).toBeUndefined();
+  });
+});
+
 describe("SVMLKindBits sanity", () => {
   test("NUMBER bit matches what svmlKindToBit returns for typeof number", () => {
     expect(SVMLKindBits.NUMBER).toBe(1);
