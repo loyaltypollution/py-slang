@@ -41,7 +41,11 @@ function compile(ast: StmtNS.FileInput, environments: ReturnType<typeof analyzeW
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(worklist.factStore, worklist.nodeIndex),
+    makeDfaQuery(
+      worklist.factStore,
+      worklist.nodeIndex,
+      nodeId => worklist.specContextForNode(nodeId),
+    ),
     worklist.registry,
   );
   return { compiler, program: compiler.compileProgram(ast) };

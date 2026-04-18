@@ -29,10 +29,10 @@ import { livenessAnalysis } from "../liveness-analysis/analysis";
 import {
   typeAnalysis,
   constAnalysis,
-  speculativeConstAnalysis,
 } from "./dfa-analyses";
 import { readExprFact } from "./dfa-factory";
 import { liftType, typeExprHandle } from "../type-analysis/analysis";
+import { constExprHandle, liftConst } from "../const-analysis/analysis";
 import type { RawKind } from "./raw-value";
 import type { TypeLattice } from "../type-analysis/lattice";
 import { leq as typeLeq } from "../type-analysis/lattice";
@@ -63,9 +63,10 @@ export function makeDfaQuery(
   factStore: FactStore,
   nodeIndex: ReadonlyMap<number, FunctionUnit>,
   /** Resolve the active speculation context for a node's owning unit, or
-   *  ROOT_CONTEXT if nothing has been speculated yet. `speculativeTypeOf`
-   *  reads `typeAnalysis` under the returned context — same analysis, same
-   *  storage dimension, no parallel twin. */
+   *  ROOT_CONTEXT if nothing has been speculated yet. Both
+   *  `speculativeTypeOf` and `speculativeConstOf` read the respective
+   *  analysis under the returned context — same analyses, same storage
+   *  dimension, no parallel twins. */
   specContextForNode: (nodeId: number) => Context = () => ROOT_CONTEXT,
 ): DfaQuery {
   const blockFor = (id: number) => nodeIndex.get(id)?.blockOfNode.get(id);
@@ -74,7 +75,8 @@ export function makeDfaQuery(
     constOf: id => readExprFact(factStore, constAnalysis, blockFor(id), id),
     speculativeTypeOf: id =>
       readExprFact(factStore, typeAnalysis, blockFor(id), id, specContextForNode(id)),
-    speculativeConstOf: id => readExprFact(factStore, speculativeConstAnalysis, blockFor(id), id),
+    speculativeConstOf: id =>
+      readExprFact(factStore, constAnalysis, blockFor(id), id, specContextForNode(id)),
     isPureScope: scopeId => factStore.tryRead(purityScopeAnalysis, scopeId),
     isSpeculationBlacklisted: nodeId =>
       factStore.tryRead(speculationBlacklistAnalysis, nodeId) === true,
@@ -82,6 +84,15 @@ export function makeDfaQuery(
 }
 
 type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq: number };
+
+/** Structural equality on ConstLattice values — used by the observation
+ *  translator to dedup assumption extensions when the same concrete value
+ *  is observed repeatedly. */
+function constLatticeEquals(a: ConstLattice, b: ConstLattice): boolean {
+  if (a.tag !== b.tag) return false;
+  if (a.tag === "const" && b.tag === "const") return a.value === b.value;
+  return true;
+}
 
 const TIER_RANK = { runtime: 0, analysis: 1 } as const;
 
@@ -419,20 +430,24 @@ export class Worklist {
   }
 
   /** Translator: converts `runtimeWriteAnalysis` observations into Context
-   *  mutations on the owning unit, then enqueues `typeAnalysis` under the
-   *  new context to re-run Kildall with the assumption.
+   *  mutations on the owning unit, then enqueues both `typeAnalysis` and
+   *  `constAnalysis` under the new context to re-run Kildall with the
+   *  assumptions.
+   *
+   *  One observation binds up to two assumptions — a TypeLattice value at
+   *  `typeExprHandle` and a ConstLattice value at `constExprHandle`. Both
+   *  share the same Context chain so a single compiled version depends on
+   *  a single chain (matches the artifact-tree model in the brief).
    *
    *  Behavior:
-   *  - Only fires for ROOT-context observations (speculative contexts don't
-   *    cascade further speculation here).
-   *  - Non-numeric / non-liftable raws → no-op.
+   *  - Only fires for ROOT-context observations.
+   *  - Non-liftable raws → no-op.
    *  - `unknown` (⊤ widening, e.g. from `widenWriteObservation` on deopt) →
-   *    prune any assumption at this nodeId from the unit's current context,
-   *    re-enqueue typeAnalysis so the shallower context gets a fresh run.
-   *  - Concrete lift matching an existing assumption → no-op (idempotent).
-   *  - New or differing lift → remove any conflicting assumption at this
-   *    nodeId, extend with the new one, update `currentSpecContext[unit]`,
-   *    enqueue entry block. */
+   *    prune any assumption at this nodeId from the unit's current context.
+   *  - Concrete lifts matching existing assumptions → no-op (idempotent).
+   *  - New / differing lifts → remove any conflicting assumption at this
+   *    nodeId, extend with the new bindings, update `currentSpecContext[unit]`,
+   *    enqueue entry block on both analyses. */
   private handleObservationForSpec(change: FactChange<unknown, unknown>): void {
     if (change.analysis !== (runtimeWriteAnalysis as unknown as Analysis<unknown, unknown>)) return;
     if (change.context !== ROOT_CONTEXT) return;
@@ -445,26 +460,43 @@ export class Worklist {
     const parentCtx = this.currentSpecContext.get(unit) ?? ROOT_CONTEXT;
 
     if (observed.kind === "unknown") {
-      const pruned = excludeAssumption(parentCtx, typeExprHandle, nodeId);
+      let pruned = excludeAssumption(parentCtx, typeExprHandle, nodeId);
+      pruned = excludeAssumption(pruned, constExprHandle, nodeId);
       if (pruned === parentCtx) return;
       if (pruned === ROOT_CONTEXT) this.currentSpecContext.delete(unit);
       else this.currentSpecContext.set(unit, pruned);
       this.enqueue(typeAnalysis, unit.cfg.entry, pruned);
+      this.enqueue(constAnalysis, unit.cfg.entry, pruned);
       return;
     }
 
-    const lifted = liftType(observed);
-    if (lifted === undefined) return;
+    const liftedType = liftType(observed);
+    const liftedConst = liftConst(observed);
 
-    const existing = findAssumption(parentCtx, typeExprHandle, nodeId);
-    if (existing !== undefined && typeLeq(lifted, existing) && typeLeq(existing, lifted)) return;
+    let newCtx = parentCtx;
+    if (liftedType !== undefined) {
+      const existing = findAssumption(newCtx, typeExprHandle, nodeId);
+      if (existing === undefined || !typeLeq(liftedType, existing) || !typeLeq(existing, liftedType)) {
+        const cleaned = existing !== undefined
+          ? excludeAssumption(newCtx, typeExprHandle, nodeId)
+          : newCtx;
+        newCtx = extendContext(cleaned, typeExprHandle, nodeId, liftedType);
+      }
+    }
+    if (liftedConst !== undefined) {
+      const existing = findAssumption(newCtx, constExprHandle, nodeId);
+      if (existing === undefined || !constLatticeEquals(existing, liftedConst)) {
+        const cleaned = existing !== undefined
+          ? excludeAssumption(newCtx, constExprHandle, nodeId)
+          : newCtx;
+        newCtx = extendContext(cleaned, constExprHandle, nodeId, liftedConst);
+      }
+    }
 
-    const cleanCtx = existing !== undefined
-      ? excludeAssumption(parentCtx, typeExprHandle, nodeId)
-      : parentCtx;
-    const newCtx = extendContext(cleanCtx, typeExprHandle, nodeId, lifted);
+    if (newCtx === parentCtx) return;
     this.currentSpecContext.set(unit, newCtx);
     this.enqueue(typeAnalysis, unit.cfg.entry, newCtx);
+    this.enqueue(constAnalysis, unit.cfg.entry, newCtx);
   }
 
   /** Active speculation context for a unit. Readers of `typeAnalysis`
@@ -553,7 +585,6 @@ export const DEFAULT_PASSES: ReadonlyArray<Analysis<any, any>> = [
   speculationBlacklistAnalysis,
   typeAnalysis,
   constAnalysis,
-  speculativeConstAnalysis,
   purityBlockAnalysis,
   purityScopeAnalysis,
   livenessAnalysis,

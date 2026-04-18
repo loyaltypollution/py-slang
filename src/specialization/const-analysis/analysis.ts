@@ -1,6 +1,7 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import type { Context } from "../framework/context";
+import type { Analysis, AnalysisCtx } from "../framework/analysis";
+import { findAssumption, ROOT_CONTEXT, type Context } from "../framework/context";
 import type { FactStore } from "../framework/fact-store";
 import { runtimeWriteAnalysis } from "../framework/runtime-analyses";
 import type { BlockDfaSpec } from "../framework/interfaces";
@@ -15,7 +16,7 @@ import {
   constOf,
 } from "./lattice";
 
-function liftConst(observed: RawKind): ConstLattice | undefined {
+export function liftConst(observed: RawKind): ConstLattice | undefined {
   switch (observed.kind) {
     case "number":
     case "bool":
@@ -27,7 +28,10 @@ function liftConst(observed: RawKind): ConstLattice | undefined {
   }
 }
 
-/** See `type-analysis/analysis.ts:CombineObservation` for the contract. */
+/** See `type-analysis/analysis.ts:CombineObservation` for the contract.
+ *  Only `widenConstObservation` is used in production — narrowing is now
+ *  expressed as a Context assumption (see `constExprHandle` below) and the
+ *  visitor consults `findAssumption` under non-ROOT contexts. */
 export type CombineConstObservation = (staticVal: ConstLattice, observed: RawKind) => ConstLattice;
 
 export const widenConstObservation: CombineConstObservation = (staticVal, observed) => {
@@ -35,16 +39,38 @@ export const widenConstObservation: CombineConstObservation = (staticVal, observ
   return lifted !== undefined ? constJoin(staticVal, lifted) : staticVal;
 };
 
-const constMeet = (a: ConstLattice, b: ConstLattice): ConstLattice => {
+export const constMeet = (a: ConstLattice, b: ConstLattice): ConstLattice => {
   if (a.tag === "top") return b;
   if (b.tag === "top") return a;
   if (a.tag === "bottom" || b.tag === "bottom") return CONST_BOTTOM;
   return a.value === b.value ? a : CONST_BOTTOM;
 };
 
-export const narrowConstObservation: CombineConstObservation = (staticVal, observed) => {
-  const lifted = liftConst(observed);
-  return lifted !== undefined ? constMeet(staticVal, lifted) : staticVal;
+/** Assumption-binding identity used by Context, paired with
+ *  `typeExprHandle`. Observations that lift to a concrete `ConstLattice`
+ *  extend the unit's context with `(constExprHandle, nodeId, lifted)`; the
+ *  visitor's annotate meets the computed static fact with the bound value
+ *  under non-ROOT contexts. No fact-store traffic at this analysis;
+ *  transfer is a no-op. */
+export const constExprHandle: Analysis<number, ConstLattice> = {
+  id: Symbol("constExprHandle"),
+  debugName: "constExprHandle",
+  lattice: {
+    bottom: CONST_BOTTOM,
+    leq: (a, b) => {
+      if (a.tag === "bottom") return true;
+      if (b.tag === "top") return true;
+      if (a.tag === "top") return false;
+      if (b.tag === "bottom") return false;
+      return a.value === b.value;
+    },
+    join: constJoin,
+  },
+  edges: [],
+  tier: "analysis",
+  transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): ConstLattice | undefined {
+    return undefined;
+  },
 };
 
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
@@ -54,11 +80,22 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: number, val: ConstLattice) => void,
     private readonly combineObservation: CombineConstObservation,
+    private readonly context: Context,
   ) {}
 
+  /** Mirror of `TypeAnalysisVisitor.annotate`: ROOT combines static with any
+   *  runtime observation; non-ROOT ignores observations and `meet`s with any
+   *  ancestor-bound assumption at `node.id`. See
+   *  `type-analysis/analysis.ts:annotate` for the full rationale. */
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
-    const observed = this.factStore.tryRead(runtimeWriteAnalysis, node.id);
-    const combined = observed !== undefined ? this.combineObservation(val, observed) : val;
+    let combined: ConstLattice;
+    if (this.context === ROOT_CONTEXT) {
+      const observed = this.factStore.tryRead(runtimeWriteAnalysis, node.id);
+      combined = observed !== undefined ? this.combineObservation(val, observed) : val;
+    } else {
+      const assumption = findAssumption(this.context, constExprHandle, node.id);
+      combined = assumption !== undefined ? constMeet(val, assumption) : val;
+    }
     this.recordExprFact(node.id, combined);
     return combined;
   }
@@ -257,9 +294,9 @@ export function makeConstAnalysisModule(
       env: MutableEnv<ConstLattice>,
       slotLookup: SlotLookup,
       recordExprFact: (nodeId: number, val: ConstLattice) => void,
-      _context: Context,
+      context: Context,
     ): ExprNS.Visitor<ConstLattice> {
-      return new ConstAnalysisVisitor(factStore, env, slotLookup, recordExprFact, combineObservation);
+      return new ConstAnalysisVisitor(factStore, env, slotLookup, recordExprFact, combineObservation, context);
     },
     refineOnEdge(env, _edge) {
       return env;
@@ -268,8 +305,3 @@ export function makeConstAnalysisModule(
 }
 
 export const constAnalysisModule: BlockDfaSpec<ConstLattice> = makeConstAnalysisModule(widenConstObservation);
-
-/** Speculative variant: observations narrow rather than widen. See
- *  `type-analysis/analysis.ts:speculativeTypeAnalysisModule` for the contract. */
-export const speculativeConstAnalysisModule: BlockDfaSpec<ConstLattice> =
-  makeConstAnalysisModule(narrowConstObservation);

@@ -21,7 +21,6 @@ import type { FactStore } from "../../specialization/framework/fact-store";
 import type { Analysis, AnalysisCtx } from "../../specialization/framework/analysis";
 import {
   constAnalysis,
-  speculativeConstAnalysis,
   typeAnalysis,
 } from "../../specialization/framework/dfa-analyses";
 import { speculationBlacklistAnalysis } from "../../specialization/framework/runtime-analyses";
@@ -110,7 +109,6 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
       // request on the single IR cell per unit.
       { on: "fact", analysis: typeAnalysis, wake: blockToOwningUnit, contextPolicy: "root" },
       { on: "fact", analysis: constAnalysis, wake: blockToOwningUnit, contextPolicy: "root" },
-      { on: "fact", analysis: speculativeConstAnalysis, wake: blockToOwningUnit, contextPolicy: "root" },
       // Blacklist update at nodeId N → recompile the unit owning N.
       {
         on: "fact",
@@ -189,7 +187,7 @@ function snapshotMatches(
     if (factStore.tryRead(constAnalysis, block) !== prev.constFacts.get(block)) return false;
     if (factStore.tryRead(typeAnalysis, block) !== prev.typeFacts.get(block)) return false;
     if (factStore.tryRead(typeAnalysis, block, specContext) !== prev.speculativeTypeFacts.get(block)) return false;
-    if (factStore.tryRead(speculativeConstAnalysis, block) !== prev.speculativeConstFacts.get(block)) return false;
+    if (factStore.tryRead(constAnalysis, block, specContext) !== prev.speculativeConstFacts.get(block)) return false;
   }
   // Blacklist: any nodeId in the unit that's now blacklisted but wasn't at
   // the snapshot, or vice versa, invalidates the cache.
@@ -211,7 +209,7 @@ function captureSnapshot(factStore: FactStore, unit: FunctionUnit, specContext: 
     constFacts.set(block, factStore.tryRead(constAnalysis, block));
     typeFacts.set(block, factStore.tryRead(typeAnalysis, block));
     speculativeTypeFacts.set(block, factStore.tryRead(typeAnalysis, block, specContext));
-    speculativeConstFacts.set(block, factStore.tryRead(speculativeConstAnalysis, block));
+    speculativeConstFacts.set(block, factStore.tryRead(constAnalysis, block, specContext));
   }
   for (const nodeId of unit.blockOfNode.keys()) {
     if (factStore.tryRead(speculationBlacklistAnalysis, nodeId) === true) {
