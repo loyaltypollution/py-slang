@@ -78,13 +78,25 @@ export const widenObservation: CombineObservation = (staticVal, observed) => {
   return lifted !== undefined ? join(staticVal, lifted) : staticVal;
 };
 
+/** Equality over `TypeLattice` via two-way `leq` — the product lattice has
+ *  no canonical normalization, so structural equality derives from mutual
+ *  ordering. Exported so `typeExprHandle.specAnchor.valueEqual` and the
+ *  observation translator share one definition. */
+export const typeValueEqual = (a: TypeLattice | undefined, b: TypeLattice | undefined): boolean =>
+  a === b || (a !== undefined && b !== undefined && leq(a, b) && leq(b, a));
+
 /** Assumption-binding identity used by Context. Callers build a Context by
  *  extending a parent with `(typeExprHandle, nodeId, narrowedValue)`; the
  *  `TypeAnalysisVisitor` consults `findAssumption` at each node visit and
  *  meets the computed static fact with the bound value. The handle itself
  *  is never scheduled — its `transfer` is a no-op and the fact-store never
  *  carries cells under this Analysis — it exists purely as a per-node
- *  assumption namespace keyed into the Context chain. */
+ *  assumption namespace keyed into the Context chain.
+ *
+ *  `specAnchor` — the pairing with `typeAnalysis` and `typeValueEqual` used
+ *  by `Worklist.widenGuard`'s lineage walk — is wired in `dfa-analyses.ts`
+ *  at module load. Kept out of this file to avoid a top-level circular
+ *  import with `dfa-analyses.ts`. */
 export const typeExprHandle: Analysis<number, TypeLattice> = {
   id: Symbol("typeExprHandle"),
   debugName: "typeExprHandle",

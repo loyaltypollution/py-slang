@@ -118,6 +118,22 @@ export function addEdge<K>(analysis: Analysis<K, any>, spec: EdgeSpec<K>): void 
   (analysis.edges as EdgeSpec<K>[]).push(spec);
 }
 
+/** Pairing required to back a speculation context assumption. Carries the
+ *  block DFA whose per-expression cells store the lattice value named by
+ *  the handle, plus an equality predicate over that value type. Consumed by
+ *  `Worklist.widenGuard` → `lineageOf` to diff the narrowed fact against
+ *  the widen-candidate fact on each chain-link exclusion. `blockAnalysis`
+ *  is a thunk to tolerate the circular import between a handle's defining
+ *  module and the block-analysis factory (`dfa-analyses.ts`). */
+export interface SpecAnchorInfo<V> {
+  readonly blockAnalysis: () => Analysis<any, any>;
+  // Method-shorthand form so V stays bivariant on inputs — matches the
+  // variance the rest of `Analysis<K, V>` (Lattice's leq/join) already has,
+  // so `Analysis<number, RawKind>` remains assignable to `Analysis<number,
+  // unknown>` where callers parameterize V from an unknown-typed value.
+  valueEqual(a: V | undefined, b: V | undefined): boolean;
+}
+
 /** A computation over the fact store. `transfer` returning `undefined` means "no write". */
 export interface Analysis<K, V> {
   readonly id: symbol;
@@ -130,8 +146,21 @@ export interface Analysis<K, V> {
    *  to `"analysis"`, which was a miscompile vector for any future
    *  priority-sensitive consumer. */
   readonly tier: "runtime" | "analysis";
+  /** Present iff this analysis is usable as a speculation-context anchor
+   *  (i.e. is a valid `SpecFactRef.analysis`). Populated at construction by
+   *  handles that want backends to register guards against them; absence
+   *  makes the analysis structurally unusable as a guard anchor — the
+   *  compile-time error is how `SpecAnchor<K, V>` narrows the type. */
+  readonly specAnchor?: SpecAnchorInfo<V>;
   transfer(factStore: FactStore, ctx: AnalysisCtx, key: K): V | undefined;
 }
+
+/** An `Analysis` that carries a `specAnchor`. `SpecFactRef` refines to this
+ *  type so backends can only publish guards against analyses with the
+ *  pairing declared — a forgotten pairing becomes a compile error at the
+ *  `registerGuard` call site instead of a silent degradation inside
+ *  `Worklist.widenGuard`. */
+export type SpecAnchor<K, V> = Analysis<K, V> & { readonly specAnchor: SpecAnchorInfo<V> };
 
 /** Unit-topology lookups; store access goes through the `FactStore` parameter.
  *  `currentContext` is the speculation context under which the current

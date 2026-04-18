@@ -32,11 +32,10 @@ import {
   constAnalysis,
 } from "./dfa-analyses";
 import { readExprFact } from "./dfa-factory";
-import { liftType, typeExprHandle } from "../type-analysis/analysis";
-import { constExprHandle, liftConst } from "../const-analysis/analysis";
+import { liftType, typeExprHandle, typeValueEqual } from "../type-analysis/analysis";
+import { constExprHandle, constValueEqual, liftConst } from "../const-analysis/analysis";
 import type { RawKind } from "./raw-value";
 import type { TypeLattice } from "../type-analysis/lattice";
-import { leq as typeLeq } from "../type-analysis/lattice";
 import type { ConstLattice } from "../const-analysis/lattice";
 
 /** Transform-safe projection of the DFA fact-store: only reads that are
@@ -100,7 +99,10 @@ type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq
  *  fact publishes this ref via `Worklist.registerGuard` so the engine can
  *  trace back to the assumption(s) that drove the narrowing when the guard
  *  fires. `analysis` and `key` together name the fact-store cell; no value
- *  is carried (the live value is read at deopt time from the fact store). */
+ *  is carried (the live value is read at deopt time from the fact store).
+ *  `analysis` must carry a `specAnchor` (wired in `dfa-analyses.ts`);
+ *  `Worklist.widenGuard` → `lineageOf` throws loudly if the pairing is
+ *  missing, which is louder than the old silent fallback-to-whole-unit. */
 export interface SpecFactRef<K = unknown, V = unknown> {
   readonly analysis: Analysis<K, V>;
   readonly key: K;
@@ -112,38 +114,6 @@ export interface SpecFactRef<K = unknown, V = unknown> {
 export interface GuardRegistrar {
   registerGuard<K, V>(guardNodeId: number, ref: SpecFactRef<K, V>): void;
 }
-
-/** Structural equality on ConstLattice values — used by the observation
- *  translator to dedup assumption extensions when the same concrete value
- *  is observed repeatedly. */
-function constLatticeEquals(a: ConstLattice, b: ConstLattice): boolean {
-  if (a.tag !== b.tag) return false;
-  if (a.tag === "const" && b.tag === "const") return a.value === b.value;
-  return true;
-}
-
-/** Resolve the block-keyed DFA analysis that stores the per-expression fact
- *  under a given context-assumption handle, together with the per-node
- *  value-equality test for that fact. Backends publish refs against the
- *  handle (`constExprHandle` / `typeExprHandle`) because that's the identity
- *  named by the Context chain; the engine reads the actual fact out of the
- *  block DFA's `exprFacts` map and compares it via the handle-appropriate
- *  value-lattice equality here. */
-interface HandleResolution {
-  readonly blockAnalysis: Analysis<BasicBlock, any>;
-  readonly valueEqual: (a: unknown, b: unknown) => boolean;
-}
-const typeValueEqual = (a: unknown, b: unknown): boolean =>
-  a === b || (a !== undefined && b !== undefined &&
-    typeLeq(a as TypeLattice, b as TypeLattice) &&
-    typeLeq(b as TypeLattice, a as TypeLattice));
-const constValueEqual = (a: unknown, b: unknown): boolean =>
-  a === b || (a !== undefined && b !== undefined &&
-    constLatticeEquals(a as ConstLattice, b as ConstLattice));
-const BLOCK_ANALYSIS_FOR_HANDLE = new Map<Analysis<any, any>, HandleResolution>([
-  [typeExprHandle, { blockAnalysis: typeAnalysis, valueEqual: typeValueEqual }],
-  [constExprHandle, { blockAnalysis: constAnalysis, valueEqual: constValueEqual }],
-]);
 
 /** Identity-key for an assumption. `analysis` is compared by symbol identity
  *  (Analyses are module singletons); `key` is compared by the JS `===`
@@ -574,7 +544,7 @@ export class Worklist {
     let newCtx = parentCtx;
     if (liftedType !== undefined) {
       const existing = findAssumption(newCtx, typeExprHandle, nodeId);
-      if (existing === undefined || !typeLeq(liftedType, existing) || !typeLeq(existing, liftedType)) {
+      if (existing === undefined || !typeValueEqual(liftedType, existing)) {
         const cleaned = existing !== undefined
           ? excludeAssumption(newCtx, typeExprHandle, nodeId)
           : newCtx;
@@ -583,7 +553,7 @@ export class Worklist {
     }
     if (liftedConst !== undefined) {
       const existing = findAssumption(newCtx, constExprHandle, nodeId);
-      if (existing === undefined || !constLatticeEquals(existing, liftedConst)) {
+      if (existing === undefined || !constValueEqual(existing, liftedConst)) {
         const cleaned = existing !== undefined
           ? excludeAssumption(newCtx, constExprHandle, nodeId)
           : newCtx;
@@ -725,9 +695,15 @@ export class Worklist {
     ctx: Context,
     unit: FunctionUnit,
   ): Assumption[] {
-    const resolved = BLOCK_ANALYSIS_FOR_HANDLE.get(ref.analysis);
-    if (resolved === undefined) return [];
-    const { blockAnalysis, valueEqual } = resolved;
+    const anchor = ref.analysis.specAnchor;
+    if (anchor === undefined) {
+      throw new Error(
+        `[Worklist.widenGuard] analysis "${ref.analysis.debugName}" has no specAnchor — ` +
+        `declare its block-DFA/valueEqual pairing in dfa-analyses.ts before registering guards against it.`,
+      );
+    }
+    const blockAnalysis = anchor.blockAnalysis();
+    const valueEqual = anchor.valueEqual;
     const nodeId = ref.key as number;
     const block = unit.blockOfNode.get(nodeId);
     if (block === undefined) return [];
