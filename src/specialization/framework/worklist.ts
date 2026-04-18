@@ -500,8 +500,8 @@ export class Worklist {
    *  widen-unit, lineageOf synthesis). */
   private enqueueNarrowingEntry(unit: FunctionUnit, context: Context): void {
     for (const n of this.narrowings) {
-      const seed = n.direction === "backward" ? unit.cfg.exit : unit.cfg.entry;
-      this.enqueue(n.blockAnalysis(), seed, context);
+      const analysis = n.blockAnalysis();
+      this.enqueue(analysis, analysis.seed(unit), context);
     }
   }
 

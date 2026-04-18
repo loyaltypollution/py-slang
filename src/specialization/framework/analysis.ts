@@ -19,6 +19,7 @@ import type { FunctionUnit } from "./function-unit";
 import type { FactStore } from "./fact-store";
 import type { Context } from "./context";
 import type { RawKind } from "./raw-value";
+import type { BlockFixpointAnalysis } from "./dfa-factory";
 
 /** Value-space algebra. `leq` is the partial order (a ⊑ b); `join` is the
  *  least upper bound; `bottom` is returned for unwritten cells. `eq` is
@@ -194,14 +195,8 @@ export interface Analysis<K, V> {
  *  function's unit rather than the enclosing caller's. */
 export interface Narrowing<V> {
   readonly handle: Analysis<number, V>;
-  readonly blockAnalysis: () => Analysis<any, any>;
+  readonly blockAnalysis: () => BlockFixpointAnalysis<any>;
   readonly observationSource: Analysis<number, RawKind>;
-  /** Direction of the underlying block DFA. The observation→context
-   *  translator re-seeds Kildall at the direction-appropriate block:
-   *  `unit.cfg.entry` for forward, `unit.cfg.exit` for backward. Mandatory
-   *  — a default would silently mis-seed backward narrowings at the wrong
-   *  end of the CFG, converging on the identity fact with no error. */
-  readonly direction: "forward" | "backward";
   resolveUnit?(ctx: AnalysisCtx, key: number): FunctionUnit | undefined;
   lift(observed: RawKind): V | undefined;
 }

@@ -8,17 +8,20 @@ import {
   typeRequirementAnalysis,
 } from "../type-requirement-analysis/analysis";
 import { transferBlock } from "./block-transfer";
-import type { BasicBlock } from "./cfg";
-import { nodeIdToBlock, type DfaBlockFact, makeBlockFixpointAnalysis } from "./dfa-factory";
+import {
+  nodeIdToBlock,
+  type BlockFixpointAnalysis,
+  makeBlockFixpointAnalysis,
+} from "./dfa-factory";
 import type { BlockDfaSpec } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
-import { addEdge, type Analysis, type Narrowing } from "./analysis";
+import { addEdge, type Narrowing } from "./analysis";
 import { runtimeWriteAnalysis } from "./runtime-analyses";
 
 function dfaAnalysis<L>(
   debugName: string,
   spec: BlockDfaSpec<L>,
-): Analysis<BasicBlock, DfaBlockFact<L>> {
+): BlockFixpointAnalysis<L> {
   const analysis = makeBlockFixpointAnalysis<L>({
     debugName,
     direction: spec.direction,
@@ -37,9 +40,9 @@ function dfaAnalysis<L>(
   return analysis;
 }
 
-export const typeAnalysis: Analysis<BasicBlock, DfaBlockFact<TypeLattice>> =
+export const typeAnalysis: BlockFixpointAnalysis<TypeLattice> =
   dfaAnalysis("typeAnalysis", typeAnalysisModule);
-export const constAnalysis: Analysis<BasicBlock, DfaBlockFact<ConstLattice>> =
+export const constAnalysis: BlockFixpointAnalysis<ConstLattice> =
   dfaAnalysis("constAnalysis", constAnalysisModule);
 
 /** Narrowing dimensions exposed to the observation→context translator.
@@ -50,14 +53,12 @@ export const typeNarrowing: Narrowing<TypeLattice> = {
   handle: typeExprHandle,
   blockAnalysis: () => typeAnalysis,
   observationSource: runtimeWriteAnalysis,
-  direction: "forward",
   lift: liftType,
 };
 export const constNarrowing: Narrowing<ConstLattice> = {
   handle: constExprHandle,
   blockAnalysis: () => constAnalysis,
   observationSource: runtimeWriteAnalysis,
-  direction: "forward",
   lift: liftConst,
 };
 

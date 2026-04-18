@@ -43,6 +43,7 @@ import type {
 } from "../framework/analysis";
 import {
   makeBlockFixpointAnalysis,
+  type BlockFixpointAnalysis,
   type DfaBlockFact,
 } from "../framework/dfa-factory";
 import { MutableEnv } from "../framework/mutable-env";
@@ -256,7 +257,7 @@ function transferBlockBackward(
  *  program point). At `unit.cfg.entry` this is the function's pre-body
  *  requirement — the set of parameter-type constraints that, if checked
  *  at entry, discharge the return-kind speculation for the whole body. */
-export const typeRequirementAnalysis: Analysis<BasicBlock, DfaBlockFact<TypeLattice>> =
+export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
   makeBlockFixpointAnalysis<TypeLattice>({
     debugName: "typeRequirementAnalysis",
     direction: "backward",
@@ -283,7 +284,6 @@ export const returnKindNarrowing: Narrowing<TypeLattice> = {
   handle: returnKindHandle,
   blockAnalysis: () => typeRequirementAnalysis,
   observationSource: runtimeReturnAnalysis,
-  direction: "backward",
   resolveUnit: (ctx, key) => ctx.unitForFdId(key),
   lift: liftType,
 };

@@ -29,6 +29,16 @@ export const nodeIdToBlock = (
   return block === undefined ? [] : [block];
 };
 
+/** Analysis produced by `makeBlockFixpointAnalysis`. Adds `seed(unit)` —
+ *  the block at which the fixpoint is seeded for `unit`: entry for
+ *  forward, exit for backward. Exposed so consumers re-seeding the
+ *  fixpoint (e.g. the worklist's narrowing translator) don't re-derive
+ *  direction from a parallel surface field. */
+export interface BlockFixpointAnalysis<L>
+  extends Analysis<BasicBlock, DfaBlockFact<L>> {
+  seed(unit: FunctionUnit): BasicBlock;
+}
+
 /** Output fact for one block under an analysis analysis. */
 export interface DfaBlockFact<L> {
   /** Slot-keyed OUT env for forward successor / backward predecessor merging. */
@@ -78,7 +88,7 @@ type DfaConfig<L> = DfaConfigBase<L> & (
 
 export function makeBlockFixpointAnalysis<L>(
   config: DfaConfig<L>,
-): Analysis<BasicBlock, DfaBlockFact<L>> {
+): BlockFixpointAnalysis<L> {
   // Frozen singleton: `FactStore.read` returns this for unwritten cells. Any
   // caller that mutates `outEnv` or `exprFacts` in place corrupts every other
   // unwritten read through the same analysis. `Object.freeze` prevents
@@ -206,12 +216,13 @@ export function makeBlockFixpointAnalysis<L>(
   const seedKey = (unit: FunctionUnit): BasicBlock =>
     config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
 
-  const blockKeyedAnalysis: Analysis<BasicBlock, DfaBlockFact<L>> = {
+  const blockKeyedAnalysis: BlockFixpointAnalysis<L> = {
     id: blockPassId,
     debugName: `${config.debugName}:blocks`,
     lattice: envLattice,
     edges: edgesArr,
     tier: "analysis",
+    seed: seedKey,
     transfer(factStore: FactStore, ctx: AnalysisCtx, block: BasicBlock): DfaBlockFact<L> | undefined {
       const unit = block.unit;
       const inEnv = inEnvFor(factStore, block, unit, ctx.currentContext);
