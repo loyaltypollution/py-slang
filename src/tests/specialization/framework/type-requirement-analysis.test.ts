@@ -40,6 +40,7 @@ import {
 import {
   requirementAtEntry,
   returnKindHandle,
+  returnKindNarrowing,
   typeRequirementAnalysis,
   type EntryRequirement,
 } from "../../../specialization/type-requirement-analysis/analysis";
@@ -49,6 +50,8 @@ import {
   DEFAULT_TRANSFORMS,
   Worklist,
 } from "../../../specialization/framework/worklist";
+import type { Narrowing } from "../../../specialization/framework/analysis";
+import { typeNarrowing } from "../../../specialization/framework/dfa-analyses";
 
 function build(code: string): { ast: StmtNS.FileInput; worklist: Worklist } {
   const script = code + "\n";
@@ -299,6 +302,38 @@ def hot(x):
     expect(seen[0].provable.size).toBe(0);
     expect(seen[0].unprovable.size).toBe(0);
     expect(seen[1].provable.get(0)?.kinds).toBe(INT_BIT);
+  });
+
+  test("Worklist construction throws when narrowings on one source disagree on resolveUnit", () => {
+    // Two narrowings on the same observationSource (runtimeReturnAnalysis)
+    // declaring different resolveUnits used to silently defer to the first.
+    // Now construction throws so the misconfiguration surfaces before any
+    // observation fires.
+    const byFdId: Narrowing<TypeLattice> = {
+      ...returnKindNarrowing,
+    };
+    // Copy the handle identity but swap resolveUnit to the node resolver —
+    // conflicts with returnKindNarrowing's fdId resolver.
+    const byNode: Narrowing<TypeLattice> = {
+      ...returnKindNarrowing,
+      resolveUnit: (ctx, key) => ctx.unitForNode(key),
+    };
+
+    const script = "x = 1\n";
+    const ast = parse(script) as StmtNS.FileInput;
+    const { environments } = analyzeWithEnvironments(ast, script, 4);
+
+    expect(() =>
+      new Worklist(
+        ast,
+        environments,
+        DEFAULT_PASSES,
+        undefined,
+        DEFAULT_TRANSFORMS,
+        undefined,
+        [typeNarrowing, byFdId, byNode],
+      ),
+    ).toThrow(/disagree on resolveUnit/);
   });
 
   test("write observation does NOT extend return-kind context", () => {

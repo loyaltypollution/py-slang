@@ -82,6 +82,40 @@ function specRefKey(r: SpecFactRef): string {
 }
 
 
+/** Default unit resolver for narrowings whose key is a nodeId. Shared
+ *  identity so `buildUnitResolverBySource`'s agreement check compares
+ *  function references rather than structural equivalents. */
+const NODE_UNIT_RESOLVER = (ctx: AnalysisCtx, key: number): FunctionUnit | undefined =>
+  ctx.unitForNode(key);
+
+/** Group narrowings by `observationSource` and assert each group agrees on
+ *  `resolveUnit`. Disagreement used to silently resolve to the first
+ *  narrowing's value — the later narrowing's context extension landed on
+ *  the wrong unit with no error. Throws at construction so the registration
+ *  bug surfaces before any observation fires. */
+function buildUnitResolverBySource(
+  narrowings: ReadonlyArray<Narrowing<any>>,
+): Map<Analysis<number, RawKind>, (ctx: AnalysisCtx, key: number) => FunctionUnit | undefined> {
+  const bySource = new Map<
+    Analysis<number, RawKind>,
+    (ctx: AnalysisCtx, key: number) => FunctionUnit | undefined
+  >();
+  for (const n of narrowings) {
+    const resolver = n.resolveUnit ?? NODE_UNIT_RESOLVER;
+    const existing = bySource.get(n.observationSource);
+    if (existing === undefined) {
+      bySource.set(n.observationSource, resolver);
+      continue;
+    }
+    if (existing !== resolver) {
+      throw new Error(
+        `[Worklist] narrowings sharing observationSource=${n.observationSource.debugName} disagree on resolveUnit — all narrowings on one source must resolve to the same unit.`,
+      );
+    }
+  }
+  return bySource;
+}
+
 const TIER_RANK = { runtime: 0, analysis: 1 } as const;
 
 const compareItems = (a: QItem, b: QItem): number => {
@@ -160,6 +194,17 @@ export class Worklist {
    *  narrowing is a one-line registration here, not a framework edit. */
   private readonly narrowings: ReadonlyArray<Narrowing<any>>;
 
+  /** Per-observation-source unit resolver, derived from `narrowings` at
+   *  construction. All narrowings sharing an `observationSource` must
+   *  agree on `resolveUnit` — the observation translator uses a single
+   *  resolver per source; disagreement used to silently resolve via the
+   *  first narrowing's value, leaving the later narrowing's context
+   *  extension to land on the wrong unit with no error. */
+  private readonly unitResolverBySource: Map<
+    Analysis<number, RawKind>,
+    (ctx: AnalysisCtx, key: number) => FunctionUnit | undefined
+  >;
+
   constructor(
     ast: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
@@ -171,6 +216,7 @@ export class Worklist {
   ) {
     this.specStrategy = specStrategy;
     this.narrowings = narrowings;
+    this.unitResolverBySource = buildUnitResolverBySource(narrowings);
     this.registry = registry ?? buildFunctionRegistry(ast);
     this.functionEnvironments = functionEnvironments;
     const built = buildFunctionUnits(ast, functionEnvironments, this.registry);
@@ -502,11 +548,9 @@ export class Worklist {
     const applicable = this.narrowings.filter(n => n.observationSource === source);
     if (applicable.length === 0) return;
 
-    // All applicable narrowings must agree on the owning unit; use the first
-    // narrowing's resolver (defaulting to node-keyed lookup). In practice
-    // each observation source has a single unit-resolution convention.
-    const resolveUnit = applicable[0].resolveUnit
-      ?? ((ctx: AnalysisCtx, k: number) => ctx.unitForNode(k));
+    // Per-source resolver is validated at construction — all narrowings on
+    // this source agree on the resolver that ran here.
+    const resolveUnit = this.unitResolverBySource.get(source) ?? NODE_UNIT_RESOLVER;
     const unit = resolveUnit(this.passCtx, key);
     if (unit === undefined) return;
 
