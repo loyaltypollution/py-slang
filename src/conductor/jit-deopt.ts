@@ -13,7 +13,7 @@ export const MAX_DEOPT_RETRIES = 32;
  *  `MAX_DEOPT_RETRIES` to avoid infinite loops on a buggy speculator.
  *
  *  `shouldRethrow` lets the caller propagate its own control-flow
- *  signals (e.g. `AbortError` from the tiered evaluator's race) without
+ *  signals (e.g. an `AbortError` from a caller-specific race) without
  *  engaging the deopt path. */
 export async function runWithDeopt<T>(
   execute: () => T | Promise<T>,

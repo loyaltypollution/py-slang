@@ -43,7 +43,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const program = compiler.compileProgram(ast);
 
       const interpreter = new SVMLInterpreter(program, {
-        sendOutput: this.conductor.sendOutput,
+        sendOutput: msg => this.conductor.sendOutput(msg),
         ...makeJitObservers(worklist),
       });
 
