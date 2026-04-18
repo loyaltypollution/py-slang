@@ -128,6 +128,32 @@ describe("ContextInterner", () => {
     expect(findAssumption(second, p, 7)).toBe(20);
   });
 
+  it("rebuild dedups structurally-equal values across disjoint trie subtrees", () => {
+    // Regression: with only the target link consulting valueEqual (the
+    // original design), rebuilds that walked through a non-target link
+    // whose value was structurally equal to a trie entry under a DIFFERENT
+    // parent path would use ref-equality and fail to converge. Two arrival
+    // orders reaching the same canonical chain would fork the trie.
+    const interner = new ContextInterner();
+    const ha = makeAnalysis<number, Boxed>("a-handle", boxedLattice);
+    const hb = makeAnalysis<number, Boxed>("b-handle", boxedLattice);
+
+    // Path A: a@1=box(10), then b@1=box(20) (already canonical — append path).
+    const ctxA = interner.extend(
+      interner.extend(ROOT_CONTEXT, ha, 1, box(10), boxedEqual),
+      hb, 1, box(20), boxedEqual,
+    );
+    // Path B: b@1=box(20) first, then a@1=box(10) (a < b canonically — rebuild
+    // path). The rebuild re-interns box(20) under ROOT→a@1=box(10), which is
+    // a different subtree than the one path A created — ref-equality fails to
+    // find path A's canonical node. Registered valueEqual finds it.
+    const ctxB = interner.extend(
+      interner.extend(ROOT_CONTEXT, hb, 1, box(20), boxedEqual),
+      ha, 1, box(10), boxedEqual,
+    );
+    expect(ctxA).toBe(ctxB);
+  });
+
   it("exclude on ctx with no match returns ctx unchanged (ref-equal)", () => {
     const interner = new ContextInterner();
     const p = makeAnalysis<number, number>("p", trivialLattice);

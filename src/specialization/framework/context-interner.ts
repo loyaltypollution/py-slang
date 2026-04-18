@@ -18,16 +18,25 @@
 //      produced — enabling sibling IR cache hits.
 //
 // Trie shape: `parent -> handle -> key -> ValueBucket`. A ValueBucket is a
-// small array scanned linearly via `valueEqual` — ConstLattice `const(v)` is
-// allocated fresh per call, so structural equality is the only sound way to
-// dedup its values. Per-bucket cardinality is bounded by the distinct observed
-// values at one (handle, nodeId) site (typically 1–3).
+// small array scanned linearly via the handle's registered `valueEqual`.
+// Per-bucket cardinality is bounded by the distinct observed values at one
+// (handle, nodeId) site (typically 1–3).
+//
+// Value-equality registration: each handle has a single `valueEqual`
+// predicate (the narrowing's `valueEqual`, a module-level constant). The
+// interner registers it on first extend and reuses it for every subsequent
+// lookup — internChild, rebuildWith, internList. This is load-bearing for
+// rebuild correctness: a chain flattened during rebuild carries values from
+// multiple trie subtrees, and `const(v)` from one subtree is reference-
+// different from `const(v)` in another. Using ref-equality here would fork
+// the trie where it should have converged, defeating sibling canonicality.
 
 import type { Analysis } from "./analysis";
 import type { Assumption, Context } from "./context";
 import { ROOT_CONTEXT } from "./context";
 
-const refEq = <V>(a: V, b: V): boolean => a === b;
+type ValueEqual = (a: unknown, b: unknown) => boolean;
+const refEq: ValueEqual = (a, b) => a === b;
 
 /** Total order on (analysis.debugName, key). `debugName` is globally unique
  *  across registered analyses; keys are node ids (numbers) for narrowings.
@@ -58,35 +67,46 @@ export class ContextInterner {
     Map<Analysis<any, any>, Map<unknown, ValueEntry[]>>
   > = new Map();
 
+  /** Per-handle value-equality predicate. Registered on first extend that
+   *  passes a non-default `valueEqual`; first registration wins (narrowing
+   *  equalities are module-level constants, so the invariant is stable in
+   *  practice). Handles without a registration use reference equality,
+   *  which suffices for interned lattice singletons. */
+  private readonly equalities: Map<Analysis<any, any>, ValueEqual> = new Map();
+
   /** Extend `parent` with `(handle, key, value)`, returning a canonical
    *  Context. `valueEqual` is consulted to deduplicate structurally-equal
-   *  values that are not reference-equal (e.g. `ConstLattice.const(v)`); when
-   *  omitted, reference equality is used. Defaults suffice for interned
-   *  singleton values (e.g. `INT_POS`) and for rebuild paths where all values
-   *  are already canonical. */
+   *  values that are not reference-equal (e.g. `ConstLattice.const(v)`);
+   *  when omitted, reference equality is used. The first non-default
+   *  `valueEqual` passed for a given `handle` is registered and used for all
+   *  subsequent ops (including rebuild paths driven by `exclude` and by
+   *  collisions under this handle on other extend calls). */
   extend<K, V>(
     parent: Context,
     handle: Analysis<K, V>,
     key: K,
     value: V,
-    valueEqual: (a: V, b: V) => boolean = refEq,
+    valueEqual?: (a: V, b: V) => boolean,
   ): Context {
+    if (valueEqual !== undefined) {
+      this.registerEquality(handle, valueEqual as unknown as ValueEqual);
+    }
     const parentAssumption = parent.assumption;
+    if (parentAssumption === undefined) {
+      return this.internChild(parent, handle, key, value);
+    }
     const newLink: Assumption = {
       analysis: handle as Analysis<unknown, unknown>,
       key: key as unknown,
       value: value as unknown,
     };
-    if (parentAssumption === undefined) {
-      return this.internChild(parent, handle, key, value, valueEqual);
-    }
     const cmp = compareAssumption(newLink, parentAssumption);
     if (cmp > 0) {
-      return this.internChild(parent, handle, key, value, valueEqual);
+      return this.internChild(parent, handle, key, value);
     }
     // cmp === 0 (same (handle, key) — replace) or cmp < 0 (sorts earlier —
     // must rebuild). Either path goes through rebuildWith.
-    return this.rebuildWith(parent, handle, key, value, valueEqual);
+    return this.rebuildWith(parent, handle, key, value);
   }
 
   /** Remove every link at `(handle, key)` from `ctx`. Identity-returns `ctx`
@@ -126,12 +146,23 @@ export class ContextInterner {
     return count;
   }
 
+  private registerEquality<K, V>(
+    handle: Analysis<K, V>,
+    valueEqual: ValueEqual,
+  ): void {
+    const key = handle as unknown as Analysis<any, any>;
+    if (!this.equalities.has(key)) this.equalities.set(key, valueEqual);
+  }
+
+  private equalityFor(handle: Analysis<any, any>): ValueEqual {
+    return this.equalities.get(handle) ?? refEq;
+  }
+
   private internChild<K, V>(
     parent: Context,
     handle: Analysis<K, V>,
     key: K,
     value: V,
-    valueEqual: (a: V, b: V) => boolean,
   ): Context {
     const handleAsKey = handle as unknown as Analysis<any, any>;
     let byHandle = this.children.get(parent);
@@ -149,8 +180,9 @@ export class ContextInterner {
       bucket = [];
       byKey.set(key, bucket);
     }
+    const eq = this.equalityFor(handleAsKey);
     for (const entry of bucket) {
-      if (valueEqual(entry.value as V, value)) return entry.node;
+      if (eq(entry.value, value)) return entry.node;
     }
     const node: Context = Object.freeze({
       parent,
@@ -173,7 +205,6 @@ export class ContextInterner {
     handle: Analysis<K, V>,
     key: K,
     value: V,
-    valueEqual: (a: V, b: V) => boolean,
   ): Context {
     const links: Assumption[] = [];
     const handleAsKey = handle as unknown as Analysis<unknown, unknown>;
@@ -190,26 +221,13 @@ export class ContextInterner {
       value: value as unknown,
     });
     links.sort(compareAssumption);
-    // For the target (handle, key), use the caller-supplied valueEqual so a
-    // freshly-observed value dedups against a canonical sibling. All other
-    // links come from an already-canonical parent chain and are ref-equal to
-    // their interned representatives, so default === suffices.
-    return this.internList(links, handleAsKey, key as unknown, valueEqual as (a: unknown, b: unknown) => boolean);
+    return this.internList(links);
   }
 
-  private internList(
-    sorted: ReadonlyArray<Assumption>,
-    targetHandle?: Analysis<unknown, unknown>,
-    targetKey?: unknown,
-    targetEqual?: (a: unknown, b: unknown) => boolean,
-  ): Context {
+  private internList(sorted: ReadonlyArray<Assumption>): Context {
     let cur: Context = ROOT_CONTEXT;
     for (const a of sorted) {
-      const useTarget = targetEqual !== undefined
-        && a.analysis === targetHandle
-        && a.key === targetKey;
-      const eq = useTarget ? targetEqual : refEq;
-      cur = this.internChild(cur, a.analysis, a.key, a.value, eq);
+      cur = this.internChild(cur, a.analysis, a.key, a.value);
     }
     return cur;
   }
