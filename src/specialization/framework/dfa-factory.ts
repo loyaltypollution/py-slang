@@ -150,6 +150,7 @@ export function makeBlockFixpointAnalysis<L>(
         exprFacts: exprFactsJoin(a.exprFacts, b.exprFacts),
       };
     },
+    eq: (a, b) => a === b || (compoundLeq(a, b) && compoundLeq(b, a)),
   };
 
   const blockPassId = Symbol(`${config.debugName}:blocks`);

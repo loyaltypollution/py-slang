@@ -35,6 +35,7 @@ const rawValueLattice: Lattice<RawKind> = {
     a.kind === "unknown" || b.kind === "unknown"
       ? RAW_TOP
       : rawKindEquals(a, b) ? a : RAW_TOP,
+  eq: (a, b) => a === b || rawKindEquals(a, b),
 };
 
 /** Runtime observation of per-node value writes. Key = NodeId, value = RawKind.
@@ -108,6 +109,8 @@ export const saturatingCountLattice: Lattice<number> = {
   leq: (a, b) =>
     Math.min(RUNTIME_CALL_COUNT_SAT, a) <= Math.min(RUNTIME_CALL_COUNT_SAT, b),
   join: (a, b) => Math.min(RUNTIME_CALL_COUNT_SAT, Math.max(a, b)),
+  eq: (a, b) =>
+    Math.min(RUNTIME_CALL_COUNT_SAT, a) === Math.min(RUNTIME_CALL_COUNT_SAT, b),
 };
 
 /** Runtime observation of function-entry counts. Key = FunctionDef.id. */

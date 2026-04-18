@@ -21,11 +21,18 @@ import type { Context } from "./context";
 import type { RawKind } from "./raw-value";
 
 /** Value-space algebra. `leq` is the partial order (a ⊑ b); `join` is the
- *  least upper bound; `bottom` is returned for unwritten cells. */
+ *  least upper bound; `bottom` is returned for unwritten cells. `eq` is
+ *  structural equality — the antisymmetric closure of `leq`. It's a required
+ *  field, so callers say `lat.eq(a, b)` the same way they say
+ *  `lat.leq(a, b)` / `lat.join(a, b)`. Authors typically define it as
+ *  `(a, b) => a === b || (leq(a, b) && leq(b, a))`; the `a === b` shortcut
+ *  hits frequently for interned lattice singletons. A faster custom
+ *  implementation is allowed provided it stays semantically equivalent. */
 export interface Lattice<V> {
   readonly bottom: V;
   leq(a: V, b: V): boolean;
   join(a: V, b: V): V;
+  eq(a: V, b: V): boolean;
 }
 
 /** Bounded lattice: adds `top` and `meet` to `Lattice<V>`. Required by DFA
@@ -149,11 +156,11 @@ export interface Analysis<K, V> {
 }
 
 /** A single dimension along which runtime observations can extend a
- *  speculation context. Bundles everything needed to participate as a
- *  speculation anchor: the identity (`handle`) named in Context assumption
- *  chains; the block DFA whose per-expression cells store the lattice
- *  value; the lift from raw observation to lattice value; and the equality
- *  predicate the lineage walk uses to diff facts on assumption exclusion.
+ *  speculation context. Bundles the identity (`handle`) named in Context
+ *  assumption chains, the block DFA whose per-expression cells store the
+ *  lattice value, and the lift from raw observation to lattice value.
+ *  Value equality is derived from `handle.lattice.leq` via `latticeEqual`
+ *  at use sites — narrowings do not carry their own equality.
  *
  *  The worklist iterates a registered list of `Narrowing`s in four
  *  data-driven sites: observation→context translation, `widenGuard` and
@@ -168,11 +175,6 @@ export interface Narrowing<V> {
   readonly handle: Analysis<number, V>;
   readonly blockAnalysis: () => Analysis<any, any>;
   lift(observed: RawKind): V | undefined;
-  // Method-shorthand form so V stays bivariant on inputs — matches the
-  // variance the rest of `Analysis<K, V>` (Lattice's leq/join) already has,
-  // so `Narrowing<RawKind>` remains assignable to `Narrowing<unknown>`
-  // where callers parameterize V from an unknown-typed value.
-  valueEqual(a: V | undefined, b: V | undefined): boolean;
 }
 
 /** Unit-topology lookups; store access goes through the `FactStore` parameter.

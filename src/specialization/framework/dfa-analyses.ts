@@ -1,6 +1,6 @@
-import { constAnalysisModule, constExprHandle, constValueEqual, liftConst } from "../const-analysis/analysis";
+import { constAnalysisModule, constExprHandle, liftConst } from "../const-analysis/analysis";
 import type { ConstLattice } from "../const-analysis/lattice";
-import { liftType, typeAnalysisModule, typeExprHandle, typeValueEqual } from "../type-analysis/analysis";
+import { liftType, typeAnalysisModule, typeExprHandle } from "../type-analysis/analysis";
 import type { TypeLattice } from "../type-analysis/lattice";
 import { transferBlock } from "./block-transfer";
 import type { BasicBlock } from "./cfg";
@@ -45,13 +45,11 @@ export const typeNarrowing: Narrowing<TypeLattice> = {
   handle: typeExprHandle,
   blockAnalysis: () => typeAnalysis,
   lift: liftType,
-  valueEqual: typeValueEqual,
 };
 export const constNarrowing: Narrowing<ConstLattice> = {
   handle: constExprHandle,
   blockAnalysis: () => constAnalysis,
   lift: liftConst,
-  valueEqual: constValueEqual,
 };
 
 /** Default narrowing set. Worklist callers that omit the constructor's

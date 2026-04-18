@@ -22,4 +22,5 @@ export const livenessLattice: BoundedLattice<LiveVal> = {
   join: (_a, _b) => LIVE,
   meet: (_a, _b) => LIVE,
   leq: (_a, _b) => true,
+  eq: (_a, _b) => true,
 };

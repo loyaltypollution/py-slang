@@ -18,25 +18,16 @@
 //      produced — enabling sibling IR cache hits.
 //
 // Trie shape: `parent -> handle -> key -> ValueBucket`. A ValueBucket is a
-// small array scanned linearly via the handle's registered `valueEqual`.
-// Per-bucket cardinality is bounded by the distinct observed values at one
-// (handle, nodeId) site (typically 1–3).
-//
-// Value-equality registration: each handle has a single `valueEqual`
-// predicate (the narrowing's `valueEqual`, a module-level constant). The
-// interner registers it on first extend and reuses it for every subsequent
-// lookup — internChild, rebuildWith, internList. This is load-bearing for
-// rebuild correctness: a chain flattened during rebuild carries values from
-// multiple trie subtrees, and `const(v)` from one subtree is reference-
-// different from `const(v)` in another. Using ref-equality here would fork
-// the trie where it should have converged, defeating sibling canonicality.
+// small array scanned linearly via `handle.lattice.eq`. Per-bucket
+// cardinality is bounded by the distinct observed values at one (handle,
+// nodeId) site (typically 1–3). `handle.lattice.eq` is the canonical
+// structural equality (see `Lattice<V>` in `./analysis`); using ref-equality
+// here would fork the trie where it should have converged — `const(v)` from
+// separate `liftConst` calls is structurally equal but reference-different.
 
 import type { Analysis } from "./analysis";
 import type { Assumption, Context } from "./context";
 import { ROOT_CONTEXT } from "./context";
-
-type ValueEqual = (a: unknown, b: unknown) => boolean;
-const refEq: ValueEqual = (a, b) => a === b;
 
 /** Total order on (analysis.debugName, key). `debugName` is globally unique
  *  across registered analyses; keys are node ids (numbers) for narrowings.
@@ -67,30 +58,15 @@ export class ContextInterner {
     Map<Analysis<any, any>, Map<unknown, ValueEntry[]>>
   > = new Map();
 
-  /** Per-handle value-equality predicate. Registered on first extend that
-   *  passes a non-default `valueEqual`; first registration wins (narrowing
-   *  equalities are module-level constants, so the invariant is stable in
-   *  practice). Handles without a registration use reference equality,
-   *  which suffices for interned lattice singletons. */
-  private readonly equalities: Map<Analysis<any, any>, ValueEqual> = new Map();
-
   /** Extend `parent` with `(handle, key, value)`, returning a canonical
-   *  Context. `valueEqual` is consulted to deduplicate structurally-equal
-   *  values that are not reference-equal (e.g. `ConstLattice.const(v)`);
-   *  when omitted, reference equality is used. The first non-default
-   *  `valueEqual` passed for a given `handle` is registered and used for all
-   *  subsequent ops (including rebuild paths driven by `exclude` and by
-   *  collisions under this handle on other extend calls). */
+   *  Context. Equal values are dedup'd via `handle.lattice.eq`; the caller
+   *  does not supply an equality predicate. */
   extend<K, V>(
     parent: Context,
     handle: Analysis<K, V>,
     key: K,
     value: V,
-    valueEqual?: (a: V, b: V) => boolean,
   ): Context {
-    if (valueEqual !== undefined) {
-      this.registerEquality(handle, valueEqual as unknown as ValueEqual);
-    }
     const parentAssumption = parent.assumption;
     if (parentAssumption === undefined) {
       return this.internChild(parent, handle, key, value);
@@ -146,18 +122,6 @@ export class ContextInterner {
     return count;
   }
 
-  private registerEquality<K, V>(
-    handle: Analysis<K, V>,
-    valueEqual: ValueEqual,
-  ): void {
-    const key = handle as unknown as Analysis<any, any>;
-    if (!this.equalities.has(key)) this.equalities.set(key, valueEqual);
-  }
-
-  private equalityFor(handle: Analysis<any, any>): ValueEqual {
-    return this.equalities.get(handle) ?? refEq;
-  }
-
   private internChild<K, V>(
     parent: Context,
     handle: Analysis<K, V>,
@@ -180,9 +144,8 @@ export class ContextInterner {
       bucket = [];
       byKey.set(key, bucket);
     }
-    const eq = this.equalityFor(handleAsKey);
     for (const entry of bucket) {
-      if (eq(entry.value, value)) return entry.node;
+      if (handle.lattice.eq(entry.value as V, value)) return entry.node;
     }
     const node: Context = Object.freeze({
       parent,

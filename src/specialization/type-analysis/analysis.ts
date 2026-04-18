@@ -32,6 +32,7 @@ import {
   IntRef,
   join,
   leq,
+  eq,
   meet,
   NULL,
   NULL_BIT,
@@ -78,13 +79,6 @@ export const widenObservation: CombineObservation = (staticVal, observed) => {
   return lifted !== undefined ? join(staticVal, lifted) : staticVal;
 };
 
-/** Equality over `TypeLattice` via two-way `leq` — the product lattice has
- *  no canonical normalization, so structural equality derives from mutual
- *  ordering. Exported so `typeNarrowing.valueEqual` (see `dfa-analyses.ts`)
- *  and the observation translator share one definition. */
-export const typeValueEqual = (a: TypeLattice | undefined, b: TypeLattice | undefined): boolean =>
-  a === b || (a !== undefined && b !== undefined && leq(a, b) && leq(b, a));
-
 /** Assumption-binding identity used by Context. Callers build a Context by
  *  extending a parent with `(typeExprHandle, nodeId, narrowedValue)`; the
  *  `TypeAnalysisVisitor` consults `findAssumption` at each node visit and
@@ -100,7 +94,7 @@ export const typeValueEqual = (a: TypeLattice | undefined, b: TypeLattice | unde
 export const typeExprHandle: Analysis<number, TypeLattice> = {
   id: Symbol("typeExprHandle"),
   debugName: "typeExprHandle",
-  lattice: { bottom: BOTTOM, leq, join },
+  lattice: { bottom: BOTTOM, leq, join, eq },
   edges: [],
   tier: "analysis",
   transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): TypeLattice | undefined {
@@ -316,6 +310,7 @@ export function makeTypeAnalysisModule(
   join,
   meet,
   leq,
+  eq,
   makeExprVisitor(
     factStore: FactStore,
     env: MutableEnv<TypeLattice>,

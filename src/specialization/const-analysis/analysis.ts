@@ -13,6 +13,8 @@ import {
   CONST_BOTTOM,
   CONST_TOP,
   constJoin,
+  constLeq,
+  constEq,
   constOf,
 } from "./lattice";
 
@@ -46,18 +48,6 @@ export const constMeet = (a: ConstLattice, b: ConstLattice): ConstLattice => {
   return a.value === b.value ? a : CONST_BOTTOM;
 };
 
-/** Equality over `ConstLattice` — structural by `tag`, by `value` for
- *  `"const"` cells. Exported so `constNarrowing.valueEqual` (see
- *  `dfa-analyses.ts`) and the worklist's observation translator (dedup when
- *  a repeat lift matches an existing assumption) share one definition. */
-export const constValueEqual = (a: ConstLattice | undefined, b: ConstLattice | undefined): boolean => {
-  if (a === b) return true;
-  if (a === undefined || b === undefined) return false;
-  if (a.tag !== b.tag) return false;
-  if (a.tag === "const" && b.tag === "const") return a.value === b.value;
-  return true;
-};
-
 /** Assumption-binding identity used by Context, paired with
  *  `typeExprHandle`. Observations that lift to a concrete `ConstLattice`
  *  extend the unit's context with `(constExprHandle, nodeId, lifted)`; the
@@ -74,14 +64,9 @@ export const constExprHandle: Analysis<number, ConstLattice> = {
   debugName: "constExprHandle",
   lattice: {
     bottom: CONST_BOTTOM,
-    leq: (a, b) => {
-      if (a.tag === "bottom") return true;
-      if (b.tag === "top") return true;
-      if (a.tag === "top") return false;
-      if (b.tag === "bottom") return false;
-      return a.value === b.value;
-    },
+    leq: constLeq,
     join: constJoin,
+    eq: constEq,
   },
   edges: [],
   tier: "analysis",
@@ -299,13 +284,8 @@ export function makeConstAnalysisModule(
     top: CONST_TOP,
     join: constJoin,
     meet: constMeet,
-    leq: (a, b) => {
-      if (a.tag === "bottom") return true;
-      if (b.tag === "top") return true;
-      if (a.tag === "top") return false;
-      if (b.tag === "bottom") return false;
-      return a.value === b.value;
-    },
+    leq: constLeq,
+    eq: constEq,
     makeExprVisitor(
       factStore: FactStore,
       env: MutableEnv<ConstLattice>,

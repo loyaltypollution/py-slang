@@ -12,6 +12,7 @@ const trivialLattice: Lattice<number> = {
   bottom: 0,
   leq: (a, b) => a <= b,
   join: (a, b) => Math.max(a, b),
+  eq: (a, b) => a === b,
 };
 
 function makeAnalysis<K, V>(name: string, lattice: Lattice<V>): Analysis<K, V> {

@@ -45,10 +45,10 @@ type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq
  *  live value is read at deopt time from the fact store.
  *
  *  Typed against `Narrowing<unknown>`: the lineage walk only calls
- *  `narrowing.valueEqual` / `narrowing.blockAnalysis()`, neither of which
- *  needs the specific V. Keeping the interface ungenericized matches actual
- *  usage (every caller erases V to unknown) and removes a cosmetic type
- *  parameter. */
+ *  `narrowing.blockAnalysis()` and reads `narrowing.handle.lattice` to
+ *  derive equality via `latticeEqual`, neither of which needs the specific
+ *  V. Keeping the interface ungenericized matches actual usage and removes
+ *  a cosmetic type parameter. */
 export interface SpecFactRef {
   readonly narrowing: Narrowing<unknown>;
   readonly key: number;
@@ -509,16 +509,11 @@ export class Worklist {
       const lifted = n.lift(observed);
       if (lifted === undefined) continue;
       const existing = findAssumption(newCtx, n.handle, nodeId);
-      if (existing !== undefined && n.valueEqual(existing, lifted)) continue;
+      if (existing !== undefined && n.handle.lattice.eq(existing, lifted)) continue;
       const cleaned = existing !== undefined
         ? excludeAssumption(newCtx, n.handle, nodeId)
         : newCtx;
-      // Thread n.valueEqual so structurally-equal-but-ref-different lifts
-      // (e.g. ConstLattice.const(v) allocated fresh per call) collapse to
-      // the canonical sibling context. Without this, identical observations
-      // arriving at different times would fragment the trie despite the
-      // interner, defeating sibling IR cache hits on deopt.
-      newCtx = extendContext(cleaned, n.handle, nodeId, lifted, n.valueEqual);
+      newCtx = extendContext(cleaned, n.handle, nodeId, lifted);
     }
 
     if (newCtx === parentCtx) return;
@@ -665,7 +660,15 @@ export class Worklist {
       this.enqueueNarrowingEntry(unit, without);
       this.processQueue();
       const widened = readExprFact(this.factStore, blockAnalysis, block, nodeId, without);
-      if (!narrowing.valueEqual(current, widened)) loadBearing.push(a);
+      // A link is load-bearing iff removing it widens the fact at `ref`.
+      // Both reads can miss (returning undefined) if the pruned context has
+      // no cell yet; treat `undefined === undefined` as unchanged, any
+      // single-sided undefined as a change. Otherwise compare via the
+      // narrowing lattice's `eq`.
+      const unchanged = current === widened
+        || (current !== undefined && widened !== undefined
+            && narrowing.handle.lattice.eq(current, widened));
+      if (!unchanged) loadBearing.push(a);
     }
     return loadBearing;
   }

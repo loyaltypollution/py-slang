@@ -17,6 +17,7 @@ const trivialLattice: Lattice<number> = {
   bottom: 0,
   leq: (a, b) => a <= b,
   join: (a, b) => Math.max(a, b),
+  eq: (a, b) => a === b,
 };
 
 function makeAnalysis<K, V>(name: string, lattice: Lattice<V>): Analysis<K, V> {
@@ -30,15 +31,15 @@ function makeAnalysis<K, V>(name: string, lattice: Lattice<V>): Analysis<K, V> {
   };
 }
 
-// Structural value type used to exercise valueEqual dedup: fresh objects per
-// allocation, compared by content. Mirrors ConstLattice's shape.
+// Structural value type used to exercise value dedup: fresh objects per
+// allocation, compared via lattice `eq`. Mirrors ConstLattice's shape.
 interface Boxed { readonly v: number; }
 const box = (v: number): Boxed => ({ v });
-const boxedEqual = (a: Boxed, b: Boxed): boolean => a.v === b.v;
 const boxedLattice: Lattice<Boxed> = {
   bottom: { v: -1 },
   leq: (a, b) => a.v <= b.v,
   join: (a, b) => ({ v: Math.max(a.v, b.v) }),
+  eq: (a, b) => a === b || a.v === b.v,
 };
 
 describe("ContextInterner", () => {
@@ -57,21 +58,14 @@ describe("ContextInterner", () => {
     expect(a).toBe(b);
   });
 
-  it("structurally-equal values dedup via valueEqual", () => {
+  it("structurally-equal values dedup via lattice.eq", () => {
     const interner = new ContextInterner();
     const h = makeAnalysis<number, Boxed>("h", boxedLattice);
-    const a = interner.extend(ROOT_CONTEXT, h, 1, box(42), boxedEqual);
-    const b = interner.extend(ROOT_CONTEXT, h, 1, box(42), boxedEqual);
-    expect(a).toBe(b);
-  });
-
-  it("structurally-equal values do NOT dedup without valueEqual", () => {
-    const interner = new ContextInterner();
-    const h = makeAnalysis<number, Boxed>("h", boxedLattice);
+    // Fresh box objects: ref-different but lattice-equal (same .v).
+    // boxedLattice.eq handles the structural comparison.
     const a = interner.extend(ROOT_CONTEXT, h, 1, box(42));
     const b = interner.extend(ROOT_CONTEXT, h, 1, box(42));
-    // Fresh objects, no valueEqual ⇒ ref-equality fails ⇒ two distinct nodes.
-    expect(a).not.toBe(b);
+    expect(a).toBe(b);
   });
 
   it("order-independence: same assumption set → same canonical chain", () => {
@@ -129,27 +123,26 @@ describe("ContextInterner", () => {
   });
 
   it("rebuild dedups structurally-equal values across disjoint trie subtrees", () => {
-    // Regression: with only the target link consulting valueEqual (the
-    // original design), rebuilds that walked through a non-target link
-    // whose value was structurally equal to a trie entry under a DIFFERENT
-    // parent path would use ref-equality and fail to converge. Two arrival
-    // orders reaching the same canonical chain would fork the trie.
+    // Regression: rebuilds that walk through a non-target link whose value
+    // is structurally equal to a trie entry under a DIFFERENT parent path
+    // must use lattice.eq, not ref-equality. Otherwise two arrival orders
+    // reaching the same canonical chain would fork the trie.
     const interner = new ContextInterner();
     const ha = makeAnalysis<number, Boxed>("a-handle", boxedLattice);
     const hb = makeAnalysis<number, Boxed>("b-handle", boxedLattice);
 
     // Path A: a@1=box(10), then b@1=box(20) (already canonical — append path).
     const ctxA = interner.extend(
-      interner.extend(ROOT_CONTEXT, ha, 1, box(10), boxedEqual),
-      hb, 1, box(20), boxedEqual,
+      interner.extend(ROOT_CONTEXT, ha, 1, box(10)),
+      hb, 1, box(20),
     );
     // Path B: b@1=box(20) first, then a@1=box(10) (a < b canonically — rebuild
     // path). The rebuild re-interns box(20) under ROOT→a@1=box(10), which is
-    // a different subtree than the one path A created — ref-equality fails to
-    // find path A's canonical node. Registered valueEqual finds it.
+    // a different subtree than path A created. lattice.eq finds the
+    // canonical sibling.
     const ctxB = interner.extend(
-      interner.extend(ROOT_CONTEXT, hb, 1, box(20), boxedEqual),
-      ha, 1, box(10), boxedEqual,
+      interner.extend(ROOT_CONTEXT, hb, 1, box(20)),
+      ha, 1, box(10),
     );
     expect(ctxA).toBe(ctxB);
   });

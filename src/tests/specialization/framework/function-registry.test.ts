@@ -22,7 +22,7 @@ function makeLifecycleObserver(): {
   const analysis: Analysis<FunctionUnit, number> = {
     id: Symbol("observer"),
     debugName: "observer",
-    lattice: { bottom: 0, leq: (a, b) => a <= b, join: Math.max },
+    lattice: { bottom: 0, leq: (a, b) => a <= b, join: Math.max, eq: (a, b) => a === b },
     edges: [
       { on: "mint", effect: (_fs, _ctx, u) => { minted.push(u); } },
       { on: "rebuild", effect: (_fs, _ctx, u) => { rebuilt.push(u); } },

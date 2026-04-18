@@ -365,6 +365,7 @@ const absValLattice: Lattice<AbsVal> = {
   bottom: BOTTOM,
   leq: absLeq,
   join: absJoin,
+  eq: (a, b) => a === b || (absLeq(a, b) && absLeq(b, a)),
 };
 
 export const purityBlockAnalysis: Analysis<
@@ -422,6 +423,7 @@ const outerLattice: Lattice<boolean | undefined> = {
     if (b === undefined) return a;
     return a && b;
   },
+  eq: (a, b) => a === b,
 };
 
 export const purityScopeAnalysis: Analysis<number, boolean | undefined> = {

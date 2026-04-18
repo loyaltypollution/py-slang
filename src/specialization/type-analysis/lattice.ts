@@ -62,6 +62,14 @@ export function leq(a: TypeLattice, b: TypeLattice): boolean {
   return true;
 }
 
+/** Structural equality: antisymmetric closure of `leq`, with an `a === b`
+ *  shortcut that hits often (all narrowed types come from `INT_SINGLETONS`,
+ *  `BOOL_SINGLETONS`, `FLOAT_SINGLETONS`, or `TOP`/`BOTTOM` — frozen
+ *  singletons). Shared between `typeExprHandle.lattice` and
+ *  `typeAnalysisModule`. */
+export const eq = (a: TypeLattice, b: TypeLattice): boolean =>
+  a === b || (leq(a, b) && leq(b, a));
+
 function makeSingleton(
   kinds: number,
   intRef: IntRef,

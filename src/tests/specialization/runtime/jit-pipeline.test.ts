@@ -58,6 +58,7 @@ f()
         bottom: 0,
         leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
+        eq: (a, b) => a === b,
       },
       edges: [{ on: "fact", analysis: runtimeCallAnalysis, wake: (_c, k) => [k as number] }],
       tier: "analysis",
@@ -85,6 +86,7 @@ f()
         bottom: 0,
         leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
+        eq: (a, b) => a === b,
       },
       edges: [{ on: "fact", analysis: runtimeCallAnalysis, wake: () => [unit] }],
       tier: "analysis",
@@ -153,6 +155,7 @@ g()
         bottom: undefined,
         leq: (a, b) => a === undefined || a === b,
         join: (a, b) => a ?? b,
+        eq: (a, b) => a === b,
       },
       edges: [
         { on: "fact", analysis: runtimeCallAnalysis, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },

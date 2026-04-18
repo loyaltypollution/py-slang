@@ -19,12 +19,14 @@ const intMaxLattice: Lattice<number> = {
   bottom: 0,
   leq: (a, b) => a <= b,
   join: (a, b) => Math.max(a, b),
+  eq: (a, b) => a === b,
 };
 
 const firedLattice: Lattice<"fired"> = {
   bottom: "fired",
   leq: () => true,
   join: () => "fired",
+  eq: () => true,
 };
 
 function makeAnalysis<K, V>(

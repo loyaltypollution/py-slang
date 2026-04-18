@@ -155,6 +155,7 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
       bottom: UNCOMPILED,
       leq: structuralEquals,
       join: (_a, b) => b,
+      eq: structuralEquals,
     },
     edges,
     tier: "analysis",

@@ -26,12 +26,14 @@ const intMax: Lattice<number> = {
   bottom: 0,
   leq: (a, b) => a <= b,
   join: (a, b) => Math.max(a, b),
+  eq: (a, b) => a === b,
 };
 
 const topOnly: Lattice<"fired"> = {
   bottom: "fired",
   leq: () => true,
   join: () => "fired",
+  eq: () => true,
 };
 
 function saturatingBucket(ceiling: number): Lattice<number> {
@@ -39,6 +41,7 @@ function saturatingBucket(ceiling: number): Lattice<number> {
     bottom: 0,
     leq: (a, b) => a <= b,
     join: (a, b) => Math.min(ceiling, Math.max(a, b)),
+    eq: (a, b) => Math.min(ceiling, a) === Math.min(ceiling, b),
   };
 }
 

@@ -42,10 +42,10 @@ export function isRoot(ctx: Context): boolean {
 }
 
 /** Build a canonical child context. Equivalent calls (same `parent`, same
- *  `(analysis, key)`, and `valueEqual`-equal value) return the same object —
- *  identity is a sound proxy for structural equality. `valueEqual` is
- *  consulted only for the new link's value; omit it when values are
- *  reference-stable (e.g. interned lattice singletons like `INT_POS`).
+ *  `(analysis, key)`, and lattice-equal value) return the same object —
+ *  identity is a sound proxy for structural equality. Value dedup uses
+ *  mutual `analysis.lattice.leq` (see `latticeEqual` in `./analysis`), so
+ *  no per-caller equality parameter is needed.
  *
  *  Chains are stored in canonical order by `(analysis.debugName, key)`, so
  *  adding an assumption that sorts before an existing link triggers a
@@ -56,9 +56,8 @@ export function extendContext<K, V>(
   analysis: Analysis<K, V>,
   key: K,
   value: V,
-  valueEqual?: (a: V, b: V) => boolean,
 ): Context {
-  return defaultInterner.extend(parent, analysis, key, value, valueEqual);
+  return defaultInterner.extend(parent, analysis, key, value);
 }
 
 /** Walk parent pointers looking for an assumption bound against
