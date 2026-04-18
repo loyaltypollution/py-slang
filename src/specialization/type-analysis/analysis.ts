@@ -65,22 +65,17 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
   [TokenType.NOTEQUAL, "!="],
 ]);
 
-/** How a per-node static fact is combined with a runtime observation, if any.
- *  - `widenObservation` (default): `join(static, observed)` — widens to catch
- *    polymorphism static missed. Always sound to consume.
- *  - `narrowObservation`: `meet(static, observed)` — speculatively tightens.
- *    Consumers MUST emit a runtime guard; violation widens the observation
- *    (forces ⊤) which cascades a recompile via the fact store. */
+/** How a per-node static fact is combined with a runtime observation under
+ *  ROOT. Only `widenObservation` remains — narrowing is now expressed as a
+ *  Context assumption, consumed via `findAssumption` inside the visitor.
+ *  `CombineObservation` is kept as a parameter on `makeTypeAnalysisModule`
+ *  so tests/fixtures can swap in a stub if they need to exercise the ROOT
+ *  widening branch in isolation. */
 export type CombineObservation = (staticVal: TypeLattice, observed: RawKind) => TypeLattice;
 
 export const widenObservation: CombineObservation = (staticVal, observed) => {
   const lifted = liftType(observed);
   return lifted !== undefined ? join(staticVal, lifted) : staticVal;
-};
-
-export const narrowObservation: CombineObservation = (staticVal, observed) => {
-  const lifted = liftType(observed);
-  return lifted !== undefined ? meet(staticVal, lifted) : staticVal;
 };
 
 /** Assumption-binding identity used by Context. Callers build a Context by
@@ -294,10 +289,10 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   }
 }
 
-/** Build a type-analysis module parameterized on observation-combine semantics.
- *  Two callers: the standard analysis uses `widenObservation` (sound for AST
- *  transforms); the speculative analysis uses `narrowObservation` (consumed only
- *  by SVML compilation, which emits guards). */
+/** Build a type-analysis module. `combineObservation` is applied under
+ *  ROOT only — non-ROOT contexts consult assumptions via `findAssumption`
+ *  and ignore `runtimeWriteAnalysis`. Production wires `widenObservation`;
+ *  tests can substitute a stub to isolate the observation-combine branch. */
 export function makeTypeAnalysisModule(
   combineObservation: CombineObservation,
 ): BlockDfaSpec<TypeLattice> {
@@ -339,11 +334,6 @@ export function makeTypeAnalysisModule(
 
 // Forward may-analysis: env join = union; specialize only when numeric on all paths.
 export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = makeTypeAnalysisModule(widenObservation);
-
-/** Speculative variant: observations narrow rather than widen. Consumers
- *  (svml-compiler, jit-analysis) MUST emit a guard at any specialized site that
- *  was proven only by the narrowed fact. See plan: synthetic-enchanting-wave.md. */
-export const speculativeTypeAnalysisModule: BlockDfaSpec<TypeLattice> = makeTypeAnalysisModule(narrowObservation);
 
 // ---- Predicate narrowing helpers ----
 
@@ -539,7 +529,7 @@ function applyPredicate(
   return out;
 }
 
-function liftType(rawKind: RawKind): TypeLattice | undefined {
+export function liftType(rawKind: RawKind): TypeLattice | undefined {
   switch (rawKind.kind) {
     case "number": {
       const v = rawKind.value;

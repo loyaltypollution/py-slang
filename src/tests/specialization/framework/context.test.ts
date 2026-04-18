@@ -1,5 +1,6 @@
 import {
   ROOT_CONTEXT,
+  excludeAssumption,
   extendContext,
   findAssumption,
   hasAncestor,
@@ -98,5 +99,35 @@ describe("Context", () => {
     const c1 = extendContext(ROOT_CONTEXT, p, 1, 10);
     expect(Object.isFrozen(c1)).toBe(true);
     expect(Object.isFrozen(c1.assumption)).toBe(true);
+  });
+
+  it("excludeAssumption returns ctx unchanged when no link matches", () => {
+    const p = makeAnalysis<number, number>("p", trivialLattice);
+    const c1 = extendContext(ROOT_CONTEXT, p, 1, 10);
+    expect(excludeAssumption(c1, p, 99)).toBe(c1);
+    expect(excludeAssumption(ROOT_CONTEXT, p, 1)).toBe(ROOT_CONTEXT);
+  });
+
+  it("excludeAssumption prunes matching links and rebuilds the chain above them", () => {
+    const p = makeAnalysis<number, number>("p", trivialLattice);
+    const q = makeAnalysis<number, number>("q", trivialLattice);
+    const c1 = extendContext(ROOT_CONTEXT, p, 1, 10);
+    const c2 = extendContext(c1, q, 2, 20);
+    const c3 = extendContext(c2, p, 3, 30);
+
+    const pruned = excludeAssumption(c3, q, 2);
+    expect(pruned.depth).toBe(2);
+    expect(findAssumption(pruned, q, 2)).toBeUndefined();
+    expect(findAssumption(pruned, p, 1)).toBe(10);
+    expect(findAssumption(pruned, p, 3)).toBe(30);
+  });
+
+  it("excludeAssumption removes every matching link, not just the first", () => {
+    const p = makeAnalysis<number, number>("p", trivialLattice);
+    const c1 = extendContext(ROOT_CONTEXT, p, 7, 10);
+    const c2 = extendContext(c1, p, 7, 20);
+
+    const pruned = excludeAssumption(c2, p, 7);
+    expect(pruned).toBe(ROOT_CONTEXT);
   });
 });

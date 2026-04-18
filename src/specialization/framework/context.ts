@@ -78,3 +78,29 @@ export function hasAncestor(ctx: Context, anc: Context): boolean {
   }
   return false;
 }
+
+/** Return a context derived from `ctx` with every assumption at
+ *  `(analysis, key)` removed — any chain link matching the target is
+ *  skipped; all other links are rebuilt in original order. Used to retract
+ *  a speculation when the underlying observation widens (e.g. runtime
+ *  value widens to ⊤ on conflict). Identity-returns `ctx` unchanged when
+ *  no link matched — callers can short-circuit on reference equality. */
+export function excludeAssumption<K, V>(
+  ctx: Context,
+  analysis: Analysis<K, V>,
+  key: K,
+): Context {
+  if (ctx.parent === undefined) return ctx;
+  const prunedParent = excludeAssumption(ctx.parent, analysis, key);
+  const a = ctx.assumption!;
+  const target = analysis as Analysis<unknown, unknown>;
+  if (a.analysis === target && a.key === key) {
+    return prunedParent;
+  }
+  if (prunedParent === ctx.parent) return ctx;
+  return Object.freeze({
+    parent: prunedParent,
+    assumption: a,
+    depth: prunedParent.depth + 1,
+  });
+}

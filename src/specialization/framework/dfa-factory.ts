@@ -279,13 +279,16 @@ export function makeBlockFixpointAnalysis<L>(
 /** Resolve a per-expression fact from the DFA block analysis.
  *  `block` must be the BasicBlock that contains `nodeId` in the unit whose
  *  `transferBlock` visited this expression — usually `unit.blockOfNode.get(nodeId)`
- *  where `unit` is the innermost unit containing the node. */
+ *  where `unit` is the innermost unit containing the node. `context` defaults
+ *  to ROOT_CONTEXT; passing a non-ROOT context reads the per-context cell
+ *  produced by running the analysis under that speculation's assumptions. */
 export function readExprFact<L>(
   factStore: FactStore,
   analysis: Analysis<BasicBlock, DfaBlockFact<L>>,
   block: BasicBlock | undefined,
   nodeId: number,
+  context?: Context,
 ): L | undefined {
   if (block === undefined) return undefined;
-  return factStore.tryRead(analysis, block)?.exprFacts.get(nodeId);
+  return factStore.tryRead(analysis, block, context)?.exprFacts.get(nodeId);
 }

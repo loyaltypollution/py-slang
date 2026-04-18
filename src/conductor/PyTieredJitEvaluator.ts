@@ -112,7 +112,11 @@ async function runSvml(
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       envs,
-      makeDfaQuery(wl.factStore, wl.nodeIndex),
+      makeDfaQuery(
+        wl.factStore,
+        wl.nodeIndex,
+        nodeId => wl.specContextForNode(nodeId),
+      ),
       wl.registry,
     );
     const program = compiler.compileProgram(ast);
@@ -122,7 +126,11 @@ async function runSvml(
         if (flag.aborted) throw new AbortError();
       }),
     });
-    wl.register(makeJitAnalysis({ compiler, interpreter: interp }));
+    wl.register(makeJitAnalysis({
+      compiler,
+      interpreter: interp,
+      specContextFor: unit => wl.specContextFor(unit),
+    }));
     wl.beginBatch();
     try {
       c.sendResult(SVMLInterpreter.toJSValue(await runSvmlWithDeopt(interp, wl)));

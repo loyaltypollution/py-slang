@@ -15,10 +15,7 @@ import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import {
-  speculativeTypeAnalysis,
-  typeAnalysis,
-} from "../../../specialization/framework/dfa-analyses";
+import { typeAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import {
   runtimeWriteAnalysis,
@@ -85,11 +82,19 @@ def hot(x):
 
     const block = worklist.blockOfNode(xRead.id)!;
     const widened = readExprFact(worklist.factStore, typeAnalysis, block, xRead.id);
-    const narrowed = readExprFact(worklist.factStore, speculativeTypeAnalysis, block, xRead.id);
+    // Speculative read: same typeAnalysis, per-unit speculation context that
+    // the observation→context translator extended on the observe above.
+    const narrowed = readExprFact(
+      worklist.factStore,
+      typeAnalysis,
+      block,
+      xRead.id,
+      worklist.specContextForNode(xRead.id),
+    );
 
     // `x` is a parameter — slot type is TOP. Widening analysis sees that `join(TOP, INT_POS) = TOP`.
     expect(widened?.kinds).not.toBe(INT_BIT);
-    // Narrowing analysis: `meet(TOP, INT_POS) = INT_POS`. Speculation sees the witness.
+    // Narrowing via context assumption: `meet(TOP, INT_POS) = INT_POS`.
     expect(narrowed?.kinds).toBe(INT_BIT);
   });
 });
@@ -112,15 +117,30 @@ def hot(x):
     worklist.drain();
 
     const block = worklist.blockOfNode(xRead.id)!;
-    const before = readExprFact(worklist.factStore, speculativeTypeAnalysis, block, xRead.id);
+    const before = readExprFact(
+      worklist.factStore,
+      typeAnalysis,
+      block,
+      xRead.id,
+      worklist.specContextForNode(xRead.id),
+    );
     expect(before?.kinds).toBe(INT_BIT);
 
     widenWriteObservation(worklist, xRead.id);
     worklist.drain();
 
-    const after = readExprFact(worklist.factStore, speculativeTypeAnalysis, block, xRead.id);
-    // After widening, observation is ⊤, so meet falls through to staticVal,
-    // which is TOP for an unannotated parameter slot.
+    // The translator prunes the assumption on ⊤ observations; the spec
+    // context collapses back to ROOT (or one level below, if other
+    // assumptions exist). Re-read under the current context.
+    const after = readExprFact(
+      worklist.factStore,
+      typeAnalysis,
+      block,
+      xRead.id,
+      worklist.specContextForNode(xRead.id),
+    );
+    // After widening, no narrowing assumption remains; fact falls back to
+    // the static/widened value, which is TOP for an unannotated parameter.
     expect(after?.kinds).not.toBe(INT_BIT);
   });
 });

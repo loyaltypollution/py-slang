@@ -1,6 +1,6 @@
 import { constAnalysisModule, speculativeConstAnalysisModule } from "../const-analysis/analysis";
 import type { ConstLattice } from "../const-analysis/lattice";
-import { speculativeTypeAnalysisModule, typeAnalysisModule } from "../type-analysis/analysis";
+import { typeAnalysisModule } from "../type-analysis/analysis";
 import type { TypeLattice } from "../type-analysis/lattice";
 import { transferBlock } from "./block-transfer";
 import type { BasicBlock } from "./cfg";
@@ -69,14 +69,17 @@ export const typeAnalysis: Analysis<BasicBlock, DfaBlockFact<TypeLattice>> =
 export const constAnalysis: Analysis<BasicBlock, DfaBlockFact<ConstLattice>> =
   dfaAnalysis("constAnalysis", constAnalysisModule);
 
-/** Speculative analyses: same transfer logic, but observations narrow (`meet`)
- *  instead of widening (`join`). Reads are sound only for consumers that
- *  emit a runtime guard at the specialized site (currently: `svml-compiler`
- *  via `jit-analysis`). AST-mutating transforms (`algebraic-simplify`,
- *  `dead-branch`, `constant-folding`) MUST continue to read the standard
- *  analyses — narrowed facts are speculative and unsound for AST mutation,
- *  which the CSE arm cannot recover from. */
-export const speculativeTypeAnalysis: Analysis<BasicBlock, DfaBlockFact<TypeLattice>> =
-  dfaAnalysis("speculativeTypeAnalysis", speculativeTypeAnalysisModule, "overwrite");
+/** Speculative const analysis: observations narrow (`meet`) instead of
+ *  widening (`join`). Reads are sound only for consumers that emit a runtime
+ *  guard at the specialized site (currently: `svml-compiler` via
+ *  `jit-analysis`). AST-mutating transforms MUST continue to read the
+ *  standard analyses — narrowed facts are speculative and unsound for AST
+ *  mutation.
+ *
+ *  Type speculation has been migrated to `typeAnalysis` running under a
+ *  per-unit speculation Context (see `Worklist.currentSpecContext` + the
+ *  observation-to-context translator). The const-analysis migration is
+ *  pending (matching shape; blocks deletion of `"overwrite"` accumulation
+ *  mode from `dfa-factory`). */
 export const speculativeConstAnalysis: Analysis<BasicBlock, DfaBlockFact<ConstLattice>> =
   dfaAnalysis("speculativeConstAnalysis", speculativeConstAnalysisModule, "overwrite");

@@ -15,13 +15,13 @@
 
 import { StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../../specialization/framework/cfg";
+import { ROOT_CONTEXT, type Context } from "../../specialization/framework/context";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import type { FactStore } from "../../specialization/framework/fact-store";
 import type { Analysis, AnalysisCtx } from "../../specialization/framework/analysis";
 import {
   constAnalysis,
   speculativeConstAnalysis,
-  speculativeTypeAnalysis,
   typeAnalysis,
 } from "../../specialization/framework/dfa-analyses";
 import { speculationBlacklistAnalysis } from "../../specialization/framework/runtime-analyses";
@@ -36,11 +36,16 @@ import { SVMLIR } from "./types";
  *  inequality is exactly "the DFA fact advanced". */
 interface CompileSnapshot {
   structuralGen: number;
+  /** Speculation context the snapshot's speculativeTypeFacts were read under.
+   *  Compared by reference — a new observation produces a new Context object,
+   *  so `prev.specContext !== now` short-circuits the full block-fact walk. */
+  specContext: Context;
   constFacts: Map<BasicBlock, unknown>;
   typeFacts: Map<BasicBlock, unknown>;
   /** Speculative facts also flow into the compiled IR (via GUARD_KIND
    *  emissions). Including their references here is what makes
-   *  recompile-on-deopt fire. */
+   *  recompile-on-deopt fire. Now read from `typeAnalysis` under
+   *  `specContext` rather than from a parallel speculativeTypeAnalysis. */
   speculativeTypeFacts: Map<BasicBlock, unknown>;
   speculativeConstFacts: Map<BasicBlock, unknown>;
   /** Per-nodeId blacklist snapshot. Deopt sets a node to true; on next
@@ -51,6 +56,12 @@ interface CompileSnapshot {
 export interface JitPassDeps {
   readonly compiler: SVMLCompiler;
   readonly interpreter: SVMLInterpreter;
+  /** Resolve the active speculation context for a unit. The compile-cache
+   *  snapshots `typeAnalysis` facts under this context to detect when a
+   *  new narrowing observation has landed and a recompile is due. Defaults
+   *  to ROOT (no speculation visible) when omitted — appropriate only for
+   *  fixtures that explicitly disable speculation. */
+  readonly specContextFor?: (unit: FunctionUnit) => Context;
 }
 
 function blockToOwningUnit(_ctx: AnalysisCtx, key: unknown): Iterable<FunctionUnit> {
@@ -73,6 +84,7 @@ const UNCOMPILED: SVMLIR = new SVMLIR(
 
 export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLIR> {
   const { compiler, interpreter } = deps;
+  const specContextFor = deps.specContextFor ?? ((_: FunctionUnit) => ROOT_CONTEXT);
 
   const lastSnapshot = new WeakMap<FunctionUnit, CompileSnapshot>();
 
@@ -89,10 +101,16 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
       // the memo of the owning unit. `transfer` decides whether the change
       // materially differs from the last compile via reference-identity
       // compare against `lastSnapshot`.
-      { on: "fact", analysis: typeAnalysis, wake: blockToOwningUnit },
-      { on: "fact", analysis: constAnalysis, wake: blockToOwningUnit },
-      { on: "fact", analysis: speculativeTypeAnalysis, wake: blockToOwningUnit },
-      { on: "fact", analysis: speculativeConstAnalysis, wake: blockToOwningUnit },
+      //
+      // `contextPolicy: "root"` on every fact edge: jit cells are
+      // FunctionUnit-keyed and exist only at ROOT — without the crossing,
+      // a non-ROOT write to typeAnalysis (the speculation-context path)
+      // would enqueue jitAnalysis at that non-ROOT context, creating an
+      // orphan cell no one reads. The "root" crossing lands the recompile
+      // request on the single IR cell per unit.
+      { on: "fact", analysis: typeAnalysis, wake: blockToOwningUnit, contextPolicy: "root" },
+      { on: "fact", analysis: constAnalysis, wake: blockToOwningUnit, contextPolicy: "root" },
+      { on: "fact", analysis: speculativeConstAnalysis, wake: blockToOwningUnit, contextPolicy: "root" },
       // Blacklist update at nodeId N → recompile the unit owning N.
       {
         on: "fact",
@@ -102,6 +120,7 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
           if (unit === undefined) return [];
           return unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
         },
+        contextPolicy: "root",
       },
       {
         on: "mint",
@@ -127,17 +146,18 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
       const index = compiler.indexOf(scope);
       if (index === undefined) return undefined;
 
+      const specContext = specContextFor(unit);
       const prev = lastSnapshot.get(unit);
       if (
         prev !== undefined &&
         prev.structuralGen === unit.generation &&
-        snapshotMatches(factStore, unit, prev)
+        snapshotMatches(factStore, unit, prev, specContext)
       ) {
         return undefined;
       }
 
       const newCode = compiler.compileFunction(unit);
-      lastSnapshot.set(unit, captureSnapshot(factStore, unit));
+      lastSnapshot.set(unit, captureSnapshot(factStore, unit, specContext));
       const prevIR = factStore.read(jitAnalysis, unit);
       if (structuralEquals(newCode, prevIR)) return undefined;
       interpreter.patchFunction(index, newCode);
@@ -151,16 +171,24 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
  *  A structural rebuild produces fresh `BasicBlock` instances, so the snapshot's
  *  Map keys become orphaned — but `prev.structuralGen === unit.generation` is
  *  already checked by the caller, so we only reach here when block identities
- *  match the snapshot. */
+ *  match the snapshot.
+ *
+ *  `specContext` is the unit's active speculation context at snapshot time.
+ *  If it's shifted between compiles (new observation → new context), the
+ *  speculativeTypeFacts map is keyed against the OLD context's cells; the
+ *  caller uses the stored context for comparison — see `snapshotMatches`
+ *  reading `prev.specContext`. */
 function snapshotMatches(
   factStore: FactStore,
   unit: FunctionUnit,
   prev: CompileSnapshot,
+  specContext: Context,
 ): boolean {
+  if (prev.specContext !== specContext) return false;
   for (const block of unit.blockMap.values()) {
     if (factStore.tryRead(constAnalysis, block) !== prev.constFacts.get(block)) return false;
     if (factStore.tryRead(typeAnalysis, block) !== prev.typeFacts.get(block)) return false;
-    if (factStore.tryRead(speculativeTypeAnalysis, block) !== prev.speculativeTypeFacts.get(block)) return false;
+    if (factStore.tryRead(typeAnalysis, block, specContext) !== prev.speculativeTypeFacts.get(block)) return false;
     if (factStore.tryRead(speculativeConstAnalysis, block) !== prev.speculativeConstFacts.get(block)) return false;
   }
   // Blacklist: any nodeId in the unit that's now blacklisted but wasn't at
@@ -173,7 +201,7 @@ function snapshotMatches(
   return true;
 }
 
-function captureSnapshot(factStore: FactStore, unit: FunctionUnit): CompileSnapshot {
+function captureSnapshot(factStore: FactStore, unit: FunctionUnit, specContext: Context): CompileSnapshot {
   const constFacts = new Map<BasicBlock, unknown>();
   const typeFacts = new Map<BasicBlock, unknown>();
   const speculativeTypeFacts = new Map<BasicBlock, unknown>();
@@ -182,7 +210,7 @@ function captureSnapshot(factStore: FactStore, unit: FunctionUnit): CompileSnaps
   for (const block of unit.blockMap.values()) {
     constFacts.set(block, factStore.tryRead(constAnalysis, block));
     typeFacts.set(block, factStore.tryRead(typeAnalysis, block));
-    speculativeTypeFacts.set(block, factStore.tryRead(speculativeTypeAnalysis, block));
+    speculativeTypeFacts.set(block, factStore.tryRead(typeAnalysis, block, specContext));
     speculativeConstFacts.set(block, factStore.tryRead(speculativeConstAnalysis, block));
   }
   for (const nodeId of unit.blockOfNode.keys()) {
@@ -192,6 +220,7 @@ function captureSnapshot(factStore: FactStore, unit: FunctionUnit): CompileSnaps
   }
   return {
     structuralGen: unit.generation,
+    specContext,
     constFacts,
     typeFacts,
     speculativeTypeFacts,

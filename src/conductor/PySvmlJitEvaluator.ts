@@ -39,7 +39,11 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const compiler = SVMLCompiler.fromProgramUnit(
         ast,
         environments,
-        makeDfaQuery(worklist.factStore, worklist.nodeIndex),
+        makeDfaQuery(
+          worklist.factStore,
+          worklist.nodeIndex,
+          nodeId => worklist.specContextForNode(nodeId),
+        ),
         worklist.registry,
       );
       const program = compiler.compileProgram(ast);
@@ -49,7 +53,11 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         ...makeJitObservers(worklist),
       });
 
-      worklist.register(makeJitAnalysis({ compiler, interpreter }));
+      worklist.register(makeJitAnalysis({
+        compiler,
+        interpreter,
+        specContextFor: unit => worklist.specContextFor(unit),
+      }));
 
       worklist.beginBatch();
       try {

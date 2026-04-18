@@ -17,7 +17,7 @@ import {
   type FunctionUnit,
 } from "./function-unit";
 import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type TransformRule, type LifecycleEdge } from "./analysis";
-import { ROOT_CONTEXT, type Context } from "./context";
+import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Context } from "./context";
 import { runtimeCallAnalysis, runtimeWriteAnalysis, speculationBlacklistAnalysis } from "./runtime-analyses";
 import { purityBlockAnalysis, purityScopeAnalysis } from "../purity-analysis/analysis";
 import { algebraicSimplifyRule } from "../transforms/algebraic-simplify";
@@ -29,11 +29,13 @@ import { livenessAnalysis } from "../liveness-analysis/analysis";
 import {
   typeAnalysis,
   constAnalysis,
-  speculativeTypeAnalysis,
   speculativeConstAnalysis,
 } from "./dfa-analyses";
 import { readExprFact } from "./dfa-factory";
+import { liftType, typeExprHandle } from "../type-analysis/analysis";
+import type { RawKind } from "./raw-value";
 import type { TypeLattice } from "../type-analysis/lattice";
+import { leq as typeLeq } from "../type-analysis/lattice";
 import type { ConstLattice } from "../const-analysis/lattice";
 
 /** Per-node read-only projection of the DFA fact-store. Resolves the
@@ -60,12 +62,18 @@ export interface DfaQuery {
 export function makeDfaQuery(
   factStore: FactStore,
   nodeIndex: ReadonlyMap<number, FunctionUnit>,
+  /** Resolve the active speculation context for a node's owning unit, or
+   *  ROOT_CONTEXT if nothing has been speculated yet. `speculativeTypeOf`
+   *  reads `typeAnalysis` under the returned context — same analysis, same
+   *  storage dimension, no parallel twin. */
+  specContextForNode: (nodeId: number) => Context = () => ROOT_CONTEXT,
 ): DfaQuery {
   const blockFor = (id: number) => nodeIndex.get(id)?.blockOfNode.get(id);
   return {
     typeOf: id => readExprFact(factStore, typeAnalysis, blockFor(id), id),
     constOf: id => readExprFact(factStore, constAnalysis, blockFor(id), id),
-    speculativeTypeOf: id => readExprFact(factStore, speculativeTypeAnalysis, blockFor(id), id),
+    speculativeTypeOf: id =>
+      readExprFact(factStore, typeAnalysis, blockFor(id), id, specContextForNode(id)),
     speculativeConstOf: id => readExprFact(factStore, speculativeConstAnalysis, blockFor(id), id),
     isPureScope: scopeId => factStore.tryRead(purityScopeAnalysis, scopeId),
     isSpeculationBlacklisted: nodeId =>
@@ -109,6 +117,16 @@ export class Worklist {
    *  `edges`; sweep clears it. */
   private readonly transforms: TransformRule[] = [];
   private readonly transformDirty = new Map<TransformRule, Set<FunctionUnit>>();
+
+  /** Per-unit active speculation context. Grows monotonically as
+   *  `runtimeWriteAnalysis` observations land (each adds one
+   *  `(typeExprHandle, nodeId, lifted)` assumption). `widenWriteObservation`
+   *  retracts by pruning any matching link. Unset or ROOT_CONTEXT means the
+   *  unit is currently emitting unspeculated IR. The tree structure is
+   *  sibling-capable by construction; deopt-driven pruning currently rewrites
+   *  in place — the full subtree-walk lands with `speculationBlacklistAnalysis`
+   *  retirement. */
+  private readonly currentSpecContext: Map<FunctionUnit, Context> = new Map();
 
   /** Single fact-change dispatch index. Analyses and transforms both compile
    *  their fact edges into callbacks here; no per-subscriber-kind branching
@@ -157,6 +175,14 @@ export class Worklist {
     for (const p of analyses) this.register(p);
     for (const r of transforms) this.registerTransform(r);
     this.factStore.onChange(c => this.handleFactChange(c));
+    // Observation → speculation-context translator. Subscribes after the
+    // dispatch listener so per-context wake-ups for this observation (e.g.
+    // speculativeConstAnalysis's existing ROOT-context edge on
+    // runtimeWriteAnalysis) fire first, keeping the old const speculation
+    // pipeline unchanged. Type speculation is now expressed as typeAnalysis
+    // running under the unit's current spec context; the translator maintains
+    // that context.
+    this.factStore.onChange(c => this.handleObservationForSpec(c));
 
     // Initial units are seeded lazily: `register` replays onUnitMinted to each
     // analysis's subscriber, and `registerTransform` populates each rule's dirty
@@ -392,6 +418,69 @@ export class Worklist {
     for (const sub of subs) sub(ctx, change.key);
   }
 
+  /** Translator: converts `runtimeWriteAnalysis` observations into Context
+   *  mutations on the owning unit, then enqueues `typeAnalysis` under the
+   *  new context to re-run Kildall with the assumption.
+   *
+   *  Behavior:
+   *  - Only fires for ROOT-context observations (speculative contexts don't
+   *    cascade further speculation here).
+   *  - Non-numeric / non-liftable raws → no-op.
+   *  - `unknown` (⊤ widening, e.g. from `widenWriteObservation` on deopt) →
+   *    prune any assumption at this nodeId from the unit's current context,
+   *    re-enqueue typeAnalysis so the shallower context gets a fresh run.
+   *  - Concrete lift matching an existing assumption → no-op (idempotent).
+   *  - New or differing lift → remove any conflicting assumption at this
+   *    nodeId, extend with the new one, update `currentSpecContext[unit]`,
+   *    enqueue entry block. */
+  private handleObservationForSpec(change: FactChange<unknown, unknown>): void {
+    if (change.analysis !== (runtimeWriteAnalysis as unknown as Analysis<unknown, unknown>)) return;
+    if (change.context !== ROOT_CONTEXT) return;
+    if (typeof change.key !== "number") return;
+    const nodeId = change.key;
+    const unit = this.nodeToUnit.get(nodeId);
+    if (unit === undefined) return;
+
+    const observed = change.newValue as RawKind;
+    const parentCtx = this.currentSpecContext.get(unit) ?? ROOT_CONTEXT;
+
+    if (observed.kind === "unknown") {
+      const pruned = excludeAssumption(parentCtx, typeExprHandle, nodeId);
+      if (pruned === parentCtx) return;
+      if (pruned === ROOT_CONTEXT) this.currentSpecContext.delete(unit);
+      else this.currentSpecContext.set(unit, pruned);
+      this.enqueue(typeAnalysis, unit.cfg.entry, pruned);
+      return;
+    }
+
+    const lifted = liftType(observed);
+    if (lifted === undefined) return;
+
+    const existing = findAssumption(parentCtx, typeExprHandle, nodeId);
+    if (existing !== undefined && typeLeq(lifted, existing) && typeLeq(existing, lifted)) return;
+
+    const cleanCtx = existing !== undefined
+      ? excludeAssumption(parentCtx, typeExprHandle, nodeId)
+      : parentCtx;
+    const newCtx = extendContext(cleanCtx, typeExprHandle, nodeId, lifted);
+    this.currentSpecContext.set(unit, newCtx);
+    this.enqueue(typeAnalysis, unit.cfg.entry, newCtx);
+  }
+
+  /** Active speculation context for a unit. Readers of `typeAnalysis`
+   *  looking for speculatively-narrowed facts should pass this context to
+   *  `readExprFact` / `factStore.tryRead`. */
+  specContextFor(unit: FunctionUnit): Context {
+    return this.currentSpecContext.get(unit) ?? ROOT_CONTEXT;
+  }
+
+  /** Same as `specContextFor`, keyed by nodeId. Convenience for consumers
+   *  that only have an AST node id (e.g. the DfaQuery projection). */
+  specContextForNode(nodeId: number): Context {
+    const unit = this.nodeToUnit.get(nodeId);
+    return unit === undefined ? ROOT_CONTEXT : this.specContextFor(unit);
+  }
+
   /** Rebuild CFG for every pending unit, then fire `onUnitRebuilt`. */
   private flushPendingRebuilds(): FunctionUnit[] {
     if (this.pendingRebuilds.size === 0) return [];
@@ -464,7 +553,6 @@ export const DEFAULT_PASSES: ReadonlyArray<Analysis<any, any>> = [
   speculationBlacklistAnalysis,
   typeAnalysis,
   constAnalysis,
-  speculativeTypeAnalysis,
   speculativeConstAnalysis,
   purityBlockAnalysis,
   purityScopeAnalysis,
