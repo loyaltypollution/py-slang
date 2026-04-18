@@ -38,21 +38,31 @@ import type { TypeLattice } from "../type-analysis/lattice";
 import { leq as typeLeq } from "../type-analysis/lattice";
 import type { ConstLattice } from "../const-analysis/lattice";
 
-/** Per-node read-only projection of the DFA fact-store. Resolves the
- *  containing BasicBlock internally via `nodeIndex`, so callers identify
- *  nodes by id alone. */
-export interface DfaQuery {
+/** Transform-safe projection of the DFA fact-store: only reads that are
+ *  sound to consume during AST mutation. Excludes speculative readers —
+ *  a narrowed fact at a node can become ⊤ on the next observation (deopt),
+ *  and a transform that rewrote the AST based on the narrowed fact cannot
+ *  safely un-rewrite. Anything mutating the AST MUST accept only this
+ *  sub-interface; the type gate is the enforcement mechanism for P3. */
+export interface StaticDfaQuery {
   typeOf(nodeId: number): TypeLattice | undefined;
   constOf(nodeId: number): ConstLattice | undefined;
+  /** Purity verdict for a FunctionDef scope. `true` = no observable side
+   *  effects ⇒ safe to whole-call deopt re-entry. `false` = impure.
+   *  `undefined` = not yet computed (treat as impure for safety). */
+  isPureScope(scopeId: number): boolean | undefined;
+}
+
+/** Full DfaQuery extends `StaticDfaQuery` with speculation readers — intended
+ *  for backend emission (svml-compiler, jit-analysis) where a runtime guard
+ *  protects against violation of the narrowed fact. NOT sound for AST
+ *  mutation; transforms should be typed against `StaticDfaQuery` only. */
+export interface DfaQuery extends StaticDfaQuery {
   /** Speculatively-narrowed type fact (observation `meet`'d with static).
    *  Consumers MUST emit a runtime guard at any specialization decision
    *  that depends on a tighter answer than `typeOf` would give. */
   speculativeTypeOf(nodeId: number): TypeLattice | undefined;
   speculativeConstOf(nodeId: number): ConstLattice | undefined;
-  /** Purity verdict for a FunctionDef scope. `true` = no observable side
-   *  effects ⇒ safe to whole-call deopt re-entry. `false` = impure.
-   *  `undefined` = not yet computed (treat as impure for safety). */
-  isPureScope(scopeId: number): boolean | undefined;
   /** True iff a prior guard at this nodeId fired and the deopt handler
    *  blacklisted further speculation. The compiler must use the generic
    *  opcode at this site even if speculative facts still appear narrowed. */
