@@ -1,5 +1,6 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
+import type { Context } from "../framework/context";
 import type { FactStore } from "../framework/fact-store";
 import type { MutableEnv } from "../framework/mutable-env";
 import { runtimeWriteAnalysis } from "../framework/runtime-analyses";
@@ -88,6 +89,11 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: number, val: TypeLattice) => void,
     private readonly combineObservation: CombineObservation,
+    // Speculation context the current transfer is running under. Plumbed
+    // through for upcoming assumption-based narrowing; the visitor does not
+    // yet consult it — the migration lands when `speculativeTypeAnalysis` is
+    // replaced by `typeAnalysis`-under-context.
+    readonly context: Context,
   ) {}
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
@@ -281,8 +287,9 @@ export function makeTypeAnalysisModule(
     env: MutableEnv<TypeLattice>,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: number, val: TypeLattice) => void,
+    context: Context,
   ): ExprNS.Visitor<TypeLattice> {
-    return new TypeAnalysisVisitor(factStore, env, slotLookup, recordExprFact, combineObservation);
+    return new TypeAnalysisVisitor(factStore, env, slotLookup, recordExprFact, combineObservation, context);
   },
   /**
    * Narrow the env when crossing a branch edge. Handles `slot OP literal`

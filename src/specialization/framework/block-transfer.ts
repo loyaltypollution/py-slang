@@ -1,5 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "./cfg";
+import type { Context } from "./context";
 import type { DfaBlockFact } from "./dfa-factory";
 import type { FactStore } from "./fact-store";
 import type { BlockDfaSpec } from "./interfaces";
@@ -72,13 +73,14 @@ export function transferBlock<L>(
   module: BlockDfaSpec<L>,
   factStore: FactStore,
   slotLookup: SlotLookup,
+  context: Context,
 ): DfaBlockFact<L> {
   const outEnv = inEnv.snapshot();
   const exprFacts = new Map<number, L>();
   const recordExprFact = (nodeId: number, val: L): void => {
     exprFacts.set(nodeId, val);
   };
-  const visitor = module.makeExprVisitor(factStore, outEnv, slotLookup, recordExprFact);
+  const visitor = module.makeExprVisitor(factStore, outEnv, slotLookup, recordExprFact, context);
   const stmts = block.stmts;
   if (module.direction === "backward") {
     for (let i = stmts.length - 1; i >= 0; i--) {

@@ -21,8 +21,8 @@ function dfaAnalysis<L>(
     valueLattice: spec,
     mergeKind: spec.mergeKind,
     seedEnv: () => new MutableEnv<L>(),
-    transferBlock: (factStore, _ctx, block, inEnv, unit) =>
-      transferBlock(block, inEnv, spec, factStore, unit.slotLookup),
+    transferBlock: (factStore, ctx, block, inEnv, unit) =>
+      transferBlock(block, inEnv, spec, factStore, unit.slotLookup, ctx.currentContext),
     refineOnEdge: (env, edge) => spec.refineOnEdge(env, edge),
     accumulationMode,
   });

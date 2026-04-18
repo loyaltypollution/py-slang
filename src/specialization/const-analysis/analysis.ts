@@ -1,5 +1,6 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
+import type { Context } from "../framework/context";
 import type { FactStore } from "../framework/fact-store";
 import { runtimeWriteAnalysis } from "../framework/runtime-analyses";
 import type { BlockDfaSpec } from "../framework/interfaces";
@@ -256,6 +257,7 @@ export function makeConstAnalysisModule(
       env: MutableEnv<ConstLattice>,
       slotLookup: SlotLookup,
       recordExprFact: (nodeId: number, val: ConstLattice) => void,
+      _context: Context,
     ): ExprNS.Visitor<ConstLattice> {
       return new ConstAnalysisVisitor(factStore, env, slotLookup, recordExprFact, combineObservation);
     },

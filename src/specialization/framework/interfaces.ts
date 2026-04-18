@@ -1,5 +1,6 @@
 import type { ExprNS } from "../../ast-types";
 import type { CFGEdge } from "./cfg";
+import type { Context } from "./context";
 import type { FactStore } from "./fact-store";
 import type { MutableEnv } from "./mutable-env";
 import type { BoundedLattice } from "./analysis";
@@ -43,12 +44,19 @@ export interface BlockDfaSpec<L> extends BoundedLattice<L> {
    *  records per-node output facts into `recordExprFact`. The visitor MUST
    *  NOT write back into `factStore` — per-node facts flow out via
    *  `recordExprFact` and are attached to the block analysis's `DfaBlockFact`
-   *  by `transferBlock`. */
+   *  by `transferBlock`.
+   *
+   *  `context` is the speculation context this transfer is running under.
+   *  ROOT_CONTEXT for the unspeculated pass; a non-ROOT context carries
+   *  assumption bindings the visitor MAY consult (via `findAssumption`) to
+   *  narrow per-node facts. Modules that are speculation-oblivious ignore
+   *  the parameter. */
   makeExprVisitor(
     factStore: FactStore,
     env: MutableEnv<L>,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: number, val: L) => void,
+    context: Context,
   ): ExprNS.Visitor<L>;
 
   /** Per-edge env refinement. Called by the DFA factory before a predecessor
