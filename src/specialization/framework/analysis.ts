@@ -198,11 +198,10 @@ export interface Narrowing<V> {
   readonly observationSource: Analysis<number, RawKind>;
   /** Direction of the underlying block DFA. The observation→context
    *  translator re-seeds Kildall at the direction-appropriate block:
-   *  `unit.cfg.entry` for forward, `unit.cfg.exit` for backward. Forward
-   *  is the default and can be omitted for brevity — backward narrowings
-   *  MUST declare `"backward"` or their fixpoint seeds at the wrong end of
-   *  the CFG and silently converges on the identity fact. */
-  readonly direction?: "forward" | "backward";
+   *  `unit.cfg.entry` for forward, `unit.cfg.exit` for backward. Mandatory
+   *  — a default would silently mis-seed backward narrowings at the wrong
+   *  end of the CFG, converging on the identity fact with no error. */
+  readonly direction: "forward" | "backward";
   resolveUnit?(ctx: AnalysisCtx, key: number): FunctionUnit | undefined;
   lift(observed: RawKind): V | undefined;
 }

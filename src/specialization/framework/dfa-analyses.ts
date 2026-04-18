@@ -50,12 +50,14 @@ export const typeNarrowing: Narrowing<TypeLattice> = {
   handle: typeExprHandle,
   blockAnalysis: () => typeAnalysis,
   observationSource: runtimeWriteAnalysis,
+  direction: "forward",
   lift: liftType,
 };
 export const constNarrowing: Narrowing<ConstLattice> = {
   handle: constExprHandle,
   blockAnalysis: () => constAnalysis,
   observationSource: runtimeWriteAnalysis,
+  direction: "forward",
   lift: liftConst,
 };
 
