@@ -18,6 +18,7 @@
 import type { FunctionUnit } from "./function-unit";
 import type { FactStore } from "./fact-store";
 import type { Context } from "./context";
+import type { RawKind } from "./raw-value";
 
 /** Value-space algebra. `leq` is the partial order (a ⊑ b); `join` is the
  *  least upper bound; `bottom` is returned for unwritten cells. */
@@ -161,6 +162,22 @@ export interface Analysis<K, V> {
  *  `registerGuard` call site instead of a silent degradation inside
  *  `Worklist.widenGuard`. */
 export type SpecAnchor<K, V> = Analysis<K, V> & { readonly specAnchor: SpecAnchorInfo<V> };
+
+/** A single dimension along which runtime observations can extend a
+ *  speculation context. Bundles the assumption-anchor handle (whose
+ *  `specAnchor.blockAnalysis` is the Kildall analysis that must re-run
+ *  when assumptions change) with the lifting function that maps a raw
+ *  observation into this dimension's value type.
+ *
+ *  The worklist iterates a registered list of `NarrowingSpec`s in four
+ *  data-driven sites: observation→context translation, `widenGuard` and
+ *  `widenUnitSpeculation`'s re-seed loops, and `lineageOf`'s synthetic
+ *  Kildall runs. Adding a new narrowing dimension is a one-line
+ *  registration; the framework does not name individual analyses. */
+export interface NarrowingSpec<V> {
+  readonly handle: Analysis<number, V>;
+  lift(observed: RawKind): V | undefined;
+}
 
 /** Unit-topology lookups; store access goes through the `FactStore` parameter.
  *  `currentContext` is the speculation context under which the current

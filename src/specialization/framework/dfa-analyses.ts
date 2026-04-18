@@ -1,13 +1,13 @@
-import { constAnalysisModule, constExprHandle, constValueEqual } from "../const-analysis/analysis";
+import { constAnalysisModule, constExprHandle, constValueEqual, liftConst } from "../const-analysis/analysis";
 import type { ConstLattice } from "../const-analysis/lattice";
-import { typeAnalysisModule, typeExprHandle, typeValueEqual } from "../type-analysis/analysis";
+import { liftType, typeAnalysisModule, typeExprHandle, typeValueEqual } from "../type-analysis/analysis";
 import type { TypeLattice } from "../type-analysis/lattice";
 import { transferBlock } from "./block-transfer";
 import type { BasicBlock } from "./cfg";
 import { nodeIdToBlock, type DfaBlockFact, makeBlockFixpointAnalysis } from "./dfa-factory";
 import type { BlockDfaSpec } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
-import { addEdge, type Analysis, type SpecAnchorInfo } from "./analysis";
+import { addEdge, type Analysis, type NarrowingSpec, type SpecAnchorInfo } from "./analysis";
 import { runtimeWriteAnalysis } from "./runtime-analyses";
 
 function dfaAnalysis<L>(
@@ -60,3 +60,23 @@ attachSpecAnchor(typeExprHandle, {
   blockAnalysis: () => typeAnalysis,
   valueEqual: typeValueEqual,
 });
+
+/** Narrowing dimensions exposed to the observation→context translator.
+ *  Registering one here is the full surface for adding a speculation
+ *  dimension: the worklist's observation translator, widen primitives,
+ *  and `lineageOf` iterate this list. No framework edits required. */
+export const typeNarrowing: NarrowingSpec<TypeLattice> = {
+  handle: typeExprHandle,
+  lift: liftType,
+};
+export const constNarrowing: NarrowingSpec<ConstLattice> = {
+  handle: constExprHandle,
+  lift: liftConst,
+};
+
+/** Default narrowing set. Worklist callers that omit the constructor's
+ *  `narrowings` parameter get this list. */
+export const DEFAULT_NARROWINGS: ReadonlyArray<NarrowingSpec<any>> = [
+  typeNarrowing,
+  constNarrowing,
+];

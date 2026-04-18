@@ -16,7 +16,7 @@ import {
   wireCFG,
   type FunctionUnit,
 } from "./function-unit";
-import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type TransformRule, type LifecycleEdge } from "./analysis";
+import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type NarrowingSpec, type TransformRule, type LifecycleEdge } from "./analysis";
 import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Assumption, type Context } from "./context";
 import { immediateStrategy, type SpeculationStrategy } from "./speculation-strategy";
 import { runtimeCallAnalysis, runtimeWriteAnalysis } from "./runtime-analyses";
@@ -30,10 +30,9 @@ import { livenessAnalysis } from "../liveness-analysis/analysis";
 import {
   typeAnalysis,
   constAnalysis,
+  DEFAULT_NARROWINGS,
 } from "./dfa-analyses";
 import { readExprFact } from "./dfa-factory";
-import { liftType, typeExprHandle, typeValueEqual } from "../type-analysis/analysis";
-import { constExprHandle, constValueEqual, liftConst } from "../const-analysis/analysis";
 import type { RawKind } from "./raw-value";
 import type { TypeLattice } from "../type-analysis/lattice";
 import type { ConstLattice } from "../const-analysis/lattice";
@@ -166,8 +165,9 @@ export class Worklist {
   private readonly transformDirty = new Map<TransformRule, Set<FunctionUnit>>();
 
   /** Per-unit active speculation context. Grows as `runtimeWriteAnalysis`
-   *  observations land (each adds one `(typeExprHandle, nodeId, lifted)`
-   *  assumption). `widenWriteObservation` retracts per-observation;
+   *  observations land — each observation adds one assumption per
+   *  registered narrowing whose `lift` accepts it (see `this.narrowings`).
+   *  `widenWriteObservation` retracts per-observation;
    *  `widenUnitSpeculation` collapses the chain to ROOT on guard violation
    *  (coarser handle, used when the guard's consumer nodeId doesn't match
    *  any observation site — lineage-precise pruning is deferred). Unset or
@@ -203,6 +203,11 @@ export class Worklist {
    *  strategy) to suppress speculation on single outliers. */
   private readonly specStrategy: SpeculationStrategy;
 
+  /** Registered speculation-narrowing dimensions. The observation translator,
+   *  widen primitives, and `lineageOf` iterate this list — adding a new
+   *  narrowing is a one-line registration here, not a framework edit. */
+  private readonly narrowings: ReadonlyArray<NarrowingSpec<any>>;
+
   constructor(
     ast: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
@@ -210,8 +215,10 @@ export class Worklist {
     registry?: FunctionRegistry,
     transforms: ReadonlyArray<TransformRule> = DEFAULT_TRANSFORMS,
     specStrategy: SpeculationStrategy = immediateStrategy,
+    narrowings: ReadonlyArray<NarrowingSpec<any>> = DEFAULT_NARROWINGS,
   ) {
     this.specStrategy = specStrategy;
+    this.narrowings = narrowings;
     this.registry = registry ?? buildFunctionRegistry(ast);
     this.functionEnvironments = functionEnvironments;
     const built = buildFunctionUnits(ast, functionEnvironments, this.registry);
@@ -485,15 +492,36 @@ export class Worklist {
     for (const sub of subs) sub(ctx, change.key);
   }
 
+  /** Block analysis bound to a narrowing via its handle's `specAnchor`.
+   *  Throws if the handle was never declared as a spec anchor — the loud
+   *  equivalent of silent fallback to whole-unit widen. */
+  private blockAnalysisOf(n: NarrowingSpec<any>): Analysis<any, any> {
+    const anchor = n.handle.specAnchor;
+    if (anchor === undefined) {
+      throw new Error(
+        `[Worklist] narrowing "${n.handle.debugName}" has no specAnchor — ` +
+        `declare its block-DFA/valueEqual pairing in dfa-analyses.ts.`,
+      );
+    }
+    return anchor.blockAnalysis();
+  }
+
+  /** Re-seed Kildall for every registered narrowing's block analysis at
+   *  `unit`'s entry block under `context`. Used whenever the unit's active
+   *  speculation context shifts (observation-extend, widen-guard,
+   *  widen-unit, lineageOf synthesis). */
+  private enqueueNarrowingEntry(unit: FunctionUnit, context: Context): void {
+    for (const n of this.narrowings) {
+      this.enqueue(this.blockAnalysisOf(n), unit.cfg.entry, context);
+    }
+  }
+
   /** Translator: converts `runtimeWriteAnalysis` observations into Context
-   *  mutations on the owning unit, then enqueues both `typeAnalysis` and
-   *  `constAnalysis` under the new context to re-run Kildall with the
-   *  assumptions.
-   *
-   *  One observation binds up to two assumptions — a TypeLattice value at
-   *  `typeExprHandle` and a ConstLattice value at `constExprHandle`. Both
-   *  share the same Context chain so a single compiled version depends on
-   *  a single chain (matches the artifact-tree model in the brief).
+   *  mutations on the owning unit, then re-seeds Kildall for each
+   *  registered narrowing under the new context. An observation binds at
+   *  most one assumption per narrowing — all bindings share the same
+   *  Context chain so one compiled version depends on one chain (matches
+   *  the artifact-tree model in the brief).
    *
    *  Invoked directly from `observe` (not via factStore.onChange) so count-
    *  based strategies see every observed call, including repeats the
@@ -527,44 +555,36 @@ export class Worklist {
     }
 
     if (observed.kind === "unknown") {
-      let pruned = excludeAssumption(parentCtx, typeExprHandle, nodeId);
-      pruned = excludeAssumption(pruned, constExprHandle, nodeId);
+      let pruned = parentCtx;
+      for (const n of this.narrowings) {
+        pruned = excludeAssumption(pruned, n.handle, nodeId);
+      }
       if (pruned === parentCtx) return;
       if (pruned === ROOT_CONTEXT) this.currentSpecContext.delete(unit);
       else this.currentSpecContext.set(unit, pruned);
-      this.enqueue(typeAnalysis, unit.cfg.entry, pruned);
-      this.enqueue(constAnalysis, unit.cfg.entry, pruned);
+      this.enqueueNarrowingEntry(unit, pruned);
       this.fireLifecycle("specContextChange", unit);
       return;
     }
 
-    const liftedType = liftType(observed);
-    const liftedConst = liftConst(observed);
-
     let newCtx = parentCtx;
-    if (liftedType !== undefined) {
-      const existing = findAssumption(newCtx, typeExprHandle, nodeId);
-      if (existing === undefined || !typeValueEqual(liftedType, existing)) {
-        const cleaned = existing !== undefined
-          ? excludeAssumption(newCtx, typeExprHandle, nodeId)
-          : newCtx;
-        newCtx = extendContext(cleaned, typeExprHandle, nodeId, liftedType);
-      }
-    }
-    if (liftedConst !== undefined) {
-      const existing = findAssumption(newCtx, constExprHandle, nodeId);
-      if (existing === undefined || !constValueEqual(existing, liftedConst)) {
-        const cleaned = existing !== undefined
-          ? excludeAssumption(newCtx, constExprHandle, nodeId)
-          : newCtx;
-        newCtx = extendContext(cleaned, constExprHandle, nodeId, liftedConst);
-      }
+    for (const n of this.narrowings) {
+      const lifted = n.lift(observed);
+      if (lifted === undefined) continue;
+      const existing = findAssumption(newCtx, n.handle, nodeId);
+      const valueEqual = n.handle.specAnchor?.valueEqual;
+      const unchanged =
+        existing !== undefined && valueEqual !== undefined && valueEqual(existing, lifted);
+      if (unchanged) continue;
+      const cleaned = existing !== undefined
+        ? excludeAssumption(newCtx, n.handle, nodeId)
+        : newCtx;
+      newCtx = extendContext(cleaned, n.handle, nodeId, lifted);
     }
 
     if (newCtx === parentCtx) return;
     this.currentSpecContext.set(unit, newCtx);
-    this.enqueue(typeAnalysis, unit.cfg.entry, newCtx);
-    this.enqueue(constAnalysis, unit.cfg.entry, newCtx);
+    this.enqueueNarrowingEntry(unit, newCtx);
     this.fireLifecycle("specContextChange", unit);
   }
 
@@ -603,8 +623,7 @@ export class Worklist {
     if (!this.currentSpecContext.has(unit)) return undefined;
     this.currentSpecContext.delete(unit);
     this.guardProvenance.get(unit)?.clear();
-    this.enqueue(typeAnalysis, unit.cfg.entry, ROOT_CONTEXT);
-    this.enqueue(constAnalysis, unit.cfg.entry, ROOT_CONTEXT);
+    this.enqueueNarrowingEntry(unit, ROOT_CONTEXT);
     this.fireLifecycle("specContextChange", unit);
     return unit;
   }
@@ -673,19 +692,18 @@ export class Worklist {
         if (prunedSet.has(specRefKey(r))) perUnit.delete(gid);
       }
     }
-    this.enqueue(typeAnalysis, unit.cfg.entry, pruned);
-    this.enqueue(constAnalysis, unit.cfg.entry, pruned);
+    this.enqueueNarrowingEntry(unit, pruned);
     this.fireLifecycle("specContextChange", unit);
     return unit;
   }
 
   /** Identify assumptions in `ctx`'s chain whose removal widens the fact at
    *  `(ref.analysis, ref.key)`. Algorithm: for each link, synthesize the
-   *  chain without it, transiently run Kildall (typeAnalysis + constAnalysis
-   *  only — no transforms, no CFG rebuild), and diff the fact. Cells under
-   *  the synthetic chain are written to the fact store and linger — contexts
-   *  are identity-keyed so no collision, but a fact-store eviction pass is
-   *  a later step (C5b follow-up).
+   *  chain without it, re-seed Kildall for every registered narrowing
+   *  under the synthesized chain (no transforms, no CFG rebuild), and diff
+   *  the fact at `ref`. Cells under the synthetic chain are written to the
+   *  fact store and linger — contexts are identity-keyed so no collision,
+   *  but a fact-store eviction pass is a later step (C5b follow-up).
    *
    *  Cost: O(chainDepth × Kildall-at-pruned-ctx). Chain depth is bounded by
    *  the speculation strategy (`countBasedStrategy`, etc.) which throttles
@@ -714,8 +732,7 @@ export class Worklist {
       if (a === undefined) continue;
       const without = excludeAssumption(ctx, a.analysis, a.key);
       if (without === ctx) continue;
-      this.enqueue(typeAnalysis, unit.cfg.entry, without);
-      this.enqueue(constAnalysis, unit.cfg.entry, without);
+      this.enqueueNarrowingEntry(unit, without);
       this.processQueue();
       const widened = readExprFact(this.factStore, blockAnalysis, block, nodeId, without);
       if (!valueEqual(current, widened)) loadBearing.push(a);
