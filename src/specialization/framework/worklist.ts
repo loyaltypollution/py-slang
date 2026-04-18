@@ -17,6 +17,7 @@ import {
   type FunctionUnit,
 } from "./function-unit";
 import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type TransformRule, type LifecycleEdge } from "./analysis";
+import { ROOT_CONTEXT, type Context } from "./context";
 import { runtimeCallAnalysis, runtimeWriteAnalysis, speculationBlacklistAnalysis } from "./runtime-analyses";
 import { purityBlockAnalysis, purityScopeAnalysis } from "../purity-analysis/analysis";
 import { algebraicSimplifyRule } from "../transforms/algebraic-simplify";
@@ -72,7 +73,7 @@ export function makeDfaQuery(
   };
 }
 
-type QItem = { analysis: Analysis<any, any>; key: unknown; seq: number };
+type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq: number };
 
 const TIER_RANK = { runtime: 0, analysis: 1 } as const;
 
@@ -94,7 +95,13 @@ export class Worklist {
   private readonly registeredAnalyses: Analysis<any, any>[] = [];
   private readonly queue = new PriorityQueue<QItem>(compareItems);
   private seqCounter = 0;
-  private readonly pendingKeysByAnalysis = new Map<Analysis<any, any>, Set<unknown>>();
+  /** Dedup guard: a given (analysis, context, key) enqueued twice before being
+   *  drained is a single item. Context is part of the dedup identity because
+   *  sibling contexts run independent Kildall. */
+  private readonly pendingKeysByAnalysis = new Map<
+    Analysis<any, any>,
+    Map<Context, Set<unknown>>
+  >();
   private batchDepth = 0;
 
   /** Registered transforms and their dirty sets. A unit enters the dirty set
@@ -239,9 +246,9 @@ export class Worklist {
       }
       const wake = spec.wake;
       const effect = spec.effect;
-      this.subscribeFact(spec.analysis, (_ctx, key) => {
-        if (effect !== undefined) effect(this.factStore, this.passCtx, key);
-        for (const k of wake(this.passCtx, key)) this.enqueue(reader, k);
+      this.subscribeFact(spec.analysis, (ctx, key) => {
+        if (effect !== undefined) effect(this.factStore, ctx, key);
+        for (const k of wake(ctx, key)) this.enqueue(reader, k, ctx.currentContext);
       });
     }
     // Replay existing-unit mints so registration order doesn't determine seeding.
@@ -277,8 +284,8 @@ export class Worklist {
     }
   }
 
-  observe<K, V>(analysis: Analysis<K, V>, key: K, value: V): void {
-    this.factStore.write(analysis, key, value);
+  observe<K, V>(analysis: Analysis<K, V>, key: K, value: V, context: Context = ROOT_CONTEXT): void {
+    this.factStore.write(analysis, key, value, context);
     if (this.batchDepth === 0) this.processQueue();
   }
 
@@ -300,26 +307,32 @@ export class Worklist {
     return false;
   }
 
-  enqueue<K, V>(analysis: Analysis<K, V>, key: K): void {
+  enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: Context = ROOT_CONTEXT): void {
     const p = analysis as Analysis<any, any>;
-    let pending = this.pendingKeysByAnalysis.get(p);
+    let byContext = this.pendingKeysByAnalysis.get(p);
+    if (byContext === undefined) {
+      byContext = new Map();
+      this.pendingKeysByAnalysis.set(p, byContext);
+    }
+    let pending = byContext.get(context);
     if (pending === undefined) {
       pending = new Set();
-      this.pendingKeysByAnalysis.set(p, pending);
+      byContext.set(context, pending);
     }
     if (pending.has(key)) return;
     pending.add(key);
-    this.queue.enqueue({ analysis: p, key, seq: this.seqCounter++ });
+    this.queue.enqueue({ analysis: p, key, context, seq: this.seqCounter++ });
   }
 
   /** Pop the PQ to empty. Tier order: runtime < analysis. Does not rebuild CFGs. */
   private processQueue(): void {
     while (!this.queue.isEmpty()) {
       const item = this.queue.dequeue()!;
-      this.pendingKeysByAnalysis.get(item.analysis)?.delete(item.key);
-      const value = item.analysis.transfer(this.factStore, this.passCtx, item.key);
+      this.pendingKeysByAnalysis.get(item.analysis)?.get(item.context)?.delete(item.key);
+      const ctx = this.ctxFor(item.context);
+      const value = item.analysis.transfer(this.factStore, ctx, item.key);
       if (value !== undefined) {
-        this.factStore.write(item.analysis, item.key, value);
+        this.factStore.write(item.analysis, item.key, value, item.context);
       }
     }
   }
@@ -346,16 +359,35 @@ export class Worklist {
   private readonly passCtx: AnalysisCtx = {
     unitForNode: (nodeId: number) => this.nodeToUnit.get(nodeId),
     unitForFdId: (fdId: number) => this.unitsByFdId.get(fdId),
+    currentContext: ROOT_CONTEXT,
   };
+
+  /** Build an `AnalysisCtx` scoped to `context`. The root context reuses
+   *  `passCtx` (hot path); non-root contexts allocate a wrapper sharing the
+   *  same unit-topology lookups but swapping `currentContext`. */
+  private ctxFor(context: Context): AnalysisCtx {
+    if (context === ROOT_CONTEXT) return this.passCtx;
+    return {
+      unitForNode: this.passCtx.unitForNode,
+      unitForFdId: this.passCtx.unitForFdId,
+      currentContext: context,
+    };
+  }
 
   /** FactStore listener. Invariant: runs inside `FactStore.write`'s
    *  listener-dispatch loop; MUST NOT invoke `factStore.write`. Dispatches
    *  to every subscriber registered against `change.analysis` — analysis reader
-   *  wake-ups and transform dirty-additions compiled into the same list. */
+   *  wake-ups and transform dirty-additions compiled into the same list.
+   *
+   *  The `ctx` passed to subscribers carries `change.context` as
+   *  `currentContext`, so wake-ups enqueue under the same context the write
+   *  originated in — cross-context ripple doesn't happen without an explicit
+   *  context-crossing edge. */
   private handleFactChange(change: FactChange<unknown, unknown>): void {
     const subs = this.factSubs.get(change.analysis as Analysis<any, any>);
     if (subs === undefined) return;
-    for (const sub of subs) sub(this.passCtx, change.key);
+    const ctx = this.ctxFor(change.context);
+    for (const sub of subs) sub(ctx, change.key);
   }
 
   /** Rebuild CFG for every pending unit, then fire `onUnitRebuilt`. */

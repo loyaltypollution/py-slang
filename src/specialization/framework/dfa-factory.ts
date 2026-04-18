@@ -1,4 +1,5 @@
 import type { BasicBlock, CFGEdge } from "./cfg";
+import type { Context } from "./context";
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
@@ -174,7 +175,12 @@ export function makeBlockFixpointAnalysis<L>(
 
   const blockPassId = Symbol(`${config.debugName}:blocks`);
 
-  function inEnvFor(factStore: FactStore, block: BasicBlock, unit: FunctionUnit): MutableEnv<L> {
+  function inEnvFor(
+    factStore: FactStore,
+    block: BasicBlock,
+    unit: FunctionUnit,
+    context: Context,
+  ): MutableEnv<L> {
     // Iterate predecessor *edges* so `refineOnEdge` sees the labeled edge
     // (branch-true/false + condition). Backward analyses treat CFG successors
     // as predecessors by symmetry.
@@ -185,9 +191,10 @@ export function makeBlockFixpointAnalysis<L>(
     let env: MutableEnv<L> | undefined;
     for (const edge of preds) {
       // `factStore.read` returns the frozen bottomFact for unwritten cells;
-      // we never mutate it in place.
+      // we never mutate it in place. Read is scoped to `context` so a
+      // speculative context's predecessors don't leak ROOT state.
       const predBlock = config.direction === "forward" ? edge.from : edge.to;
-      const predOut = factStore.read(blockKeyedAnalysis, predBlock).outEnv;
+      const predOut = factStore.read(blockKeyedAnalysis, predBlock, context).outEnv;
       // Refine across the edge. Identity returns are common and must not
       // allocate; the factory absorbs that by snapshotting only when the
       // refinement returned a truly different env.
@@ -227,7 +234,7 @@ export function makeBlockFixpointAnalysis<L>(
     tier: "analysis",
     transfer(factStore: FactStore, ctx: AnalysisCtx, block: BasicBlock): DfaBlockFact<L> | undefined {
       const unit = block.unit;
-      const inEnv = inEnvFor(factStore, block, unit);
+      const inEnv = inEnvFor(factStore, block, unit, ctx.currentContext);
       return config.transferBlock(factStore, ctx, block, inEnv, unit);
     },
   };

@@ -17,6 +17,7 @@
 
 import type { FunctionUnit } from "./function-unit";
 import type { FactStore } from "./fact-store";
+import type { Context } from "./context";
 
 /** Value-space algebra. `leq` is the partial order (a ⊑ b); `join` is the
  *  least upper bound; `bottom` is returned for unwritten cells. */
@@ -114,12 +115,20 @@ export interface Analysis<K, V> {
   transfer(factStore: FactStore, ctx: AnalysisCtx, key: K): V | undefined;
 }
 
-/** Unit-topology lookups; store access goes through the `FactStore` parameter. */
+/** Unit-topology lookups; store access goes through the `FactStore` parameter.
+ *  `currentContext` is the speculation context under which the current
+ *  `transfer` / wake-dispatch call is running — read via
+ *  `factStore.read(..., ctx.currentContext)` to fetch per-context cells and
+ *  `findAssumption(ctx.currentContext, analysis, key)` to fetch narrowing
+ *  assumptions bound in this context's chain. ROOT_CONTEXT when no
+ *  speculation is active, which is the default for every existing caller. */
 export interface AnalysisCtx {
   /** Outermost containing unit for a node. */
   unitForNode(nodeId: number): FunctionUnit | undefined;
   /** Unit for a `FunctionDef.id`. */
   unitForFdId(fdId: number): FunctionUnit | undefined;
+  /** Speculation context for this dispatch. */
+  readonly currentContext: Context;
 }
 
 /** One-shot or cascading imperative AST sweep gated on analyses. Transforms

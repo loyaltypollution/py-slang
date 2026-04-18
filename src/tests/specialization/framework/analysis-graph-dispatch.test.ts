@@ -11,6 +11,7 @@ import { Resolver } from "../../../resolver";
 import { Worklist } from "../../../specialization/framework/worklist";
 import type { EdgeSpec, Lattice, Analysis, TransformRule } from "../../../specialization/framework/analysis";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
+import { ROOT_CONTEXT, extendContext } from "../../../specialization/framework/context";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -346,5 +347,103 @@ describe("Worklist analysis-graph dispatch", () => {
 
     const wl = buildWorklist();
     expect(() => wl.endBatch()).toThrow(/matching beginBatch/);
+  });
+
+  describe("context dispatch", () => {
+    test("enqueue under non-ROOT runs transfer with matching currentContext; write lands at that context", () => {
+      const wl = buildWorklist();
+      const observedContexts: unknown[] = [];
+      const p = makeAnalysis<number, number>({
+        name: "p",
+        lattice: intMax,
+      });
+      // Replace transfer to read currentContext and yield a fixed value.
+      const pWithTransfer: Analysis<number, number> = {
+        ...p,
+        transfer: (_fs, ctx, _k) => {
+          observedContexts.push(ctx.currentContext);
+          return 7;
+        },
+      };
+      wl.register(pWithTransfer);
+
+      const ctx = extendContext(ROOT_CONTEXT, pWithTransfer, 42, 99);
+      wl.enqueue(pWithTransfer, 42, ctx);
+      wl.drain();
+
+      expect(observedContexts).toEqual([ctx]);
+      expect(wl.factStore.read(pWithTransfer, 42, ctx)).toBe(7);
+      expect(wl.factStore.read(pWithTransfer, 42, ROOT_CONTEXT)).toBe(0);
+    });
+
+    test("wake-ups from a non-ROOT write re-enqueue in the same context", () => {
+      const wl = buildWorklist();
+      const producer = makeAnalysis<number, number>({
+        name: "producer",
+        lattice: intMax,
+      });
+      const seenContexts: unknown[] = [];
+      const reader: Analysis<number, number> = {
+        id: Symbol("reader"),
+        debugName: "reader",
+        lattice: intMax,
+        edges: [{ on: "fact", analysis: producer, wake: (_c, k) => [k as number] }],
+        tier: "analysis",
+        transfer: (_fs, ctx, _k) => {
+          seenContexts.push(ctx.currentContext);
+          return undefined;
+        },
+      };
+      wl.register(producer);
+      wl.register(reader);
+
+      const ctx = extendContext(ROOT_CONTEXT, producer, 1, 99);
+
+      // Seed reader so it's considered a known cell target.
+      wl.factStore.write(reader, 1, 0, ctx);
+      seenContexts.length = 0;
+
+      wl.factStore.write(producer, 1, 5, ctx);
+      wl.drain();
+
+      expect(seenContexts).toEqual([ctx]);
+    });
+
+    test("writes at ROOT and non-ROOT do not cross-wake each other", () => {
+      const wl = buildWorklist();
+      const producer = makeAnalysis<number, number>({
+        name: "producer",
+        lattice: intMax,
+      });
+      const rootSeen: unknown[] = [];
+      const reader: Analysis<number, number> = {
+        id: Symbol("reader"),
+        debugName: "reader",
+        lattice: intMax,
+        edges: [{ on: "fact", analysis: producer, wake: (_c, k) => [k as number] }],
+        tier: "analysis",
+        transfer: (_fs, ctx, _k) => {
+          rootSeen.push(ctx.currentContext);
+          return undefined;
+        },
+      };
+      wl.register(producer);
+      wl.register(reader);
+
+      const ctx = extendContext(ROOT_CONTEXT, producer, 1, 99);
+
+      wl.factStore.write(producer, 1, 5); // ROOT
+      wl.drain();
+      const afterRoot = rootSeen.slice();
+
+      wl.factStore.write(producer, 1, 5, ctx); // non-ROOT
+      wl.drain();
+      const afterCtx = rootSeen.slice();
+
+      expect(afterRoot.every(c => c === ROOT_CONTEXT)).toBe(true);
+      const newCalls = afterCtx.slice(afterRoot.length);
+      expect(newCalls.every(c => c === ctx)).toBe(true);
+      expect(newCalls.length).toBeGreaterThan(0);
+    });
   });
 });
