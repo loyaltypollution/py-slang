@@ -55,8 +55,14 @@ import {
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import { liftType } from "../type-analysis/analysis";
 import {
+  BOOL_BIT,
   BOTTOM,
+  CLOSURE_BIT,
+  COMPLEX_BIT,
+  FLOAT_BIT,
   INT_BIT,
+  NULL_BIT,
+  STR_BIT,
   TOP,
   eq,
   integer,
@@ -297,28 +303,62 @@ export const returnKindNarrowing: Narrowing<TypeLattice> = {
   lift: liftType,
 };
 
-/** Read the per-slot type requirement at `unit`'s entry block under
- *  `context`. Slots whose requirement is TOP (no constraint) are omitted
- *  from the result. Returns an empty map when the analysis hasn't yet
- *  produced a fact for this (unit, context) — typically because the
- *  context carries no return-kind assumption and the analysis short-
- *  circuited. Consumers: guard-hoisting, redundant-check elimination.
+/** Split view of the per-slot entry requirement for `unit` under
+ *  `context`. `provable` holds slots whose requirement is strictly
+ *  stronger than TOP (no constraint) and satisfiable by some concrete
+ *  runtime value — the guard candidates. `unprovable` holds slots whose
+ *  requirement is empty (no runtime value satisfies it) — two paths of
+ *  the body demand incompatible types for that slot, and the speculation
+ *  cannot hold for any input.
  *
- *  A slot mapping to BOTTOM signals "two paths of the body demand
- *  incompatible types for this slot" — the return-kind speculation cannot
- *  be proved. Callers must treat BOTTOM as an unprovable-speculation
- *  signal, not as a valid type requirement. */
+ *  Consumers MUST branch on `unprovable` before emitting a guard: an
+ *  unprovable slot means the speculation is statically impossible, so
+ *  guard emission would gate every call on a check that always fails. */
+export interface EntryRequirement {
+  readonly provable: ReadonlyMap<number, TypeLattice>;
+  readonly unprovable: ReadonlySet<number>;
+}
+
+/** True iff `v` describes at least one concrete runtime value. Empty
+ *  kinds mask means outright BOTTOM. A kind bit with an empty refinement
+ *  (e.g. `kinds=INT_BIT` with `intRef=0`, as produced by
+ *  `meet(INT_POS, INT_NEG)`) is structurally non-BOTTOM but semantically
+ *  admits no integer — the distinction matters because `eq(v, BOTTOM)`
+ *  alone would misclassify such a slot as provable. Refinementless kinds
+ *  (STR, NULL, CLOSURE, COMPLEX) are satisfiable whenever their bit is
+ *  set; refinement-bearing kinds (INT, BOOL, FLOAT) require a non-zero
+ *  refinement bit. */
+function isSatisfiable(v: TypeLattice): boolean {
+  if (v.kinds === 0) return false;
+  const refinementless = STR_BIT | NULL_BIT | CLOSURE_BIT | COMPLEX_BIT;
+  if ((v.kinds & refinementless) !== 0) return true;
+  if ((v.kinds & INT_BIT) !== 0 && v.intRef !== 0) return true;
+  if ((v.kinds & BOOL_BIT) !== 0 && v.boolRef !== 0) return true;
+  if ((v.kinds & FLOAT_BIT) !== 0 && v.floatRef !== 0) return true;
+  return false;
+}
+
+/** Read the per-slot type requirement at `unit`'s entry block under
+ *  `context`. Returns the split `EntryRequirement`. TOP bindings (no
+ *  constraint) are omitted from both halves. Returns empty sets when the
+ *  analysis hasn't yet produced a fact for this (unit, context) —
+ *  typically because the context carries no return-kind assumption and
+ *  the analysis short-circuited. Consumers: guard-hoisting, redundant-
+ *  check elimination. */
 export function requirementAtEntry(
   factStore: FactStore,
   unit: FunctionUnit,
   context: Context = ROOT_CONTEXT,
-): Map<number, TypeLattice> {
+): EntryRequirement {
+  const provable = new Map<number, TypeLattice>();
+  const unprovable = new Set<number>();
   const fact = factStore.tryRead(typeRequirementAnalysis, unit.cfg.entry, context);
-  const result = new Map<number, TypeLattice>();
-  if (fact === undefined) return result;
+  if (fact === undefined) return { provable, unprovable };
   for (const slot of fact.outEnv.definedSlots()) {
     const req = fact.outEnv.get(slot);
-    if (req !== undefined && req !== TOP) result.set(slot, req);
+    if (req === undefined || req === TOP) continue;
+    if (isSatisfiable(req)) provable.set(slot, req);
+    else unprovable.add(slot);
   }
-  return result;
+  return { provable, unprovable };
 }

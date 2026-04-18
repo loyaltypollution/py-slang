@@ -24,13 +24,18 @@ import {
   findAssumption,
   ROOT_CONTEXT,
 } from "../../../specialization/framework/context";
+import { MutableEnv } from "../../../specialization/framework/mutable-env";
 import {
   observeRuntimeReturn,
   observeRuntimeWrite,
 } from "../../../specialization/framework/runtime-analyses";
 import {
+  BOTTOM,
   INT_BIT,
+  INT_NEG,
   INT_POS,
+  meet,
+  type TypeLattice,
 } from "../../../specialization/type-analysis/lattice";
 import {
   requirementAtEntry,
@@ -58,7 +63,8 @@ def hot(x):
     const unit = worklist.units.get(fn)!;
 
     const reqs = requirementAtEntry(worklist.factStore, unit, ROOT_CONTEXT);
-    expect(reqs.size).toBe(0);
+    expect(reqs.provable.size).toBe(0);
+    expect(reqs.unprovable.size).toBe(0);
   });
 
   test("return x with INT_POS return-kind assumption requires x: INT_POS at entry", () => {
@@ -74,7 +80,8 @@ def hot(x):
     worklist.drain();
 
     const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
-    expect(reqs.get(0)).toEqual(INT_POS);
+    expect(reqs.provable.get(0)).toEqual(INT_POS);
+    expect(reqs.unprovable.size).toBe(0);
   });
 
   test("intermediate assignment: y = x; return y hoists onto x, clears y", () => {
@@ -94,12 +101,13 @@ def hot(x):
     // Slot 0 = parameter `x`; non-zero slot(s) = locals. `x` carries the
     // requirement; `y` is killed by its own assignment before the backward
     // flow reaches the entry block.
-    expect(reqs.get(0)).toEqual(INT_POS);
-    for (const [slot, _req] of reqs) {
+    expect(reqs.provable.get(0)).toEqual(INT_POS);
+    for (const slot of reqs.provable.keys()) {
       if (slot !== 0) {
         throw new Error(`unexpected requirement on non-param slot ${slot}`);
       }
     }
+    expect(reqs.unprovable.size).toBe(0);
   });
 
   test("binary + with int target requires both operands int (kind-level)", () => {
@@ -115,11 +123,12 @@ def hot(x):
     worklist.drain();
 
     const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
-    const xReq = reqs.get(0);
+    const xReq = reqs.provable.get(0);
     // Kind mask constrained to INT; sign inverse is deferred — the first-cut
     // propagator widens sign to INT_ANY so the target's sign refinement does
     // NOT carry into operand requirements. `x`'s kind must be int.
     expect(xReq?.kinds).toBe(INT_BIT);
+    expect(reqs.unprovable.size).toBe(0);
   });
 
   test.each([
@@ -140,7 +149,8 @@ def hot(x):
     worklist.drain();
 
     const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
-    expect(reqs.get(0)?.kinds).toBe(INT_BIT);
+    expect(reqs.provable.get(0)?.kinds).toBe(INT_BIT);
+    expect(reqs.unprovable.size).toBe(0);
   });
 
   test("binary / is NOT int-closed — no requirement on operands", () => {
@@ -159,7 +169,8 @@ def hot(x):
     worklist.drain();
 
     const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
-    expect(reqs.size).toBe(0);
+    expect(reqs.provable.size).toBe(0);
+    expect(reqs.unprovable.size).toBe(0);
   });
 
   test("ternary: target propagates into both arms", () => {
@@ -178,9 +189,10 @@ def hot(x, y, c):
     // Parameters are slots 0 (x), 1 (y), 2 (c). Both x and y must be int;
     // the predicate c carries no requirement because the predicate type
     // doesn't flow into the result.
-    expect(reqs.get(0)?.kinds).toBe(INT_BIT);
-    expect(reqs.get(1)?.kinds).toBe(INT_BIT);
-    expect(reqs.get(2)).toBeUndefined();
+    expect(reqs.provable.get(0)?.kinds).toBe(INT_BIT);
+    expect(reqs.provable.get(1)?.kinds).toBe(INT_BIT);
+    expect(reqs.provable.get(2)).toBeUndefined();
+    expect(reqs.unprovable.size).toBe(0);
   });
 
   test("end-to-end: observeRuntimeReturn extends context and seeds entry requirement", () => {
@@ -201,7 +213,45 @@ def hot(x):
     expect(findAssumption(ctx, returnKindHandle, fn.id)).toBeDefined();
 
     const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
-    expect(reqs.get(0)?.kinds).toBe(INT_BIT);
+    expect(reqs.provable.get(0)?.kinds).toBe(INT_BIT);
+    expect(reqs.unprovable.size).toBe(0);
+  });
+
+  test("unsatisfiable requirements classify as unprovable, not provable", () => {
+    // The current propagator rules rarely produce unsatisfiable entries
+    // from source code (all paths seeded by the same returnKindHandle
+    // target widen to INT_ANY on int-closed binops). Inject the two
+    // unsatisfiable shapes directly and verify the split classifies them:
+    //   - slot 10: full BOTTOM (kinds === 0).
+    //   - slot 11: meet(INT_POS, INT_NEG) — kinds=INT_BIT but intRef=0,
+    //     i.e. int kind with no admissible sign. Structurally non-BOTTOM
+    //     but semantically admits no value; `isSatisfiable` must see this.
+    //   - slot 12: INT_POS, provable.
+    const { ast, worklist } = build(`
+def hot(x):
+    return x
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const unit = worklist.units.get(fn)!;
+
+    const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
+    const env = new MutableEnv<TypeLattice>();
+    env.set(10, BOTTOM);
+    env.set(11, meet(INT_POS, INT_NEG));
+    env.set(12, INT_POS);
+    worklist.factStore.write(
+      typeRequirementAnalysis,
+      unit.cfg.entry,
+      { outEnv: env, exprFacts: new Map<number, TypeLattice>() },
+      ctx,
+    );
+
+    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    expect(reqs.unprovable.has(10)).toBe(true);
+    expect(reqs.unprovable.has(11)).toBe(true);
+    expect(reqs.provable.get(12)).toEqual(INT_POS);
+    expect(reqs.provable.has(10)).toBe(false);
+    expect(reqs.provable.has(11)).toBe(false);
   });
 
   test("write observation does NOT extend return-kind context", () => {
