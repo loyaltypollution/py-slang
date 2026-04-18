@@ -320,6 +320,69 @@ hot(1, 0)
     expect(guardArgs(currentProgram)).toEqual([cond1Id]);
   });
 
+  test("artifact cache: deopt to a previously-compiled ancestor context skips recompile", () => {
+    // Artifact-tree MVP. Timeline:
+    //   1. jitAnalysis registered before any observation → first transfer
+    //      compiles the unit under ROOT_CONTEXT and caches the IR.
+    //   2. Observation on `mode` extends the unit's context to C1 → jit
+    //      transfer recompiles under C1 (with GUARD_TRUTHY), caches that IR.
+    //   3. Runtime sees mode=0, the guard fires, widenGuard prunes the sole
+    //      load-bearing assumption, and the unit's active context reverts
+    //      to ROOT_CONTEXT — the SAME singleton the cache already holds an
+    //      IR for.
+    //   4. The next jit transfer must hit the cache and re-patch the
+    //      baseline IR without calling `compiler.compileFunction` again.
+    const { ast, environments, worklist } = build(`
+def hot(mode):
+    y = mode
+    if y > 0:
+        return 1
+    else:
+        return 999
+
+hot(0)
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const modeRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
+
+    const { compiler, program } = compile(ast, environments, worklist);
+    const interpreter = new SVMLInterpreter(program, { sendOutput: () => {} });
+    const compileSpy = jest.spyOn(compiler, "compileFunction");
+
+    const jitAnalysis = makeJitAnalysis({
+      compiler,
+      interpreter,
+      specContextFor: unit => worklist.specContextFor(unit),
+    });
+    worklist.register(jitAnalysis);
+    worklist.drain(); // initial compile under ROOT populates cache[ROOT]
+
+    // Observe a truthy value to drive the unit off ROOT and force a
+    // speculative recompile under the new context.
+    worklist.observe(runtimeWriteAnalysis, modeRead.id, { kind: "number", value: 1 });
+    worklist.drain();
+    const compilesBeforeDeopt = compileSpy.mock.calls.length;
+    expect(compilesBeforeDeopt).toBeGreaterThanOrEqual(2);
+
+    let violation: SpeculationViolation | undefined;
+    try {
+      interpreter.execute();
+    } catch (e) {
+      if (!(e instanceof SpeculationViolation)) throw e;
+      violation = e;
+    }
+    expect(violation).toBeDefined();
+
+    worklist.widenGuard(violation!.nodeId);
+    worklist.drain();
+
+    // Cache hit on ROOT: no additional compileFunction invocation.
+    expect(compileSpy.mock.calls.length).toBe(compilesBeforeDeopt);
+    // And the backend is dispatching to a guard-free IR.
+    const currentProgram = (interpreter as unknown as { program: typeof program }).program;
+    expect(hasOpcode(currentProgram, OpCodes.GUARD_TRUTHY)).toBe(false);
+  });
+
   test("DCE ratio: dead arm with N statements drops ~N opcodes", () => {
     // Empirical baseline for the silver-bullet claim. With observation pinning
     // mode, the else arm's 6 assignments all vanish from IR. Else-arm RHSs

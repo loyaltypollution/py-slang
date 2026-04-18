@@ -5,6 +5,15 @@
 // produced IR differs structurally from the previously-stored one; the
 // IR itself is the lattice value, so equal writes suppress onChange.
 //
+// Per-context artifact cache. The unit's active speculation context
+// (`specContextFor(unit)`) drives which IR the backend dispatches to. Each
+// compile caches `(unit, context) → {snapshot, IR}`; subsequent transfers
+// for a context we've compiled before reuse the cached IR and only patch.
+// This is the deopt-without-recompile path: lineage-precise widen prunes
+// the unit's context to an ancestor we already compiled under, and the
+// next transfer hits the cache. Forward navigation (new observation → new
+// child context) always misses and compiles.
+//
 // callCount / purity are deliberately NOT tuple inputs: compileFunction does
 // not read them. Their effect on the emitted IR is indirect — memoizationRule
 // reads them and, on fire, wraps the body. That wrap is a structural edit
@@ -24,23 +33,28 @@ import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
 import { SVMLIR } from "./types";
 
-/** Snapshot of the inputs that determine a unit's compiled IR, captured at
- *  the last successful compile. Block-fact entries are reference-compared
- *  against `factStore.tryRead` on the next transfer: `FactStore.write` preserves
- *  the previous reference when the new value is lattice-equal, so identity
- *  inequality is exactly "the DFA fact advanced".
+/** Snapshot of the inputs that determined a unit's compiled IR at some
+ *  past compile under a specific context. Block-fact entries are
+ *  reference-compared against `factStore.tryRead` on the next transfer:
+ *  `FactStore.write` preserves the previous reference when the new value is
+ *  lattice-equal, so identity inequality is exactly "the DFA fact
+ *  advanced".
  *
  *  `rootFacts` and `speculativeFacts` are keyed by the narrowing whose
  *  block analysis produced them — one entry per registered narrowing.
  *  Adding a new narrowing extends the maps without touching this module. */
 interface CompileSnapshot {
   structuralGen: number;
-  /** Speculation context the speculative facts were read under. Compared
-   *  by reference — a new observation produces a new Context object, so
-   *  `prev.specContext !== now` short-circuits the full block-fact walk. */
-  specContext: Context;
   rootFacts: Map<Narrowing<any>, Map<BasicBlock, unknown>>;
   speculativeFacts: Map<Narrowing<any>, Map<BasicBlock, unknown>>;
+}
+
+/** Per-context cache entry: the compiled IR and the snapshot of inputs it
+ *  was compiled under. The cache key (outer `Map<Context, ...>`) carries
+ *  the context, so it's not repeated here. */
+interface CacheEntry {
+  readonly snapshot: CompileSnapshot;
+  readonly ir: SVMLIR;
 }
 
 export interface JitPassDeps {
@@ -82,18 +96,26 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
   const specContextFor = deps.specContextFor ?? ((_: FunctionUnit) => ROOT_CONTEXT);
   const narrowings = deps.narrowings ?? DEFAULT_NARROWINGS;
 
-  const lastSnapshot = new WeakMap<FunctionUnit, CompileSnapshot>();
+  /** Per-unit, per-context compiled-artifact cache. Outer key is the unit;
+   *  inner key is the speculation context the IR was compiled under. Lookup
+   *  on each transfer against the unit's current active context — a hit
+   *  (same structuralGen, DFA facts unchanged) skips the compile entirely
+   *  and just re-patches the cached IR. On unit rebuild (structural edit),
+   *  the per-unit Map is cleared; stale contexts would never validate
+   *  anyway, but dropping them also keeps the Map bounded. */
+  const cache = new WeakMap<FunctionUnit, Map<Context, CacheEntry>>();
 
   // Block-keyed DFA analysis: a fact-advancing change on a block invalidates
   // the memo of the owning unit. `transfer` decides whether the change
   // materially differs from the last compile via reference-identity compare
-  // against `lastSnapshot`.
+  // against the cache entry for the unit's active context.
   //
   // `contextPolicy: "root"` on every fact edge: jit cells are FunctionUnit-
-  // keyed and exist only at ROOT — without the crossing, a non-ROOT write to
-  // a narrowing's block analysis would enqueue jitAnalysis at that non-ROOT
-  // context, creating an orphan cell no one reads. The "root" crossing
-  // lands the recompile request on the single IR cell per unit.
+  // keyed and the fact-store cell exists only at ROOT (holding the
+  // currently-dispatched IR). A non-ROOT wake would enqueue jit at that
+  // non-ROOT context, creating an orphan cell no one reads. The "root"
+  // crossing lands the recompile request on the single fact-store cell per
+  // unit; the per-context cache lives outside the fact store.
   const edges: EdgeSpec<FunctionUnit>[] = narrowings.map(n => ({
     on: "fact",
     analysis: n.blockAnalysis(),
@@ -143,17 +165,33 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
       if (index === undefined) return undefined;
 
       const specContext = specContextFor(unit);
-      const prev = lastSnapshot.get(unit);
+      let perContext = cache.get(unit);
+      if (perContext === undefined) {
+        perContext = new Map();
+        cache.set(unit, perContext);
+      }
+
+      const cached = perContext.get(specContext);
       if (
-        prev !== undefined &&
-        prev.structuralGen === unit.generation &&
-        snapshotMatches(factStore, unit, prev, specContext, narrowings)
+        cached !== undefined &&
+        cached.snapshot.structuralGen === unit.generation &&
+        snapshotMatches(factStore, unit, cached.snapshot, specContext, narrowings)
       ) {
-        return undefined;
+        // Cache hit: the IR we already built for this context is still
+        // valid. Patch the function table only if the backend isn't already
+        // dispatching to it (the ROOT fact-store cell tracks the current
+        // dispatch target).
+        const currentIR = factStore.read(jitAnalysis, unit);
+        if (structuralEquals(cached.ir, currentIR)) return undefined;
+        interpreter.patchFunction(index, cached.ir);
+        return cached.ir;
       }
 
       const newCode = compiler.compileFunction(unit);
-      lastSnapshot.set(unit, captureSnapshot(factStore, unit, specContext, narrowings));
+      perContext.set(specContext, {
+        snapshot: captureSnapshot(factStore, unit, specContext, narrowings),
+        ir: newCode,
+      });
       const prevIR = factStore.read(jitAnalysis, unit);
       if (structuralEquals(newCode, prevIR)) return undefined;
       interpreter.patchFunction(index, newCode);
@@ -167,6 +205,15 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
     on: "retire",
     effect: (factStore, _ctx, unit) => {
       factStore.evict(jitAnalysis, unit);
+      cache.delete(unit);
+    },
+  });
+  // Rebuild invalidates every cached context's IR (CFG identities change,
+  // and `structuralGen` mismatches anyway). Clear so the Map stays bounded.
+  (jitAnalysis.edges as EdgeSpec<FunctionUnit>[]).push({
+    on: "rebuild",
+    effect: (_factStore, _ctx, unit) => {
+      cache.delete(unit);
     },
   });
   return jitAnalysis;
@@ -178,10 +225,9 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
  *  `prev.structuralGen === unit.generation` is already checked by the
  *  caller, so we only reach here when block identities match the snapshot.
  *
- *  `specContext` is the unit's active speculation context at snapshot time.
- *  If it's shifted between compiles (new observation → new context), the
- *  speculativeFacts map is keyed against the OLD context's cells; the
- *  caller uses the stored context for comparison via `prev.specContext`. */
+ *  `specContext` is both the cache lookup key and the context we read
+ *  speculative facts under. Cache partitioning by context means `prev`
+ *  was always captured under this `specContext`. */
 function snapshotMatches(
   factStore: FactStore,
   unit: FunctionUnit,
@@ -189,7 +235,6 @@ function snapshotMatches(
   specContext: Context,
   narrowings: ReadonlyArray<Narrowing<any>>,
 ): boolean {
-  if (prev.specContext !== specContext) return false;
   for (const n of narrowings) {
     const blockAnalysis = n.blockAnalysis();
     const rootMap = prev.rootFacts.get(n);
@@ -224,7 +269,6 @@ function captureSnapshot(
   }
   return {
     structuralGen: unit.generation,
-    specContext,
     rootFacts,
     speculativeFacts,
   };
