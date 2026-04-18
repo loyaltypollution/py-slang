@@ -513,7 +513,12 @@ export class Worklist {
       const cleaned = existing !== undefined
         ? excludeAssumption(newCtx, n.handle, nodeId)
         : newCtx;
-      newCtx = extendContext(cleaned, n.handle, nodeId, lifted);
+      // Thread n.valueEqual so structurally-equal-but-ref-different lifts
+      // (e.g. ConstLattice.const(v) allocated fresh per call) collapse to
+      // the canonical sibling context. Without this, identical observations
+      // arriving at different times would fragment the trie despite the
+      // interner, defeating sibling IR cache hits on deopt.
+      newCtx = extendContext(cleaned, n.handle, nodeId, lifted, n.valueEqual);
     }
 
     if (newCtx === parentCtx) return;
