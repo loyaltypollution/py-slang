@@ -555,7 +555,7 @@ export class Worklist {
     if (observed.kind !== "unknown") {
       const accept = this.specStrategy.onObservation({
         unit,
-        nodeId: key,
+        key,
         observed,
         parentContext: parentCtx,
       });

@@ -21,7 +21,11 @@ import type { RawKind } from "./raw-value";
 
 export interface ObservationEvent {
   readonly unit: FunctionUnit;
-  readonly nodeId: number;
+  /** The observation's key in its source analysis's keyspace — nodeId
+   *  for `runtimeWriteAnalysis`, fdId for `runtimeReturnAnalysis`, and
+   *  whatever future narrowing dimensions define. Treat as an opaque
+   *  identity for dedup/counting; do not assume it names an AST node. */
+  readonly key: number;
   readonly observed: RawKind;
   /** The unit's current speculation context at the moment of observation.
    *  Strategies that care about chain depth or existing assumptions read
@@ -53,7 +57,7 @@ export const immediateStrategy: SpeculationStrategy = {
   },
 };
 
-/** Speculate only after the same `(nodeId, discriminant)` has been observed
+/** Speculate only after the same `(key, discriminant)` has been observed
  *  `threshold` or more times. `discriminant` is the RawKind's `kind` plus
  *  any carried `value` — so `{kind:"number", value:1}` and
  *  `{kind:"number", value:2}` count separately, but repeated
@@ -67,7 +71,7 @@ export function countBasedStrategy(threshold: number): SpeculationStrategy {
     throw new Error(`[countBasedStrategy] threshold must be a positive integer, got ${threshold}`);
   }
   const counts = new Map<number, Map<string, number>>();
-  const unitSites = new WeakMap<FunctionUnit, Set<number>>();
+  const unitKeys = new WeakMap<FunctionUnit, Set<number>>();
 
   const discriminant = (raw: RawKind): string => {
     switch (raw.kind) {
@@ -81,30 +85,30 @@ export function countBasedStrategy(threshold: number): SpeculationStrategy {
   };
 
   return {
-    onObservation({ unit, nodeId, observed }) {
-      let perSite = counts.get(nodeId);
-      if (perSite === undefined) {
-        perSite = new Map();
-        counts.set(nodeId, perSite);
+    onObservation({ unit, key, observed }) {
+      let perKey = counts.get(key);
+      if (perKey === undefined) {
+        perKey = new Map();
+        counts.set(key, perKey);
       }
       const disc = discriminant(observed);
-      const next = (perSite.get(disc) ?? 0) + 1;
-      perSite.set(disc, next);
+      const next = (perKey.get(disc) ?? 0) + 1;
+      perKey.set(disc, next);
 
-      let sites = unitSites.get(unit);
-      if (sites === undefined) {
-        sites = new Set();
-        unitSites.set(unit, sites);
+      let keys = unitKeys.get(unit);
+      if (keys === undefined) {
+        keys = new Set();
+        unitKeys.set(unit, keys);
       }
-      sites.add(nodeId);
+      keys.add(key);
 
       return next >= threshold;
     },
     onUnitRetired(unit) {
-      const sites = unitSites.get(unit);
-      if (sites === undefined) return;
-      for (const nodeId of sites) counts.delete(nodeId);
-      unitSites.delete(unit);
+      const keys = unitKeys.get(unit);
+      if (keys === undefined) return;
+      for (const key of keys) counts.delete(key);
+      unitKeys.delete(unit);
     },
   };
 }
