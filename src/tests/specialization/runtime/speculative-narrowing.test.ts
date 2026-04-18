@@ -8,7 +8,9 @@
 // (GUARD_KIND / MULF) was disabled — see svml-compiler.ts `numericMode`.
 
 import { ExprNS, StmtNS, resetNodeIds } from "../../../ast-types";
-import { ROOT_CONTEXT } from "../../../specialization/framework/context";
+import { findAssumption, ROOT_CONTEXT } from "../../../specialization/framework/context";
+import { constExprHandle } from "../../../specialization/const-analysis/analysis";
+import { typeExprHandle } from "../../../specialization/type-analysis/analysis";
 import { SpeculationViolation } from "../../../engines/svml/errors";
 import { makeJitAnalysis } from "../../../engines/svml/jit-analysis";
 import OpCodes, { SVMLKindBits } from "../../../engines/svml/opcodes";
@@ -321,18 +323,19 @@ hot(1, 0)
     expect(guardArgs(currentProgram)).toEqual([cond1Id]);
   });
 
-  test("artifact cache: deopt to a previously-compiled ancestor context skips recompile", () => {
-    // Artifact-tree MVP. Timeline:
-    //   1. jitAnalysis registered before any observation → first transfer
-    //      compiles the unit under ROOT_CONTEXT and caches the IR.
-    //   2. Observation on `mode` extends the unit's context to C1 → jit
-    //      transfer recompiles under C1 (with GUARD_TRUTHY), caches that IR.
-    //   3. Runtime sees mode=0, the guard fires, widenGuard prunes the sole
-    //      load-bearing assumption, and the unit's active context reverts
-    //      to ROOT_CONTEXT — the SAME singleton the cache already holds an
-    //      IR for.
-    //   4. The next jit transfer must hit the cache and re-patch the
-    //      baseline IR without calling `compiler.compileFunction` again.
+  test("lineage-precise widen: pruned context retains the non-load-bearing narrowing", () => {
+    // Observation at modeRead lifts BOTH narrowings (constExprHandle@modeRead
+    // and typeExprHandle@modeRead). Only `constExprHandle@modeRead` is
+    // load-bearing for the const fact the GUARD_TRUTHY protects: removing
+    // the const assumption widens cond's const fact to TOP, removing the type
+    // assumption does not (const analysis doesn't consult type narrowings).
+    //
+    // Post-deopt, `widenGuard` must retain `typeExprHandle@modeRead` —
+    // whole-unit reset would drop both and land at ROOT. This test is the
+    // regression guard: if `compileFunction` ever stops passing the
+    // guardRegistrar through to its sub-compiler, `registerGuard` silently
+    // no-ops during jit recompile, `widenGuard` falls back to
+    // `widenUnitSpeculation`, and ctx collapses to ROOT.
     const { ast, environments, worklist } = build(`
 def hot(mode):
     y = mode
@@ -356,10 +359,8 @@ hot(0)
       specContextFor: unit => worklist.specContextFor(unit),
     });
     worklist.register(jitAnalysis);
-    worklist.drain(); // initial compile under ROOT populates cache[ROOT]
+    worklist.drain();
 
-    // Observe a truthy value to drive the unit off ROOT and force a
-    // speculative recompile under the new context.
     worklist.observe(runtimeWriteAnalysis, modeRead.id, { kind: "number", value: 1 });
     worklist.drain();
     const compilesBeforeDeopt = compileSpy.mock.calls.length;
@@ -377,9 +378,24 @@ hot(0)
     worklist.widenGuard(violation!.nodeId);
     worklist.drain();
 
-    // Cache hit on ROOT: no additional compileFunction invocation.
-    expect(compileSpy.mock.calls.length).toBe(compilesBeforeDeopt);
-    // And the backend is dispatching to a guard-free IR.
+    const unit = worklist.nodeIndex.get(modeRead.id)!;
+    const ctx = worklist.specContextFor(unit);
+    // Lineage-precise: only the load-bearing const assumption was pruned.
+    // Under whole-unit reset (the widenUnitSpeculation fallback), ctx === ROOT.
+    expect(ctx).not.toBe(ROOT_CONTEXT);
+    expect(findAssumption(ctx, constExprHandle, modeRead.id)).toBeUndefined();
+    expect(findAssumption(ctx, typeExprHandle, modeRead.id)).toBeDefined();
+
+    // The pruned context `[typeExprHandle@modeRead]` was never active pre-
+    // deopt, so it's a novel intermediate — cache miss → recompile. This is
+    // the accepted cost per the brief's wording ("let MORE of these prunes
+    // land on pre-built siblings" — not all). Ancestor-fallback dispatch is
+    // the next-step optimization; without it, one recompile per deopt.
+    expect(compileSpy.mock.calls.length).toBeGreaterThan(compilesBeforeDeopt);
+
+    // The recompile produced a guard-free IR: under [typeExprHandle@modeRead]
+    // (no const narrowing in chain), speculativeConditionTruth returns
+    // undefined, so visitIfStmt takes the generic branch-emission path.
     const currentProgram = (interpreter as unknown as { program: typeof program }).program;
     expect(hasOpcode(currentProgram, OpCodes.GUARD_TRUTHY)).toBe(false);
   });

@@ -340,6 +340,7 @@ export class SVMLCompiler
       this.functionEnvironments,
       builder,
       this.dfaQuery,
+      this.guardRegistrar,
     );
     subCompiler._scopeIndexMap = this._scopeIndexMap;
     subCompiler.registry = this.registry;
