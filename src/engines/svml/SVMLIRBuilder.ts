@@ -70,7 +70,7 @@ export class SVMLIRBuilder {
   /**
    * Create a child builder for a nested function with a caller-supplied index.
    * The parent records the child so `getAllBuilders()` can assemble the whole
-   * program IR in one pass.
+   * program IR in one analysis.
    */
   createChildBuilder(numArgs: number, functionIndex: number): SVMLIRBuilder {
     const child = new SVMLIRBuilder(numArgs, functionIndex);
@@ -346,4 +346,8 @@ const STACK_EFFECTS = new Int16Array(OPCODE_MAX + 1);
   // Iterator opcodes
   STACK_EFFECTS[OpCodes.NEWITER] = 0; // pops iterable, pushes iterator (net 0)
   STACK_EFFECTS[OpCodes.FOR_ITER] = 1; // upper bound: pushes next value (exit path pops iter)
+
+  // Speculation guards
+  STACK_EFFECTS[OpCodes.GUARD_KIND] = 0;     // peek
+  STACK_EFFECTS[OpCodes.GUARD_TRUTHY] = -1;  // pop
 })();

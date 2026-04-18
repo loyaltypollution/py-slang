@@ -1,4 +1,4 @@
-// Normalizes raw runtime-observed values (from `runtimeWritePass`) into a
+// Normalizes raw runtime-observed values (from `runtimeWriteAnalysis`) into a
 // tagged union that lattice-lifters can dispatch on. Hides the tagged-object
 // shape of CSE stack values so each analysis maps one classification.
 

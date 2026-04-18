@@ -9,7 +9,7 @@ import {
   MEMO_MISS,
   memoPut,
 } from "../../../runtime/memo";
-import { runtimeCallPass } from "../../../specialization/framework/runtime-passes";
+import { runtimeCallAnalysis } from "../../../specialization/framework/runtime-analyses";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
 import type { Worklist } from "../../../specialization/framework/worklist";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
@@ -33,7 +33,7 @@ function findFunctionDef(ast: StmtNS.FileInput, name: string): StmtNS.FunctionDe
 }
 
 function observeCallsTo(reactive: Worklist, fd: StmtNS.FunctionDef, n: number): void {
-  for (let i = 1; i <= n; i++) reactive.observe(runtimeCallPass, fd.id, i);
+  for (let i = 1; i <= n; i++) reactive.observe(runtimeCallAnalysis, fd.id, i);
 }
 
 function memoFired(_reactive: Worklist, unit: FunctionUnit): boolean {
@@ -54,9 +54,9 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
     const { ast, reactive } = setup("def f(x):\n    return x + 1");
     reactive.drain();
     const fd = findFunctionDef(ast, "f");
-    expect(reactive.factStore.tryRead(runtimeCallPass, fd.id)).toBeUndefined();
+    expect(reactive.factStore.tryRead(runtimeCallAnalysis, fd.id)).toBeUndefined();
     observeCallsTo(reactive, fd, 3);
-    expect(reactive.factStore.tryRead(runtimeCallPass, fd.id)).toBe(3);
+    expect(reactive.factStore.tryRead(runtimeCallAnalysis, fd.id)).toBe(3);
   });
 
   test("below threshold: body unchanged", () => {

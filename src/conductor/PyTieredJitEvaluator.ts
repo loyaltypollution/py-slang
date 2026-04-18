@@ -10,7 +10,7 @@ import {
   displayError,
 } from "../engines/cse/streams";
 import { SpeculationViolation } from "../engines/svml/errors";
-import { makeJitPass } from "../engines/svml/jit-pass";
+import { makeJitAnalysis } from "../engines/svml/jit-analysis";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
@@ -122,7 +122,7 @@ async function runSvml(
         if (flag.aborted) throw new AbortError();
       }),
     });
-    wl.register(makeJitPass({ compiler, interpreter: interp }));
+    wl.register(makeJitAnalysis({ compiler, interpreter: interp }));
     wl.beginBatch();
     try {
       c.sendResult(SVMLInterpreter.toJSValue(await runSvmlWithDeopt(interp, wl)));

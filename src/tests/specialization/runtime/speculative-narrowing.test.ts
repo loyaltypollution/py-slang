@@ -1,30 +1,31 @@
 // Speculative observation-narrowing pipeline.
 //
-// Validates the `runtimeWritePass → speculative{Type,Const}AnalysisPass →
-// svml-compiler GUARD_KIND emission → SpeculationViolation deopt → recompile`
-// chain. The standard (widening) passes must remain unchanged so AST-mutating
-// transforms stay sound; the speculative passes are the JIT-only refinement
-// the compiler consults when emitting guards.
+// Validates the `runtimeWriteAnalysis → speculative{Type,Const}Analysis →
+// svml-compiler GUARD_TRUTHY emission → SpeculationViolation deopt → recompile`
+// chain. The standard (widening) analyses must remain unchanged so AST-mutating
+// transforms stay sound; the speculative analyses are the JIT-only refinement
+// the compiler consults when emitting guards. Numeric-kind speculation
+// (GUARD_KIND / MULF) was disabled — see svml-compiler.ts `numericMode`.
 
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { SpeculationViolation } from "../../../engines/svml/errors";
-import { makeJitPass } from "../../../engines/svml/jit-pass";
+import { makeJitAnalysis } from "../../../engines/svml/jit-analysis";
 import OpCodes, { SVMLKindBits } from "../../../engines/svml/opcodes";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import {
-  speculativeTypeAnalysisPass,
-  typeAnalysisPass,
-} from "../../../specialization/framework/dfa-passes";
+  speculativeTypeAnalysis,
+  typeAnalysis,
+} from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import {
-  runtimeWritePass,
-  speculationBlacklistPass,
+  runtimeWriteAnalysis,
+  speculationBlacklistAnalysis,
   widenWriteObservation,
   blacklistSpeculation,
-} from "../../../specialization/framework/runtime-passes";
+} from "../../../specialization/framework/runtime-analyses";
 import { INT_BIT } from "../../../specialization/type-analysis/lattice";
 import { makeDfaQuery } from "../../../specialization";
 import { hasOpcode } from "../../harness/opcode-assert";
@@ -64,8 +65,8 @@ function findFirstVariableRead(node: ExprNS.Expr | StmtNS.Stmt, name: string): E
   return undefined;
 }
 
-describe("speculative pass: meet vs join", () => {
-  test("widening pass preserves TOP under observation; speculative pass narrows to the singleton", () => {
+describe("speculative analysis: meet vs join", () => {
+  test("widening analysis preserves TOP under observation; speculative analysis narrows to the singleton", () => {
     const { ast, worklist } = build(`
 def hot(x):
     y = x
@@ -77,117 +78,29 @@ def hot(x):
 
     // Inject a runtime observation as if SVMLInterpreter.dispatchWriteSite
     // had fired with value 5 at this STORE site.
-    worklist.observe(runtimeWritePass, xRead.id, { kind: "number", value: 5 });
+    worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
     worklist.drain();
 
-    expect(worklist.factStore.tryRead(runtimeWritePass, xRead.id)).toEqual({ kind: "number", value: 5 });
+    expect(worklist.factStore.tryRead(runtimeWriteAnalysis, xRead.id)).toEqual({ kind: "number", value: 5 });
 
     const block = worklist.blockOfNode(xRead.id)!;
-    const widened = readExprFact(worklist.factStore, typeAnalysisPass, block, xRead.id);
-    const narrowed = readExprFact(worklist.factStore, speculativeTypeAnalysisPass, block, xRead.id);
+    const widened = readExprFact(worklist.factStore, typeAnalysis, block, xRead.id);
+    const narrowed = readExprFact(worklist.factStore, speculativeTypeAnalysis, block, xRead.id);
 
-    // `x` is a parameter — slot type is TOP. Widening pass sees that `join(TOP, INT_POS) = TOP`.
+    // `x` is a parameter — slot type is TOP. Widening analysis sees that `join(TOP, INT_POS) = TOP`.
     expect(widened?.kinds).not.toBe(INT_BIT);
-    // Narrowing pass: `meet(TOP, INT_POS) = INT_POS`. Speculation sees the witness.
+    // Narrowing analysis: `meet(TOP, INT_POS) = INT_POS`. Speculation sees the witness.
     expect(narrowed?.kinds).toBe(INT_BIT);
   });
 });
 
-describe("svml-compiler: GUARD_KIND emission gated by speculation", () => {
-  test("MULF + GUARD_KIND emitted when only speculative pass proves numeric", () => {
-    const { ast, environments, worklist } = build(`
-def hot(x):
-    y = x
-    return y * 2
-`);
-    const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const assign = fn.body[0] as StmtNS.Assign;
-    const xRead = assign.value as ExprNS.Variable;
-
-    worklist.observe(runtimeWritePass, xRead.id, { kind: "number", value: 5 });
-
-    const { program } = compile(ast, environments, worklist);
-    expect(hasOpcode(program, OpCodes.MULF)).toBe(true);
-    expect(hasOpcode(program, OpCodes.MULG)).toBe(false);
-    expect(hasOpcode(program, OpCodes.GUARD_KIND)).toBe(true);
-  });
-
-  test("no speculation without observation — falls back to MULG", () => {
-    const { ast, environments, worklist } = build(`
-def hot(x):
-    y = x
-    return y * 2
-`);
-    // Deliberately no observe(): speculative pass has no facts to meet against.
-    const { program } = compile(ast, environments, worklist);
-    expect(hasOpcode(program, OpCodes.MULG)).toBe(true);
-    expect(hasOpcode(program, OpCodes.GUARD_KIND)).toBe(false);
-  });
-
-  test("impure scope blocks speculation even with observation present", () => {
-    // print() makes hot impure; speculation gate refuses to emit guards
-    // because deopt re-entry would replay the print.
-    const { ast, environments, worklist } = build(`
-def hot(x):
-    print(x)
-    y = x
-    return y * 2
-`);
-    const fn = ast.statements[0] as StmtNS.FunctionDef;
-    // Find Variable x inside `y = x` (skip over the print call site).
-    const assign = fn.body[1] as StmtNS.Assign;
-    const xRead = assign.value as ExprNS.Variable;
-    worklist.observe(runtimeWritePass, xRead.id, { kind: "number", value: 5 });
-
-    const { program } = compile(ast, environments, worklist);
-    expect(hasOpcode(program, OpCodes.GUARD_KIND)).toBe(false);
-  });
-});
-
-describe("GUARD_KIND interpreter semantics", () => {
-  test("matches mask → no-op; mismatch → SpeculationViolation", () => {
-    const { ast, environments, worklist } = build(`
-def hot(x):
-    y = x
-    return y * 2
-
-print(hot(10))
-`);
-    const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    worklist.observe(runtimeWritePass, xRead.id, { kind: "number", value: 5 });
-
-    const { program } = compile(ast, environments, worklist);
-
-    // Numeric arg: completes, no throw.
-    const okOutputs: string[] = [];
-    const okInterp = new SVMLInterpreter(program, { sendOutput: m => okOutputs.push(m) });
-    expect(() => okInterp.execute()).not.toThrow();
-    expect(okOutputs).toContain("20");
-
-    // Replace top-level call with `hot("oops")` so guard fires. Since AST is
-    // already compiled, build a parallel program where the literal arg is a
-    // string. Easiest route: re-parse with a string arg, recompile under the
-    // SAME observation (forces same opcode shape).
-    const { ast: ast2, environments: env2, worklist: wl2 } = build(`
-def hot(x):
-    y = x
-    return y * 2
-
-print(hot("oops"))
-`);
-    const fn2 = ast2.statements[0] as StmtNS.FunctionDef;
-    const xRead2 = (fn2.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    wl2.observe(runtimeWritePass, xRead2.id, { kind: "number", value: 5 });
-    const { program: badProgram } = compile(ast2, env2, wl2);
-
-    const badInterp = new SVMLInterpreter(badProgram, { sendOutput: () => {} });
-    expect(() => badInterp.execute()).toThrow(SpeculationViolation);
-  });
-});
+// GUARD_KIND emission was disabled in svml-compiler (see numericMode rationale:
+// ADDF vs ADDG differed by ~2 typeof checks, V8 PIC closes the gap, measured
+// speedup ≤1%). The numeric-speculation tests that used to live here were
+// removed; GUARD_TRUTHY dead-branch tests below remain the speculation spec.
 
 describe("widenWriteObservation: deopt-protocol primitive", () => {
-  test("writing ⊤ at a node erases speculative narrowing on next pass", () => {
+  test("writing ⊤ at a node erases speculative narrowing on next analysis", () => {
     const { ast, worklist } = build(`
 def hot(x):
     y = x
@@ -195,46 +108,93 @@ def hot(x):
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    worklist.observe(runtimeWritePass, xRead.id, { kind: "number", value: 5 });
+    worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
     worklist.drain();
 
     const block = worklist.blockOfNode(xRead.id)!;
-    const before = readExprFact(worklist.factStore, speculativeTypeAnalysisPass, block, xRead.id);
+    const before = readExprFact(worklist.factStore, speculativeTypeAnalysis, block, xRead.id);
     expect(before?.kinds).toBe(INT_BIT);
 
     widenWriteObservation(worklist, xRead.id);
     worklist.drain();
 
-    const after = readExprFact(worklist.factStore, speculativeTypeAnalysisPass, block, xRead.id);
+    const after = readExprFact(worklist.factStore, speculativeTypeAnalysis, block, xRead.id);
     // After widening, observation is ⊤, so meet falls through to staticVal,
     // which is TOP for an unannotated parameter slot.
     expect(after?.kinds).not.toBe(INT_BIT);
   });
 });
 
-describe("end-to-end deopt: PySvmlJitEvaluator-style retry", () => {
-  test("guard violation → blacklist → recompile drops GUARD_KIND from the unit", () => {
-    // Mimic what runWithDeopt does. After the guard fires, the deopt handler
-    // blacklists the node, drains, jit-pass recompiles. Verify the new IR
-    // no longer contains GUARD_KIND for that nodeId. (The post-deopt MULG
-    // then runs unsupported-operand semantics on string*number — that's
-    // expected behavior; we don't assert it here.)
+describe("svml-compiler: speculative dead-branch (GUARD_TRUTHY)", () => {
+  test("speculative const proves cond → emits GUARD_TRUTHY + only the taken arm", () => {
+    // mode is statically TOP (parameter). Observation pins the read to int 1.
+    // Speculative const flows: y = mode → slot(y) = const(1). Then `y > 0`
+    // is speculatively const(true). Compiler drops the else arm entirely.
+    // Using explicit else: a bare statement after `if` is NOT in the if's
+    // else block (Python AST puts it as a sibling), so it wouldn't be
+    // dropped — only the if's own else branch can be eliminated.
     const { ast, environments, worklist } = build(`
-def hot(x):
-    y = x
-    return y * 2
-
-hot("oops")
+def hot(mode):
+    y = mode
+    if y > 0:
+        return 1
+    else:
+        return 999
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    worklist.observe(runtimeWritePass, xRead.id, { kind: "number", value: 5 });
+    const yAssign = fn.body[0] as StmtNS.Assign;
+    const modeRead = yAssign.value as ExprNS.Variable;
+    worklist.observe(runtimeWriteAnalysis, modeRead.id, { kind: "number", value: 1 });
+
+    const { program } = compile(ast, environments, worklist);
+    expect(hasOpcode(program, OpCodes.GUARD_TRUTHY)).toBe(true);
+
+    // Dead-arm signature: the literal 999 should not appear in any function's
+    // constant pool / opcode stream because the else arm was never compiled.
+    const allArg1s = program.functions.flatMap(fn => Array.from(fn.arg1s));
+    expect(allArg1s).not.toContain(999);
+    expect(allArg1s).toContain(1); // taken arm survives
+  });
+
+  test("static const cond → no GUARD_TRUTHY (existing static fold path handles it)", () => {
+    // `if 1 > 0:` is statically constant. The static const analysis folds it;
+    // speculativeConditionTruth must not fire (would emit a redundant guard).
+    const { ast, environments, worklist } = build(`
+def hot(x):
+    if 1 > 0:
+        return x
+    return 999
+`);
+    const { program } = compile(ast, environments, worklist);
+    expect(hasOpcode(program, OpCodes.GUARD_TRUTHY)).toBe(false);
+  });
+
+  test("GUARD_TRUTHY mismatch → SpeculationViolation; blacklist drops the guard on recompile", () => {
+    // Observation says mode=1 (truthy). Runtime call analyses mode=0 (falsy).
+    // Guard fires → blacklist node → recompile → no more GUARD_TRUTHY → both
+    // arms restored.
+    const { ast, environments, worklist } = build(`
+def hot(mode):
+    y = mode
+    if y > 0:
+        return 1
+    else:
+        return 999
+
+hot(0)
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const yAssign = fn.body[0] as StmtNS.Assign;
+    const modeRead = yAssign.value as ExprNS.Variable;
+    // Pre-seed with a positive observation (as if the function had been called
+    // with mode=1 before; the actual call below analyses 0 to trigger violation).
+    worklist.observe(runtimeWriteAnalysis, modeRead.id, { kind: "number", value: 1 });
 
     const { compiler, program } = compile(ast, environments, worklist);
     const interpreter = new SVMLInterpreter(program, { sendOutput: () => {} });
-    worklist.register(makeJitPass({ compiler, interpreter }));
+    worklist.register(makeJitAnalysis({ compiler, interpreter }));
 
-    expect(hasOpcode(program, OpCodes.GUARD_KIND)).toBe(true);
+    expect(hasOpcode(program, OpCodes.GUARD_TRUTHY)).toBe(true);
 
     let violation: SpeculationViolation | undefined;
     try {
@@ -248,13 +208,50 @@ hot("oops")
     blacklistSpeculation(worklist, violation!.nodeId);
     worklist.drain();
 
-    // After blacklist + drain, the patched program no longer guards this site.
-    // Read interpreter's current program (a different reference than `program`,
-    // produced by patchFunction).
     const currentProgram = (interpreter as unknown as { program: typeof program }).program;
-    expect(hasOpcode(currentProgram, OpCodes.GUARD_KIND)).toBe(false);
-    expect(hasOpcode(currentProgram, OpCodes.MULG)).toBe(true);
-    expect(worklist.factStore.tryRead(speculationBlacklistPass, violation!.nodeId)).toBe(true);
+    expect(hasOpcode(currentProgram, OpCodes.GUARD_TRUTHY)).toBe(false);
+    // Else arm restored: literal 999 reappears.
+    const restoredArg1s = currentProgram.functions.flatMap(fn => Array.from(fn.arg1s));
+    expect(restoredArg1s).toContain(999);
+  });
+
+  test("DCE ratio: dead arm with N statements drops ~N opcodes", () => {
+    // Empirical baseline for the silver-bullet claim. With observation pinning
+    // mode, the else arm's 6 assignments all vanish from IR. Else-arm RHSs
+    // depend on `mode` so static const-folding can't collapse them — that
+    // would shrink the baseline and defeat the DCE measurement.
+    const code = `
+def hot(mode):
+    y = mode
+    if y > 0:
+        return 1
+    else:
+        a = mode + 100
+        b = mode + 200
+        c = mode + 300
+        d = mode + 400
+        e = mode + 500
+        f = mode + 600
+        return a + b + c + d + e + f
+`;
+    // Speculative compile (with observation).
+    const { ast, environments, worklist } = build(code);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const yAssign = fn.body[0] as StmtNS.Assign;
+    const modeRead = yAssign.value as ExprNS.Variable;
+    worklist.observe(runtimeWriteAnalysis, modeRead.id, { kind: "number", value: 1 });
+    const { program: speculative } = compile(ast, environments, worklist);
+
+    // Static compile (no observation).
+    const { ast: ast2, environments: env2, worklist: wl2 } = build(code);
+    const { program: staticProgram } = compile(ast2, env2, wl2);
+
+    const opCount = (p: typeof speculative) =>
+      p.functions.reduce((sum, fn) => sum + fn.count, 0);
+    const ratio = opCount(speculative) / opCount(staticProgram);
+    // 6 assignments + a 5-arg sum + return ≈ 25+ opcodes eliminated, vs
+    // baseline of ~40. Expect <70% — leaves margin for opcode-counting drift.
+    expect(ratio).toBeLessThan(0.7);
   });
 });
 

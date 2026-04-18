@@ -7,7 +7,79 @@ generalizes them to run many analyses over a shared fact store.
 
 ---
 
-## 0. The running example
+## 0. The four core components (map of the engine)
+
+Before the example: the whole engine is four pieces. Everything else is a
+specialization or a wiring detail.
+
+```mermaid
+flowchart LR
+    L["Lattice&lt;V&gt;<br/>bottom, leq, join"]
+    P["Analysis&lt;K, V&gt;<br/>edges + transfer(factStore, ctx, key)"]
+    F["FactStore<br/>cells: (analysis, key) → V<br/>lattice-monotone write"]
+    W["Worklist<br/>queue of (analysis, key)<br/>drives processQueue"]
+
+    L -- "owns<br/>change-detection algebra" --> P
+    P -- "transfer writes into" --> F
+    F -- "fires FactChange on advance" --> W
+    W -- "pops (analysis, key)<br/>calls analysis.transfer" --> P
+    P -- "edges wake<br/>reader keys" --> W
+```
+
+Their contracts, and what each one is *not*:
+
+| Component | Owns | Does **not** own |
+|---|---|---|
+| **`Lattice<V>`** | `bottom`, `leq` (partial order), `join` (lub). Change detection is derived from `leq` alone. | Equality (no `latticeEquals`), iteration, storage. |
+| **`Analysis<K, V>`** | `lattice`, `edges`, `tier`, `transfer(factStore, ctx, key)`. One transfer per `(analysis, key)` cell. | Storage (writes go to `FactStore`); scheduling (lives in `Worklist`). |
+| **`FactStore`** | Cell map `(analysis, key) → V`. `write` joins monotonically and fires events only on real advance. `onChange` pub/sub. | Enqueueing (the worklist's listener does that); deciding *which* keys to wake (edges do that). |
+| **`Worklist`** | Queue of `(analysis, key)`. Subscribes to `FactStore.onChange`; on an event, looks up every edge into `change.analysis` and calls `edge.wake` to project the changed key onto reader keys. Drains with tier priority. | The transfer logic; the lattice algebra; the cell storage. |
+
+The **one-way information flow** is the key invariant:
+
+```
+Analysis.transfer → FactStore.write → FactChange event →
+Worklist reads edges → Worklist.enqueue → (later) Analysis.transfer ...
+```
+
+A analysis never enqueues directly, never writes to another analysis's cell, and
+never sees the worklist. A lattice never sees keys. The `FactStore` never
+decides what to wake. Each responsibility is in exactly one place, which is
+why the engine is ~200 lines despite running 11+ interacting analyses.
+
+Two ways analyses react to upstream change, both mediated by `edges`
+(`analysis.ts`):
+
+- **`FactEdge`** (`on: "fact"`) — "when upstream analysis `P` writes key `k`,
+  call `wake(ctx, k)` and enqueue every key it yields into *my* key-space."
+  The self-edge is a `FactEdge` whose `wake` returns `block.successors` —
+  that one line is Kildall's "push successors on change."
+- **`LifecycleEdge`** (`on: "mint" | "rebuild" | "retire"`) — "when a
+  `FunctionUnit` is created / its CFG rebuilt / it's retired, call
+  `wake(ctx, unit)` or run `effect(factStore, ctx, unit)`." Used for
+  seeding entry blocks and evicting stale cells.
+
+Both shapes carry a mandatory `on` discriminant. "Depends on, doesn't
+react" is *not* an edge — read the upstream in `transfer` via
+`factStore.read(upstream, ...)` without declaring one.
+
+A sibling protocol handles imperative rewrites:
+
+- **`TransformRule`** — no lattice, no transfer, no cell. It has
+  `edges: FactEdge<FunctionUnit>[]` (unified with analysis edges) plus
+  `autoDirtyOn: ("mint" | "rebuild")[]` (default `["mint", "rebuild"]`).
+  The worklist dirties the rule on those triggers and on fact-edge writes;
+  `sweep(unit, factStore, ctx)` runs once per dirty unit *after*
+  `processQueue` drains, and a return of `true` schedules a CFG rebuild.
+  Transforms sit outside the monotone fixpoint on purpose — rewriting is
+  not a data-flow.
+
+With that skeleton in hand, the rest of the tutorial shows the pieces
+doing work.
+
+---
+
+## 1. A running example
 
 ```python
 def f(n):
@@ -27,7 +99,7 @@ know about each variable? Expected result:
 
 ---
 
-## 1. Draw the CFG
+## 2. Draw the CFG
 
 A **basic block** is a straight-line chunk of statements with one entry and
 one exit. The CFG of `f`:
@@ -47,7 +119,7 @@ inside a `FunctionUnit`.
 
 ---
 
-## 2. Pick a lattice
+## 3. Pick a lattice
 
 A **lattice** is the set of "facts" we track plus two operations:
 
@@ -69,7 +141,7 @@ Rules: `⊥ ⊔ x = x`; `c ⊔ c = c`; `c ⊔ c' = ⊤` for `c ≠ c'`; `⊤ ⊔
 The full analysis state at a program point is an **environment**
 `slot → lattice value`, e.g. `{ x: 10, y: 20, n: ⊤ }`.
 
-The framework captures this algebra in `pass.ts`:
+The framework captures this algebra in `analysis.ts`:
 
 ```ts
 interface Lattice<V> {
@@ -77,18 +149,16 @@ interface Lattice<V> {
   leq(a: V, b: V): boolean;   // partial order a ⊑ b
   join(a: V, b: V): V;        // least upper bound
 }
-
-function latticeEquals<V>(l: Lattice<V>, a: V, b: V): boolean {
-  return l.leq(a, b) && l.leq(b, a);   // anti-symmetric equality, derived
-}
 ```
 
-`leq` is the only primitive for change detection. Equality is derived, not
-overridable — so the partial order is the single source of truth.
+`leq` is the only primitive for change detection. `FactStore.write` uses
+it as a fast-path: if `leq(value, prev)` then the join can't advance and
+the write is a no-op. There is no separate `equals` — anti-symmetry plus
+monotone writes make it unnecessary.
 
 ---
 
-## 3. Transfer function
+## 4. Transfer function
 
 The **transfer function** `f_B` says: given the fact at block `B`'s entry,
 what holds at its exit? Compute it by walking the statements inside.
@@ -105,7 +175,7 @@ terminate.
 
 ---
 
-## 4. The classical worklist
+## 5. The classical worklist
 
 ```mermaid
 flowchart LR
@@ -136,7 +206,7 @@ At B3: `x = ⊤`, `y = 20` — the answer we expected.
 
 ---
 
-## 5. Many analyses, one engine
+## 6. Many analyses, one engine
 
 Real optimizers don't run just one DFA. They run many — constant
 propagation, types, purity, reaching defs — and each wants to consume the
@@ -150,27 +220,31 @@ flowchart LR
       C["ONE lattice + ONE worklist<br/>over CFG nodes"]
     end
     subgraph "This framework"
-      D["Many passes, each its own lattice<br/>Dependency DAG via `edges`<br/>Shared FactStore<br/>ONE worklist over (pass, key) pairs"]
+      D["Many analyses, each its own lattice<br/>Dependency DAG via `edges`<br/>Shared FactStore<br/>ONE worklist over (analysis, key) pairs"]
     end
 ```
 
-The core abstraction is `Pass<K, V>`:
+The core abstraction is `Analysis<K, V>`:
 
 ```ts
-interface Pass<K, V> {
+interface Analysis<K, V> {
   readonly lattice: Lattice<V>;
   readonly edges: ReadonlyArray<EdgeSpec<K>>;
   readonly tier: "runtime" | "analysis";
-  transfer(ctx: PassCtx, key: K): V | undefined;
+  transfer(factStore: FactStore, ctx: AnalysisCtx, key: K): V | undefined;
 }
 ```
 
-- **`V`** — the facts this pass computes.
+`factStore` is threaded explicitly rather than being hung off `ctx`, so
+every transfer's store dependency is visible in its signature and
+`AnalysisCtx` stays narrow (unit-topology lookups only).
+
+- **`V`** — the facts this analysis computes.
 - **`K`** — what those facts are indexed by.
-- **`edges`** — upstream passes and lifecycle events this pass reacts to.
+- **`edges`** — upstream analyses and lifecycle events this analysis reacts to.
 - **`tier`** — priority class: `"runtime"` settles before `"analysis"`
   within a single worklist drain.
-- **`transfer(ctx, key)`** — recompute the fact at `key`. Returning
+- **`transfer(factStore, ctx, key)`** — recompute the fact at `key`. Returning
   `undefined` means "no write" (see §8).
 
 The one-to-one mapping:
@@ -180,22 +254,22 @@ The one-to-one mapping:
 | CFG node / basic block | a key `K` |
 | Environment at that point | the value `V` (a lattice element) |
 | `⊔` at merge points | `lattice.join` |
-| Fixed-point test | `!latticeEquals(l, joined, old)` |
-| Transfer function `f_B` | `Pass.transfer(ctx, key)` |
+| Fixed-point test | `!leq(joined, prev)` (in `FactStore.write`) |
+| Transfer function `f_B` | `Analysis.transfer(factStore, ctx, key)` |
 | "Push successors on change" | a `wake` projector on a self-edge |
-| One analysis | One pass among many in the DAG |
+| One analysis | One analysis among many in the DAG |
 
 ---
 
-## 6. Following the flow through the example
+## 7. Following the flow through the example
 
-There is **one** pass in the DAG for constant analysis on `f`, not two.
+There is **one** analysis in the DAG for constant analysis on `f`, not two.
 `constAnalysisModule` (in `const-analysis/analysis.ts`) is a **descriptor**
 — a lattice + expression visitor — handed to the block-fixpoint factory
-`makeBlockFixpointPass`. The factory returns a single block-keyed `Pass`.
-Per-expression facts live inside that pass's value type
+`makeBlockFixpointAnalysis`. The factory returns a single block-keyed `Analysis`.
+Per-expression facts live inside that analysis's value type
 (`DfaBlockFact<L>.exprFacts: Map<nodeId, L>`) and are read back via
-`readExprFact` — a projection, not a second pass.
+`readExprFact` — a projection, not a second analysis.
 
 ### Why block-keyed, not node-keyed?
 
@@ -213,9 +287,9 @@ A natural question: consumers want per-expression facts — why not key on
    `transferBlock` visits each statement it already has the live env;
    recording the `ConstLattice` into `exprFacts` is free.
 
-### Mapping each pass's keys onto the Python program
+### Mapping each analysis's keys onto the Python program
 
-Each pass's `K` carves the same source along a different axis:
+Each analysis's `K` carves the same source along a different axis:
 
 ```mermaid
 flowchart TB
@@ -231,24 +305,24 @@ flowchart TB
       s4 --> s5
     end
 
-    subgraph RW["runtimeWritePass · K = nodeId"]
+    subgraph RW["runtimeWriteAnalysis · K = nodeId"]
       r_n["nodeId(n) ↦ observed RawKind"]
       r_xy["nodeId(x+y) ↦ observed RawKind"]
     end
 
-    subgraph CBP["constBlockPass · K = BasicBlock"]
+    subgraph CBP["constBlockAnalysis · K = BasicBlock"]
       b1["B1 ↦ outEnv: x=10, y=20, n=⊤"]
       b2["B2 ↦ outEnv: x=5,  y=20, n=⊤"]
       b3["B3 ↦ outEnv: x=⊤,  y=20, n=⊤"]
     end
 
-    subgraph EF["constBlockPass exprFacts (projection)"]
+    subgraph EF["constBlockAnalysis exprFacts (projection)"]
       e_x["nodeId(x in return) ↦ ⊤ · readExprFact(B3)"]
       e_y["nodeId(y in return) ↦ 20 · readExprFact(B3)"]
       e_sum["nodeId(x+y) ↦ ⊤ · readExprFact(B3)"]
     end
 
-    subgraph UNIT["structuralPass · K = FunctionUnit"]
+    subgraph UNIT["structuralAnalysis · K = FunctionUnit"]
       u_f["unit(f) ↦ AstVersion"]
     end
 
@@ -264,13 +338,13 @@ flowchart TB
     SRC -.- u_f
 ```
 
-- **`runtimeWritePass`** attaches a fact to expression nodes the runtime
+- **`runtimeWriteAnalysis`** attaches a fact to expression nodes the runtime
   happened to execute.
-- **`constBlockPass`** attaches a fact to each block: the slot env at
+- **`constBlockAnalysis`** attaches a fact to each block: the slot env at
   the block's exit. Classical DFA lives here.
-- **`exprFacts`** is not a separate pass — it's a map inside the block
-  pass's `V`, populated during the block walk.
-- **`structuralPass`** attaches one cell per unit, bumped when the
+- **`exprFacts`** is not a separate analysis — it's a map inside the block
+  analysis's `V`, populated during the block walk.
+- **`structuralAnalysis`** attaches one cell per unit, bumped when the
   unit's AST/CFG is rebuilt. Everything else reads it to re-seed on
   structural change.
 
@@ -278,10 +352,10 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    RW["runtimeWritePass<br/>K = nodeId"]
-    BP["constBlockPass<br/>K = BasicBlock<br/>V = DfaBlockFact&lt;ConstLattice&gt;"]
-    SP["structuralPass<br/>K = FunctionUnit"]
-    C["consumers<br/>(other passes, transforms)"]
+    RW["runtimeWriteAnalysis<br/>K = nodeId"]
+    BP["constBlockAnalysis<br/>K = BasicBlock<br/>V = DfaBlockFact&lt;ConstLattice&gt;"]
+    SP["structuralAnalysis<br/>K = FunctionUnit"]
+    C["consumers<br/>(other analyses, transforms)"]
 
     RW -- "nodeId → containing block" --> BP
     SP -- "unit → cfg.entry" --> BP
@@ -289,9 +363,9 @@ flowchart LR
     BP -. "readExprFact projection" .-> C
 ```
 
-Only three passes. The dotted line is a read-side projection, not a DAG
-edge: consumers query `exprFacts` inside the block pass's `V` directly —
-there's no separate node-keyed pass to wake.
+Only three analyses. The dotted line is a read-side projection, not a DAG
+edge: consumers query `exprFacts` inside the block analysis's `V` directly —
+there's no separate node-keyed analysis to wake.
 
 ### Walking the worklist (cold start)
 
@@ -312,7 +386,7 @@ Two things made this work without hand-wiring a classical worklist:
 - The **self-edge wake** (`dfa-factory.ts`) is literally "when block b's
   OUT changes, enqueue b.successors." Classical successor-push as one
   projector.
-- **No separate node-keyed pass.** Per-expression facts are computed
+- **No separate node-keyed analysis.** Per-expression facts are computed
   during the block walk and recorded into `exprFacts`. Consumers reach
   them via `readExprFact` — which resolves the containing block and
   indexes the map.
@@ -320,12 +394,12 @@ Two things made this work without hand-wiring a classical worklist:
 ### Adding runtime evidence
 
 Suppose at runtime we observe `n = 3`. A cell is written at
-`runtimeWritePass[nodeId(n)]`. The same machinery re-enters:
+`runtimeWriteAnalysis[nodeId(n)]`. The same machinery re-enters:
 
 ```mermaid
 flowchart TB
     r1["runtime writes nodeId(n) = Int"]
-    r2["nodeId→block wake fires: nodeId(n) maps to B1<br/>enqueue constBlockPass.transfer(B1)"]
+    r2["nodeId→block wake fires: nodeId(n) maps to B1<br/>enqueue constBlockAnalysis.transfer(B1)"]
     r3["pop B1 · transfer re-runs with runtime widening<br/>branch predicate n &gt; 0 can now fold downstream"]
     r4["if B1 changed → self-edge cascades;<br/>eventually re-converges to a sharper fixpoint"]
     r1 --> r2 --> r3 --> r4
@@ -333,13 +407,13 @@ flowchart TB
 
 Runtime observations enter the same fixpoint as static analysis, through
 declared edges. Classical DFA has nowhere to put that evidence; here it's
-just another upstream pass with a `wake` projector.
+just another upstream analysis with a `wake` projector.
 
 ---
 
-## 7. Four granularities: node, block, unit, scope
+## 8. Four granularities: node, block, unit, scope
 
-The framework uses several key-spaces depending on what a pass is
+The framework uses several key-spaces depending on what an analysis is
 reasoning about. Biggest → smallest:
 
 ```mermaid
@@ -363,19 +437,19 @@ flowchart TD
 On `f`: ~dozens of nodes, 3 blocks, 2 scopes (module + `f`), 2 units
 (module-unit + `f`-unit).
 
-Passes in the codebase, by role and key:
+Analyses in the codebase, by role and key:
 
-| Pass | Tier | K | V | Role |
+| Analysis | Tier | K | V | Role |
 |---|---|---|---|---|
-| `runtimeWritePass` | runtime | nodeId | `RawKind` | source — runtime value observations |
-| `runtimeCallPass` | runtime | nodeId | `number` | source — saturating call counter |
-| `callCountPass` | analysis | fdId | `number` | fold over runtime counter |
-| `constBlockPass` | analysis | `BasicBlock` | `DfaBlockFact<ConstLattice>` | classical DFA |
-| `typeBlockPass` | analysis | `BasicBlock` | `DfaBlockFact<TypeLattice>` | classical DFA |
-| `purityScopePass` | analysis | fdId | `boolean \| undefined` | summary projection from unit's purity DFA |
-| `structuralPass` | analysis | `FunctionUnit` | `AstVersion` | CFG-rebuild version tag |
+| `runtimeWriteAnalysis` | runtime | nodeId | `RawKind` | source — runtime value observations |
+| `runtimeCallAnalysis` | runtime | nodeId | `number` | source — saturating call counter |
+| `callCountAnalysis` | analysis | fdId | `number` | fold over runtime counter |
+| `constBlockAnalysis` | analysis | `BasicBlock` | `DfaBlockFact<ConstLattice>` | classical DFA |
+| `typeBlockAnalysis` | analysis | `BasicBlock` | `DfaBlockFact<TypeLattice>` | classical DFA |
+| `purityScopeAnalysis` | analysis | fdId | `boolean \| undefined` | summary projection from unit's purity DFA |
+| `structuralAnalysis` | analysis | `FunctionUnit` | `AstVersion` | CFG-rebuild version tag |
 
-Transforms are not passes. They live in a parallel protocol
+Transforms are not analyses. They live in a parallel protocol
 (`TransformRule`) — see §9.
 
 Reading the table: **runtime sources feed analyses feed transforms.** The
@@ -383,7 +457,7 @@ three tiers of work.
 
 ---
 
-## 8. Design notes
+## 9. Design notes
 
 ### Direction — does the same transfer work backward?
 
@@ -396,54 +470,56 @@ The transfer function you write is the same shape either way.
 
 `undefined` means **"no write"**, distinct from "write ⊥":
 
-- **Guard clauses** — the pass decides the key is not its responsibility.
+- **Guard clauses** — the analysis decides the key is not its responsibility.
 - **Don't pollute the store with bottoms** — `undefined` keeps `tryRead`
   returning `undefined`, which consumers can branch on to distinguish
   "analyzed, result is ⊥" from "not applicable."
 - **Retryability** — returning `undefined` leaves the cell absent so the
-  pass is re-run cleanly next time an upstream changes.
+  analysis is re-run cleanly next time an upstream changes.
 
 ### `EdgeSpec`: fact edges and lifecycle edges in one protocol
 
-Naively `edges: Pass<any, any>[]` — a dependency list — would be enough.
-It isn't: different passes key on different things, and a node-keyed
+Naively `edges: Analysis<any, any>[]` — a dependency list — would be enough.
+It isn't: different analyses key on different things, and a node-keyed
 upstream can't say *which block* of a block-keyed downstream needs waking
 without a projection.
 
-The type (`pass.ts`):
+The type (`analysis.ts`):
 
 ```ts
 type EdgeSpec<K> = FactEdge<K> | LifecycleEdge<K>;
 
 interface FactEdge<K> {
-  readonly on?: "fact";
-  readonly pass: Pass<any, any>;
-  wake?(ctx: PassCtx, key: unknown): Iterable<K>;
+  readonly on: "fact";
+  readonly analysis: Analysis<any, any>;
+  wake(ctx: AnalysisCtx, key: unknown): Iterable<K>;
 }
 
 interface LifecycleEdge<K> {
   readonly on: "mint" | "rebuild" | "retire";
-  wake?(ctx: PassCtx, unit: FunctionUnit): Iterable<K>;
-  effect?(ctx: PassCtx, unit: FunctionUnit): void;
+  wake?(ctx: AnalysisCtx, unit: FunctionUnit): Iterable<K>;
+  effect?(factStore: FactStore, ctx: AnalysisCtx, unit: FunctionUnit): void;
 }
 ```
 
-Two shapes, one discriminant `on`:
+Two shapes, one mandatory discriminant `on`:
 
-- **Fact edge** — wake when the upstream pass writes. `wake` projects
-  upstream key into my key-space. `wake` omitted = dependency-only
-  (reads the upstream in `transfer` but doesn't auto-react).
+- **Fact edge** — wake when the upstream analysis writes. `wake` projects
+  upstream key into my key-space. Both `on` and `wake` are required:
+  "depends on, doesn't react" is not an auto-reactive edge — express
+  that by reading `factStore.read(upstream, ...)` inside `transfer`
+  without declaring an edge.
 - **Lifecycle edge** — wake or run `effect` when a unit is minted,
   rebuilt, or retired. For seeding entry blocks, evicting stale cells,
-  etc.
+  etc. At least one of `wake` / `effect` must be defined.
 
-A worked example: `runtimeWritePass` is keyed by `nodeId`; `constBlockPass`
+A worked example: `runtimeWriteAnalysis` is keyed by `nodeId`; `constBlockAnalysis`
 is keyed by `BasicBlock`. When runtime observes `n = 3`, only B1 (the
-block containing `n`) should re-transfer. The projector
-(`dfa-factory.ts`):
+block containing `n`) should re-transfer. The projector is exported from
+`dfa-factory.ts`:
 
 ```ts
-const nodeIdToBlock = (ctx, key) => {
+export const nodeIdToBlock = (ctx: AnalysisCtx, key: unknown): Iterable<BasicBlock> => {
   if (typeof key !== "number") return [];
   const u = ctx.unitForNode(key);
   const block = u?.blockOfNode.get(key);
@@ -451,18 +527,21 @@ const nodeIdToBlock = (ctx, key) => {
 };
 ```
 
-...and the edge:
+...and each upstream node-keyed source is wired in by the DFA config as
+a `FactEdge` with that projector:
 
 ```ts
-const configEdges = config.reads.map(p => ({ pass: p, wake: nodeIdToBlock }));
+for (const upstream of upstreams) {
+  edges.push({ on: "fact", analysis: upstream, wake: nodeIdToBlock });
+}
 ```
 
 The block DFA declares four edges total:
 
 | Edge | Kind | Source | `wake` output | Classical analogue |
 |---|---|---|---|---|
-| upstream fact edges | fact | runtime / node-keyed passes | `[containing block]` | — |
-| self-edge | fact | block pass itself | `successors` / `predecessors` | **push successors on change** |
+| upstream fact edges | fact | runtime / node-keyed analyses | `[containing block]` | — |
+| self-edge | fact | block analysis itself | `successors` / `predecessors` | **push successors on change** |
 | `"mint"` | lifecycle | unit created | `[entry block]` | seed on creation |
 | `"rebuild"` | lifecycle | unit's CFG rebuilt | `[entry block]` + `effect` evicts stale block cells | re-seed |
 | `"retire"` | lifecycle | unit destroyed | — (just `effect` to evict) | teardown |
@@ -473,10 +552,49 @@ worklist's core behavior is an edge, not hardcoded.
 
 ---
 
-## 9. How the worklist actually gets woken
+## 10. How the worklist actually gets woken
 
 Earlier diagrams hand-wave "B1 changed, so the worklist enqueues its
 successors." What mediates that:
+
+### The two data structures, side by side
+
+The **FactStore** is a map keyed by `(analysis, key)`. Drawn with the analysis as
+the outer axis, each analysis owns a sub-map `key → V`. The **Worklist** is a
+priority queue of `(analysis, key)` items; `analysis.tier` gives the priority —
+`runtime` (0) drains before `analysis` (1) within a single `processQueue`.
+**TransformRule** sweeps are not enqueued items; they run once each after
+the PQ empties.
+
+```mermaid
+flowchart LR
+    subgraph FS["FactStore — Map⟨(analysis, key), V⟩"]
+      direction TB
+      rw["runtimeWriteAnalysis<br/>nodeId(n) ↦ Int"]
+      sp["structuralAnalysis<br/>unit(f) ↦ v3"]
+      cb["constBlockAnalysis<br/>B1 ↦ {x:10, y:20, n:⊤}<br/>B2 ↦ {x:5,  y:20, n:⊤}<br/>B3 ↦ {x:⊤,  y:20, n:⊤}"]
+    end
+
+    subgraph WL["Worklist — PriorityQueue⟨(analysis, key)⟩"]
+      direction TB
+      rt["tier 0 · runtime<br/>(runtimeWriteAnalysis, nodeId n)"]
+      an["tier 1 · analysis<br/>(constBlockAnalysis, B2) → (constBlockAnalysis, B3)"]
+      tr["post-drain: TransformRule.sweep<br/>memoization · const-fold · dead-branch"]
+      rt --> an --> tr
+    end
+
+    FS == "① write advances cell →<br/>onChange fires" ==> WL
+    WL == "② pop → analysis.transfer" ==> FS
+```
+
+Outer axis of the store is the analysis; inner is its own `K → V`. The
+worklist drains tier 0 before tier 1; `TransformRule` sweeps run once
+after the PQ empties and may schedule a CFG rebuild.
+
+The cycle in one line: **write → onChange → edge.wake → enqueue → pop →
+transfer → write**. Analyses never see the worklist; the worklist never
+touches cell values; the store never decides which readers to wake —
+that's what `edges` are for.
 
 ### Pub/sub via `FactStore.onChange`
 
@@ -490,7 +608,7 @@ A change event (`fact-store.ts`):
 
 ```ts
 interface FactChange<K, V> {
-  readonly pass: Pass<K, V>;
+  readonly analysis: Analysis<K, V>;
   readonly key: K;
   readonly oldValue: V | undefined;
   readonly newValue: V;
@@ -502,24 +620,21 @@ lattice-aware:
 
 ```mermaid
 flowchart TD
-    w["write(pass, key, value)"]
-    leq{"leq(value, prev)?<br/>(fast path)"}
-    join["joined = join(prev, value)"]
-    eq{"latticeEquals(prev, joined)?"}
-    noop["no-op"]
-    store["store joined"]
-    fire["fire listeners"]
+    w["write(analysis, key, value)"]
+    leq{"prev exists AND<br/>leq(value, prev)?"}
+    join["joined = prev ? join(prev, value) : value"]
+    noop["no-op, return false"]
+    store["store joined,<br/>fire listeners, return true"]
     w --> leq
     leq -- yes --> noop
-    leq -- no --> join --> eq
-    eq -- yes --> noop
-    eq -- no --> store --> fire
+    leq -- no --> join --> store
 ```
 
-Two suppressions collapse to no-ops (no event):
-
-- **Fast path**: if `leq(value, prev)`, the join can't advance.
-- **Slow path**: if after joining we're still equal to `prev`.
+One suppression: if `leq(value, prev)` the join can't advance, so the
+write is a no-op and no event fires. Otherwise we join and store
+unconditionally — a second `leq(joined, prev)` check would only trigger
+for non-idempotent joins, which is a lattice-law violation, not something
+the store should paper over.
 
 This turns the lattice's monotonicity promise into a framework
 invariant: every event corresponds to a real advance. A buggy `transfer`
@@ -533,8 +648,8 @@ return raw values without hand-joining.
 ```mermaid
 flowchart LR
     fc["FactChange arrives"]
-    rd["look up edges pointing at change.pass"]
-    pj["for each reader pass:<br/>call edge.wake(ctx, change.key)"]
+    rd["look up edges pointing at change.analysis"]
+    pj["for each reader analysis:<br/>call edge.wake(ctx, change.key)"]
     eq["enqueue (reader, key) for each wake output"]
     drain["later: processQueue drains,<br/>calling transfer → write → maybe more events"]
     fc --> rd --> pj --> eq -.-> drain
@@ -544,33 +659,34 @@ Writes from the event happen later, when `processQueue` pops the
 enqueued `(reader, key)` and calls `reader.transfer(...)`. At that point
 we're outside the listener frame and the nested write fires cleanly.
 
-### Transforms: imperative rewrites, not passes
+### Transforms: imperative rewrites, not analyses
 
 Transforms (memoization, constant-folding, dead-branch) are not
-`Pass<K, V>`. They have no lattice, no `transfer`, no cell in the
-fact store. Their interface (`pass.ts`):
+`Analysis<K, V>`. They have no lattice, no `transfer`, no cell in the
+fact store. Their interface (`analysis.ts`):
 
 ```ts
 interface TransformRule {
   readonly id: symbol;
   readonly debugName: string;
-  readonly edges?: ReadonlyArray<TransformEdge<any>>;
-  sweep(unit: FunctionUnit, ctx: PassCtx): boolean;  // true = mutated
-}
-
-interface TransformEdge<K> {
-  readonly pass: Pass<K, any>;
-  wake(ctx: PassCtx, key: K): Iterable<FunctionUnit>;
+  readonly edges?: ReadonlyArray<FactEdge<FunctionUnit>>;
+  readonly autoDirtyOn?: ReadonlyArray<"mint" | "rebuild">;  // default ["mint", "rebuild"]
+  sweep(unit: FunctionUnit, factStore: FactStore, ctx: AnalysisCtx): boolean;  // true = mutated
 }
 ```
 
-The worklist dirties a rule on unit mint/rebuild and on writes to any
-pass declared in `edges`. The rule's `sweep` runs after `processQueue`
-drains. If `sweep` returns `true`, the unit is scheduled for CFG
-rebuild, which re-fires lifecycle edges and (for fact-driven passes)
-restarts the fixpoint.
+Transform edges reuse `FactEdge<FunctionUnit>` — same dispatch shape as
+analysis edges, `wake` yields the units to dirty. `autoDirtyOn` controls
+which lifecycle events also dirty every unit; rules driven purely by
+fact edges can opt out with `[]`.
 
-Keeping transforms out of the pass protocol removes the pretense that
+The worklist dirties a rule on its `autoDirtyOn` events and on writes to
+any analysis declared in `edges`. The rule's `sweep` runs after
+`processQueue` drains. If `sweep` returns `true`, the unit is scheduled
+for CFG rebuild, which re-fires lifecycle edges and restarts the
+fixpoint.
+
+Keeping transforms out of the analysis protocol removes the pretense that
 imperative rewriting is a monotone data-flow: it isn't, and encoding it
 as one (with a `"fired"` sentinel lattice) was strictly ceremony.
 
@@ -580,13 +696,13 @@ Cold start, enqueue B1:
 
 ```mermaid
 flowchart TB
-    a1["processQueue pops (constBlockPass, B1)"]
-    a2["call constBlockPass.transfer(ctx, B1)"]
-    a3["factStore.write(constBlockPass, B1, fact)"]
-    a4["write computes join, checks latticeEquals<br/>cell advances"]
+    a1["processQueue pops (constBlockAnalysis, B1)"]
+    a2["call constBlockAnalysis.transfer(factStore, ctx, B1)"]
+    a3["factStore.write(constBlockAnalysis, B1, fact)"]
+    a4["write short-circuits if leq(value, prev);<br/>otherwise stores join(prev, value) and fires event"]
     a5["fire FactChange to worklist.handleFactChange"]
-    a6["handler looks up edges pointing at constBlockPass<br/>= constBlockPass itself (self-edge) + any cross-pass readers"]
-    a7["self-edge wake: B1 → [B2, B3]<br/>enqueue (constBlockPass, B2), (constBlockPass, B3)"]
+    a6["handler looks up edges pointing at constBlockAnalysis<br/>= constBlockAnalysis itself (self-edge) + any cross-analysis readers"]
+    a7["self-edge wake: B1 → [B2, B3]<br/>enqueue (constBlockAnalysis, B2), (constBlockAnalysis, B3)"]
     a8["write returns · processQueue loops"]
     a1 --> a2 --> a3 --> a4 --> a5 --> a6 --> a7 --> a8
 ```
@@ -596,20 +712,20 @@ engine. No polling, no re-entrancy, no double-counting.
 
 ---
 
-## 10. Summary cheat-sheet
+## 11. Summary cheat-sheet
 
 - **Classical DFA** = one lattice + CFG + worklist over program points.
-- **This framework** = many `Pass<K, V>` in a DAG + one worklist over
-  `(pass, key)` pairs, sharing a `FactStore`.
+- **This framework** = many `Analysis<K, V>` in a DAG + one worklist over
+  `(analysis, key)` pairs, sharing a `FactStore`.
 - **`K`** = *"what entity is this fact about?"* (node / block / unit /
   fdId …). **`V`** = *"what do we know?"* (a lattice element).
-- **Tiers**: `runtime` sources → `analysis` passes → `TransformRule`s.
+- **Tiers**: `runtime` sources → `analysis` analyses → `TransformRule`s.
 - **Edges**: `FactEdge` (wake on upstream write, `wake` projects keys)
   and `LifecycleEdge` (wake / `effect` on unit mint / rebuild / retire).
 - **Change detection**: `leq` only; equality is derived. `FactStore.write`
   joins monotonically and fires events only on real advances.
-- **Transforms** (`TransformRule`) live outside the pass protocol — they
+- **Transforms** (`TransformRule`) live outside the analysis protocol — they
   are imperative sweeps gated on analyses, not monotone data-flows.
-- **Block-keyed DFA** (`makeBlockFixpointPass`) is the specialized
+- **Block-keyed DFA** (`makeBlockFixpointAnalysis`) is the specialized
   helper for Kildall-style analyses; per-expression facts ride inside
   the block fact's `exprFacts` map and are queried via `readExprFact`.

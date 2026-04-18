@@ -2,7 +2,7 @@
 
 import { StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
-import { constAnalysisPass } from "../framework/dfa-passes";
+import { constAnalysis } from "../framework/dfa-analyses";
 import { readExprFact } from "../framework/dfa-factory";
 import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
@@ -34,7 +34,7 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
   private tryReplaceIf(stmt: StmtNS.Stmt): StmtNS.Stmt[] | null {
     if (!(stmt instanceof StmtNS.If)) return null;
     const block = this.unit.blockOfNode.get(stmt.condition.id);
-    const cv = readExprFact(this.factStore, constAnalysisPass, block, stmt.condition.id);
+    const cv = readExprFact(this.factStore, constAnalysis, block, stmt.condition.id);
     if (cv?.tag !== "const" || typeof cv.value !== "boolean") return null;
     return cv.value ? stmt.body : (stmt.elseBlock ?? []);
   }
@@ -74,5 +74,5 @@ export const deadBranchRule = unitSweepRule(
     v.sweep(unit.body);
     return v.changed;
   },
-  [{ on: "fact", pass: constAnalysisPass, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  [{ on: "fact", analysis: constAnalysis, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
 );

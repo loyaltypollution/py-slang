@@ -1,7 +1,7 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { FactStore } from "../framework/fact-store";
-import { runtimeWritePass } from "../framework/runtime-passes";
+import { runtimeWriteAnalysis } from "../framework/runtime-analyses";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { MutableEnv } from "../framework/mutable-env";
 import type { RawKind } from "../framework/raw-value";
@@ -56,7 +56,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   ) {}
 
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
-    const observed = this.factStore.tryRead(runtimeWritePass, node.id);
+    const observed = this.factStore.tryRead(runtimeWriteAnalysis, node.id);
     const combined = observed !== undefined ? this.combineObservation(val, observed) : val;
     this.recordExprFact(node.id, combined);
     return combined;

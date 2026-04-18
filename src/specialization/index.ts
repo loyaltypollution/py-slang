@@ -10,4 +10,4 @@ export {
   makeJitObservers,
   widenWriteObservation,
   blacklistSpeculation,
-} from "./framework/runtime-passes";
+} from "./framework/runtime-analyses";

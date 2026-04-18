@@ -8,7 +8,7 @@ import { runSpecCase } from "../../harness/spec-e2e";
 // Dead-branch elimination: after convergence, the predicate is known and the
 // eliminated arm's bytecode is gone. Asserted through (a) CPython stdout
 // parity, (b) absence of BRF in the compiled program. AST-shape assertions
-// are preserved here because they catch a regression where the pass runs but
+// are preserved here because they catch a regression where the analysis runs but
 // produces a valid-but-unpruned tree.
 
 function optimise(code: string): StmtNS.Stmt[] {

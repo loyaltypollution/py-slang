@@ -1,4 +1,4 @@
-// Priority-scheduled worklist for pass-graph dispatch.
+// Priority-scheduled worklist for analysis-graph dispatch.
 
 import { PriorityQueue } from "@datastructures-js/priority-queue";
 import { StmtNS } from "../../ast-types";
@@ -16,19 +16,21 @@ import {
   wireCFG,
   type FunctionUnit,
 } from "./function-unit";
-import { REGISTERED_PASSES, type Pass, type PassCtx, type TransformRule, type LifecycleEdge } from "./pass";
-import { runtimeCallPass, runtimeWritePass, speculationBlacklistPass } from "./runtime-passes";
-import { purityBlockPass, purityScopePass } from "../purity-analysis/analysis";
+import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type TransformRule, type LifecycleEdge } from "./analysis";
+import { runtimeCallAnalysis, runtimeWriteAnalysis, speculationBlacklistAnalysis } from "./runtime-analyses";
+import { purityBlockAnalysis, purityScopeAnalysis } from "../purity-analysis/analysis";
 import { algebraicSimplifyRule } from "../transforms/algebraic-simplify";
 import { constantFoldingRule } from "../transforms/constant-folding";
 import { deadBranchRule } from "../transforms/dead-branch";
+import { deadStoreRule } from "../transforms/dead-store";
 import { memoizationRule } from "../transforms/memoization";
+import { livenessAnalysis } from "../liveness-analysis/analysis";
 import {
-  typeAnalysisPass,
-  constAnalysisPass,
-  speculativeTypeAnalysisPass,
-  speculativeConstAnalysisPass,
-} from "./dfa-passes";
+  typeAnalysis,
+  constAnalysis,
+  speculativeTypeAnalysis,
+  speculativeConstAnalysis,
+} from "./dfa-analyses";
 import { readExprFact } from "./dfa-factory";
 import type { TypeLattice } from "../type-analysis/lattice";
 import type { ConstLattice } from "../const-analysis/lattice";
@@ -60,23 +62,23 @@ export function makeDfaQuery(
 ): DfaQuery {
   const blockFor = (id: number) => nodeIndex.get(id)?.blockOfNode.get(id);
   return {
-    typeOf: id => readExprFact(factStore, typeAnalysisPass, blockFor(id), id),
-    constOf: id => readExprFact(factStore, constAnalysisPass, blockFor(id), id),
-    speculativeTypeOf: id => readExprFact(factStore, speculativeTypeAnalysisPass, blockFor(id), id),
-    speculativeConstOf: id => readExprFact(factStore, speculativeConstAnalysisPass, blockFor(id), id),
-    isPureScope: scopeId => factStore.tryRead(purityScopePass, scopeId),
+    typeOf: id => readExprFact(factStore, typeAnalysis, blockFor(id), id),
+    constOf: id => readExprFact(factStore, constAnalysis, blockFor(id), id),
+    speculativeTypeOf: id => readExprFact(factStore, speculativeTypeAnalysis, blockFor(id), id),
+    speculativeConstOf: id => readExprFact(factStore, speculativeConstAnalysis, blockFor(id), id),
+    isPureScope: scopeId => factStore.tryRead(purityScopeAnalysis, scopeId),
     isSpeculationBlacklisted: nodeId =>
-      factStore.tryRead(speculationBlacklistPass, nodeId) === true,
+      factStore.tryRead(speculationBlacklistAnalysis, nodeId) === true,
   };
 }
 
-type QItem = { pass: Pass<any, any>; key: unknown; seq: number };
+type QItem = { analysis: Analysis<any, any>; key: unknown; seq: number };
 
 const TIER_RANK = { runtime: 0, analysis: 1 } as const;
 
 const compareItems = (a: QItem, b: QItem): number => {
-  const ta = TIER_RANK[a.pass.tier];
-  const tb = TIER_RANK[b.pass.tier];
+  const ta = TIER_RANK[a.analysis.tier];
+  const tb = TIER_RANK[b.analysis.tier];
   return ta - tb || a.seq - b.seq;
 };
 
@@ -89,30 +91,30 @@ export class Worklist {
   private readonly pendingRebuilds = new Set<FunctionUnit>();
 
   readonly factStore = new FactStore();
-  private readonly registeredPasses: Pass<any, any>[] = [];
+  private readonly registeredAnalyses: Analysis<any, any>[] = [];
   private readonly queue = new PriorityQueue<QItem>(compareItems);
   private seqCounter = 0;
-  private readonly pendingKeysByPass = new Map<Pass<any, any>, Set<unknown>>();
+  private readonly pendingKeysByAnalysis = new Map<Analysis<any, any>, Set<unknown>>();
   private batchDepth = 0;
 
   /** Registered transforms and their dirty sets. A unit enters the dirty set
-   *  on mint, rebuild, or a write to an upstream pass declared in the rule's
+   *  on mint, rebuild, or a write to an upstream analysis declared in the rule's
    *  `edges`; sweep clears it. */
   private readonly transforms: TransformRule[] = [];
   private readonly transformDirty = new Map<TransformRule, Set<FunctionUnit>>();
 
-  /** Single fact-change dispatch index. Passes and transforms both compile
+  /** Single fact-change dispatch index. Analyses and transforms both compile
    *  their fact edges into callbacks here; no per-subscriber-kind branching
    *  lives in `handleFactChange`. */
   private readonly factSubs = new Map<
-    Pass<any, any>,
-    Array<(ctx: PassCtx, key: unknown) => void>
+    Analysis<any, any>,
+    Array<(ctx: AnalysisCtx, key: unknown) => void>
   >();
-  /** Single lifecycle dispatch index, one list per event kind. Passes'
+  /** Single lifecycle dispatch index, one list per event kind. Analyses'
    *  `LifecycleEdge`s and transforms' mint/rebuild auto-dirtying both
    *  compile into callbacks here. */
   private readonly lifecycleSubs: Record<"mint" | "rebuild" | "retire",
-    Array<(ctx: PassCtx, unit: FunctionUnit) => void>
+    Array<(ctx: AnalysisCtx, unit: FunctionUnit) => void>
   > = { mint: [], rebuild: [], retire: [] };
 
   readonly registry: FunctionRegistry;
@@ -125,7 +127,7 @@ export class Worklist {
   constructor(
     ast: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
-    passes: ReadonlyArray<Pass<any, any>> = DEFAULT_PASSES,
+    analyses: ReadonlyArray<Analysis<any, any>> = DEFAULT_PASSES,
     registry?: FunctionRegistry,
     transforms: ReadonlyArray<TransformRule> = DEFAULT_TRANSFORMS,
   ) {
@@ -145,12 +147,12 @@ export class Worklist {
     }
     this.rebuildNodeToUnit();
 
-    for (const p of passes) this.register(p);
+    for (const p of analyses) this.register(p);
     for (const r of transforms) this.registerTransform(r);
     this.factStore.onChange(c => this.handleFactChange(c));
 
     // Initial units are seeded lazily: `register` replays onUnitMinted to each
-    // pass's subscriber, and `registerTransform` populates each rule's dirty
+    // analysis's subscriber, and `registerTransform` populates each rule's dirty
     // set with the existing units. Subsequent mints (mid-drain) fire
     // onUnitMinted via `onRegistryMint`.
 
@@ -176,7 +178,7 @@ export class Worklist {
     this._units.delete(node as StmtNS.FileInput | StmtNS.FunctionDef);
     this.pendingRebuilds.delete(unit);
     for (const s of this.transformDirty.values()) s.delete(unit);
-    // Each pass declares its own eviction via `{on:"retire", effect}`.
+    // Each analysis declares its own eviction via `{on:"retire", effect}`.
     this.fireLifecycle("retire", unit);
     this.rebuildNodeToUnit();
   }
@@ -207,41 +209,43 @@ export class Worklist {
   /** Subscribe `fn` to writes against `upstream`. Called via `register` /
    *  `registerTransform`; not public API. */
   private subscribeFact(
-    upstream: Pass<any, any>,
-    fn: (ctx: PassCtx, key: unknown) => void,
+    upstream: Analysis<any, any>,
+    fn: (ctx: AnalysisCtx, key: unknown) => void,
   ): void {
     const list = this.factSubs.get(upstream) ?? [];
     list.push(fn);
     this.factSubs.set(upstream, list);
   }
 
-  /** Register a pass. Idempotent. Compiles each edge in `pass.edges` into a
+  /** Register an analysis. Idempotent. Compiles each edge in `analysis.edges` into a
    *  callback on the unified dispatch indices (`factSubs` / `lifecycleSubs`).
    *  Lifecycle edges with `on: "mint"` fire immediately against every
-   *  existing unit so late-registered passes pick up the initial mint burst. */
-  register<K, V>(pass: Pass<K, V>): void {
-    if (this.registeredPasses.indexOf(pass as Pass<any, any>) !== -1) return;
-    this.registeredPasses.push(pass as Pass<any, any>);
-    REGISTERED_PASSES.add(pass as Pass<any, any>);
-    const reader = pass as Pass<any, any>;
+   *  existing unit so late-registered analyses pick up the initial mint burst. */
+  register<K, V>(analysis: Analysis<K, V>): void {
+    if (this.registeredAnalyses.indexOf(analysis as Analysis<any, any>) !== -1) return;
+    this.registeredAnalyses.push(analysis as Analysis<any, any>);
+    REGISTERED_ANALYSES.add(analysis as Analysis<any, any>);
+    const reader = analysis as Analysis<any, any>;
     const fireLifecycleEdge = (lc: LifecycleEdge<any>, unit: FunctionUnit): void => {
       if (lc.wake !== undefined) {
         for (const k of lc.wake(this.passCtx, unit)) this.enqueue(reader, k);
       }
       if (lc.effect !== undefined) lc.effect(this.factStore, this.passCtx, unit);
     };
-    for (const spec of pass.edges) {
+    for (const spec of analysis.edges) {
       if (spec.on !== "fact") {
         this.lifecycleSubs[spec.on].push((_ctx, unit) => fireLifecycleEdge(spec, unit));
         continue;
       }
       const wake = spec.wake;
-      this.subscribeFact(spec.pass, (_ctx, key) => {
+      const effect = spec.effect;
+      this.subscribeFact(spec.analysis, (_ctx, key) => {
+        if (effect !== undefined) effect(this.factStore, this.passCtx, key);
         for (const k of wake(this.passCtx, key)) this.enqueue(reader, k);
       });
     }
     // Replay existing-unit mints so registration order doesn't determine seeding.
-    for (const spec of pass.edges) {
+    for (const spec of analysis.edges) {
       if (spec.on !== "mint") continue;
       for (const unit of this._units.values()) fireLifecycleEdge(spec, unit);
     }
@@ -259,22 +263,22 @@ export class Worklist {
     for (const u of this._units.values()) dirty.add(u);
     this.transformDirty.set(rule, dirty);
 
-    const addUnit = (_ctx: PassCtx, unit: FunctionUnit): void => { dirty.add(unit); };
+    const addUnit = (_ctx: AnalysisCtx, unit: FunctionUnit): void => { dirty.add(unit); };
     const auto = rule.autoDirtyOn ?? ["mint", "rebuild"];
     for (const kind of auto) this.lifecycleSubs[kind].push(addUnit);
 
     if (rule.edges !== undefined) {
       for (const edge of rule.edges) {
         const wake = edge.wake;
-        this.subscribeFact(edge.pass, (ctx, key) => {
+        this.subscribeFact(edge.analysis, (ctx, key) => {
           for (const u of wake(ctx, key)) dirty.add(u);
         });
       }
     }
   }
 
-  observe<K, V>(pass: Pass<K, V>, key: K, value: V): void {
-    this.factStore.write(pass, key, value);
+  observe<K, V>(analysis: Analysis<K, V>, key: K, value: V): void {
+    this.factStore.write(analysis, key, value);
     if (this.batchDepth === 0) this.processQueue();
   }
 
@@ -296,26 +300,26 @@ export class Worklist {
     return false;
   }
 
-  enqueue<K, V>(pass: Pass<K, V>, key: K): void {
-    const p = pass as Pass<any, any>;
-    let pending = this.pendingKeysByPass.get(p);
+  enqueue<K, V>(analysis: Analysis<K, V>, key: K): void {
+    const p = analysis as Analysis<any, any>;
+    let pending = this.pendingKeysByAnalysis.get(p);
     if (pending === undefined) {
       pending = new Set();
-      this.pendingKeysByPass.set(p, pending);
+      this.pendingKeysByAnalysis.set(p, pending);
     }
     if (pending.has(key)) return;
     pending.add(key);
-    this.queue.enqueue({ pass: p, key, seq: this.seqCounter++ });
+    this.queue.enqueue({ analysis: p, key, seq: this.seqCounter++ });
   }
 
   /** Pop the PQ to empty. Tier order: runtime < analysis. Does not rebuild CFGs. */
   private processQueue(): void {
     while (!this.queue.isEmpty()) {
       const item = this.queue.dequeue()!;
-      this.pendingKeysByPass.get(item.pass)?.delete(item.key);
-      const value = item.pass.transfer(this.factStore, this.passCtx, item.key);
+      this.pendingKeysByAnalysis.get(item.analysis)?.delete(item.key);
+      const value = item.analysis.transfer(this.factStore, this.passCtx, item.key);
       if (value !== undefined) {
-        this.factStore.write(item.pass, item.key, value);
+        this.factStore.write(item.analysis, item.key, value);
       }
     }
   }
@@ -339,17 +343,17 @@ export class Worklist {
     return anyFired;
   }
 
-  private readonly passCtx: PassCtx = {
+  private readonly passCtx: AnalysisCtx = {
     unitForNode: (nodeId: number) => this.nodeToUnit.get(nodeId),
     unitForFdId: (fdId: number) => this.unitsByFdId.get(fdId),
   };
 
   /** FactStore listener. Invariant: runs inside `FactStore.write`'s
    *  listener-dispatch loop; MUST NOT invoke `factStore.write`. Dispatches
-   *  to every subscriber registered against `change.pass` — pass reader
+   *  to every subscriber registered against `change.analysis` — analysis reader
    *  wake-ups and transform dirty-additions compiled into the same list. */
   private handleFactChange(change: FactChange<unknown, unknown>): void {
-    const subs = this.factSubs.get(change.pass as Pass<any, any>);
+    const subs = this.factSubs.get(change.analysis as Analysis<any, any>);
     if (subs === undefined) return;
     for (const sub of subs) sub(this.passCtx, change.key);
   }
@@ -419,22 +423,24 @@ export class Worklist {
   static readonly DEFAULT_DRAIN_LIMIT = 1000;
 }
 
-/** Default production pass set. Tests may pass a subset for isolation. */
-export const DEFAULT_PASSES: ReadonlyArray<Pass<any, any>> = [
-  runtimeWritePass,
-  runtimeCallPass,
-  speculationBlacklistPass,
-  typeAnalysisPass,
-  constAnalysisPass,
-  speculativeTypeAnalysisPass,
-  speculativeConstAnalysisPass,
-  purityBlockPass,
-  purityScopePass,
+/** Default production analysis set. Tests may use a subset for isolation. */
+export const DEFAULT_PASSES: ReadonlyArray<Analysis<any, any>> = [
+  runtimeWriteAnalysis,
+  runtimeCallAnalysis,
+  speculationBlacklistAnalysis,
+  typeAnalysis,
+  constAnalysis,
+  speculativeTypeAnalysis,
+  speculativeConstAnalysis,
+  purityBlockAnalysis,
+  purityScopeAnalysis,
+  livenessAnalysis,
 ];
 
 export const DEFAULT_TRANSFORMS: ReadonlyArray<TransformRule> = [
   deadBranchRule,
   constantFoldingRule,
   algebraicSimplifyRule,
+  deadStoreRule,
   memoizationRule,
 ];

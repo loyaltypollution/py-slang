@@ -2,7 +2,7 @@ import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { FactStore } from "../framework/fact-store";
 import type { MutableEnv } from "../framework/mutable-env";
-import { runtimeWritePass } from "../framework/runtime-passes";
+import { runtimeWriteAnalysis } from "../framework/runtime-analyses";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
@@ -91,7 +91,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   ) {}
 
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
-    const observed = this.factStore.tryRead(runtimeWritePass, node.id);
+    const observed = this.factStore.tryRead(runtimeWriteAnalysis, node.id);
     const combined = observed !== undefined ? this.combineObservation(val, observed) : val;
     this.recordExprFact(node.id, combined);
     return combined;
@@ -171,7 +171,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   // return the result of the short-circuit path the caller would take
   // lexically (the right arm), widened by the left.
   //
-  // Both operands are always visited so downstream passes receive
+  // Both operands are always visited so downstream analyses receive
   // sub-expression annotations.
   visitBoolOpExpr(expr: ExprNS.BoolOp): TypeLattice {
     const left = expr.left.accept(this);
@@ -262,8 +262,8 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 }
 
 /** Build a type-analysis module parameterized on observation-combine semantics.
- *  Two callers: the standard pass uses `widenObservation` (sound for AST
- *  transforms); the speculative pass uses `narrowObservation` (consumed only
+ *  Two callers: the standard analysis uses `widenObservation` (sound for AST
+ *  transforms); the speculative analysis uses `narrowObservation` (consumed only
  *  by SVML compilation, which emits guards). */
 export function makeTypeAnalysisModule(
   combineObservation: CombineObservation,
@@ -307,7 +307,7 @@ export function makeTypeAnalysisModule(
 export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = makeTypeAnalysisModule(widenObservation);
 
 /** Speculative variant: observations narrow rather than widen. Consumers
- *  (svml-compiler, jit-pass) MUST emit a guard at any specialized site that
+ *  (svml-compiler, jit-analysis) MUST emit a guard at any specialized site that
  *  was proven only by the narrowed fact. See plan: synthetic-enchanting-wave.md. */
 export const speculativeTypeAnalysisModule: BlockDfaSpec<TypeLattice> = makeTypeAnalysisModule(narrowObservation);
 

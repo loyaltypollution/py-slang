@@ -140,9 +140,10 @@ function serialiseFunction(f: SVMLIR, targetMaxOpcode?: number): ImFunction {
       case OpCodes.JMP:
         throw new Error("JMP assembling not implemented");
       case OpCodes.GUARD_KIND:
-        // arg1 = nodeId, arg2 = SVMLKindBits mask. JIT-only opcode; sinter
-        // rejects it via SINTER_OPCODE_MAX. Emitted here only for symmetry
-        // when targetMaxOpcode is undefined.
+      case OpCodes.GUARD_TRUTHY:
+        // arg1 = nodeId, arg2 = mask (GUARD_KIND) or expectedTruthiness
+        // (GUARD_TRUTHY). JIT-only opcodes; sinter rejects them via
+        // SINTER_OPCODE_MAX.
         b.putI(32, instr.arg1 as number);
         b.putI(32, instr.arg2 as number);
         break;
@@ -294,7 +295,7 @@ export function disassemble(p: Uint8Array): SVMLProgram {
     throw new Error("Malformed SVML binary: no function section");
   }
 
-  // First pass: discover function start offsets by parsing from known starts.
+  // First analysis: discover function start offsets by parsing from known starts.
   // Using getInstructionSize to advance prevents matching NEWC inside immediates.
   const functionOffsetSet = new Set<number>([entrypointOffset]);
   const worklist: number[] = [entrypointOffset];
@@ -335,7 +336,7 @@ export function disassemble(p: Uint8Array): SVMLProgram {
     instructions: Instruction[];
   }
 
-  // Second pass: parse each function into mutable raw data
+  // Second analysis: parse each function into mutable raw data
   const rawFunctions: RawFunction[] = [];
   const offsetToIndex = new Map<number, number>();
   const closureFixups: Array<{ fnIndex: number; instrIndex: number; targetOffset: number }> = [];
@@ -478,6 +479,7 @@ export function disassemble(p: Uint8Array): SVMLProgram {
         case OpCodes.JMP:
           throw new Error("JMP disassembly not implemented");
         case OpCodes.GUARD_KIND:
+        case OpCodes.GUARD_TRUTHY:
           if (cursor + 8 > p.byteLength) {
             throw new Error("Truncated instruction");
           }

@@ -1,15 +1,15 @@
 /**
- * Worklist pass-graph dispatch layer.
+ * Worklist analysis-graph dispatch layer.
  *
  * Exercises `register` / `enqueue` / `drain` without touching any production
- * analysis / transform. Every pass is constructed inline with minimal lattices
+ * analysis / transform. Every analysis is constructed inline with minimal lattices
  * so the test isolates the dispatch rule — "a lattice-change write fans out
  * to declared readers only".
  */
 import { parse } from "../../../parser/parser-adapter";
 import { Resolver } from "../../../resolver";
 import { Worklist } from "../../../specialization/framework/worklist";
-import type { EdgeSpec, Lattice, Pass, TransformRule } from "../../../specialization/framework/pass";
+import type { EdgeSpec, Lattice, Analysis, TransformRule } from "../../../specialization/framework/analysis";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -41,17 +41,17 @@ function saturatingBucket(ceiling: number): Lattice<number> {
   };
 }
 
-function identityWake<K>(pass: Pass<any, any>): EdgeSpec<K> {
-  return { on: "fact", pass, wake: (_c, k) => [k as K] };
+function identityWake<K>(analysis: Analysis<any, any>): EdgeSpec<K> {
+  return { on: "fact", analysis, wake: (_c, k) => [k as K] };
 }
 
-function makePass<K, V>(opts: {
+function makeAnalysis<K, V>(opts: {
   name: string;
   lattice: Lattice<V>;
   edges?: ReadonlyArray<EdgeSpec<K>>;
   tier?: "runtime" | "analysis";
   transfer?: (key: K) => V | undefined;
-}): Pass<K, V> {
+}): Analysis<K, V> {
   return {
     id: Symbol(opts.name),
     debugName: opts.name,
@@ -64,15 +64,15 @@ function makePass<K, V>(opts: {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe("Worklist pass-graph dispatch", () => {
+describe("Worklist analysis-graph dispatch", () => {
   test("(a) saturating lattice at ceiling: consumer not re-enqueued", () => {
     const wl = buildWorklist();
-    const producer = makePass<string, number>({
+    const producer = makeAnalysis<string, number>({
       name: "producer",
       lattice: saturatingBucket(3),
     });
     let consumerRuns = 0;
-    const consumer = makePass<string, number>({
+    const consumer = makeAnalysis<string, number>({
       name: "consumer",
       lattice: intMax,
       edges: [identityWake(producer)],
@@ -102,10 +102,10 @@ describe("Worklist pass-graph dispatch", () => {
     expect(consumerRuns).toBe(runsAtCeiling);
   });
 
-  test("(b) write to unread pass wakes no consumers", () => {
+  test("(b) write to unread analysis wakes no consumers", () => {
     const wl = buildWorklist();
-    const unread = makePass<string, number>({ name: "unread", lattice: intMax });
-    const consumer = makePass<string, number>({
+    const unread = makeAnalysis<string, number>({ name: "unread", lattice: intMax });
+    const consumer = makeAnalysis<string, number>({
       name: "consumer",
       lattice: intMax,
       edges: [],
@@ -116,7 +116,7 @@ describe("Worklist pass-graph dispatch", () => {
     wl.factStore.write(consumer, "k", 1);
 
     let enqueued = false;
-    const observer = makePass<string, number>({
+    const observer = makeAnalysis<string, number>({
       name: "observer",
       lattice: intMax,
       edges: [identityWake(unread)],
@@ -133,7 +133,7 @@ describe("Worklist pass-graph dispatch", () => {
     expect(enqueued).toBe(true);
 
     let consumerRan = false;
-    const consumer2 = makePass<string, number>({
+    const consumer2 = makeAnalysis<string, number>({
       name: "consumer2",
       lattice: intMax,
       edges: [],
@@ -151,7 +151,7 @@ describe("Worklist pass-graph dispatch", () => {
   test("(c) onUnitRebuilt fires once per pending rebuild, with fresh CFG", () => {
     const wl = buildWorklist("def f():\n    return 1\n");
     const rebuildEvents: FunctionUnit[] = [];
-    const observer = makePass<FunctionUnit, number>({
+    const observer = makeAnalysis<FunctionUnit, number>({
       name: "observer",
       lattice: intMax,
       edges: [
@@ -188,7 +188,7 @@ describe("Worklist pass-graph dispatch", () => {
   test("(d) transform sweeps after analyses converge within a drain iteration", () => {
     const wl = buildWorklist();
     const order: string[] = [];
-    const analysis = makePass<FunctionUnit, number>({
+    const analysis = makeAnalysis<FunctionUnit, number>({
       name: "analysis",
       lattice: intMax,
       tier: "analysis",
@@ -220,7 +220,7 @@ describe("Worklist pass-graph dispatch", () => {
   test("(e) transform that fires triggers CFG rebuild and onUnitRebuilt", () => {
     const wl = buildWorklist();
     const rebuilt: FunctionUnit[] = [];
-    const observer = makePass<FunctionUnit, number>({
+    const observer = makeAnalysis<FunctionUnit, number>({
       name: "observer",
       lattice: intMax,
       edges: [
@@ -248,12 +248,12 @@ describe("Worklist pass-graph dispatch", () => {
 
   test("top-only lattice: re-write of 'fired' suppresses re-enqueue", () => {
     const wl = buildWorklist();
-    const rule = makePass<string, "fired">({
+    const rule = makeAnalysis<string, "fired">({
       name: "rule",
       lattice: topOnly,
     });
     let reads = 0;
-    const reader = makePass<string, number>({
+    const reader = makeAnalysis<string, number>({
       name: "reader",
       lattice: intMax,
       edges: [identityWake(rule)],
@@ -278,15 +278,15 @@ describe("Worklist pass-graph dispatch", () => {
 
   test("identity-key reader: runtime write at nodeId X wakes only key X", () => {
     const wl = buildWorklist();
-    const producer = makePass<number, number>({
+    const producer = makeAnalysis<number, number>({
       name: "producer",
       lattice: intMax,
     });
     const seenKeys: number[] = [];
-    const reader = makePass<number, number>({
+    const reader = makeAnalysis<number, number>({
       name: "reader",
       lattice: intMax,
-      edges: [{ on: "fact", pass: producer, wake: (_c, k) => [k as number] }],
+      edges: [{ on: "fact", analysis: producer, wake: (_c, k) => [k as number] }],
       transfer: (k) => {
         seenKeys.push(k);
         return undefined;
@@ -309,15 +309,15 @@ describe("Worklist pass-graph dispatch", () => {
 
     for (const batched of [false, true]) {
       const wl = buildWorklist();
-      const producer = makePass<number, number>({
+      const producer = makeAnalysis<number, number>({
         name: "producer",
         lattice: intMax,
       });
       const order: number[] = [];
-      const reader = makePass<number, number>({
+      const reader = makeAnalysis<number, number>({
         name: "reader",
         lattice: intMax,
-        edges: [{ on: "fact", pass: producer, wake: (_c, k) => [k as number] }],
+        edges: [{ on: "fact", analysis: producer, wake: (_c, k) => [k as number] }],
         transfer: (k) => {
           order.push(k);
           return undefined;

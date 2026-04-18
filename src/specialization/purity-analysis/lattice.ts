@@ -32,10 +32,10 @@ export type AbsVal =
   | { readonly kind: "global" }
   // Closure value produced by a nested FunctionDef. `fdId` identifies the
   // nested function; `pure` records whether its body was determined pure by
-  // `purityScopePass`. `undefined` means "inner not yet analyzed" — treated
+  // `purityScopeAnalysis`. `undefined` means "inner not yet analyzed" — treated
   // as pending at call sites (no tainting until the verdict lands), which
-  // keeps the outer block's summary monotone under the cross-pass
-  // dependency on `purityScopePass`. A Call through a slot holding a pure
+  // keeps the outer block's summary monotone under the cross-analysis
+  // dependency on `purityScopeAnalysis`. A Call through a slot holding a pure
   // Closure is pure; an impure Closure taints the enclosing function.
   | {
       readonly kind: "closure";
@@ -94,7 +94,7 @@ export function absJoin(a: AbsVal, b: AbsVal): AbsVal {
   if (a.kind === "impure" || b.kind === "impure") return UNKNOWN;
   if (a.kind === "unknown" || b.kind === "unknown") return UNKNOWN;
   // Closure sub-lattice: monotonically refine `undefined` → `defined`, so
-  // the `pending → pure` transition from `purityScopePass` survives the
+  // the `pending → pure` transition from `purityScopeAnalysis` survives the
   // fact-store's monotone join. `true` vs `false` at the same fdId is a
   // genuine contestation → Unknown. Different fdIds → Unknown.
   if (a.kind === "closure" && b.kind === "closure" && a.fdId === b.fdId) {

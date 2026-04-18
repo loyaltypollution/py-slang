@@ -1,7 +1,7 @@
 /**
- * Tests for the intraprocedural MOD-dataflow purity pass (PurityScopePass).
+ * Tests for the intraprocedural MOD-dataflow purity analysis (PurityScopeAnalysis).
  *
- * The pass runs a fixpoint CFG walk with a block-level `PurityRecord`
+ * The analysis runs a fixpoint CFG walk with a block-level `PurityRecord`
  * (mod-set, call-purity, sticky impure flag) and derives `hint.pure` at
  * the exit block. These tests cover parity with the previous syntactic
  * fold plus the capability gains introduced by:
@@ -13,7 +13,7 @@ import { StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import { Worklist } from "../../../specialization/framework/worklist";
-import { purityScopePass } from "../../../specialization/purity-analysis/analysis";
+import { purityScopeAnalysis } from "../../../specialization/purity-analysis/analysis";
 
 function purityOf(code: string, fnName: string): boolean | undefined {
   const script = code + "\n";
@@ -24,13 +24,13 @@ function purityOf(code: string, fnName: string): boolean | undefined {
 
   for (const stmt of ast.statements) {
     if (stmt instanceof StmtNS.FunctionDef && stmt.name.lexeme === fnName) {
-      return worklist.factStore.tryRead(purityScopePass, stmt.id);
+      return worklist.factStore.tryRead(purityScopeAnalysis, stmt.id);
     }
   }
   throw new Error(`FunctionDef ${fnName} not found`);
 }
 
-describe("PurityScopePass — parity with prior syntactic fold", () => {
+describe("PurityScopeAnalysis — parity with prior syntactic fold", () => {
   test("pure arithmetic body", () => {
     expect(purityOf("def f(x):\n    return x + 1", "f")).toBe(true);
   });
@@ -132,7 +132,7 @@ describe("PurityScopePass — parity with prior syntactic fold", () => {
   });
 });
 
-describe("PurityScopePass — CFG-join discriminators", () => {
+describe("PurityScopeAnalysis — CFG-join discriminators", () => {
   test("branchy local write with merging conditional arms is pure", () => {
     // The audit's discriminator: distinct assigns on distinct paths, join
     // at the block after the if. Mod = {y}; y is local → pure.
@@ -163,7 +163,7 @@ describe("PurityScopePass — CFG-join discriminators", () => {
   });
 });
 
-describe("PurityScopePass — capability gains vs. prior rule", () => {
+describe("PurityScopeAnalysis — capability gains vs. prior rule", () => {
   test("whitelisted builtin `range` in a for-loop iter keeps fn pure", () => {
     // Previously: visitCallExpr marked every Call IMPURE unconditionally
     // → iter impure → whole body impure. Now: `range` is whitelisted.
@@ -198,7 +198,7 @@ describe("PurityScopePass — capability gains vs. prior rule", () => {
   });
 });
 
-describe("PurityScopePass — freshness / escape tracking", () => {
+describe("PurityScopeAnalysis — freshness / escape tracking", () => {
   test("pure: fresh list allocation, local mutate, element return", () => {
     // xs is Fresh in this frame; the subscript-store targets a locally-
     // owned container. Under the old coarse rule this was impure (any List
@@ -273,7 +273,7 @@ describe("PurityScopePass — freshness / escape tracking", () => {
   });
 });
 
-describe("PurityScopePass — closures (nested FunctionDef)", () => {
+describe("PurityScopeAnalysis — closures (nested FunctionDef)", () => {
   test("pure: nested def called locally", () => {
     const code = [
       "def f(n):",

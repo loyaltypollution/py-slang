@@ -4,7 +4,7 @@ import { generateCSEMachineStateStream } from "../../../engines/cse/interpreter"
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import type { Worklist } from "../../../specialization/framework/worklist";
-import { constAnalysisPass, typeAnalysisPass } from "../../../specialization/framework/dfa-passes";
+import { constAnalysis, typeAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import { INT_BIT } from "../../../specialization/type-analysis/lattice";
 import { buildTestWorklist } from "../../utils";
@@ -29,8 +29,8 @@ describe("factStore contents after optimization", () => {
     const { ast, engine } = optimise("x = 42");
     const rhs = (ast.statements[0] as StmtNS.Assign).value;
     const block = engine.blockOfNode(rhs.id);
-    const type = readExprFact(engine.factStore, typeAnalysisPass, block, rhs.id);
-    const cv = readExprFact(engine.factStore, constAnalysisPass, block, rhs.id);
+    const type = readExprFact(engine.factStore, typeAnalysis, block, rhs.id);
+    const cv = readExprFact(engine.factStore, constAnalysis, block, rhs.id);
     expect(type).toBeDefined();
     expect(type!.kinds & INT_BIT).toBeTruthy();
     expect(cv?.tag).toBe("const");
@@ -42,7 +42,7 @@ describe("factStore contents after optimization", () => {
     const rhs = (ast.statements[0] as StmtNS.Assign).value;
     const cv = readExprFact(
       engine.factStore,
-      constAnalysisPass,
+      constAnalysis,
       engine.blockOfNode(rhs.id),
       rhs.id,
     );
@@ -55,7 +55,7 @@ describe("factStore contents after optimization", () => {
     const ret = (ast.statements[0] as StmtNS.FunctionDef).body[0] as StmtNS.Return;
     const type = readExprFact(
       engine.factStore,
-      typeAnalysisPass,
+      typeAnalysis,
       engine.blockOfNode(ret.value!.id),
       ret.value!.id,
     );
@@ -68,13 +68,13 @@ describe("factStore contents after optimization", () => {
     const fnRet = (ast.statements[1] as StmtNS.FunctionDef).body[0] as StmtNS.Return;
     const rootCv = readExprFact(
       engine.factStore,
-      constAnalysisPass,
+      constAnalysis,
       engine.blockOfNode(rootRhs.id),
       rootRhs.id,
     );
     const retType = readExprFact(
       engine.factStore,
-      typeAnalysisPass,
+      typeAnalysis,
       engine.blockOfNode(fnRet.value!.id),
       fnRet.value!.id,
     );
@@ -106,7 +106,7 @@ describe("stepper ↔ factStore join", () => {
       if (node && "id" in node && typeof node.id === "number") {
         const cv = readExprFact(
           engine.factStore,
-          constAnalysisPass,
+          constAnalysis,
           engine.blockOfNode(node.id),
           node.id,
         );
@@ -116,7 +116,7 @@ describe("stepper ↔ factStore join", () => {
     return hits;
   }
 
-  test("x = 42: stepper passes through a node whose fact is const(42)", async () => {
+  test("x = 42: stepper analyses through a node whose fact is const(42)", async () => {
     const { context, engine } = optimise("x = 42");
     const hits = await stepAndCollect(context, engine);
     expect(hits.length).toBeGreaterThan(0);

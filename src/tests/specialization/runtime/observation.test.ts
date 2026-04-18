@@ -7,11 +7,11 @@ import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import {
   observeRuntimeWrite,
-  runtimeCallPass,
-} from "../../../specialization/framework/runtime-passes";
+  runtimeCallAnalysis,
+} from "../../../specialization/framework/runtime-analyses";
 import { STR_BIT } from "../../../specialization/type-analysis/lattice";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
-import { typeAnalysisPass } from "../../../specialization/framework/dfa-passes";
+import { typeAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { makeDfaQuery } from "../../../specialization";
 import { buildTestWorklist } from "../../utils";
 
@@ -68,7 +68,7 @@ x = "hello"
     const secondAssign = ast.statements[1] as StmtNS.Assign;
     const type = readExprFact(
       reactive.factStore,
-      typeAnalysisPass,
+      typeAnalysis,
       reactive.blockOfNode(secondAssign.value.id),
       secondAssign.value.id,
     );
@@ -86,14 +86,14 @@ describe("observation: idempotence", () => {
     reactive.drain();
     const assign = ast.statements[0] as StmtNS.Assign;
     const block = reactive.blockOfNode(assign.value.id);
-    const before = readExprFact(reactive.factStore, typeAnalysisPass, block, assign.value.id);
+    const before = readExprFact(reactive.factStore, typeAnalysis, block, assign.value.id);
     observeRuntimeWrite(reactive, assign.value.id, 42);
-    const after = readExprFact(reactive.factStore, typeAnalysisPass, block, assign.value.id);
+    const after = readExprFact(reactive.factStore, typeAnalysis, block, assign.value.id);
     expect(after).toEqual(before);
   });
 });
 
-// Call observation: user-function calls surface to the call-count pass, which
+// Call observation: user-function calls surface to the call-count analysis, which
 // is how the memoization transform gets its threshold signal.
 describe("SVML observeScopeCall", () => {
   test("fires with the callee FunctionDef's scope id on each user call", async () => {
@@ -118,7 +118,7 @@ f()
         calls.push(scopeId);
         const next = (callCounts.get(scopeId) ?? 0) + 1;
         callCounts.set(scopeId, next);
-        reactive.observe(runtimeCallPass, scopeId, next);
+        reactive.observe(runtimeCallAnalysis, scopeId, next);
       },
     });
 

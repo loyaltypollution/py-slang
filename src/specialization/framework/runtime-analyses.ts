@@ -1,8 +1,8 @@
-// Runtime observation passes. Written via `Worklist.observe`; tier "runtime".
+// Runtime observation analyses. Written via `Worklist.observe`; tier "runtime".
 
 import { StmtNS } from "../../ast-types";
 import type { FactStore } from "./fact-store";
-import type { Lattice, Pass, PassCtx } from "./pass";
+import type { Lattice, Analysis, AnalysisCtx } from "./analysis";
 import { classifyRawValue, type RawKind } from "./raw-value";
 import type { Worklist } from "./worklist";
 
@@ -12,7 +12,7 @@ export const RUNTIME_CALL_COUNT_SAT = 11;
 const RAW_TOP: RawKind = { kind: "unknown" };
 
 // Observation lattice: singletons < ⊤ ({kind:"unknown"}, conflict-absorbing).
-// `bottom` is set to RAW_TOP because readers only call `tryRead` on this pass
+// `bottom` is set to RAW_TOP because readers only call `tryRead` on this analysis
 // (never `read`), so the declared `bottom` never surfaces as a lattice ⊥.
 function rawKindEquals(a: RawKind, b: RawKind): boolean {
   if (a === b) return true;
@@ -37,22 +37,22 @@ const rawValueLattice: Lattice<RawKind> = {
 };
 
 /** Runtime observation of per-node value writes. Key = NodeId, value = RawKind. */
-export const runtimeWritePass: Pass<number, RawKind> = {
-  id: Symbol("runtimeWritePass"),
-  debugName: "runtimeWritePass",
+export const runtimeWriteAnalysis: Analysis<number, RawKind> = {
+  id: Symbol("runtimeWriteAnalysis"),
+  debugName: "runtimeWriteAnalysis",
   lattice: rawValueLattice,
   edges: [
     {
       on: "retire",
       effect: (factStore, _ctx, unit) => {
         for (const nodeId of unit.blockOfNode.keys()) {
-          factStore.evict(runtimeWritePass, nodeId);
+          factStore.evict(runtimeWriteAnalysis, nodeId);
         }
       },
     },
   ],
   tier: "runtime",
-  transfer(_factStore: FactStore, _ctx: PassCtx, _key: number): RawKind | undefined {
+  transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): RawKind | undefined {
     return undefined;
   },
 };
@@ -64,31 +64,31 @@ export const runtimeWritePass: Pass<number, RawKind> = {
  *  value can take it back off, and `classifyRawValue` allocates, so skip it. */
 export function observeRuntimeWrite(
   observer: {
-    observe: (p: Pass<number, RawKind>, k: number, v: RawKind) => void;
+    observe: (p: Analysis<number, RawKind>, k: number, v: RawKind) => void;
     factStore: FactStore;
   },
   nodeId: number,
   raw: unknown,
 ): void {
-  const prev = observer.factStore.tryRead(runtimeWritePass, nodeId);
+  const prev = observer.factStore.tryRead(runtimeWriteAnalysis, nodeId);
   if (prev !== undefined && prev.kind === "unknown") return;
-  observer.observe(runtimeWritePass, nodeId, classifyRawValue(raw));
+  observer.observe(runtimeWriteAnalysis, nodeId, classifyRawValue(raw));
 }
 
 /** Force the per-node observation to ⊤ (`unknown`), erasing any singleton
- *  narrowing the speculative pass had derived for THIS specific node. */
+ *  narrowing the speculative analysis had derived for THIS specific node. */
 export function widenWriteObservation(
-  observer: { observe: (p: Pass<number, RawKind>, k: number, v: RawKind) => void },
+  observer: { observe: (p: Analysis<number, RawKind>, k: number, v: RawKind) => void },
   nodeId: number,
 ): void {
-  observer.observe(runtimeWritePass, nodeId, RAW_TOP);
+  observer.observe(runtimeWriteAnalysis, nodeId, RAW_TOP);
 }
 
-/** Per-nodeId boolean: `true` means "the speculative pass produced a fact at
+/** Per-nodeId boolean: `true` means "the speculative analysis produced a fact at
  *  this node that drove a guard which fired at runtime; do not speculate here
  *  again." Monotone (false → true). The compiler reads it via
  *  `DfaQuery.isSpeculationBlacklisted` and falls back to generic opcodes
- *  when set, regardless of how narrowed the speculative pass's fact looks.
+ *  when set, regardless of how narrowed the speculative analysis's fact looks.
  *
  *  Why a blacklist instead of widening the source observation: the slot whose
  *  narrowing drove the guard may have been narrowed by an observation at a
@@ -97,9 +97,9 @@ export function widenWriteObservation(
  *  the upstream observation. Blacklisting the guard's nodeId is coarse but
  *  sufficient: the compiler skips speculation at that exact site, falling back
  *  to the generic opcode that handles all kinds. */
-export const speculationBlacklistPass: Pass<number, boolean> = {
-  id: Symbol("speculationBlacklistPass"),
-  debugName: "speculationBlacklistPass",
+export const speculationBlacklistAnalysis: Analysis<number, boolean> = {
+  id: Symbol("speculationBlacklistAnalysis"),
+  debugName: "speculationBlacklistAnalysis",
   lattice: {
     bottom: false,
     leq: (a, b) => !a || b, // false ≤ true; true only ≤ true
@@ -107,17 +107,17 @@ export const speculationBlacklistPass: Pass<number, boolean> = {
   },
   edges: [],
   tier: "runtime",
-  transfer(_factStore: FactStore, _ctx: PassCtx, _key: number): boolean | undefined {
+  transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): boolean | undefined {
     return undefined;
   },
 };
 
 /** Mark `nodeId` as no-longer-speculatable. Idempotent. */
 export function blacklistSpeculation(
-  observer: { observe: (p: Pass<number, boolean>, k: number, v: boolean) => void },
+  observer: { observe: (p: Analysis<number, boolean>, k: number, v: boolean) => void },
   nodeId: number,
 ): void {
-  observer.observe(speculationBlacklistPass, nodeId, true);
+  observer.observe(speculationBlacklistAnalysis, nodeId, true);
 }
 
 /** Saturating call-count lattice: `bottom=0`, join clamped at
@@ -127,7 +127,7 @@ export function blacklistSpeculation(
  *  and escape the fast path; `FactStore.write` relies on a well-formed
  *  lattice (`leq(v, prev) ⇒ join(prev, v) = prev`) to short-circuit, so the
  *  lattice itself must saturate in both `leq` and `join`. Used by
- *  `runtimeCallPass` for raw observations; consumers read the saturated
+ *  `runtimeCallAnalysis` for raw observations; consumers read the saturated
  *  value directly. */
 export const saturatingCountLattice: Lattice<number> = {
   bottom: 0,
@@ -137,9 +137,9 @@ export const saturatingCountLattice: Lattice<number> = {
 };
 
 /** Runtime observation of function-entry counts. Key = FunctionDef.id. */
-export const runtimeCallPass: Pass<number, number> = {
-  id: Symbol("runtimeCallPass"),
-  debugName: "runtimeCallPass",
+export const runtimeCallAnalysis: Analysis<number, number> = {
+  id: Symbol("runtimeCallAnalysis"),
+  debugName: "runtimeCallAnalysis",
   lattice: saturatingCountLattice,
   edges: [
     {
@@ -147,13 +147,13 @@ export const runtimeCallPass: Pass<number, number> = {
       effect: (factStore, _ctx, unit) => {
         const fd = unit.funcAst;
         if (fd instanceof StmtNS.FunctionDef) {
-          factStore.evict(runtimeCallPass, fd.id);
+          factStore.evict(runtimeCallAnalysis, fd.id);
         }
       },
     },
   ],
   tier: "runtime",
-  transfer(_factStore: FactStore, _ctx: PassCtx, _key: number): number | undefined {
+  transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): number | undefined {
     return undefined;
   },
 };
@@ -183,9 +183,9 @@ export function makeJitObservers(
     },
     observeScopeCall: (scopeId) => {
       beforeObserve?.();
-      const cur = worklist.factStore.tryRead(runtimeCallPass, scopeId) ?? 0;
+      const cur = worklist.factStore.tryRead(runtimeCallAnalysis, scopeId) ?? 0;
       if (cur >= RUNTIME_CALL_COUNT_SAT) return;
-      worklist.observe(runtimeCallPass, scopeId, cur + 1);
+      worklist.observe(runtimeCallAnalysis, scopeId, cur + 1);
       if (worklist.hasPendingWork()) worklist.drain();
     },
   };

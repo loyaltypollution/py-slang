@@ -61,7 +61,7 @@ export class SVMLInterpreter {
 
   /**
    * Fact-store observers invoked at STORE / CALL sites. `observeNodeWrite`
-   * feeds `runtimeWritePass`; `observeScopeCall` feeds `runtimeCallPass`.
+   * feeds `runtimeWriteAnalysis`; `observeScopeCall` feeds `runtimeCallAnalysis`.
    * Defaults are no-ops for standalone bytecode execution;
    * `PySvmlJitEvaluator` wires them to `worklist.observe(...)` calls.
    */
@@ -597,8 +597,21 @@ export class SVMLInterpreter {
           const allowedMask = a2;
           if ((witnessedBit & allowedMask) === 0) {
             // a1 is the AST nodeId we narrowed against; deopt handler in
-            // the evaluator widens runtimeWritePass at this nodeId.
+            // the evaluator widens runtimeWriteAnalysis at this nodeId.
             throw new SpeculationViolation(a1, value, witnessedKind, allowedMask);
+          }
+          break;
+        }
+
+        case OpCodes.GUARD_TRUTHY: {
+          // Speculative branch guard for dead-arm elimination. POPs the
+          // condition value (the dead arm is not emitted, so nothing else
+          // would consume it). Throws if the witnessed truthiness disagrees
+          // with the speculative const fact the compiler narrowed against.
+          const value = this.pop();
+          const expected = a2 === 1;
+          if (this.isTruthy(value) !== expected) {
+            throw new SpeculationViolation(a1, value, getSVMLType(value), a2);
           }
           break;
         }

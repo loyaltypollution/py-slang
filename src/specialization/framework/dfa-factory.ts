@@ -2,9 +2,9 @@ import type { BasicBlock, CFGEdge } from "./cfg";
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
-import type { BoundedLattice, EdgeSpec, Lattice, Pass, PassCtx } from "./pass";
+import type { BoundedLattice, EdgeSpec, Lattice, Analysis, AnalysisCtx } from "./analysis";
 
-/** Packages a Kildall block DFA as a `Pass<BasicBlock, DfaBlockFact<L>>`.
+/** Packages a Kildall block DFA as a `Analysis<BasicBlock, DfaBlockFact<L>>`.
  *  The fact carries the block's OUT env (used for CFG successor propagation)
  *  and the per-node lattice facts the transfer computed inside this block.
  *  Analyses that need block-global sticky state (e.g. purity's "impure" bit)
@@ -13,13 +13,13 @@ import type { BoundedLattice, EdgeSpec, Lattice, Pass, PassCtx } from "./pass";
  *  usual monotone propagation without a separate summary channel. */
 
 /** Edge projector: map a node-keyed upstream key to its containing block.
- *  Exported so callers of `makeBlockFixpointPass` declare node-fact
- *  upstreams via `addEdge(pass, {on:"fact", pass: upstream, wake: nodeIdToBlock})`
+ *  Exported so callers of `makeBlockFixpointAnalysis` declare node-fact
+ *  upstreams via `addEdge(analysis, {on:"fact", analysis: upstream, wake: nodeIdToBlock})`
  *  rather than a dedicated factory-level `reads` channel. Returns an empty
  *  iterable when the key isn't a number or the node isn't indexed in any
  *  unit's `blockOfNode`. */
 export const nodeIdToBlock = (
-  ctx: PassCtx,
+  ctx: AnalysisCtx,
   key: unknown,
 ): Iterable<BasicBlock> => {
   if (typeof key !== "number") return [];
@@ -28,7 +28,7 @@ export const nodeIdToBlock = (
   return block === undefined ? [] : [block];
 };
 
-/** Output fact for one block under an analysis pass. */
+/** Output fact for one block under an analysis analysis. */
 export interface DfaBlockFact<L> {
   /** Slot-keyed OUT env for forward successor / backward predecessor merging. */
   readonly outEnv: MutableEnv<L>;
@@ -52,7 +52,7 @@ interface DfaConfigBase<L> {
   /** Pure: IN env → OUT env + per-node exprFacts. No fact-store writes. */
   readonly transferBlock: (
     factStore: FactStore,
-    ctx: PassCtx,
+    ctx: AnalysisCtx,
     block: BasicBlock,
     inEnv: MutableEnv<L>,
     unit: FunctionUnit,
@@ -60,7 +60,7 @@ interface DfaConfigBase<L> {
   /** Seed the entry (forward) / exit (backward) block's IN env. */
   readonly seedEnv: (unit: FunctionUnit) => MutableEnv<L>;
   /** Per-edge env refinement. See `BlockDfaSpec.refineOnEdge` for the contract.
-   *  Mandatory so forgotten implementations surface at compile time; passes
+   *  Mandatory so forgotten implementations surface at compile time; analyses
    *  that don't narrow return `env` unchanged. */
   readonly refineOnEdge: (env: MutableEnv<L>, edge: CFGEdge) => MutableEnv<L>;
   /** Block-fact accumulation policy.
@@ -69,15 +69,15 @@ interface DfaConfigBase<L> {
    *  - `"overwrite"`: factStore.write replaces prev outright (`join := new`),
    *    and `leq` is structural equality. Required for narrowing analyses
    *    where observations can either tighten or widen-back facts (e.g. the
-   *    speculative passes — see `dfa-passes.ts`). Convergence then depends on
-   *    upstream observation passes saturating, which they do (runtimeWritePass
-   *    saturates at ⊤ on conflict, runtimeCallPass saturates at SAT). */
+   *    speculative analyses — see `dfa-analyses.ts`). Convergence then depends on
+   *    upstream observation analyses saturating, which they do (runtimeWriteAnalysis
+   *    saturates at ⊤ on conflict, runtimeCallAnalysis saturates at SAT). */
   readonly accumulationMode?: "monotone" | "overwrite";
 }
 
 /** May-merge analyses only need `Lattice<L>` (join + leq). Must-merge needs
  *  `BoundedLattice<L>` so the factory can call `meetWith(..., top)`. The
- *  discriminated union lets `purityBlockPass` (may-merge) pass a plain
+ *  discriminated union lets `purityBlockAnalysis` (may-merge) supply a plain
  *  `Lattice` without fabricating unused `top`/`meet` — the type system
  *  refuses a must-merge config paired with a non-bounded lattice. */
 type DfaConfig<L> = DfaConfigBase<L> & (
@@ -85,12 +85,12 @@ type DfaConfig<L> = DfaConfigBase<L> & (
   | { readonly mergeKind: "must"; readonly valueLattice: BoundedLattice<L> }
 );
 
-export function makeBlockFixpointPass<L>(
+export function makeBlockFixpointAnalysis<L>(
   config: DfaConfig<L>,
-): Pass<BasicBlock, DfaBlockFact<L>> {
+): Analysis<BasicBlock, DfaBlockFact<L>> {
   // Frozen singleton: `FactStore.read` returns this for unwritten cells. Any
   // caller that mutates `outEnv` or `exprFacts` in place corrupts every other
-  // unwritten read through the same pass. `Object.freeze` prevents
+  // unwritten read through the same analysis. `Object.freeze` prevents
   // re-assignment of the outer fields; `outEnv.freeze()` makes the internal
   // slot array mutators throw — callers MUST `snapshot()` before mutation.
   // `inEnvFor` does exactly that; `readExprFact` only reads via `tryRead`/
@@ -163,7 +163,7 @@ export function makeBlockFixpointPass<L>(
   /** Overwrite mode: leq is structural equality (so identical re-transfers
    *  are no-ops at the fact store), join discards the old fact entirely. The
    *  DFA's monotone-transfer assumption is dropped — termination relies on
-   *  upstream observation passes saturating, which they do. */
+   *  upstream observation analyses saturating, which they do. */
   const overwriteEnvLattice: Lattice<DfaBlockFact<L>> = {
     bottom: bottomFact,
     leq: (a, b) => compoundLeq(a, b) && compoundLeq(b, a),
@@ -187,7 +187,7 @@ export function makeBlockFixpointPass<L>(
       // `factStore.read` returns the frozen bottomFact for unwritten cells;
       // we never mutate it in place.
       const predBlock = config.direction === "forward" ? edge.from : edge.to;
-      const predOut = factStore.read(blockKeyedPass, predBlock).outEnv;
+      const predOut = factStore.read(blockKeyedAnalysis, predBlock).outEnv;
       // Refine across the edge. Identity returns are common and must not
       // allocate; the factory absorbs that by snapshotting only when the
       // refinement returned a truly different env.
@@ -208,8 +208,8 @@ export function makeBlockFixpointPass<L>(
     return env ?? config.seedEnv(unit);
   }
 
-  // `edges` is a live array passed to the pass; construct the pass first,
-  // then push the self-edge referring to `blockKeyedPass` directly. Callers
+  // `edges` is a live array passed to the analysis; construct the analysis first,
+  // then push the self-edge referring to `blockKeyedAnalysis` directly. Callers
   // that need node-keyed upstreams add them via `addEdge` after construction
   // using the exported `nodeIdToBlock` projector. The array stays unfrozen
   // to make both self-wake and post-hoc amendments (e.g. purity block ↔
@@ -219,22 +219,22 @@ export function makeBlockFixpointPass<L>(
   const seedKey = (unit: FunctionUnit): BasicBlock =>
     config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
 
-  const blockKeyedPass: Pass<BasicBlock, DfaBlockFact<L>> = {
+  const blockKeyedAnalysis: Analysis<BasicBlock, DfaBlockFact<L>> = {
     id: blockPassId,
     debugName: `${config.debugName}:blocks`,
     lattice: envLattice,
     edges: edgesArr,
     tier: "analysis",
-    transfer(factStore: FactStore, ctx: PassCtx, block: BasicBlock): DfaBlockFact<L> | undefined {
+    transfer(factStore: FactStore, ctx: AnalysisCtx, block: BasicBlock): DfaBlockFact<L> | undefined {
       const unit = block.unit;
       const inEnv = inEnvFor(factStore, block, unit);
       return config.transferBlock(factStore, ctx, block, inEnv, unit);
     },
   };
 
-  const evictStaleBlocks = (factStore: FactStore, _ctx: PassCtx, unit: FunctionUnit): void => {
-    for (const b of factStore.readAll(blockKeyedPass).keys()) {
-      if (b.unit === unit) factStore.evict(blockKeyedPass, b);
+  const evictStaleBlocks = (factStore: FactStore, _ctx: AnalysisCtx, unit: FunctionUnit): void => {
+    for (const b of factStore.readAll(blockKeyedAnalysis).keys()) {
+      if (b.unit === unit) factStore.evict(blockKeyedAnalysis, b);
     }
   };
 
@@ -253,10 +253,10 @@ export function makeBlockFixpointPass<L>(
   );
 
   // Self-wake: block OUT change → CFG successors recompute IN. Appended after
-  // construction so we can reference `blockKeyedPass` directly, no getter.
+  // construction so we can reference `blockKeyedAnalysis` directly, no getter.
   edgesArr.push({
     on: "fact",
-    pass: blockKeyedPass as Pass<any, any>,
+    analysis: blockKeyedAnalysis as Analysis<any, any>,
     wake: (_ctx, key) => {
       const b = key as BasicBlock;
       const edges = config.direction === "forward" ? b.successorEdges : b.predecessorEdges;
@@ -266,19 +266,19 @@ export function makeBlockFixpointPass<L>(
     },
   });
 
-  return blockKeyedPass;
+  return blockKeyedAnalysis;
 }
 
-/** Resolve a per-expression fact from the DFA block pass.
+/** Resolve a per-expression fact from the DFA block analysis.
  *  `block` must be the BasicBlock that contains `nodeId` in the unit whose
  *  `transferBlock` visited this expression — usually `unit.blockOfNode.get(nodeId)`
  *  where `unit` is the innermost unit containing the node. */
 export function readExprFact<L>(
   factStore: FactStore,
-  pass: Pass<BasicBlock, DfaBlockFact<L>>,
+  analysis: Analysis<BasicBlock, DfaBlockFact<L>>,
   block: BasicBlock | undefined,
   nodeId: number,
 ): L | undefined {
   if (block === undefined) return undefined;
-  return factStore.tryRead(pass, block)?.exprFacts.get(nodeId);
+  return factStore.tryRead(analysis, block)?.exprFacts.get(nodeId);
 }

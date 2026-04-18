@@ -27,7 +27,7 @@ export class ZeroDivisionError extends SVMLInterpreterError {}
 export class ValueError extends SVMLInterpreterError {}
 
 /** Thrown by `GUARD_KIND` when the runtime value doesn't match the kind mask
- *  the speculative pass narrowed to. Caught at the engine boundary
+ *  the speculative analysis narrowed to. Caught at the engine boundary
  *  (`PySvmlJitEvaluator` / `PyTieredJitEvaluator`), which forces the
  *  observation widening that triggers a recompile and re-enters `execute()`. */
 export class SpeculationViolation extends SVMLInterpreterError {

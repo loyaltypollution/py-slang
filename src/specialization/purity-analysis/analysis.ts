@@ -6,9 +6,9 @@
 // impure — flow-sensitivity a linear scan can't express.
 //
 // Nested `FunctionDef` bodies are analyzed as their own `FunctionUnit`s; the
-// enclosing block reads the nested `purityScopePass` verdict via a cross-pass
+// enclosing block reads the nested `purityScopeAnalysis` verdict via a cross-analysis
 // reads-edge and binds the name's slot to `Closure(fdId, pure)`. Pending
-// closures (inner not yet analyzed) defer judgment until the scope-pass
+// closures (inner not yet analyzed) defer judgment until the scope-analysis
 // refinement arrives.
 //
 // `Lambda` / `MultiLambda` stay sticky-impure — out of scope for this phase.
@@ -16,14 +16,14 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import {
-  makeBlockFixpointPass,
+  makeBlockFixpointAnalysis,
   type DfaBlockFact,
 } from "../framework/dfa-factory";
 import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
-import type { EdgeSpec, Lattice, Pass, PassCtx } from "../framework/pass";
-import { addEdge } from "../framework/pass";
+import type { EdgeSpec, Lattice, Analysis, AnalysisCtx } from "../framework/analysis";
+import { addEdge } from "../framework/analysis";
 import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   absJoin,
@@ -65,12 +65,12 @@ const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
 //   3. Capture distinction — reading a capture is a dependency (returns
 //      Unknown, no taint); reading a plain nonlocal is impure. Const/type
 //      collapse both to top.
-//   4. `FunctionDef` stmt — binds a Closure value via cross-pass read of
-//      `purityScopePass`. Const/type treat FunctionDef as a no-op.
+//   4. `FunctionDef` stmt — binds a Closure value via cross-analysis read of
+//      `purityScopeAnalysis`. Const/type treat FunctionDef as a no-op.
 //   5. Call-site arg escape — bare Variable args to unknown callees get
 //      downgraded to Unknown in the env. Const/type don't model escape.
 //
-// Any of these would break the existing const/type passes if retrofitted
+// Any of these would break the existing const/type analyses if retrofitted
 // into the shared block-transfer. The visitor-pattern style (vs. the
 // instanceof chain used here) is a stylistic drift — not semantic — and
 // could be unified if a new Expr kind surfaces missed-case risk.
@@ -333,12 +333,12 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
         state.impure = true;
         return;
       }
-      const innerPure = state.factStore.tryRead(purityScopePass, fd.id);
+      const innerPure = state.factStore.tryRead(purityScopeAnalysis, fd.id);
       // Defer on `undefined`: the inner hasn't been analyzed yet — record a
       // *pending* Closure. Call sites and escape points treat pending as
       // "deferred" (no markImpure), keeping this block's summary monotone
-      // under the cross-pass dependency. When the inner converges, the
-      // reads-edge `purityBlockPass ← purityScopePass` wakes this block
+      // under the cross-analysis dependency. When the inner converges, the
+      // reads-edge `purityBlockAnalysis ← purityScopeAnalysis` wakes this block
       // and the binding resolves to a definite true/false verdict.
       state.env.set(info.slot, { kind: "closure", fdId: fd.id, pure: innerPure });
       return;
@@ -367,10 +367,10 @@ const absValLattice: Lattice<AbsVal> = {
   join: absJoin,
 };
 
-export const purityBlockPass: Pass<
+export const purityBlockAnalysis: Analysis<
   BasicBlock,
   DfaBlockFact<AbsVal>
-> = makeBlockFixpointPass<AbsVal>({
+> = makeBlockFixpointAnalysis<AbsVal>({
   debugName: "purityAnalysis",
   direction: "forward",
   valueLattice: absValLattice,
@@ -424,14 +424,14 @@ const outerLattice: Lattice<boolean | undefined> = {
   },
 };
 
-export const purityScopePass: Pass<number, boolean | undefined> = {
-  id: Symbol("purityScopePass"),
-  debugName: "purityScopePass",
+export const purityScopeAnalysis: Analysis<number, boolean | undefined> = {
+  id: Symbol("purityScopeAnalysis"),
+  debugName: "purityScopeAnalysis",
   lattice: outerLattice,
   edges: [
     {
       on: "fact",
-      pass: purityBlockPass,
+      analysis: purityBlockAnalysis,
       wake: (_ctx, key) => {
         const fd = (key as BasicBlock).unit.funcAst;
         return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
@@ -456,13 +456,13 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
       effect: (factStore, _ctx, unit) => {
         const fd = unit.funcAst;
         if (fd instanceof StmtNS.FunctionDef) {
-          factStore.evict(purityScopePass, fd.id);
+          factStore.evict(purityScopeAnalysis, fd.id);
         }
       },
     },
   ],
   tier: "analysis",
-  transfer(factStore: FactStore, ctx: PassCtx, fdId: number): boolean | undefined {
+  transfer(factStore: FactStore, ctx: AnalysisCtx, fdId: number): boolean | undefined {
     const unit = ctx.unitForFdId(fdId);
     if (unit === undefined) return undefined;
     const fd = unit.funcAst;
@@ -471,10 +471,10 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
     // local impure effect?" The block DFA only writes facts for reachable
     // blocks (worklist walks CFG successors from entry), so OR'ing the
     // summaries of all visited blocks is the right aggregation. If no block
-    // has been visited yet, defer until the inner pass has run.
+    // has been visited yet, defer until the inner analysis has run.
     let anyVisited = false;
     for (const block of unit.cfg.blocks) {
-      const fact = factStore.tryRead(purityBlockPass, block);
+      const fact = factStore.tryRead(purityBlockAnalysis, block);
       if (fact === undefined) continue;
       anyVisited = true;
       if (fact.exprFacts.has(IMPURE_SENTINEL_NODE_ID)) return false;
@@ -483,16 +483,16 @@ export const purityScopePass: Pass<number, boolean | undefined> = {
   },
 };
 
-// Cross-pass edge: the block pass consults `purityScopePass` when it hits a
+// Cross-analysis edge: the block analysis consults `purityScopeAnalysis` when it hits a
 // nested `FunctionDef` stmt (to learn the nested function's purity verdict).
-// Declared post-hoc because both passes reference each other. The factory
+// Declared post-hoc because both analyses reference each other. The factory
 // returns `edges` as a plain (unfrozen) array so late amendments are safe.
-// Wake-up path: when the nested fd's scope-pass writes for `fdId`, project
+// Wake-up path: when the nested fd's scope-analysis writes for `fdId`, project
 // to the outer block containing that `def` stmt via `unitForNode` +
 // `blockOfNode`.
 const scopeToBlock: EdgeSpec<BasicBlock> = {
   on: "fact",
-  pass: purityScopePass,
+  analysis: purityScopeAnalysis,
   wake: (ctx, key) => {
     if (typeof key !== "number") return [];
     const u = ctx.unitForNode(key);
@@ -500,4 +500,4 @@ const scopeToBlock: EdgeSpec<BasicBlock> = {
     return block === undefined ? [] : [block];
   },
 };
-addEdge(purityBlockPass, scopeToBlock);
+addEdge(purityBlockAnalysis, scopeToBlock);

@@ -2,7 +2,7 @@
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
-import { constAnalysisPass } from "../framework/dfa-passes";
+import { constAnalysis } from "../framework/dfa-analyses";
 import { readExprFact } from "../framework/dfa-factory";
 import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
@@ -19,7 +19,7 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   private tryRewrite(expr: ExprNS.Expr): ExprNS.Expr {
     if (!(expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare)) return expr;
     const block = this.unit.blockOfNode.get(expr.id);
-    const cv = readExprFact(this.factStore, constAnalysisPass, block, expr.id);
+    const cv = readExprFact(this.factStore, constAnalysis, block, expr.id);
     if (cv?.tag !== "const") return expr;
     this.changed = true;
     return new ExprNS.Literal(
@@ -177,5 +177,5 @@ export const constantFoldingRule = unitSweepRule(
     v.sweep(unit.body);
     return v.changed;
   },
-  [{ on: "fact", pass: constAnalysisPass, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  [{ on: "fact", analysis: constAnalysis, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
 );

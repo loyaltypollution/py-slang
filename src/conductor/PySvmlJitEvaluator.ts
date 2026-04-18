@@ -1,6 +1,6 @@
 import { BasicEvaluator } from "@sourceacademy/conductor/runner";
 import { SpeculationViolation } from "../engines/svml/errors";
-import { makeJitPass } from "../engines/svml/jit-pass";
+import { makeJitAnalysis } from "../engines/svml/jit-analysis";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import type { SVMLBoxType } from "../engines/svml/types";
@@ -15,7 +15,7 @@ import {
 import { EvaluatorError } from "./errors";
 
 /** Cap on consecutive deopts before giving up. A speculation that violates
- *  on every retry indicates a bug in the speculative pass or in our widening
+ *  on every retry indicates a bug in the speculative analysis or in our widening
  *  protocol — running forever would just hang. */
 const MAX_DEOPT_RETRIES = 32;
 
@@ -23,7 +23,7 @@ const MAX_DEOPT_RETRIES = 32;
  * SVML evaluator with JIT specialization. After static convergence and
  * compile, runtime observations drive further transforms; each mutated
  * FunctionDef is recompiled and patched into the function table via
- * `jitPass` (see `engines/svml/jit-pass.ts`).
+ * `jitAnalysis` (see `engines/svml/jit-analysis.ts`).
  */
 export class PySvmlJitEvaluator extends BasicEvaluator {
   async evaluateChunk(chunk: string): Promise<void> {
@@ -49,7 +49,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         ...makeJitObservers(worklist),
       });
 
-      worklist.register(makeJitPass({ compiler, interpreter }));
+      worklist.register(makeJitAnalysis({ compiler, interpreter }));
 
       worklist.beginBatch();
       try {
@@ -66,7 +66,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
 
 /** Drive `interpreter.execute()` with deopt-and-retry. On `SpeculationViolation`,
  *  widen the observation that was speculated on; the worklist's cascading
- *  edges (runtimeWritePass → speculative passes → jit-pass) then drain a
+ *  edges (runtimeWriteAnalysis → speculative analyses → jit-analysis) then drain a
  *  recompile-and-patch before the next retry. Bounded by `MAX_DEOPT_RETRIES`
  *  to avoid infinite loops on a buggy speculator. */
 async function runWithDeopt(
@@ -87,7 +87,7 @@ async function runWithDeopt(
       }
       blacklistSpeculation(worklist, e.nodeId);
       // observe() drains automatically when batchDepth permits; inside
-      // beginBatch we need to drain explicitly so jit-pass.transfer fires
+      // beginBatch we need to drain explicitly so jit-analysis.transfer fires
       // and patches the function table before retry.
       worklist.drain();
     }

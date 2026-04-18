@@ -1,9 +1,9 @@
 import { StmtNS, ExprNS } from "../../ast-types";
 import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
-import type { PassCtx, TransformRule } from "../framework/pass";
-import { runtimeCallPass, RUNTIME_CALL_COUNT_SAT } from "../framework/runtime-passes";
-import { purityScopePass } from "../purity-analysis/analysis";
+import type { AnalysisCtx, TransformRule } from "../framework/analysis";
+import { runtimeCallAnalysis, RUNTIME_CALL_COUNT_SAT } from "../framework/runtime-analyses";
+import { purityScopeAnalysis } from "../purity-analysis/analysis";
 
 export const MEMOIZATION_THRESHOLD = RUNTIME_CALL_COUNT_SAT - 1;
 import { Token } from "../../tokenizer/tokenizer";
@@ -86,7 +86,7 @@ function rewriteReturns(
     } else if (s instanceof StmtNS.While || s instanceof StmtNS.For) {
       rewriteReturns(s.body, fd, id, params);
     }
-    // Nested FunctionDef / Assign / Pass / etc. — do not descend.
+    // Nested FunctionDef / Assign / Analysis / etc. — do not descend.
   }
 }
 
@@ -97,23 +97,23 @@ export const memoizationRule: TransformRule = {
   id: Symbol("memoizationRule"),
   debugName: "memoizationRule",
   edges: [
-    { on: "fact", pass: runtimeCallPass, wake: (ctx, fdId) => {
+    { on: "fact", analysis: runtimeCallAnalysis, wake: (ctx, fdId) => {
       const u = ctx.unitForFdId(fdId as number);
       return u ? [u] : [];
     }},
-    { on: "fact", pass: purityScopePass, wake: (ctx, fdId) => {
+    { on: "fact", analysis: purityScopeAnalysis, wake: (ctx, fdId) => {
       const u = ctx.unitForFdId(fdId as number);
       return u ? [u] : [];
     }},
   ],
-  sweep(unit: FunctionUnit, factStore: FactStore, _ctx: PassCtx): boolean {
+  sweep(unit: FunctionUnit, factStore: FactStore, _ctx: AnalysisCtx): boolean {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
     if (hasMemoPrelude(fd)) return false;
-    // runtimeCallPass already saturates at RUNTIME_CALL_COUNT_SAT via its
+    // runtimeCallAnalysis already saturates at RUNTIME_CALL_COUNT_SAT via its
     // lattice join, so factStore.read returns the capped count directly.
-    if (factStore.read(runtimeCallPass, fd.id) < MEMOIZATION_THRESHOLD) return false;
-    if (factStore.read(purityScopePass, fd.id) !== true) return false;
+    if (factStore.read(runtimeCallAnalysis, fd.id) < MEMOIZATION_THRESHOLD) return false;
+    if (factStore.read(purityScopeAnalysis, fd.id) !== true) return false;
     return applyMemoizationWrap(unit);
   },
 };

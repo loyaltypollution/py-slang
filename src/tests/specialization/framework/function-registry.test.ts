@@ -6,12 +6,12 @@ import {
   buildFunctionRegistry,
 } from "../../../specialization/framework/function-registry";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
-import type { Pass } from "../../../specialization/framework/pass";
+import type { Analysis } from "../../../specialization/framework/analysis";
 import { Worklist } from "../../../specialization/framework/worklist";
 
-/** Test helper: a pass that records mint/rebuild/retire events via onRegister. */
+/** Test helper: an analysis that records mint/rebuild/retire events via onRegister. */
 function makeLifecycleObserver(): {
-  pass: Pass<FunctionUnit, number>;
+  analysis: Analysis<FunctionUnit, number>;
   minted: FunctionUnit[];
   rebuilt: FunctionUnit[];
   retired: Array<{ unit: FunctionUnit; fdId: number }>;
@@ -19,7 +19,7 @@ function makeLifecycleObserver(): {
   const minted: FunctionUnit[] = [];
   const rebuilt: FunctionUnit[] = [];
   const retired: Array<{ unit: FunctionUnit; fdId: number }> = [];
-  const pass: Pass<FunctionUnit, number> = {
+  const analysis: Analysis<FunctionUnit, number> = {
     id: Symbol("observer"),
     debugName: "observer",
     lattice: { bottom: 0, leq: (a, b) => a <= b, join: Math.max },
@@ -35,7 +35,7 @@ function makeLifecycleObserver(): {
     tier: "analysis",
     transfer: () => undefined,
   };
-  return { pass, minted, rebuilt, retired };
+  return { analysis, minted, rebuilt, retired };
 }
 
 function parseProgram(code: string): StmtNS.FileInput {
@@ -142,14 +142,14 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
   // mints or retires today, so this is scaffold — but the plumbing must hold
   // before the first caller arrives, otherwise the silent-miscompile failure
   // mode returns.
-  function build(src: string, extraPasses: Pass<any, any>[] = []): {
+  function build(src: string, extraAnalyses: Analysis<any, any>[] = []): {
     ast: StmtNS.FileInput;
     worklist: Worklist;
   } {
     const ast = parseProgram(src);
     const resolver = new Resolver(src + "\n", ast);
     resolver.resolve(ast);
-    const worklist = new Worklist(ast, resolver.functionEnvironments, extraPasses, undefined, []);
+    const worklist = new Worklist(ast, resolver.functionEnvironments, extraAnalyses, undefined, []);
     return { ast, worklist };
   }
 
@@ -157,7 +157,7 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
     const obs = makeLifecycleObserver();
     const { ast, worklist } = build(
       ["def f():", "    return 1", "def g():", "    return 2"].join("\n"),
-      [obs.pass],
+      [obs.analysis],
     );
     const g = ast.statements[1] as StmtNS.FunctionDef;
 
@@ -172,42 +172,42 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
     expect(() => worklist.registry.slotOf(g.id)).toThrow(/not registered/);
   });
 
-  it("retire evicts fact-store cells for number-keyed passes", async () => {
-    const { runtimeWritePass, runtimeCallPass } = await import(
-      "../../../specialization/framework/runtime-passes"
+  it("retire evicts fact-store cells for number-keyed analyses", async () => {
+    const { runtimeWriteAnalysis, runtimeCallAnalysis } = await import(
+      "../../../specialization/framework/runtime-analyses"
     );
-    const { purityScopePass } = await import(
+    const { purityScopeAnalysis } = await import(
       "../../../specialization/purity-analysis/analysis"
     );
     const { ast, worklist } = build(
       ["def f():", "    return 1", "def g():", "    x = 2", "    return x"].join("\n"),
-      [runtimeWritePass, runtimeCallPass, purityScopePass],
+      [runtimeWriteAnalysis, runtimeCallAnalysis, purityScopeAnalysis],
     );
     const g = ast.statements[1] as StmtNS.FunctionDef;
     const gUnit = worklist.units.get(g)!;
 
     // Seed cells for g's fdId and one of g's node ids.
     const someNodeId = gUnit.blockOfNode.keys().next().value as number;
-    worklist.factStore.write(runtimeWritePass, someNodeId, { kind: "number", value: 7 });
-    worklist.factStore.write(runtimeCallPass, g.id, 3);
-    worklist.factStore.write(purityScopePass, g.id, true);
+    worklist.factStore.write(runtimeWriteAnalysis, someNodeId, { kind: "number", value: 7 });
+    worklist.factStore.write(runtimeCallAnalysis, g.id, 3);
+    worklist.factStore.write(purityScopeAnalysis, g.id, true);
 
-    expect(worklist.factStore.tryRead(runtimeWritePass, someNodeId)).toBeDefined();
-    expect(worklist.factStore.tryRead(runtimeCallPass, g.id)).toBeDefined();
-    expect(worklist.factStore.tryRead(purityScopePass, g.id)).toBeDefined();
+    expect(worklist.factStore.tryRead(runtimeWriteAnalysis, someNodeId)).toBeDefined();
+    expect(worklist.factStore.tryRead(runtimeCallAnalysis, g.id)).toBeDefined();
+    expect(worklist.factStore.tryRead(purityScopeAnalysis, g.id)).toBeDefined();
 
     worklist.registry.retire(g.id);
 
-    expect(worklist.factStore.tryRead(runtimeWritePass, someNodeId)).toBeUndefined();
-    expect(worklist.factStore.tryRead(runtimeCallPass, g.id)).toBeUndefined();
-    expect(worklist.factStore.tryRead(purityScopePass, g.id)).toBeUndefined();
+    expect(worklist.factStore.tryRead(runtimeWriteAnalysis, someNodeId)).toBeUndefined();
+    expect(worklist.factStore.tryRead(runtimeCallAnalysis, g.id)).toBeUndefined();
+    expect(worklist.factStore.tryRead(purityScopeAnalysis, g.id)).toBeUndefined();
   });
 
   it("mint after retire re-materializes a unit and fires onUnitMinted again", () => {
     const obs = makeLifecycleObserver();
     const { ast, worklist } = build(
       ["def f():", "    return 1", "def g():", "    return 2"].join("\n"),
-      [obs.pass],
+      [obs.analysis],
     );
     const g = ast.statements[1] as StmtNS.FunctionDef;
 

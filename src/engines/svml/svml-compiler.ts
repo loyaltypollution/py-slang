@@ -132,27 +132,52 @@ export class SVMLCompiler
     return k !== undefined && k !== 0 && (k & ~SVMLCompiler.NUMERIC_KIND_MASK) === 0;
   }
 
-  /** Per-operand specialization decision. `"static"` = no guard needed,
-   *  `"speculative"` = emit GUARD_KIND, `"none"` = generic opcode required. */
-  private numericMode(node: ExprNS.Expr): "static" | "speculative" | "none" {
-    if (this.isStaticallyNumeric(node)) return "static";
-    if (this.isSpeculativelyNumeric(node)) return "speculative";
-    return "none";
+  /** Per-operand specialization decision. `"static"` = proven numeric by
+   *  static analysis (emits F-opcode, no guard); `"none"` = generic opcode.
+   *  Speculative numeric narrowing is disabled: ADDF vs ADDG in this
+   *  interpreter differ by ~2 typeof checks per dispatch, which V8's
+   *  optimizer closes via PIC/inlining; measured net speedup was ≤1%.
+   *  The real JIT lever is dead-branch elimination (see visitIfStmt). */
+  private numericMode(node: ExprNS.Expr): "static" | "none" {
+    return this.isStaticallyNumeric(node) ? "static" : "none";
   }
 
-  /** Mask matching anything the F-opcodes can handle (`x as number` accepts
-   *  JS numbers, and Python booleans are JS booleans coerced to 0/1). */
-  private static readonly NUMERIC_GUARD_MASK: number =
-    SVMLKindBits.NUMBER | SVMLKindBits.BOOLEAN;
+  /** Slot key → expected const value, populated when visitAssignStmt emits
+   *  a peek-guard verifying the RHS's speculative const. Reads of a slot
+   *  tracked here are GUARANTEED to hold the recorded value at runtime,
+   *  so any expression whose speculative const flows from these slots is
+   *  const-pinned and can skip runtime evaluation entirely. This is the
+   *  anchor that lets visitIfStmt drop the cond eval and dead arm. */
+  private constGuardedSlots = new Map<string, number>();
 
-  private emitNumericGuard(node: ExprNS.Expr): void {
-    this.builder.emitBinary(OpCodes.GUARD_KIND, node.id, SVMLCompiler.NUMERIC_GUARD_MASK);
+  /** If the speculative const analysis has pinned `cond` to a concrete value AND
+   *  speculation is allowed in this scope AND the node isn't blacklisted,
+   *  return the truthiness; otherwise `undefined`. The compiler uses this in
+   *  `visitIfStmt` to drop a dead arm at the IR level — the big DCE lever
+   *  the JIT has over AOT, since the static const analysis cannot prove a
+   *  parameter or cross-scope value constant without interprocedural
+   *  inference. Static const is checked first so already-folded conditions
+   *  return `undefined` here (visitIfStmt's static-fold path handles those). */
+  private speculativeConditionTruth(cond: ExprNS.Expr): boolean | undefined {
+    if (!this.speculationAllowed()) return undefined;
+    if (this.dfaQuery?.isSpeculationBlacklisted(cond.id)) return undefined;
+    // Skip if the static const analysis already proves it — no guard needed.
+    const staticConst = this.getConst(cond);
+    if (staticConst !== undefined && staticConst.tag === "const") return undefined;
+    const spec = this.dfaQuery?.speculativeConstOf(cond.id);
+    if (spec === undefined || spec.tag !== "const") return undefined;
+    const v = spec.value;
+    // Python truthiness over the values constOf can hold (number/bool/string).
+    if (typeof v === "number") return v !== 0;
+    if (typeof v === "boolean") return v;
+    if (typeof v === "string") return v.length > 0;
+    return undefined;
   }
 
   /**
    * Create SVMLCompiler from program AST.
-   * Pass pre-computed environments (from analyzeWithEnvironments) to avoid a second resolver run.
-   * Pass `registry` when sharing identity with a Worklist (JIT pipelines); omit to build one internally.
+   * Analysis pre-computed environments (from analyzeWithEnvironments) to avoid a second resolver run.
+   * Analysis `registry` when sharing identity with a Worklist (JIT pipelines); omit to build one internally.
    */
   static fromProgram(
     program: StmtNS.FileInput,
@@ -556,9 +581,7 @@ export class SVMLCompiler
     const useSpecialized = lMode !== "none" && rMode !== "none";
     const opcode = this.getBinaryOpCode(expr.operator, useSpecialized);
     const leftResult = this.compile(expr.left);
-    if (useSpecialized && lMode === "speculative") this.emitNumericGuard(expr.left);
     const rightResult = this.compile(expr.right);
-    if (useSpecialized && rMode === "speculative") this.emitNumericGuard(expr.right);
     this.builder.emitNullary(opcode);
     return { maxStackSize: Math.max(leftResult.maxStackSize, 1 + rightResult.maxStackSize) };
   }
@@ -569,9 +592,7 @@ export class SVMLCompiler
     const useSpecialized = lMode !== "none" && rMode !== "none";
     const opcode = this.getCompareOpCode(expr.operator, useSpecialized);
     const leftResult = this.compile(expr.left);
-    if (useSpecialized && lMode === "speculative") this.emitNumericGuard(expr.left);
     const rightResult = this.compile(expr.right);
-    if (useSpecialized && rMode === "speculative") this.emitNumericGuard(expr.right);
     this.builder.emitNullary(opcode);
     return { maxStackSize: Math.max(leftResult.maxStackSize, 1 + rightResult.maxStackSize) };
   }
@@ -786,6 +807,27 @@ export class SVMLCompiler
   }
 
   visitIfStmt(stmt: StmtNS.If): ExpressionResult {
+    // Speculative dead-branch: if the speculative const analysis has pinned the
+    // condition's value, emit `cond + GUARD_TRUTHY + only-the-taken-arm`.
+    // The dead arm produces zero opcodes — the IR-level DCE that AOT cannot
+    // replicate without interprocedural value inference. Deopt restores the
+    // generic shape via blacklist on next compile.
+    const specTruth = this.speculativeConditionTruth(stmt.condition);
+    if (specTruth !== undefined) {
+      const testResult = this.compile(stmt.condition);
+      this.builder.emitBinary(OpCodes.GUARD_TRUTHY, stmt.condition.id, specTruth ? 1 : 0);
+      const taken = specTruth ? stmt.body : stmt.elseBlock;
+      const takenResult = taken
+        ? this.compileStatements(taken)
+        : (() => {
+            this.builder.emitNullary(OpCodes.LGCU);
+            return { maxStackSize: 1 };
+          })();
+      return {
+        maxStackSize: Math.max(testResult.maxStackSize, takenResult.maxStackSize),
+      };
+    }
+
     const testResult = this.compile(stmt.condition);
     const elseLabel = this.builder.emitJump(OpCodes.BRF);
 

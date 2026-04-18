@@ -2,7 +2,7 @@ import type { ExprNS } from "../../ast-types";
 import type { CFGEdge } from "./cfg";
 import type { FactStore } from "./fact-store";
 import type { MutableEnv } from "./mutable-env";
-import type { BoundedLattice } from "./pass";
+import type { BoundedLattice } from "./analysis";
 import type { SlotLookup } from "./slot-table";
 
 /**
@@ -33,16 +33,16 @@ import type { SlotLookup } from "./slot-table";
 /** Expression-level DFA module for block-fixpoint analyses. Extends
  *  `BoundedLattice<L>` so the module itself IS the per-slot value lattice —
  *  no separate field, no duplication between `BlockDfaSpec` and the
- *  `valueLattice` passed to `makeBlockFixpointPass`. */
+ *  `valueLattice` passed to `makeBlockFixpointAnalysis`. */
 export interface BlockDfaSpec<L> extends BoundedLattice<L> {
   readonly mergeKind: "may" | "must";
   readonly direction: "forward" | "backward";
 
   /** Per-subtree visitor. Reads upstream observations from `factStore`
-   *  (read-only — `runtimeWritePass` lookups for lattice widening) and
+   *  (read-only — `runtimeWriteAnalysis` lookups for lattice widening) and
    *  records per-node output facts into `recordExprFact`. The visitor MUST
    *  NOT write back into `factStore` — per-node facts flow out via
-   *  `recordExprFact` and are attached to the block pass's `DfaBlockFact`
+   *  `recordExprFact` and are attached to the block analysis's `DfaBlockFact`
    *  by `transferBlock`. */
   makeExprVisitor(
     factStore: FactStore,
@@ -60,7 +60,7 @@ export interface BlockDfaSpec<L> extends BoundedLattice<L> {
    *  return `env` unchanged — the factory detects identity and elides a
    *  redundant snapshot.
    *
-   *  Parallels `EdgeSpec.wake`: each pass opts in by providing a body.
+   *  Parallels `EdgeSpec.wake`: each analysis opts in by providing a body.
    *  Modules that don't narrow return `env` — identity is mandatory, not
    *  optional, to catch forgotten implementations at compile time. */
   refineOnEdge(env: MutableEnv<L>, edge: CFGEdge): MutableEnv<L>;

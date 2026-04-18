@@ -8,7 +8,7 @@ export type FunctionScopeNode =
   | ExprNS.MultiLambda;
 
 /** Observes structural events on the registry. The owning Worklist (if any)
- *  attaches itself here so that mint/retire wake downstream passes for the
+ *  attaches itself here so that mint/retire wake downstream analyses for the
  *  affected units. Registry does not know about the Worklist lifecycle API;
  *  it only dispatches "what happened to whom". */
 export interface FunctionRegistryListener {
@@ -45,7 +45,7 @@ export class FunctionRegistry {
   private listener: FunctionRegistryListener | undefined;
 
   /** Attach the single structural-event listener (the owning Worklist).
-   *  Replaces any prior listener. Pass `undefined` to detach. */
+   *  Replaces any prior listener. Analysis `undefined` to detach. */
   setListener(listener: FunctionRegistryListener | undefined): void {
     this.listener = listener;
   }
@@ -124,7 +124,7 @@ export class FunctionRegistry {
 /**
  * Build a fresh registry by pre-order DFS over `program`: FileInput first,
  * then nested FunctionDef/Lambda/MultiLambda in traversal order. Slot order
- * is byte-identical to the legacy `computeFunctionIndices` pass, so bytecode
+ * is byte-identical to the legacy `computeFunctionIndices` analysis, so bytecode
  * layout is preserved during the migration.
  */
 export function buildFunctionRegistry(program: StmtNS.FileInput): FunctionRegistry {

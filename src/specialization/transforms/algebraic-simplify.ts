@@ -19,7 +19,7 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { BasicBlock } from "../framework/cfg";
-import { typeAnalysisPass, constAnalysisPass } from "../framework/dfa-passes";
+import { typeAnalysis, constAnalysis } from "../framework/dfa-analyses";
 import { readExprFact } from "../framework/dfa-factory";
 import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
@@ -78,10 +78,10 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   }
 
   private typeOf(node: ExprNS.Expr): TypeLattice | undefined {
-    return readExprFact(this.factStore, typeAnalysisPass, this.unit.blockOfNode.get(node.id), node.id);
+    return readExprFact(this.factStore, typeAnalysis, this.unit.blockOfNode.get(node.id), node.id);
   }
   private constOf(node: ExprNS.Expr): ConstLattice | undefined {
-    return readExprFact(this.factStore, constAnalysisPass, this.unit.blockOfNode.get(node.id), node.id);
+    return readExprFact(this.factStore, constAnalysis, this.unit.blockOfNode.get(node.id), node.id);
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
@@ -302,5 +302,5 @@ export const algebraicSimplifyRule = unitSweepRule(
     v.sweep(unit.body);
     return v.changed;
   },
-  [{ on: "fact", pass: typeAnalysisPass, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  [{ on: "fact", analysis: typeAnalysis, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
 );

@@ -1,14 +1,14 @@
 // Three citizen kinds are registered with a Worklist. They share a registration
 // mechanism but not a shape — do not collapse them:
 //
-//   Pass<K, V>        — monotone lattice-keyed unit. Registered via
+//   Analysis<K, V>        — monotone lattice-keyed unit. Registered via
 //                       `worklist.register`; `transfer(ctx, key)` writes into
-//                       the FactStore. All fixpoint work flows through Passes.
+//                       the FactStore. All fixpoint work flows through Analyses.
 //
 //   BlockDfaSpec<L>   — descriptor (lattice + visitor factory) handed to
-//                       `makeBlockFixpointPass` in `interfaces.ts`. Not
+//                       `makeBlockFixpointAnalysis` in `interfaces.ts`. Not
 //                       registered directly; the factory produces a
-//                       `Pass<BasicBlock, DfaBlockFact<L>>` that is.
+//                       `Analysis<BasicBlock, DfaBlockFact<L>>` that is.
 //
 //   TransformRule     — imperative AST sweep (defined below). Registered via
 //                       `worklist.registerTransform`; no lattice, no transfer,
@@ -29,7 +29,7 @@ export interface Lattice<V> {
 /** Bounded lattice: adds `top` and `meet` to `Lattice<V>`. Required by DFA
  *  value-lattices — `meet` is the dual merge for "must" analyses, and `top`
  *  seeds MutableEnv slots when the generic block transfer widens (e.g. For
- *  loop targets). Cell-level `Lattice<V>` (the `Pass.lattice` type) does not
+ *  loop targets). Cell-level `Lattice<V>` (the `Analysis.lattice` type) does not
  *  need these; counters, sticky flags, and observation lattices rarely have
  *  a natural `top` or `meet`, so we keep the base interface permissive. */
 export interface BoundedLattice<V> extends Lattice<V> {
@@ -37,10 +37,10 @@ export interface BoundedLattice<V> extends Lattice<V> {
   meet(a: V, b: V): V;
 }
 
-/** An edge into a pass. Two shapes, discriminated by the mandatory `on` tag:
+/** An edge into an analysis. Two shapes, discriminated by the mandatory `on` tag:
  *
- *   - Fact edge (`on: "fact"`): `wake` projects an upstream pass's key-change
- *     to zero-or-more keys in *this* pass's key-space, enqueuing them for
+ *   - Fact edge (`on: "fact"`): `wake` projects an upstream analysis's key-change
+ *     to zero-or-more keys in *this* analysis's key-space, enqueuing them for
  *     re-transfer. Both `on` and `wake` are required — "depends on, doesn't
  *     react" is not an auto-reactive edge; express such dependencies by
  *     reading from `factStore.read(upstream, ...)` in `transfer` without declaring
@@ -49,7 +49,7 @@ export interface BoundedLattice<V> extends Lattice<V> {
  *   - Lifecycle edge (`on: "mint" | "rebuild" | "retire"`): fires on unit
  *     lifecycle transitions. `wake(ctx, unit)` yields keys to enqueue;
  *     `effect(ctx, unit)` runs arbitrary side effects (typically
- *     `factStore.evict` for passes with unit-scoped facts). At least one of
+ *     `factStore.evict` for analyses with unit-scoped facts). At least one of
  *     `wake` / `effect` must be defined.
  *
  *  `on` is mandatory on both shapes so discriminated narrowing in consumers
@@ -60,56 +60,62 @@ export type EdgeSpec<K> = FactEdge<K> | LifecycleEdge<K>;
 
 export interface FactEdge<K> {
   readonly on: "fact";
-  readonly pass: Pass<any, any>;
-  wake(ctx: PassCtx, key: unknown): Iterable<K>;
+  readonly analysis: Analysis<any, any>;
+  wake(ctx: AnalysisCtx, key: unknown): Iterable<K>;
+  /** Optional side effect fired before `wake`'s keys are enqueued. Used by
+   *  the speculative DFA analyses to evict block-cell caches when an upstream
+   *  observation changes: narrowing fixpoints don't converge monotonically
+   *  through loops (a back-edge carrying a stale widened fact absorbs the
+   *  narrowing from the entry block), so we restart from a clean slate. */
+  effect?(factStore: FactStore, ctx: AnalysisCtx, key: unknown): void;
 }
 
 export interface LifecycleEdge<K> {
   readonly on: "mint" | "rebuild" | "retire";
-  wake?(ctx: PassCtx, unit: FunctionUnit): Iterable<K>;
-  effect?(factStore: FactStore, ctx: PassCtx, unit: FunctionUnit): void;
+  wake?(ctx: AnalysisCtx, unit: FunctionUnit): Iterable<K>;
+  effect?(factStore: FactStore, ctx: AnalysisCtx, unit: FunctionUnit): void;
 }
 
-/** Module-level set of passes the Worklist has registered. Populated by
+/** Module-level set of analyses the Worklist has registered. Populated by
  *  `Worklist.register`; consulted by `addEdge` to reject amendments that
  *  would be silently dropped by the worklist's edge-snapshot. Using a
  *  `WeakSet` means the bookkeeping lives off-object (no structural stamp
- *  on `Pass`) and retired-but-unreferenced passes are collectible. */
-export const REGISTERED_PASSES: WeakSet<Pass<any, any>> = new WeakSet();
+ *  on `Analysis`) and retired-but-unreferenced analyses are collectible. */
+export const REGISTERED_ANALYSES: WeakSet<Analysis<any, any>> = new WeakSet();
 
-/** Append an `EdgeSpec` to a pass's `edges` after construction. Encapsulates
+/** Append an `EdgeSpec` to an analysis's `edges` after construction. Encapsulates
  *  the readonly-cast that would otherwise leak at every call site. Intended
- *  for passes with mutually-recursive edges that can't be declared at
- *  literal-construction time (e.g. purity block ↔ scope). Throws if `pass`
+ *  for analyses with mutually-recursive edges that can't be declared at
+ *  literal-construction time (e.g. purity block ↔ scope). Throws if `analysis`
  *  is already registered with a worklist — the worklist snapshots `edges`
  *  during `register`, so post-registration additions would silently never
  *  dispatch. */
-export function addEdge<K>(pass: Pass<K, any>, spec: EdgeSpec<K>): void {
-  if (REGISTERED_PASSES.has(pass as Pass<any, any>)) {
+export function addEdge<K>(analysis: Analysis<K, any>, spec: EdgeSpec<K>): void {
+  if (REGISTERED_ANALYSES.has(analysis as Analysis<any, any>)) {
     throw new Error(
-      `[addEdge] pass "${pass.debugName}" is already registered with a worklist; edges added now will never dispatch. Declare edges at construction or via addEdge before register().`,
+      `[addEdge] analysis "${analysis.debugName}" is already registered with a worklist; edges added now will never dispatch. Declare edges at construction or via addEdge before register().`,
     );
   }
-  (pass.edges as EdgeSpec<K>[]).push(spec);
+  (analysis.edges as EdgeSpec<K>[]).push(spec);
 }
 
 /** A computation over the fact store. `transfer` returning `undefined` means "no write". */
-export interface Pass<K, V> {
+export interface Analysis<K, V> {
   readonly id: symbol;
   readonly debugName: string;
   readonly lattice: Lattice<V>;
   readonly edges: ReadonlyArray<EdgeSpec<K>>;
   /** Priority tier. Runtime observations settle before analyses within a
-   *  `processQueue` drain. Transforms are no longer passes — see
+   *  `processQueue` drain. Transforms are no longer analyses — see
    *  `TransformRule`. Mandatory: a forgotten tier used to silently default
    *  to `"analysis"`, which was a miscompile vector for any future
    *  priority-sensitive consumer. */
   readonly tier: "runtime" | "analysis";
-  transfer(factStore: FactStore, ctx: PassCtx, key: K): V | undefined;
+  transfer(factStore: FactStore, ctx: AnalysisCtx, key: K): V | undefined;
 }
 
 /** Unit-topology lookups; store access goes through the `FactStore` parameter. */
-export interface PassCtx {
+export interface AnalysisCtx {
   /** Outermost containing unit for a node. */
   unitForNode(nodeId: number): FunctionUnit | undefined;
   /** Unit for a `FunctionDef.id`. */
@@ -117,9 +123,9 @@ export interface PassCtx {
 }
 
 /** One-shot or cascading imperative AST sweep gated on analyses. Transforms
- *  are not `Pass<_, _>` — they have no lattice, no transfer, and do not
+ *  are not `Analysis<_, _>` — they have no lattice, no transfer, and do not
  *  participate in the fact-store fixpoint. Worklist dirties a rule on unit
- *  mint / rebuild and on writes to any pass declared in `edges`; the rule's
+ *  mint / rebuild and on writes to any analysis declared in `edges`; the rule's
  *  `sweep` runs once per dirty unit after `processQueue` drains, and units
  *  that rewrote are scheduled for CFG rebuild. Idempotency across rebuilds
  *  is the rule's responsibility: dead-branch / const-folding are naturally
@@ -129,8 +135,8 @@ export interface TransformRule {
   readonly id: symbol;
   readonly debugName: string;
   /** Fact-driven wake edges — reuses `FactEdge<FunctionUnit>` so transform
-   *  and pass edges go through the same dispatch shape. A write to the
-   *  edge's `pass` calls `wake(ctx, key)`, which yields the units to add to
+   *  and analysis edges go through the same dispatch shape. A write to the
+   *  edge's `analysis` calls `wake(ctx, key)`, which yields the units to add to
    *  this rule's dirty set. Omit for a rule that only fires on mint/rebuild. */
   readonly edges?: ReadonlyArray<FactEdge<FunctionUnit>>;
   /** Lifecycle events that auto-dirty every unit. Defaults to both `"mint"`
@@ -141,5 +147,5 @@ export interface TransformRule {
   readonly autoDirtyOn?: ReadonlyArray<"mint" | "rebuild">;
   /** Returns `true` iff `unit.body` was mutated — the worklist then schedules
    *  a CFG rebuild for `unit`. */
-  sweep(unit: FunctionUnit, factStore: FactStore, ctx: PassCtx): boolean;
+  sweep(unit: FunctionUnit, factStore: FactStore, ctx: AnalysisCtx): boolean;
 }

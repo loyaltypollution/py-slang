@@ -92,9 +92,17 @@ export enum OpCodes {
    *  SVMLKindBits mask (Int32). Peeks top of stack and throws
    *  SpeculationViolation if the runtime kind isn't in the mask. */
   GUARD_KIND = 89,
+  /** Speculative truthiness guard for dead-branch elimination. arg1 = nodeId
+   *  (for blacklist on violation). arg2 = expected truthiness (0 = falsy,
+   *  1 = truthy). POPs the top value, computes Python truthiness, throws
+   *  SpeculationViolation if it disagrees with arg2. The compiler emits this
+   *  in place of `BRF/BR + alt arm` when the speculative const analysis proves
+   *  the if-condition is statically constant — the dead arm is then never
+   *  emitted into IR at all, which is the big-DCE lever. */
+  GUARD_TRUTHY = 90,
 }
 
-export const OPCODE_MAX = 89;
+export const OPCODE_MAX = 90;
 
 /** Bitmask over SVMLType used by GUARD_KIND. Bits are independent so an
  *  observation lattice that admits multiple kinds (e.g. NUMBER ∪ BOOLEAN
@@ -182,7 +190,8 @@ export function getInstructionSize(opcode: OpCodes): number {
       return 9;
 
     case OpCodes.GUARD_KIND:
-      return 9; // 1 (opcode) + 4 (nodeId Int32) + 4 (mask Int32)
+    case OpCodes.GUARD_TRUTHY:
+      return 9; // 1 (opcode) + 4 (nodeId Int32) + 4 (arg2 Int32)
 
     default:
       return 1;

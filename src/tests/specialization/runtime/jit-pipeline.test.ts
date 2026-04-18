@@ -1,5 +1,5 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
-import { makeJitPass } from "../../../engines/svml/jit-pass";
+import { makeJitAnalysis } from "../../../engines/svml/jit-analysis";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import { SVMLIR } from "../../../engines/svml/types";
@@ -9,15 +9,15 @@ import { MEMOIZATION_THRESHOLD } from "../../../specialization/transforms/memoiz
 import {
   RUNTIME_CALL_COUNT_SAT,
   observeRuntimeWrite,
-  runtimeCallPass,
-} from "../../../specialization/framework/runtime-passes";
-import { constAnalysisPass, typeAnalysisPass } from "../../../specialization/framework/dfa-passes";
-import { purityScopePass } from "../../../specialization/purity-analysis/analysis";
+  runtimeCallAnalysis,
+} from "../../../specialization/framework/runtime-analyses";
+import { constAnalysis, typeAnalysis } from "../../../specialization/framework/dfa-analyses";
+import { purityScopeAnalysis } from "../../../specialization/purity-analysis/analysis";
 import { CONST_TOP } from "../../../specialization/const-analysis/lattice";
 import { TOP as TYPE_TOP } from "../../../specialization/type-analysis/lattice";
 import { MutableEnv } from "../../../specialization/framework/mutable-env";
 import type { FunctionUnit } from "../../../specialization/framework/function-unit";
-import type { Pass, PassCtx } from "../../../specialization/framework/pass";
+import type { Analysis, AnalysisCtx } from "../../../specialization/framework/analysis";
 import { makeDfaQuery } from "../../../specialization";
 import { buildTestWorklist } from "../../utils";
 
@@ -36,8 +36,8 @@ function buildUnit(code: string) {
   return { ast, environments, reactive, compiler, program: compiler.compileProgram(ast) };
 }
 
-// ── (1) Saturation: runtimeCallPass caps at SAT and suppresses consumer rerun ──
-describe("runtimeCallPass saturation", () => {
+// ── (1) Saturation: runtimeCallAnalysis caps at SAT and suppresses consumer rerun ──
+describe("runtimeCallAnalysis saturation", () => {
   function setup() {
     const { ast, reactive } = buildUnit(`
 def f():
@@ -51,7 +51,7 @@ f()
   test("consumer wakeups capped at MEMOIZATION_THRESHOLD + 1", () => {
     const { worklist, fDef } = setup();
     let transferRuns = 0;
-    const observer: Pass<number, number> = {
+    const observer: Analysis<number, number> = {
       id: Symbol("observer"),
       debugName: "observer",
       lattice: {
@@ -59,17 +59,17 @@ f()
         leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
       },
-      edges: [{ on: "fact", pass: runtimeCallPass, wake: (_c, k) => [k as number] }],
+      edges: [{ on: "fact", analysis: runtimeCallAnalysis, wake: (_c, k) => [k as number] }],
       tier: "analysis",
       transfer(factStore, _ctx, key) {
         transferRuns++;
-        return factStore.read(runtimeCallPass, key) ?? 0;
+        return factStore.read(runtimeCallAnalysis, key) ?? 0;
       },
     };
     worklist.register(observer);
 
     for (let i = 1; i <= MEMOIZATION_THRESHOLD * 5; i++) {
-      worklist.observe(runtimeCallPass, fDef.id, i);
+      worklist.observe(runtimeCallAnalysis, fDef.id, i);
     }
     expect(transferRuns).toBeGreaterThan(0);
     expect(transferRuns).toBeLessThanOrEqual(MEMOIZATION_THRESHOLD + 1);
@@ -78,32 +78,32 @@ f()
   test("jit-style transfer fires exactly once at saturation", () => {
     const { worklist, unit, fDef } = setup();
     let patchCalls = 0;
-    const jitPass: Pass<FunctionUnit, number> = {
-      id: Symbol("test-jitPass"),
-      debugName: "test-jitPass",
+    const jitAnalysis: Analysis<FunctionUnit, number> = {
+      id: Symbol("test-jitAnalysis"),
+      debugName: "test-jitAnalysis",
       lattice: {
         bottom: 0,
         leq: (a, b) => a <= b,
         join: (a, b) => Math.max(a, b),
       },
-      edges: [{ on: "fact", pass: runtimeCallPass, wake: () => [unit] }],
+      edges: [{ on: "fact", analysis: runtimeCallAnalysis, wake: () => [unit] }],
       tier: "analysis",
       transfer(factStore, _ctx, u) {
-        const c = factStore.read(runtimeCallPass, fDef.id) ?? 0;
+        const c = factStore.read(runtimeCallAnalysis, fDef.id) ?? 0;
         if (c <= MEMOIZATION_THRESHOLD) return undefined;
-        const prev = factStore.read(jitPass, u);
+        const prev = factStore.read(jitAnalysis, u);
         if (prev === 1) return undefined;
         patchCalls++;
         return 1;
       },
     };
-    worklist.register(jitPass);
-    worklist.enqueue(jitPass, unit);
+    worklist.register(jitAnalysis);
+    worklist.enqueue(jitAnalysis, unit);
     worklist.drain();
     expect(patchCalls).toBe(0);
 
     for (let i = 1; i <= MEMOIZATION_THRESHOLD * 3; i++) {
-      worklist.observe(runtimeCallPass, fDef.id, i);
+      worklist.observe(runtimeCallAnalysis, fDef.id, i);
     }
     expect(patchCalls).toBe(1);
   });
@@ -136,7 +136,7 @@ g()
     patchSpy.mockRestore();
   });
 
-  test("registered jitPass only patches FunctionDef scopes (never FileInput)", async () => {
+  test("registered jitAnalysis only patches FunctionDef scopes (never FileInput)", async () => {
     const { ast, reactive, compiler, program } = buildUnit(`
 def g():
     return 1
@@ -146,22 +146,22 @@ g()
     const gDef = ast.statements[0] as StmtNS.FunctionDef;
     const patchSpy = jest.spyOn(interpreter, "patchFunction");
 
-    const jitPass: Pass<FunctionUnit, "fired" | undefined> = {
-      id: Symbol("test-jitPass"),
-      debugName: "test-jitPass",
+    const jitAnalysis: Analysis<FunctionUnit, "fired" | undefined> = {
+      id: Symbol("test-jitAnalysis"),
+      debugName: "test-jitAnalysis",
       lattice: {
         bottom: undefined,
         leq: (a, b) => a === undefined || a === b,
         join: (a, b) => a ?? b,
       },
       edges: [
-        { on: "fact", pass: runtimeCallPass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
-        { on: "fact", pass: purityScopePass, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
+        { on: "fact", analysis: runtimeCallAnalysis, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
+        { on: "fact", analysis: purityScopeAnalysis, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
         { on: "mint", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },
         { on: "rebuild", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },
       ],
       tier: "analysis",
-      transfer(_fs, _ctx: PassCtx, unit: FunctionUnit) {
+      transfer(_fs, _ctx: AnalysisCtx, unit: FunctionUnit) {
         const scope = unit.funcAst;
         if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
         const index = compiler.indexOf(scope);
@@ -170,7 +170,7 @@ g()
         return "fired";
       },
     };
-    reactive.register(jitPass);
+    reactive.register(jitAnalysis);
     await interpreter.execute();
     reactive.drain();
 
@@ -218,7 +218,7 @@ describe("program replacement", () => {
 });
 
 // ── (4) Memo invalidation: fact changes inside a unit force recompile ────────
-describe("jitPass CompileInputs memo invalidation", () => {
+describe("jitAnalysis CompileInputs memo invalidation", () => {
   function makeStubIR(tag: number): SVMLIR {
     return new SVMLIR(
       new Int32Array([tag]),
@@ -251,14 +251,14 @@ f(1)
     };
     const interpreter = { patchFunction: () => {} };
 
-    const jitPass = makeJitPass({
+    const jitAnalysis = makeJitAnalysis({
       compiler: compiler as never,
       interpreter: interpreter as never,
     });
-    reactive.register(jitPass);
+    reactive.register(jitAnalysis);
 
     const enqueue = () => {
-      reactive.enqueue(jitPass, unit);
+      reactive.enqueue(jitAnalysis, unit);
       reactive.drain();
     };
     return {
@@ -280,7 +280,7 @@ f(1)
     expect(baseline).toBeGreaterThanOrEqual(1);
 
     // Observing a runtime write at a unit-internal expression advances the
-    // DFA pass's fact for the containing block. jitPass's CompileSnapshot
+    // DFA analysis's fact for the containing block. jitAnalysis's CompileSnapshot
     // does a reference-identity compare via `tryRead`, and FactStore.write
     // replaces the stored reference on any lattice-advancing write — so the
     // snapshot mismatches and the unit recompiles.
@@ -290,33 +290,33 @@ f(1)
     const literal = binary.right as ExprNS.Literal; // `1` — statically const(1), INT_POS
     // A string observation at the literal widens its const fact
     // from const(1) → TOP and type fact from INT_POS → join with STRING,
-    // advancing the DFA block fact and forcing a jitPass recompile.
+    // advancing the DFA block fact and forcing a jitAnalysis recompile.
     observeRuntimeWrite(worklist, literal.id, "force-change");
 
     expect(counters.compiles).toBeGreaterThan(baseline);
   });
 
-  // Direct per-pass wake-up: bypasses the shared runtimeWritePass upstream so
-  // each analysis pass's reader edge is exercised independently. A regression
-  // that broke jitPass's wake on only one of the two analyses would be caught
+  // Direct per-analysis wake-up: bypasses the shared runtimeWriteAnalysis upstream so
+  // each analysis analysis's reader edge is exercised independently. A regression
+  // that broke jitAnalysis's wake on only one of the two analyses would be caught
   // here even though the `runtime-observation` test above still fires both.
   test.each([
-    { name: "typeAnalysisPass", pass: typeAnalysisPass, top: TYPE_TOP },
-    { name: "constAnalysisPass", pass: constAnalysisPass, top: CONST_TOP },
-  ])("$name change forces recompile", ({ pass, top }) => {
+    { name: "typeAnalysis", analysis: typeAnalysis, top: TYPE_TOP },
+    { name: "constAnalysis", analysis: constAnalysis, top: CONST_TOP },
+  ])("$name change forces recompile", ({ analysis, top }) => {
     const { worklist, unit, enqueue, counters } = setup();
     enqueue();
     const baseline = counters.compiles;
 
     // Write a synthesized block fact that strictly advances outEnv by
     // populating a fresh slot. Equality on the block lattice flags the
-    // change, jitPass wakes via its `reads` on this pass, analysisGen bumps
+    // change, jitAnalysis wakes via its `reads` on this analysis, analysisGen bumps
     // and the memo invalidates for the owning unit.
     const block = unit.cfg.entry;
     const outEnv = new MutableEnv<unknown>();
     outEnv.set(9999, top);
     worklist.observe(
-      pass as unknown as Pass<unknown, unknown>,
+      analysis as unknown as Analysis<unknown, unknown>,
       block,
       { outEnv, exprFacts: new Map() } as never,
     );
@@ -347,7 +347,7 @@ f(1)
     expect(baseline).toBeGreaterThanOrEqual(1);
 
     const block = unit.cfg.entry;
-    const currentConst = worklist.factStore.tryRead(constAnalysisPass, block);
+    const currentConst = worklist.factStore.tryRead(constAnalysis, block);
     expect(currentConst).toBeDefined();
 
     // Re-observe the exact same fact value. FactStore.write joins with
@@ -356,7 +356,7 @@ f(1)
     // to prove that, even if a transfer did fire, the snapshot still
     // matches by reference.
     worklist.observe(
-      constAnalysisPass as unknown as Pass<unknown, unknown>,
+      constAnalysis as unknown as Analysis<unknown, unknown>,
       block,
       currentConst as never,
     );

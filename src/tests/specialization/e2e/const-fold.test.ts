@@ -2,7 +2,7 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import OpCodes from "../../../engines/svml/opcodes";
-import { constAnalysisPass } from "../../../specialization/framework/dfa-passes";
+import { constAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import { buildTestWorklist } from "../../utils";
 import { runSpecCase } from "../../harness/spec-e2e";
@@ -72,7 +72,7 @@ describe("const fold: factStore carries constVal", () => {
     const assign = ast.statements[0] as StmtNS.Assign;
     const cv = readExprFact(
       reactive.factStore,
-      constAnalysisPass,
+      constAnalysis,
       reactive.blockOfNode(assign.value.id),
       assign.value.id,
     );
@@ -85,7 +85,7 @@ describe("const fold: factStore carries constVal", () => {
     const assign = ast.statements[1] as StmtNS.Assign;
     const cv = readExprFact(
       reactive.factStore,
-      constAnalysisPass,
+      constAnalysis,
       reactive.blockOfNode(assign.value.id),
       assign.value.id,
     );
@@ -104,7 +104,7 @@ describe("const fold: factStore carries constVal", () => {
     } else {
       const cv = readExprFact(
         reactive.factStore,
-        constAnalysisPass,
+        constAnalysis,
         reactive.blockOfNode(rhs.id),
         rhs.id,
       );

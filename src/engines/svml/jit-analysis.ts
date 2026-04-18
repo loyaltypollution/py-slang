@@ -1,4 +1,4 @@
-// JIT recompile-and-patch pass. Reads compile-relevant fact-store signals
+// JIT recompile-and-patch analysis. Reads compile-relevant fact-store signals
 // (structural + DFA block facts) and, on lattice-change, recompiles the
 // affected FunctionDef and patches its entry in the interpreter's function
 // table. Side-effect idempotence: patchFunction only fires when the
@@ -8,7 +8,7 @@
 // callCount / purity are deliberately NOT tuple inputs: compileFunction does
 // not read them. Their effect on the emitted IR is indirect — memoizationRule
 // reads them and, on fire, wraps the body. That wrap is a structural edit
-// which propagates to jitPass via the worklist's `onUnitRebuilt` hook.
+// which propagates to jitAnalysis via the worklist's `onUnitRebuilt` hook.
 // Including them directly would force a recompile on every observed call (up
 // to RUNTIME_CALL_COUNT_SAT) for a function whose IR does not change, which
 // dominated runtime on tight hot loops.
@@ -17,14 +17,14 @@ import { StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../../specialization/framework/cfg";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import type { FactStore } from "../../specialization/framework/fact-store";
-import type { Pass, PassCtx } from "../../specialization/framework/pass";
+import type { Analysis, AnalysisCtx } from "../../specialization/framework/analysis";
 import {
-  constAnalysisPass,
-  speculativeConstAnalysisPass,
-  speculativeTypeAnalysisPass,
-  typeAnalysisPass,
-} from "../../specialization/framework/dfa-passes";
-import { speculationBlacklistPass } from "../../specialization/framework/runtime-passes";
+  constAnalysis,
+  speculativeConstAnalysis,
+  speculativeTypeAnalysis,
+  typeAnalysis,
+} from "../../specialization/framework/dfa-analyses";
+import { speculationBlacklistAnalysis } from "../../specialization/framework/runtime-analyses";
 import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
 import { SVMLIR } from "./types";
@@ -53,7 +53,7 @@ export interface JitPassDeps {
   readonly interpreter: SVMLInterpreter;
 }
 
-function blockToOwningUnit(_ctx: PassCtx, key: unknown): Iterable<FunctionUnit> {
+function blockToOwningUnit(_ctx: AnalysisCtx, key: unknown): Iterable<FunctionUnit> {
   const block = key as BasicBlock;
   const unit = block.unit;
   if (unit === undefined) return [];
@@ -71,32 +71,32 @@ const UNCOMPILED: SVMLIR = new SVMLIR(
   0,
 );
 
-export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
+export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLIR> {
   const { compiler, interpreter } = deps;
 
   const lastSnapshot = new WeakMap<FunctionUnit, CompileSnapshot>();
 
-  const jitPass: Pass<FunctionUnit, SVMLIR> = {
-    id: Symbol("jitPass"),
-    debugName: "jitPass",
+  const jitAnalysis: Analysis<FunctionUnit, SVMLIR> = {
+    id: Symbol("jitAnalysis"),
+    debugName: "jitAnalysis",
     lattice: {
       bottom: UNCOMPILED,
       leq: structuralEquals,
       join: (_a, b) => b,
     },
     edges: [
-      // Block-keyed DFA pass: a fact-advancing change on a block invalidates
+      // Block-keyed DFA analysis: a fact-advancing change on a block invalidates
       // the memo of the owning unit. `transfer` decides whether the change
       // materially differs from the last compile via reference-identity
       // compare against `lastSnapshot`.
-      { on: "fact", pass: typeAnalysisPass, wake: blockToOwningUnit },
-      { on: "fact", pass: constAnalysisPass, wake: blockToOwningUnit },
-      { on: "fact", pass: speculativeTypeAnalysisPass, wake: blockToOwningUnit },
-      { on: "fact", pass: speculativeConstAnalysisPass, wake: blockToOwningUnit },
+      { on: "fact", analysis: typeAnalysis, wake: blockToOwningUnit },
+      { on: "fact", analysis: constAnalysis, wake: blockToOwningUnit },
+      { on: "fact", analysis: speculativeTypeAnalysis, wake: blockToOwningUnit },
+      { on: "fact", analysis: speculativeConstAnalysis, wake: blockToOwningUnit },
       // Blacklist update at nodeId N → recompile the unit owning N.
       {
         on: "fact",
-        pass: speculationBlacklistPass,
+        analysis: speculationBlacklistAnalysis,
         wake: (ctx, key) => {
           const unit = ctx.unitForNode(key as number);
           if (unit === undefined) return [];
@@ -116,12 +116,12 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
       {
         on: "retire",
         effect: (factStore, _ctx, unit) => {
-          factStore.evict(jitPass, unit);
+          factStore.evict(jitAnalysis, unit);
         },
       },
     ],
     tier: "analysis",
-    transfer(factStore: FactStore, _ctx: PassCtx, unit: FunctionUnit): SVMLIR | undefined {
+    transfer(factStore: FactStore, _ctx: AnalysisCtx, unit: FunctionUnit): SVMLIR | undefined {
       const scope = unit.funcAst;
       if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
       const index = compiler.indexOf(scope);
@@ -138,13 +138,13 @@ export function makeJitPass(deps: JitPassDeps): Pass<FunctionUnit, SVMLIR> {
 
       const newCode = compiler.compileFunction(unit);
       lastSnapshot.set(unit, captureSnapshot(factStore, unit));
-      const prevIR = factStore.read(jitPass, unit);
+      const prevIR = factStore.read(jitAnalysis, unit);
       if (structuralEquals(newCode, prevIR)) return undefined;
       interpreter.patchFunction(index, newCode);
       return newCode;
     },
   };
-  return jitPass;
+  return jitAnalysis;
 }
 
 /** Reference-identity compare of every block's DFA facts against the snapshot.
@@ -158,15 +158,15 @@ function snapshotMatches(
   prev: CompileSnapshot,
 ): boolean {
   for (const block of unit.blockMap.values()) {
-    if (factStore.tryRead(constAnalysisPass, block) !== prev.constFacts.get(block)) return false;
-    if (factStore.tryRead(typeAnalysisPass, block) !== prev.typeFacts.get(block)) return false;
-    if (factStore.tryRead(speculativeTypeAnalysisPass, block) !== prev.speculativeTypeFacts.get(block)) return false;
-    if (factStore.tryRead(speculativeConstAnalysisPass, block) !== prev.speculativeConstFacts.get(block)) return false;
+    if (factStore.tryRead(constAnalysis, block) !== prev.constFacts.get(block)) return false;
+    if (factStore.tryRead(typeAnalysis, block) !== prev.typeFacts.get(block)) return false;
+    if (factStore.tryRead(speculativeTypeAnalysis, block) !== prev.speculativeTypeFacts.get(block)) return false;
+    if (factStore.tryRead(speculativeConstAnalysis, block) !== prev.speculativeConstFacts.get(block)) return false;
   }
   // Blacklist: any nodeId in the unit that's now blacklisted but wasn't at
   // the snapshot, or vice versa, invalidates the cache.
   for (const nodeId of unit.blockOfNode.keys()) {
-    const now = factStore.tryRead(speculationBlacklistPass, nodeId) === true;
+    const now = factStore.tryRead(speculationBlacklistAnalysis, nodeId) === true;
     const then = prev.blacklistedNodes.has(nodeId);
     if (now !== then) return false;
   }
@@ -180,13 +180,13 @@ function captureSnapshot(factStore: FactStore, unit: FunctionUnit): CompileSnaps
   const speculativeConstFacts = new Map<BasicBlock, unknown>();
   const blacklistedNodes = new Set<number>();
   for (const block of unit.blockMap.values()) {
-    constFacts.set(block, factStore.tryRead(constAnalysisPass, block));
-    typeFacts.set(block, factStore.tryRead(typeAnalysisPass, block));
-    speculativeTypeFacts.set(block, factStore.tryRead(speculativeTypeAnalysisPass, block));
-    speculativeConstFacts.set(block, factStore.tryRead(speculativeConstAnalysisPass, block));
+    constFacts.set(block, factStore.tryRead(constAnalysis, block));
+    typeFacts.set(block, factStore.tryRead(typeAnalysis, block));
+    speculativeTypeFacts.set(block, factStore.tryRead(speculativeTypeAnalysis, block));
+    speculativeConstFacts.set(block, factStore.tryRead(speculativeConstAnalysis, block));
   }
   for (const nodeId of unit.blockOfNode.keys()) {
-    if (factStore.tryRead(speculationBlacklistPass, nodeId) === true) {
+    if (factStore.tryRead(speculationBlacklistAnalysis, nodeId) === true) {
       blacklistedNodes.add(nodeId);
     }
   }

@@ -2,7 +2,7 @@
 //
 // Edges are first-class values: a `CFGEdge` carries `from`, `to`, a `kind`
 // discriminant, and (for branch edges) the `condition` expression whose
-// truth value the edge reflects. Analysis passes that implement
+// truth value the edge reflects. Analysis analyses that implement
 // `refineOnEdge` read `condition` to narrow the env at merge sites.
 //
 // Iterate `block.successorEdges` / `block.predecessorEdges` to traverse.
@@ -70,7 +70,7 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
     return block;
   }
 
-  /** Create a labeled edge between two blocks. Callers pass the edge `kind`
+  /** Create a labeled edge between two blocks. Callers supply the edge `kind`
    *  and (when the kind demands it) the `condition` expression. */
   function linkBlocks(
     from: BasicBlock,
@@ -161,7 +161,7 @@ export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
 
           // `for` has no narrowable predicate; branch edges carry the
           // iterable expression as the "condition" purely as a placeholder.
-          // Passes that implement `refineOnEdge` should ignore non-Compare
+          // Analyses that implement `refineOnEdge` should ignore non-Compare
           // conditions.
           const loopBody = makeBlock();
           linkBlocks(header, loopBody, "branch-true", forStmt.iter);

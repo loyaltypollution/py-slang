@@ -1,4 +1,4 @@
-import type { BoundedLattice, Lattice } from "./pass";
+import type { BoundedLattice, Lattice } from "./analysis";
 
 /** Per-function slot → L env. Slot numbering matches SVMLCompiler. */
 export class MutableEnv<L> {
@@ -6,7 +6,7 @@ export class MutableEnv<L> {
   /** Once frozen, every mutator throws. Used by DFA factories that publish a
    *  shared ⊥ singleton: callers must `snapshot()` before any mutation.
    *  Forgetting the snapshot used to silently corrupt every unwritten read
-   *  through the pass's bottom fact; now it throws at the first offending
+   *  through the analysis's bottom fact; now it throws at the first offending
    *  write. Frozen flag is copied-false by `snapshot` — the copy is a private,
    *  mutable working env for the caller. */
   private frozen = false;
@@ -22,6 +22,22 @@ export class MutableEnv<L> {
   set(slot: number, val: L): void {
     this.assertMutable();
     this.slots[slot] = val;
+  }
+
+  /** Remove a slot binding. Present for analyses (liveness) whose "bottom"
+   *  is represented by absence rather than a sentinel value — a kill-then-gen
+   *  cycle in the transfer needs to distinguish "never written here" from
+   *  "written with bottom." */
+  clear(slot: number): void {
+    this.assertMutable();
+    this.slots[slot] = undefined;
+  }
+
+  /** Iterate slot ids whose bindings are defined (non-undefined). */
+  *definedSlots(): IterableIterator<number> {
+    for (let i = 0; i < this.slots.length; i++) {
+      if (this.slots[i] !== undefined) yield i;
+    }
   }
 
   snapshot(): MutableEnv<L> {
@@ -78,7 +94,7 @@ export class MutableEnv<L> {
 
   /** Pointwise `this ⊑ other` under `lattice.leq`. Missing slots are ⊥, so
    *  `undefined` on the left is trivially ≤ anything, and on the right only
-   *  if the left is also `undefined`. Callers must pass the same lattice
+   *  if the left is also `undefined`. Callers must supply the same lattice
    *  they use for `join`/`meet` — inconsistent lattices would make the order
    *  disagree with the join-induced one. */
   leq(other: MutableEnv<L>, lattice: Lattice<L>): boolean {

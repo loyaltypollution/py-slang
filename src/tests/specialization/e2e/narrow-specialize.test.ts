@@ -5,7 +5,7 @@ import { StmtNS } from "../../../ast-types";
 import OpCodes from "../../../engines/svml/opcodes";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import { typeAnalysisPass } from "../../../specialization/framework/dfa-passes";
+import { typeAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT, IntRef } from "../../../specialization/type-analysis/lattice";
 import { compileOptimized } from "../../harness/compile-pipelines";
@@ -40,7 +40,7 @@ def f(x):
     const xNode = bin.left; // Variable x
     const t = readExprFact(
       reactive.factStore,
-      typeAnalysisPass,
+      typeAnalysis,
       reactive.blockOfNode(xNode.id),
       xNode.id,
     );
