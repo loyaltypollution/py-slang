@@ -84,42 +84,6 @@ export function widenWriteObservation(
   observer.observe(runtimeWriteAnalysis, nodeId, RAW_TOP);
 }
 
-/** Per-nodeId boolean: `true` means "the speculative analysis produced a fact at
- *  this node that drove a guard which fired at runtime; do not speculate here
- *  again." Monotone (false → true). The compiler reads it via
- *  `DfaQuery.isSpeculationBlacklisted` and falls back to generic opcodes
- *  when set, regardless of how narrowed the speculative analysis's fact looks.
- *
- *  Why a blacklist instead of widening the source observation: the slot whose
- *  narrowing drove the guard may have been narrowed by an observation at a
- *  DIFFERENT AST node (e.g. the RHS of an earlier assignment that flowed into
- *  this read's slot). We don't track that lineage, so we can't reliably widen
- *  the upstream observation. Blacklisting the guard's nodeId is coarse but
- *  sufficient: the compiler skips speculation at that exact site, falling back
- *  to the generic opcode that handles all kinds. */
-export const speculationBlacklistAnalysis: Analysis<number, boolean> = {
-  id: Symbol("speculationBlacklistAnalysis"),
-  debugName: "speculationBlacklistAnalysis",
-  lattice: {
-    bottom: false,
-    leq: (a, b) => !a || b, // false ≤ true; true only ≤ true
-    join: (a, b) => a || b,
-  },
-  edges: [],
-  tier: "runtime",
-  transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): boolean | undefined {
-    return undefined;
-  },
-};
-
-/** Mark `nodeId` as no-longer-speculatable. Idempotent. */
-export function blacklistSpeculation(
-  observer: { observe: (p: Analysis<number, boolean>, k: number, v: boolean) => void },
-  nodeId: number,
-): void {
-  observer.observe(speculationBlacklistAnalysis, nodeId, true);
-}
-
 /** Saturating call-count lattice: `bottom=0`, join clamped at
  *  `RUNTIME_CALL_COUNT_SAT`. `leq` clamps both sides so it agrees with the
  *  join-induced order — `leq(12, 11)` = `min(11,12) <= min(11,11)` = true.

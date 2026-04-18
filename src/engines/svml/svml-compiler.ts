@@ -127,7 +127,6 @@ export class SVMLCompiler
 
   private isSpeculativelyNumeric(node: ExprNS.Expr): boolean {
     if (!this.speculationAllowed()) return false;
-    if (this.dfaQuery?.isSpeculationBlacklisted(node.id)) return false;
     const k = this.getSpeculativeType(node)?.kinds;
     return k !== undefined && k !== 0 && (k & ~SVMLCompiler.NUMERIC_KIND_MASK) === 0;
   }
@@ -151,16 +150,20 @@ export class SVMLCompiler
   private constGuardedSlots = new Map<string, number>();
 
   /** If the speculative const analysis has pinned `cond` to a concrete value AND
-   *  speculation is allowed in this scope AND the node isn't blacklisted,
-   *  return the truthiness; otherwise `undefined`. The compiler uses this in
-   *  `visitIfStmt` to drop a dead arm at the IR level — the big DCE lever
-   *  the JIT has over AOT, since the static const analysis cannot prove a
-   *  parameter or cross-scope value constant without interprocedural
-   *  inference. Static const is checked first so already-folded conditions
-   *  return `undefined` here (visitIfStmt's static-fold path handles those). */
+   *  speculation is allowed in this scope, return the truthiness; otherwise
+   *  `undefined`. The compiler uses this in `visitIfStmt` to drop a dead arm
+   *  at the IR level — the big DCE lever the JIT has over AOT, since the
+   *  static const analysis cannot prove a parameter or cross-scope value
+   *  constant without interprocedural inference. Static const is checked
+   *  first so already-folded conditions return `undefined` here (visitIfStmt's
+   *  static-fold path handles those).
+   *
+   *  Post-deopt soundness: when a guard fires, `Worklist.widenUnitSpeculation`
+   *  retracts the unit's spec context to ROOT, so `speculativeConstOf` on the
+   *  next compile returns the non-narrowed fact and this returns `undefined`.
+   *  No separate blacklist gate required. */
   private speculativeConditionTruth(cond: ExprNS.Expr): boolean | undefined {
     if (!this.speculationAllowed()) return undefined;
-    if (this.dfaQuery?.isSpeculationBlacklisted(cond.id)) return undefined;
     // Skip if the static const analysis already proves it — no guard needed.
     const staticConst = this.getConst(cond);
     if (staticConst !== undefined && staticConst.tag === "const") return undefined;
@@ -811,7 +814,10 @@ export class SVMLCompiler
     // condition's value, emit `cond + GUARD_TRUTHY + only-the-taken-arm`.
     // The dead arm produces zero opcodes — the IR-level DCE that AOT cannot
     // replicate without interprocedural value inference. Deopt restores the
-    // generic shape via blacklist on next compile.
+    // generic shape by context pruning (see Worklist.widenUnitSpeculation):
+    // the retracted spec context makes speculativeConstOf return the
+    // unpinned fact on the next compile, so this branch of visitIfStmt
+    // falls through to the generic cond/branch emission below.
     const specTruth = this.speculativeConditionTruth(stmt.condition);
     if (specTruth !== undefined) {
       const testResult = this.compile(stmt.condition);

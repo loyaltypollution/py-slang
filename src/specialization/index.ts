@@ -9,5 +9,4 @@ export { Worklist, makeDfaQuery, type DfaQuery, type StaticDfaQuery } from "./fr
 export {
   makeJitObservers,
   widenWriteObservation,
-  blacklistSpeculation,
 } from "./framework/runtime-analyses";

@@ -19,7 +19,7 @@ import {
 import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type TransformRule, type LifecycleEdge } from "./analysis";
 import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Context } from "./context";
 import { immediateStrategy, type SpeculationStrategy } from "./speculation-strategy";
-import { runtimeCallAnalysis, runtimeWriteAnalysis, speculationBlacklistAnalysis } from "./runtime-analyses";
+import { runtimeCallAnalysis, runtimeWriteAnalysis } from "./runtime-analyses";
 import { purityBlockAnalysis, purityScopeAnalysis } from "../purity-analysis/analysis";
 import { algebraicSimplifyRule } from "../transforms/algebraic-simplify";
 import { constantFoldingRule } from "../transforms/constant-folding";
@@ -57,17 +57,19 @@ export interface StaticDfaQuery {
 /** Full DfaQuery extends `StaticDfaQuery` with speculation readers — intended
  *  for backend emission (svml-compiler, jit-analysis) where a runtime guard
  *  protects against violation of the narrowed fact. NOT sound for AST
- *  mutation; transforms should be typed against `StaticDfaQuery` only. */
+ *  mutation; transforms should be typed against `StaticDfaQuery` only.
+ *
+ *  Guard violations retract speculation by pruning the unit's active spec
+ *  context (see `Worklist.widenUnitSpeculation`). Once pruned, the same
+ *  `speculative{Type,Const}Of` calls return the non-narrowed ROOT facts,
+ *  and the compiler naturally falls back to generic opcodes — no separate
+ *  blacklist gate. */
 export interface DfaQuery extends StaticDfaQuery {
   /** Speculatively-narrowed type fact (observation `meet`'d with static).
    *  Consumers MUST emit a runtime guard at any specialization decision
    *  that depends on a tighter answer than `typeOf` would give. */
   speculativeTypeOf(nodeId: number): TypeLattice | undefined;
   speculativeConstOf(nodeId: number): ConstLattice | undefined;
-  /** True iff a prior guard at this nodeId fired and the deopt handler
-   *  blacklisted further speculation. The compiler must use the generic
-   *  opcode at this site even if speculative facts still appear narrowed. */
-  isSpeculationBlacklisted(nodeId: number): boolean;
 }
 
 export function makeDfaQuery(
@@ -89,8 +91,6 @@ export function makeDfaQuery(
     speculativeConstOf: id =>
       readExprFact(factStore, constAnalysis, blockFor(id), id, specContextForNode(id)),
     isPureScope: scopeId => factStore.tryRead(purityScopeAnalysis, scopeId),
-    isSpeculationBlacklisted: nodeId =>
-      factStore.tryRead(speculationBlacklistAnalysis, nodeId) === true,
   };
 }
 
@@ -140,14 +140,15 @@ export class Worklist {
   private readonly transforms: TransformRule[] = [];
   private readonly transformDirty = new Map<TransformRule, Set<FunctionUnit>>();
 
-  /** Per-unit active speculation context. Grows monotonically as
-   *  `runtimeWriteAnalysis` observations land (each adds one
-   *  `(typeExprHandle, nodeId, lifted)` assumption). `widenWriteObservation`
-   *  retracts by pruning any matching link. Unset or ROOT_CONTEXT means the
-   *  unit is currently emitting unspeculated IR. The tree structure is
-   *  sibling-capable by construction; deopt-driven pruning currently rewrites
-   *  in place — the full subtree-walk lands with `speculationBlacklistAnalysis`
-   *  retirement. */
+  /** Per-unit active speculation context. Grows as `runtimeWriteAnalysis`
+   *  observations land (each adds one `(typeExprHandle, nodeId, lifted)`
+   *  assumption). `widenWriteObservation` retracts per-observation;
+   *  `widenUnitSpeculation` collapses the chain to ROOT on guard violation
+   *  (coarser handle, used when the guard's consumer nodeId doesn't match
+   *  any observation site — lineage-precise pruning is deferred). Unset or
+   *  ROOT_CONTEXT means the unit is currently emitting unspeculated IR.
+   *  The tree structure is sibling-capable by construction; sibling
+   *  materialization and subtree pruning follow in a later step. */
   private readonly currentSpecContext: Map<FunctionUnit, Context> = new Map();
 
   /** Single fact-change dispatch index. Analyses and transforms both compile
@@ -553,6 +554,33 @@ export class Worklist {
     return unit === undefined ? ROOT_CONTEXT : this.specContextFor(unit);
   }
 
+  /** Retract ALL speculation for the unit owning `nodeIdOrUnit`. Used by the
+   *  deopt path: a guard violation indicates that SOME assumption in the
+   *  unit's chain was wrong, but the guard's consumer nodeId does not
+   *  generally match the observation site that drove the narrowing — without
+   *  explicit lineage tracking we can't prune just the offending link.
+   *  Collapsing the chain to ROOT is coarser than node-level blacklisting but
+   *  strictly sound: Kildall re-runs under ROOT produce the non-narrowed
+   *  facts, and the compiler emits generic opcodes on the next recompile.
+   *
+   *  Returns the unit that was widened, or `undefined` if no unit owns the
+   *  node or the unit already has no active speculation. Callers that also
+   *  need to trigger a unit-keyed analysis (e.g. `jitAnalysis`) should
+   *  `enqueue` that analysis explicitly on the returned unit — a pure
+   *  context reset produces no fact-advance and therefore wakes no
+   *  fact-edge subscribers. */
+  widenUnitSpeculation(nodeIdOrUnit: number | FunctionUnit): FunctionUnit | undefined {
+    const unit = typeof nodeIdOrUnit === "number"
+      ? this.nodeToUnit.get(nodeIdOrUnit)
+      : nodeIdOrUnit;
+    if (unit === undefined) return undefined;
+    if (!this.currentSpecContext.has(unit)) return undefined;
+    this.currentSpecContext.delete(unit);
+    this.enqueue(typeAnalysis, unit.cfg.entry, ROOT_CONTEXT);
+    this.enqueue(constAnalysis, unit.cfg.entry, ROOT_CONTEXT);
+    return unit;
+  }
+
   /** Rebuild CFG for every pending unit, then fire `onUnitRebuilt`. */
   private flushPendingRebuilds(): FunctionUnit[] {
     if (this.pendingRebuilds.size === 0) return [];
@@ -622,7 +650,6 @@ export class Worklist {
 export const DEFAULT_PASSES: ReadonlyArray<Analysis<any, any>> = [
   runtimeWriteAnalysis,
   runtimeCallAnalysis,
-  speculationBlacklistAnalysis,
   typeAnalysis,
   constAnalysis,
   purityBlockAnalysis,

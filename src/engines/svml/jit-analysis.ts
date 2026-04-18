@@ -23,7 +23,6 @@ import {
   constAnalysis,
   typeAnalysis,
 } from "../../specialization/framework/dfa-analyses";
-import { speculationBlacklistAnalysis } from "../../specialization/framework/runtime-analyses";
 import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
 import { SVMLIR } from "./types";
@@ -47,9 +46,6 @@ interface CompileSnapshot {
    *  `specContext` rather than from a parallel speculativeTypeAnalysis. */
   speculativeTypeFacts: Map<BasicBlock, unknown>;
   speculativeConstFacts: Map<BasicBlock, unknown>;
-  /** Per-nodeId blacklist snapshot. Deopt sets a node to true; on next
-   *  compile, the compiler reads the blacklist and falls back to generic. */
-  blacklistedNodes: Set<number>;
 }
 
 export interface JitPassDeps {
@@ -109,17 +105,6 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
       // request on the single IR cell per unit.
       { on: "fact", analysis: typeAnalysis, wake: blockToOwningUnit, contextPolicy: "root" },
       { on: "fact", analysis: constAnalysis, wake: blockToOwningUnit, contextPolicy: "root" },
-      // Blacklist update at nodeId N → recompile the unit owning N.
-      {
-        on: "fact",
-        analysis: speculationBlacklistAnalysis,
-        wake: (ctx, key) => {
-          const unit = ctx.unitForNode(key as number);
-          if (unit === undefined) return [];
-          return unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
-        },
-        contextPolicy: "root",
-      },
       {
         on: "mint",
         wake: (_ctx, unit) =>
@@ -189,13 +174,6 @@ function snapshotMatches(
     if (factStore.tryRead(typeAnalysis, block, specContext) !== prev.speculativeTypeFacts.get(block)) return false;
     if (factStore.tryRead(constAnalysis, block, specContext) !== prev.speculativeConstFacts.get(block)) return false;
   }
-  // Blacklist: any nodeId in the unit that's now blacklisted but wasn't at
-  // the snapshot, or vice versa, invalidates the cache.
-  for (const nodeId of unit.blockOfNode.keys()) {
-    const now = factStore.tryRead(speculationBlacklistAnalysis, nodeId) === true;
-    const then = prev.blacklistedNodes.has(nodeId);
-    if (now !== then) return false;
-  }
   return true;
 }
 
@@ -204,17 +182,11 @@ function captureSnapshot(factStore: FactStore, unit: FunctionUnit, specContext: 
   const typeFacts = new Map<BasicBlock, unknown>();
   const speculativeTypeFacts = new Map<BasicBlock, unknown>();
   const speculativeConstFacts = new Map<BasicBlock, unknown>();
-  const blacklistedNodes = new Set<number>();
   for (const block of unit.blockMap.values()) {
     constFacts.set(block, factStore.tryRead(constAnalysis, block));
     typeFacts.set(block, factStore.tryRead(typeAnalysis, block));
     speculativeTypeFacts.set(block, factStore.tryRead(typeAnalysis, block, specContext));
     speculativeConstFacts.set(block, factStore.tryRead(constAnalysis, block, specContext));
-  }
-  for (const nodeId of unit.blockOfNode.keys()) {
-    if (factStore.tryRead(speculationBlacklistAnalysis, nodeId) === true) {
-      blacklistedNodes.add(nodeId);
-    }
   }
   return {
     structuralGen: unit.generation,
@@ -223,7 +195,6 @@ function captureSnapshot(factStore: FactStore, unit: FunctionUnit, specContext: 
     typeFacts,
     speculativeTypeFacts,
     speculativeConstFacts,
-    blacklistedNodes,
   };
 }
 

@@ -19,9 +19,7 @@ import { typeAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import {
   runtimeWriteAnalysis,
-  speculationBlacklistAnalysis,
   widenWriteObservation,
-  blacklistSpeculation,
 } from "../../../specialization/framework/runtime-analyses";
 import { INT_BIT } from "../../../specialization/type-analysis/lattice";
 import { makeDfaQuery } from "../../../specialization";
@@ -193,9 +191,9 @@ def hot(x):
     expect(hasOpcode(program, OpCodes.GUARD_TRUTHY)).toBe(false);
   });
 
-  test("GUARD_TRUTHY mismatch → SpeculationViolation; blacklist drops the guard on recompile", () => {
+  test("GUARD_TRUTHY mismatch → SpeculationViolation; widen retracts speculation and drops the guard on recompile", () => {
     // Observation says mode=1 (truthy). Runtime call analyses mode=0 (falsy).
-    // Guard fires → blacklist node → recompile → no more GUARD_TRUTHY → both
+    // Guard fires → widen unit spec → recompile → no more GUARD_TRUTHY → both
     // arms restored.
     const { ast, environments, worklist } = build(`
 def hot(mode):
@@ -216,7 +214,12 @@ hot(0)
 
     const { compiler, program } = compile(ast, environments, worklist);
     const interpreter = new SVMLInterpreter(program, { sendOutput: () => {} });
-    worklist.register(makeJitAnalysis({ compiler, interpreter }));
+    const jitAnalysis = makeJitAnalysis({
+      compiler,
+      interpreter,
+      specContextFor: unit => worklist.specContextFor(unit),
+    });
+    worklist.register(jitAnalysis);
 
     expect(hasOpcode(program, OpCodes.GUARD_TRUTHY)).toBe(true);
 
@@ -229,7 +232,8 @@ hot(0)
     }
     expect(violation).toBeDefined();
 
-    blacklistSpeculation(worklist, violation!.nodeId);
+    const unit = worklist.widenUnitSpeculation(violation!.nodeId);
+    if (unit !== undefined) worklist.enqueue(jitAnalysis, unit);
     worklist.drain();
 
     const currentProgram = (interpreter as unknown as { program: typeof program }).program;

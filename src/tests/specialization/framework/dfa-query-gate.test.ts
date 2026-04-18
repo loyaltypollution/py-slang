@@ -36,7 +36,5 @@ describe("DfaQuery / StaticDfaQuery split", () => {
     restricted.speculativeTypeOf;
     // @ts-expect-error — speculativeConstOf is not on StaticDfaQuery
     restricted.speculativeConstOf;
-    // @ts-expect-error — isSpeculationBlacklisted is not on StaticDfaQuery
-    restricted.isSpeculationBlacklisted;
   });
 });

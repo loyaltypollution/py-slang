@@ -19,7 +19,6 @@ import {
   Worklist,
   makeJitObservers,
   makeDfaQuery,
-  blacklistSpeculation,
 } from "../specialization";
 
 const MAX_DEOPT_RETRIES = 32;
@@ -126,14 +125,15 @@ async function runSvml(
         if (flag.aborted) throw new AbortError();
       }),
     });
-    wl.register(makeJitAnalysis({
+    const jitAnalysis = makeJitAnalysis({
       compiler,
       interpreter: interp,
       specContextFor: unit => wl.specContextFor(unit),
-    }));
+    });
+    wl.register(jitAnalysis);
     wl.beginBatch();
     try {
-      c.sendResult(SVMLInterpreter.toJSValue(await runSvmlWithDeopt(interp, wl)));
+      c.sendResult(SVMLInterpreter.toJSValue(await runSvmlWithDeopt(interp, wl, jitAnalysis)));
     } finally {
       wl.endBatch();
     }
@@ -144,10 +144,11 @@ async function runSvml(
 
 /** See PySvmlJitEvaluator.runWithDeopt — same protocol, duplicated to keep
  *  the AbortError plumbing local to this file. Aborts (race-loser signal)
- *  propagate; SpeculationViolation triggers widen + recompile + retry. */
+ *  propagate; SpeculationViolation triggers context retract + recompile + retry. */
 async function runSvmlWithDeopt(
   interp: SVMLInterpreter,
   wl: Worklist,
+  jitAnalysis: Parameters<Worklist["enqueue"]>[0],
 ): Promise<Awaited<ReturnType<SVMLInterpreter["execute"]>>> {
   let attempts = 0;
   // eslint-disable-next-line no-constant-condition
@@ -162,7 +163,8 @@ async function runSvmlWithDeopt(
           `JIT deopt budget exhausted (${MAX_DEOPT_RETRIES}); last violation at node ${e.nodeId} (${e.witnessedKind})`,
         );
       }
-      blacklistSpeculation(wl, e.nodeId);
+      const unit = wl.widenUnitSpeculation(e.nodeId);
+      if (unit !== undefined) wl.enqueue(jitAnalysis, unit);
       wl.drain();
     }
   }
