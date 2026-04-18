@@ -18,6 +18,7 @@
 import type { Context } from "./context";
 import type { FunctionUnit } from "./function-unit";
 import type { RawKind } from "./raw-value";
+import type { EntryRequirement } from "../type-requirement-analysis/analysis";
 
 export interface ObservationEvent {
   readonly unit: FunctionUnit;
@@ -27,6 +28,16 @@ export interface ObservationEvent {
    *  Strategies that care about chain depth or existing assumptions read
    *  it through here rather than reaching into Worklist state. */
   readonly parentContext: Context;
+  /** Lazy accessor for the must-backward type-requirement fact at
+   *  `unit`'s entry block under `parentContext` — i.e. the requirement
+   *  AS OF the moment of observation, before any extension this event
+   *  might trigger. Strategies consult it as a stability signal:
+   *  requirements that already reach a parameter slot indicate the
+   *  speculation, if extended, would be invariant-preserving from that
+   *  slot onward; requirements that die on an internal assignment
+   *  indicate a narrower speculation scope. Computed on first call;
+   *  strategies that don't consult it pay no cost. */
+  requirementsAt(): EntryRequirement;
 }
 
 export interface SpeculationStrategy {
