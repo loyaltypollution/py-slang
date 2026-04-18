@@ -117,6 +117,7 @@ async function runSvml(
         nodeId => wl.specContextForNode(nodeId),
       ),
       wl.registry,
+      wl,
     );
     const program = compiler.compileProgram(ast);
     const interp = new SVMLInterpreter(program, {
@@ -163,7 +164,7 @@ async function runSvmlWithDeopt(
           `JIT deopt budget exhausted (${MAX_DEOPT_RETRIES}); last violation at node ${e.nodeId} (${e.witnessedKind})`,
         );
       }
-      const unit = wl.widenUnitSpeculation(e.nodeId);
+      const unit = wl.widenGuard(e.nodeId);
       if (unit !== undefined) wl.enqueue(jitAnalysis, unit);
       wl.drain();
     }

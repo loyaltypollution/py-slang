@@ -45,6 +45,7 @@ function compile(ast: StmtNS.FileInput, environments: ReturnType<typeof analyzeW
       nodeId => worklist.specContextForNode(nodeId),
     ),
     worklist.registry,
+    worklist,
   );
   return { compiler, program: compiler.compileProgram(ast) };
 }
@@ -241,6 +242,84 @@ hot(0)
     // Else arm restored: literal 999 reappears.
     const restoredArg1s = currentProgram.functions.flatMap(fn => Array.from(fn.arg1s));
     expect(restoredArg1s).toContain(999);
+  });
+
+  test("lineage-precise widen: sibling guard backed by an independent observation survives", () => {
+    // Two independent observations, each driving its own GUARD_TRUTHY in the
+    // same function. One guard fires at runtime; C5b's lineage-precise widen
+    // must prune only the observation that drove the fired guard — the
+    // sibling guard (protected by the untouched observation) must survive
+    // the recompile. Under C5a's whole-unit reset, BOTH guards would vanish.
+    const { ast, environments, worklist } = build(`
+def hot(a, b):
+    x = a
+    y = b
+    if x > 0:
+        r1 = 1
+    else:
+        r1 = 2
+    if y > 0:
+        r2 = 10
+    else:
+        r2 = 20
+    return r1 + r2
+
+hot(1, 0)
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const xAssign = fn.body[0] as StmtNS.Assign;
+    const yAssign = fn.body[1] as StmtNS.Assign;
+    const aRead = xAssign.value as ExprNS.Variable;
+    const bRead = yAssign.value as ExprNS.Variable;
+    const if1 = fn.body[2] as StmtNS.If;
+    const if2 = fn.body[3] as StmtNS.If;
+    const cond1Id = if1.condition.id;
+    const cond2Id = if2.condition.id;
+
+    // Pre-seed both parameters as truthy; hot(1, 0) will fire the y>0 guard.
+    worklist.observe(runtimeWriteAnalysis, aRead.id, { kind: "number", value: 1 });
+    worklist.observe(runtimeWriteAnalysis, bRead.id, { kind: "number", value: 1 });
+
+    const { compiler, program } = compile(ast, environments, worklist);
+    const interpreter = new SVMLInterpreter(program, { sendOutput: () => {} });
+    const jitAnalysis = makeJitAnalysis({
+      compiler,
+      interpreter,
+      specContextFor: unit => worklist.specContextFor(unit),
+    });
+    worklist.register(jitAnalysis);
+
+    const guardArgs = (p: typeof program): number[] => {
+      const ids: number[] = [];
+      for (const fn of p.functions) {
+        for (let i = 0; i < fn.count; i++) {
+          if (fn.opcodes[i] === OpCodes.GUARD_TRUTHY) ids.push(fn.arg1s[i]);
+        }
+      }
+      return ids;
+    };
+    // Both guards present initially.
+    expect(guardArgs(program).sort()).toEqual([cond1Id, cond2Id].sort());
+
+    let violation: SpeculationViolation | undefined;
+    try {
+      interpreter.execute();
+    } catch (e) {
+      if (!(e instanceof SpeculationViolation)) throw e;
+      violation = e;
+    }
+    expect(violation).toBeDefined();
+    expect(violation!.nodeId).toBe(cond2Id); // the y>0 guard fired
+
+    const unit = worklist.widenGuard(violation!.nodeId);
+    if (unit !== undefined) worklist.enqueue(jitAnalysis, unit);
+    worklist.drain();
+
+    const currentProgram = (interpreter as unknown as { program: typeof program }).program;
+    // Lineage-precise: cond1's GUARD_TRUTHY survives (backed by a's
+    // observation, which wasn't widened); cond2's is gone (b's observation
+    // was pruned).
+    expect(guardArgs(currentProgram)).toEqual([cond1Id]);
   });
 
   test("DCE ratio: dead arm with N statements drops ~N opcodes", () => {

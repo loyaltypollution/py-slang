@@ -3,7 +3,8 @@ import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { ConstLattice } from "../../specialization/const-analysis/lattice";
 import type { TypeLattice } from "../../specialization/type-analysis/lattice";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
-import type { DfaQuery } from "../../specialization/framework/worklist";
+import type { DfaQuery, GuardRegistrar } from "../../specialization/framework/worklist";
+import { constExprHandle } from "../../specialization/const-analysis/analysis";
 import { ScopeIndexMap } from "./scope-index-map";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
 import { Token } from "../../tokenizer";
@@ -54,6 +55,11 @@ export class SVMLCompiler
   private functionEnvironments: FunctionEnvironments;
   private isTailCall: boolean;
   private dfaQuery: DfaQuery | undefined;
+  /** Optional provenance hook: when set, each emitted guard publishes the
+   *  speculative fact it's protecting so the engine can prune lineage-
+   *  precisely on deopt (see `Worklist.widenGuard`). `undefined` means
+   *  the engine will fall back to `widenUnitSpeculation` on violation. */
+  private guardRegistrar: GuardRegistrar | undefined;
   private _scopeIndexMap?: ScopeIndexMap;
   /**
    * Shared canonical registry of function identity and slot layout. Built
@@ -82,12 +88,14 @@ export class SVMLCompiler
     functionEnvironments: FunctionEnvironments,
     builder: SVMLIRBuilder,
     dfaQuery?: DfaQuery,
+    guardRegistrar?: GuardRegistrar,
   ) {
     this.builder = builder;
     this.currentEnvironment = currentEnvironment;
     this.functionEnvironments = functionEnvironments;
     this.isTailCall = false;
     this.dfaQuery = dfaQuery;
+    this.guardRegistrar = guardRegistrar;
   }
 
   /** Scope → function index map, populated during compilation via fromProgramUnit(). */
@@ -208,6 +216,7 @@ export class SVMLCompiler
     functionEnvironments: FunctionEnvironments,
     dfaQuery?: DfaQuery,
     registry?: FunctionRegistry,
+    guardRegistrar?: GuardRegistrar,
   ): SVMLCompiler {
     const mainEnv = functionEnvironments.get(program);
     if (!mainEnv) {
@@ -216,7 +225,7 @@ export class SVMLCompiler
     const reg = registry ?? buildFunctionRegistry(program);
     const builder = new SVMLIRBuilder(0, reg.slotOfNode(program));
     builder.setScopeKey(program);
-    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, dfaQuery);
+    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, dfaQuery, guardRegistrar);
     compiler.registry = reg;
 
     // Populate ScopeIndexMap eagerly so it is the source of truth for NEWC
@@ -253,6 +262,7 @@ export class SVMLCompiler
       this.functionEnvironments,
       builder,
       this.dfaQuery,
+      this.guardRegistrar,
     );
     compiler._scopeIndexMap = this._scopeIndexMap;
     compiler.registry = this.registry;
@@ -822,6 +832,13 @@ export class SVMLCompiler
     if (specTruth !== undefined) {
       const testResult = this.compile(stmt.condition);
       this.builder.emitBinary(OpCodes.GUARD_TRUTHY, stmt.condition.id, specTruth ? 1 : 0);
+      // Publish the speculative fact this guard protects — the engine traces
+      // it back to load-bearing assumptions on deopt (see
+      // `Worklist.widenGuard`). No-op when no registrar was supplied.
+      this.guardRegistrar?.registerGuard(stmt.condition.id, {
+        analysis: constExprHandle,
+        key: stmt.condition.id,
+      });
       const taken = specTruth ? stmt.body : stmt.elseBlock;
       const takenResult = taken
         ? this.compileStatements(taken)

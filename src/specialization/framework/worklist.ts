@@ -17,7 +17,7 @@ import {
   type FunctionUnit,
 } from "./function-unit";
 import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type TransformRule, type LifecycleEdge } from "./analysis";
-import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Context } from "./context";
+import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Assumption, type Context } from "./context";
 import { immediateStrategy, type SpeculationStrategy } from "./speculation-strategy";
 import { runtimeCallAnalysis, runtimeWriteAnalysis } from "./runtime-analyses";
 import { purityBlockAnalysis, purityScopeAnalysis } from "../purity-analysis/analysis";
@@ -96,6 +96,23 @@ export function makeDfaQuery(
 
 type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq: number };
 
+/** Reference to a speculative fact site. A backend emitting a guard for this
+ *  fact publishes this ref via `Worklist.registerGuard` so the engine can
+ *  trace back to the assumption(s) that drove the narrowing when the guard
+ *  fires. `analysis` and `key` together name the fact-store cell; no value
+ *  is carried (the live value is read at deopt time from the fact store). */
+export interface SpecFactRef<K = unknown, V = unknown> {
+  readonly analysis: Analysis<K, V>;
+  readonly key: K;
+}
+
+/** Narrow backend-facing interface for publishing guard provenance. Exposed
+ *  as a separate type so backends can hold a capability-restricted reference
+ *  (instead of the full `Worklist`) and so test doubles stay small. */
+export interface GuardRegistrar {
+  registerGuard<K, V>(guardNodeId: number, ref: SpecFactRef<K, V>): void;
+}
+
 /** Structural equality on ConstLattice values — used by the observation
  *  translator to dedup assumption extensions when the same concrete value
  *  is observed repeatedly. */
@@ -104,6 +121,44 @@ function constLatticeEquals(a: ConstLattice, b: ConstLattice): boolean {
   if (a.tag === "const" && b.tag === "const") return a.value === b.value;
   return true;
 }
+
+/** Resolve the block-keyed DFA analysis that stores the per-expression fact
+ *  under a given context-assumption handle, together with the per-node
+ *  value-equality test for that fact. Backends publish refs against the
+ *  handle (`constExprHandle` / `typeExprHandle`) because that's the identity
+ *  named by the Context chain; the engine reads the actual fact out of the
+ *  block DFA's `exprFacts` map and compares it via the handle-appropriate
+ *  value-lattice equality here. */
+interface HandleResolution {
+  readonly blockAnalysis: Analysis<BasicBlock, any>;
+  readonly valueEqual: (a: unknown, b: unknown) => boolean;
+}
+const typeValueEqual = (a: unknown, b: unknown): boolean =>
+  a === b || (a !== undefined && b !== undefined &&
+    typeLeq(a as TypeLattice, b as TypeLattice) &&
+    typeLeq(b as TypeLattice, a as TypeLattice));
+const constValueEqual = (a: unknown, b: unknown): boolean =>
+  a === b || (a !== undefined && b !== undefined &&
+    constLatticeEquals(a as ConstLattice, b as ConstLattice));
+const BLOCK_ANALYSIS_FOR_HANDLE = new Map<Analysis<any, any>, HandleResolution>([
+  [typeExprHandle, { blockAnalysis: typeAnalysis, valueEqual: typeValueEqual }],
+  [constExprHandle, { blockAnalysis: constAnalysis, valueEqual: constValueEqual }],
+]);
+
+/** Identity-key for an assumption. `analysis` is compared by symbol identity
+ *  (Analyses are module singletons); `key` is compared by the JS `===`
+ *  encoding used across the fact store. */
+function assumptionKey(a: Assumption): string {
+  return `${(a.analysis as Analysis<unknown, unknown>).debugName}:${String(a.key)}`;
+}
+
+/** Identity-key for a speculative fact ref — same encoding as
+ *  `assumptionKey` so a pruned-assumption set can be checked against
+ *  a guard's ref in O(1). */
+function specRefKey(r: SpecFactRef<any, any>): string {
+  return `${(r.analysis as Analysis<unknown, unknown>).debugName}:${String(r.key)}`;
+}
+
 
 const TIER_RANK = { runtime: 0, analysis: 1 } as const;
 
@@ -238,6 +293,7 @@ export class Worklist {
     this._units.delete(node as StmtNS.FileInput | StmtNS.FunctionDef);
     this.pendingRebuilds.delete(unit);
     this.currentSpecContext.delete(unit);
+    this.guardProvenance.delete(unit);
     this.specStrategy.onUnitRetired?.(unit);
     for (const s of this.transformDirty.values()) s.delete(unit);
     // Each analysis declares its own eviction via `{on:"retire", effect}`.
@@ -554,12 +610,11 @@ export class Worklist {
     return unit === undefined ? ROOT_CONTEXT : this.specContextFor(unit);
   }
 
-  /** Retract ALL speculation for the unit owning `nodeIdOrUnit`. Used by the
-   *  deopt path: a guard violation indicates that SOME assumption in the
-   *  unit's chain was wrong, but the guard's consumer nodeId does not
-   *  generally match the observation site that drove the narrowing — without
-   *  explicit lineage tracking we can't prune just the offending link.
-   *  Collapsing the chain to ROOT is coarser than node-level blacklisting but
+  /** Retract ALL speculation for the unit owning `nodeIdOrUnit`. Fallback
+   *  path when guard provenance wasn't recorded; `widenGuard` is the
+   *  preferred deopt primitive (prunes just the load-bearing assumptions).
+   *
+   *  Collapsing the chain to ROOT is coarser than lineage-precise widen but
    *  strictly sound: Kildall re-runs under ROOT produce the non-narrowed
    *  facts, and the compiler emits generic opcodes on the next recompile.
    *
@@ -576,9 +631,117 @@ export class Worklist {
     if (unit === undefined) return undefined;
     if (!this.currentSpecContext.has(unit)) return undefined;
     this.currentSpecContext.delete(unit);
+    this.guardProvenance.get(unit)?.clear();
     this.enqueue(typeAnalysis, unit.cfg.entry, ROOT_CONTEXT);
     this.enqueue(constAnalysis, unit.cfg.entry, ROOT_CONTEXT);
     return unit;
+  }
+
+  /** Per-unit, per-guard-site record of which speculative fact the guard
+   *  protects. Populated by backends via `registerGuard`; consumed by
+   *  `widenGuard` on deopt to compute the load-bearing assumption set. Keyed
+   *  by `guardNodeId` — the AST node id the backend baked into the guard
+   *  opcode; that's the id `SpeculationViolation` carries. */
+  private readonly guardProvenance: Map<FunctionUnit, Map<number, SpecFactRef<any, any>>> = new Map();
+
+  /** Backend-facing hook, called once per emitted guard. Identifies the
+   *  speculative fact whose narrowing the guard is protecting. No-op if
+   *  `guardNodeId` doesn't resolve to a known unit. */
+  registerGuard<K, V>(guardNodeId: number, ref: SpecFactRef<K, V>): void {
+    const unit = this.nodeToUnit.get(guardNodeId);
+    if (unit === undefined) return;
+    let perUnit = this.guardProvenance.get(unit);
+    if (perUnit === undefined) {
+      perUnit = new Map();
+      this.guardProvenance.set(unit, perUnit);
+    }
+    perUnit.set(guardNodeId, ref as SpecFactRef<any, any>);
+  }
+
+  /** Lineage-precise deopt handle. Given a guard that fired at
+   *  `guardNodeId`, prune just the assumption(s) in the owning unit's spec
+   *  chain whose removal would widen the speculative fact at `ref`. Sibling
+   *  assumptions (load-bearing for OTHER guards in the same unit) survive.
+   *
+   *  Falls back to `widenUnitSpeculation` when no provenance was recorded
+   *  for `guardNodeId` (safe default for backends that haven't opted in)
+   *  or when the computed lineage is empty (can happen if the fact at `ref`
+   *  reached its narrowed value via chain links whose analysis doesn't
+   *  match `ref.analysis` — a conservative signal to fall back).
+   *
+   *  Returns the widened unit, or `undefined` if no unit owns `guardNodeId`. */
+  widenGuard(guardNodeId: number): FunctionUnit | undefined {
+    const unit = this.nodeToUnit.get(guardNodeId);
+    if (unit === undefined) return undefined;
+    const ref = this.guardProvenance.get(unit)?.get(guardNodeId);
+    if (ref === undefined) return this.widenUnitSpeculation(unit);
+
+    const ctx = this.currentSpecContext.get(unit);
+    if (ctx === undefined || ctx === ROOT_CONTEXT) return undefined;
+
+    const loadBearing = this.lineageOf(ref, ctx, unit);
+    if (loadBearing.length === 0) return this.widenUnitSpeculation(unit);
+
+    let pruned: Context = ctx;
+    for (const a of loadBearing) {
+      pruned = excludeAssumption(pruned, a.analysis, a.key);
+    }
+    if (pruned === ctx) return undefined;
+
+    if (pruned === ROOT_CONTEXT) this.currentSpecContext.delete(unit);
+    else this.currentSpecContext.set(unit, pruned);
+    // Drop provenance whose guard was protecting a pruned assumption. A
+    // surviving guard may have listed a non-pruned assumption among its
+    // load-bearing set; clearing *all* provenance for the unit would be
+    // safe but throws away reusable entries. Trim precisely.
+    const perUnit = this.guardProvenance.get(unit);
+    if (perUnit !== undefined) {
+      const prunedSet = new Set(loadBearing.map(a => assumptionKey(a)));
+      for (const [gid, r] of perUnit) {
+        if (prunedSet.has(specRefKey(r))) perUnit.delete(gid);
+      }
+    }
+    this.enqueue(typeAnalysis, unit.cfg.entry, pruned);
+    this.enqueue(constAnalysis, unit.cfg.entry, pruned);
+    return unit;
+  }
+
+  /** Identify assumptions in `ctx`'s chain whose removal widens the fact at
+   *  `(ref.analysis, ref.key)`. Algorithm: for each link, synthesize the
+   *  chain without it, transiently run Kildall (typeAnalysis + constAnalysis
+   *  only — no transforms, no CFG rebuild), and diff the fact. Cells under
+   *  the synthetic chain are written to the fact store and linger — contexts
+   *  are identity-keyed so no collision, but a fact-store eviction pass is
+   *  a later step (C5b follow-up).
+   *
+   *  Cost: O(chainDepth × Kildall-at-pruned-ctx). Chain depth is bounded by
+   *  the speculation strategy (`countBasedStrategy`, etc.) which throttles
+   *  extension; deep chains are the outlier case. */
+  private lineageOf(
+    ref: SpecFactRef<any, any>,
+    ctx: Context,
+    unit: FunctionUnit,
+  ): Assumption[] {
+    const resolved = BLOCK_ANALYSIS_FOR_HANDLE.get(ref.analysis);
+    if (resolved === undefined) return [];
+    const { blockAnalysis, valueEqual } = resolved;
+    const nodeId = ref.key as number;
+    const block = unit.blockOfNode.get(nodeId);
+    if (block === undefined) return [];
+    const current = readExprFact(this.factStore, blockAnalysis, block, nodeId, ctx);
+    const loadBearing: Assumption[] = [];
+    for (let cur: Context | undefined = ctx; cur !== undefined; cur = cur.parent) {
+      const a = cur.assumption;
+      if (a === undefined) continue;
+      const without = excludeAssumption(ctx, a.analysis, a.key);
+      if (without === ctx) continue;
+      this.enqueue(typeAnalysis, unit.cfg.entry, without);
+      this.enqueue(constAnalysis, unit.cfg.entry, without);
+      this.processQueue();
+      const widened = readExprFact(this.factStore, blockAnalysis, block, nodeId, without);
+      if (!valueEqual(current, widened)) loadBearing.push(a);
+    }
+    return loadBearing;
   }
 
   /** Rebuild CFG for every pending unit, then fire `onUnitRebuilt`. */
@@ -588,6 +751,10 @@ export class Worklist {
     for (const unit of this.pendingRebuilds) {
       unit.generation++;
       wireCFG(unit);
+      // A CFG rebuild invalidates every guard's nodeId: the old ids belong
+      // to AST subtrees that the backend hasn't seen yet. The next compile
+      // will re-register guards with ids valid under the new generation.
+      this.guardProvenance.delete(unit);
       rebuilt.push(unit);
     }
     this.pendingRebuilds.clear();

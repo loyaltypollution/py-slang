@@ -44,6 +44,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           nodeId => worklist.specContextForNode(nodeId),
         ),
         worklist.registry,
+        worklist,
       );
       const program = compiler.compileProgram(ast);
 
@@ -97,7 +98,7 @@ async function runWithDeopt(
           `JIT deopt budget exhausted (${MAX_DEOPT_RETRIES}); last violation at node ${e.nodeId} (${e.witnessedKind})`,
         );
       }
-      const unit = worklist.widenUnitSpeculation(e.nodeId);
+      const unit = worklist.widenGuard(e.nodeId);
       if (unit !== undefined) worklist.enqueue(jitAnalysis, unit);
       // observe() drains automatically when batchDepth permits; inside
       // beginBatch we need to drain explicitly so jit-analysis.transfer fires
