@@ -16,7 +16,7 @@ import {
   wireCFG,
   type FunctionUnit,
 } from "./function-unit";
-import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type NarrowingSpec, type TransformRule, type LifecycleEdge } from "./analysis";
+import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type NarrowingSpec, type ObservationHost, type TransformRule, type LifecycleEdge } from "./analysis";
 import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Assumption, type Context } from "./context";
 import { immediateStrategy, type SpeculationStrategy } from "./speculation-strategy";
 import { runtimeCallAnalysis, runtimeWriteAnalysis } from "./runtime-analyses";
@@ -375,21 +375,25 @@ export class Worklist {
   }
 
   observe<K, V>(analysis: Analysis<K, V>, key: K, value: V, context: Context = ROOT_CONTEXT): void {
-    // Route runtime-write observations through the strategy + context
-    // translator BEFORE the monotone fact-store write. A repeat observation
-    // at the same site with the same value is a no-op at the store (leq
-    // fast path), but the strategy's counter still advances — count-based
-    // policies are observed-call counts, not fact-change counts.
-    if (
-      context === ROOT_CONTEXT &&
-      (analysis as unknown as Analysis<unknown, unknown>) === (runtimeWriteAnalysis as unknown as Analysis<unknown, unknown>) &&
-      typeof key === "number"
-    ) {
-      this.handleObservationForSpec(key, value as unknown as RawKind);
-    }
+    // Analyses that want to run observe-time logic (e.g. extend the unit's
+    // speculation context) declare `onObserve`. Fires BEFORE the monotone
+    // fact-store write so count-based strategies see every call, including
+    // repeats the store would collapse. The worklist has no analysis-
+    // identity branches here — participation is a property each analysis
+    // declares on itself.
+    analysis.onObserve?.(this.observationHost, key, value, context);
     this.factStore.write(analysis, key, value, context);
     if (this.batchDepth === 0) this.processQueue();
   }
+
+  /** Capability surface handed to `Analysis.onObserve` hooks. Narrow
+   *  wrapper around the worklist's private observation entry points;
+   *  analyses don't receive the full `Worklist`. */
+  private readonly observationHost: ObservationHost = {
+    handleObservationForSpec: (nodeId: number, observed: RawKind): void => {
+      this.handleObservationForSpec(nodeId, observed);
+    },
+  };
 
   beginBatch(): void {
     this.batchDepth++;

@@ -1,6 +1,7 @@
 // Runtime observation analyses. Written via `Worklist.observe`; tier "runtime".
 
 import { StmtNS } from "../../ast-types";
+import { ROOT_CONTEXT } from "./context";
 import type { FactStore } from "./fact-store";
 import type { Lattice, Analysis, AnalysisCtx } from "./analysis";
 import { classifyRawValue, type RawKind } from "./raw-value";
@@ -36,7 +37,12 @@ const rawValueLattice: Lattice<RawKind> = {
       : rawKindEquals(a, b) ? a : RAW_TOP,
 };
 
-/** Runtime observation of per-node value writes. Key = NodeId, value = RawKind. */
+/** Runtime observation of per-node value writes. Key = NodeId, value = RawKind.
+ *
+ *  Declares `onObserve` so the worklist routes each observe call through
+ *  the observation→context translator without naming this analysis by
+ *  identity. Only ROOT-context observations feed speculation — a non-ROOT
+ *  observe would be a test fixture exercising the fact store directly. */
 export const runtimeWriteAnalysis: Analysis<number, RawKind> = {
   id: Symbol("runtimeWriteAnalysis"),
   debugName: "runtimeWriteAnalysis",
@@ -52,6 +58,10 @@ export const runtimeWriteAnalysis: Analysis<number, RawKind> = {
     },
   ],
   tier: "runtime",
+  onObserve(host, key, value, context) {
+    if (context !== ROOT_CONTEXT) return;
+    host.handleObservationForSpec(key, value);
+  },
   transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): RawKind | undefined {
     return undefined;
   },

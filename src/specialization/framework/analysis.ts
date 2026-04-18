@@ -135,6 +135,14 @@ export interface SpecAnchorInfo<V> {
   valueEqual(a: V | undefined, b: V | undefined): boolean;
 }
 
+/** Capability surface handed to `Analysis.onObserve` hooks. A thin wrapper
+ *  around the worklist's observation-handling entry points — lets analyses
+ *  participate in observe-time routing (e.g. speculation-context extension)
+ *  without importing `Worklist` or receiving the full scheduler. */
+export interface ObservationHost {
+  handleObservationForSpec(nodeId: number, observed: RawKind): void;
+}
+
 /** A computation over the fact store. `transfer` returning `undefined` means "no write". */
 export interface Analysis<K, V> {
   readonly id: symbol;
@@ -153,6 +161,15 @@ export interface Analysis<K, V> {
    *  makes the analysis structurally unusable as a guard anchor — the
    *  compile-time error is how `SpecAnchor<K, V>` narrows the type. */
   readonly specAnchor?: SpecAnchorInfo<V>;
+  /** Optional hook invoked at every `Worklist.observe` for this analysis,
+   *  BEFORE the fact-store write. Fires once per observe call, including
+   *  repeats the monotone fact store would collapse — appropriate for
+   *  policies that count observation calls (count-based speculation) and
+   *  for driving the observation→context translator. The worklist has no
+   *  analysis-identity branches in `observe`; whether an observation
+   *  participates in speculation-context extension is a property the
+   *  analysis declares here. */
+  onObserve?(host: ObservationHost, key: K, value: V, context: Context): void;
   transfer(factStore: FactStore, ctx: AnalysisCtx, key: K): V | undefined;
 }
 
