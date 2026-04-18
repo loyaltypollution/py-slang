@@ -2,9 +2,32 @@
 
 This file started as a pre-implementation thesis. The thesis held up; most of
 it has landed. This revision keeps only what a future reader still needs:
-what's shipped, what's still open, and the constraints that remain binding.
+the goal to measure against, what's shipped, what's still open, and the
+constraints that remain binding.
 
-For the full original thesis, see git history (`git log --all -- next-steps.md`).
+---
+
+## The goal (reference bar)
+
+**Speculation and recovery should live in the specialization engine, not be
+scattered across analyses.**
+
+Any analysis X should be able to run under a set of *assumptions* — "x at
+node 17 is int", "branch B always takes the true arm" — and produce facts
+consistent with those assumptions. When an assumption is later invalidated
+at runtime, the specialization engine recovers: it swaps to a compiled
+version that didn't depend on the violated assumption, while transforms
+derived from *unrelated* assumptions stay intact.
+
+The old model tangled speculation into individual analyses (parallel
+`speculativeX`/`X` pairs, special accumulation modes, ad-hoc eviction). The
+refactor pulls it out: analyses compute facts under a context; the engine
+owns context creation, composition, and recovery.
+
+Use this as the bar. If a surface reads fine but its production path
+collapses to a whole-unit reset (ROOT), unrelated assumptions are being
+thrown away and the goal isn't being met — regardless of what the API
+looks like in isolation.
 
 ---
 
@@ -26,14 +49,16 @@ context under which an analysis runs, not a property of the fact:
   `src/specialization/framework/speculation-strategy.ts`.
 - **Narrowing dimensions** are data-driven through the `Narrowing<V>`
   interface. The worklist iterates `DEFAULT_NARROWINGS` in the observation
-  translator, `widenGuard`, `widenUnitSpeculation`, and `lineageOf`. Adding
+  translator, `widenGuard`, `widenFullChain`, and `lineageOf`. Adding
   a third dimension is a one-line registration in
   `src/specialization/framework/dfa-analyses.ts`.
-- **Deopt** is lineage-precise: backends publish guard provenance via
-  `Worklist.registerGuard`; on `SpeculationViolation`, `widenGuard(nodeId)`
-  prunes only the load-bearing assumptions. The `specContextChange`
-  lifecycle event wakes jit-keyed analyses; evaluators use the shared
-  `runWithDeopt` helper (`src/conductor/jit-deopt.ts`).
+- **Deopt** is lineage-precise *for node-keyed narrowings* (type, const).
+  Backends publish guard provenance via `Worklist.registerGuard`; on
+  `SpeculationViolation`, `widenGuard(nodeId)` prunes only the load-
+  bearing assumptions. Missing provenance now throws (used to silently
+  collapse to ROOT — see (4) in "What's still open"). The
+  `specContextChange` lifecycle event wakes jit-keyed analyses; evaluators
+  use the shared `runWithDeopt` helper (`src/conductor/jit-deopt.ts`).
 
 Tests: `npx tsc --noEmit && npx jest` — 2663 green.
 
@@ -81,6 +106,24 @@ Classical DFA quadrant currently missing; arguably the highest per-PR value.
 
 See (1). Not a blocker on its own — present here for the backlog.
 
+### (4) `resolveBlock` hook on `Narrowing` (lineage-precise return-kind deopt)
+
+`lineageOf` seeds its per-link Kildall re-run by calling
+`unit.blockOfNode.get(ref.key)`. That works for node-keyed narrowings
+(`typeExprHandle`, `constExprHandle`) but not for `returnKindHandle`, whose
+`key` is an fdId. `blockOfNode.get(fdId)` returns `undefined`, `lineageOf`
+bails with `[]`, and `widenGuard` falls through to `widenFullChain` — sound,
+but every return-kind deopt collapses the whole chain instead of pruning
+just the return-kind assumption.
+
+Fix: generalize `Narrowing<V>` with a `resolveBlock(unit, key): BasicBlock |
+undefined` hook. Node-keyed narrowings implement it as
+`unit.blockOfNode.get(key)`; return-kind resolves to the function's exit
+block (or whatever block the narrowing's `blockAnalysis()` seeds). Small
+interface change, unblocks the "sibling survives" guarantee for the
+return-kind dimension the rest of the doc claims. No other piece of the
+framework depends on this — orthogonal PR.
+
 ---
 
 ## Non-negotiable constraints
@@ -93,9 +136,11 @@ Still binding:
    is a regression.
 3. **Any PR that grows `Context` surface must route a non-`∅` context
    through at least one caller.**
-4. **Backends emitting guards should call `registerGuard` at emission.** A
-   fallback exists for backends that haven't opted in — don't remove it,
-   but don't lean on it for new backends either.
+4. **Backends emitting guards must call `registerGuard` at emission.**
+   `widenGuard` throws on missing provenance; there is no silent fallback.
+   A new backend that emits guards without registering them will surface
+   the bug on the first deopt, not by mysteriously collapsing unrelated
+   assumptions.
 
 ---
 

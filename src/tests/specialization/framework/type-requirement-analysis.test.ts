@@ -122,6 +122,67 @@ def hot(x):
     expect(xReq?.kinds).toBe(INT_BIT);
   });
 
+  test.each([
+    ["x * 2"],
+    ["x - 1"],
+    ["x // 2"],
+    ["x % 3"],
+  ])("binary %s with int target requires x: int at entry", (rhs) => {
+    const { ast, worklist } = build(`
+def hot(x):
+    return ${rhs}
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const unit = worklist.units.get(fn)!;
+
+    const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
+    worklist.enqueue(typeRequirementAnalysis, unit.cfg.exit, ctx);
+    worklist.drain();
+
+    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    expect(reqs.get(0)?.kinds).toBe(INT_BIT);
+  });
+
+  test("binary / is NOT int-closed — no requirement on operands", () => {
+    // Python 3: int / int = float. The backward inverse `result int ⇒
+    // operands int` would be unsound here; the analysis must leave the
+    // operand unconstrained at entry.
+    const { ast, worklist } = build(`
+def hot(x):
+    return x / 2
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const unit = worklist.units.get(fn)!;
+
+    const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
+    worklist.enqueue(typeRequirementAnalysis, unit.cfg.exit, ctx);
+    worklist.drain();
+
+    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    expect(reqs.size).toBe(0);
+  });
+
+  test("ternary: target propagates into both arms", () => {
+    const { ast, worklist } = build(`
+def hot(x, y, c):
+    return x if c else y
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const unit = worklist.units.get(fn)!;
+
+    const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
+    worklist.enqueue(typeRequirementAnalysis, unit.cfg.exit, ctx);
+    worklist.drain();
+
+    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    // Parameters are slots 0 (x), 1 (y), 2 (c). Both x and y must be int;
+    // the predicate c carries no requirement because the predicate type
+    // doesn't flow into the result.
+    expect(reqs.get(0)?.kinds).toBe(INT_BIT);
+    expect(reqs.get(1)?.kinds).toBe(INT_BIT);
+    expect(reqs.get(2)).toBeUndefined();
+  });
+
   test("end-to-end: observeRuntimeReturn extends context and seeds entry requirement", () => {
     const { ast, worklist } = build(`
 def hot(x):

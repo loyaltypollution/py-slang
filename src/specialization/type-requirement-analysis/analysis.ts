@@ -92,10 +92,21 @@ export const returnKindHandle: Analysis<number, TypeLattice> = {
  *  inverse is deferred to a later refinement. */
 const INT_ANY: TypeLattice = integer();
 
+/** Binary ops whose kind-axis inverse is "both operands int ⇒ result int".
+ *  `/` (true division) is NOT included — Python 3 promotes `int / int` to
+ *  float, so the inverse would be unsound. `//` (floor div) and `%` stay
+ *  int-closed on int operands. */
+const INT_CLOSED_BINOPS: ReadonlySet<TokenType> = new Set([
+  TokenType.PLUS,
+  TokenType.MINUS,
+  TokenType.STAR,
+  TokenType.DOUBLESLASH,
+  TokenType.PERCENT,
+]);
+
 /** Push `target` into the operand slots of `expr` as a requirement, via
  *  meet with whatever constraint the slot already carries. TOP targets
- *  short-circuit — nothing to propagate. The handled expression shapes
- *  are intentionally narrow for the first cut:
+ *  short-circuit — nothing to propagate. Handled expression shapes:
  *    - Variable: direct per-slot meet.
  *    - Grouping: transparent.
  *    - Unary +: identity, recurse with same target.
@@ -103,9 +114,12 @@ const INT_ANY: TypeLattice = integer();
  *      Sign inversion of the refinement is deferred — `INT_ANY` preserves
  *      the kind axis and drops sign, which is sound (weakens the operand
  *      requirement).
- *    - Binary + with int-kind target: both operands must be int
- *      (kind-level). `int + int = int` is the sufficient inverse on the
+ *    - Binary {+, -, *, //, %} with int-kind target: both operands must
+ *      be int (kind-level). For each op, `int ⊗ int = int` holds on the
  *      kind axis; sign-level inverse deferred.
+ *    - Ternary with target T: both consequent and alternative must
+ *      satisfy T (forward joins them to a single result kind). Predicate
+ *      is not visited — its type doesn't flow into the result.
  *  Other shapes impose no requirement — sound no-op, guards don't get
  *  hoisted through them. Extensions add cases; every addition must
  *  preserve monotonicity (stronger `target` → stronger operand
@@ -147,12 +161,18 @@ function propagateRequirement(
 
   if (expr instanceof ExprNS.Binary) {
     if (
-      expr.operator.type === TokenType.PLUS &&
-      target.kinds === INT_BIT
+      target.kinds === INT_BIT &&
+      INT_CLOSED_BINOPS.has(expr.operator.type)
     ) {
       propagateRequirement(expr.left, INT_ANY, env, slotLookup);
       propagateRequirement(expr.right, INT_ANY, env, slotLookup);
     }
+    return;
+  }
+
+  if (expr instanceof ExprNS.Ternary) {
+    propagateRequirement(expr.consequent, target, env, slotLookup);
+    propagateRequirement(expr.alternative, target, env, slotLookup);
     return;
   }
 }
