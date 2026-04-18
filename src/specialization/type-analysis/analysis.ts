@@ -80,8 +80,8 @@ export const widenObservation: CombineObservation = (staticVal, observed) => {
 
 /** Equality over `TypeLattice` via two-way `leq` — the product lattice has
  *  no canonical normalization, so structural equality derives from mutual
- *  ordering. Exported so `typeExprHandle.specAnchor.valueEqual` and the
- *  observation translator share one definition. */
+ *  ordering. Exported so `typeNarrowing.valueEqual` (see `dfa-analyses.ts`)
+ *  and the observation translator share one definition. */
 export const typeValueEqual = (a: TypeLattice | undefined, b: TypeLattice | undefined): boolean =>
   a === b || (a !== undefined && b !== undefined && leq(a, b) && leq(b, a));
 
@@ -93,10 +93,10 @@ export const typeValueEqual = (a: TypeLattice | undefined, b: TypeLattice | unde
  *  carries cells under this Analysis — it exists purely as a per-node
  *  assumption namespace keyed into the Context chain.
  *
- *  `specAnchor` — the pairing with `typeAnalysis` and `typeValueEqual` used
- *  by `Worklist.widenGuard`'s lineage walk — is wired in `dfa-analyses.ts`
- *  at module load. Kept out of this file to avoid a top-level circular
- *  import with `dfa-analyses.ts`. */
+ *  The pairing with `typeAnalysis` and `typeValueEqual` used by
+ *  `Worklist.widenGuard`'s lineage walk is assembled as a `Narrowing` in
+ *  `dfa-analyses.ts` — kept out of this file to avoid a top-level circular
+ *  import. */
 export const typeExprHandle: Analysis<number, TypeLattice> = {
   id: Symbol("typeExprHandle"),
   debugName: "typeExprHandle",

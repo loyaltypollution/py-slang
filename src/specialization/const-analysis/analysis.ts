@@ -47,9 +47,9 @@ export const constMeet = (a: ConstLattice, b: ConstLattice): ConstLattice => {
 };
 
 /** Equality over `ConstLattice` — structural by `tag`, by `value` for
- *  `"const"` cells. Exported so `constExprHandle.specAnchor.valueEqual`
- *  and the worklist's observation translator (dedup when a repeat lift
- *  matches an existing assumption) share one definition. */
+ *  `"const"` cells. Exported so `constNarrowing.valueEqual` (see
+ *  `dfa-analyses.ts`) and the worklist's observation translator (dedup when
+ *  a repeat lift matches an existing assumption) share one definition. */
 export const constValueEqual = (a: ConstLattice | undefined, b: ConstLattice | undefined): boolean => {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
@@ -65,11 +65,10 @@ export const constValueEqual = (a: ConstLattice | undefined, b: ConstLattice | u
  *  under non-ROOT contexts. No fact-store traffic at this analysis;
  *  transfer is a no-op.
  *
- *  `specAnchor` — the pairing with `constAnalysis` (block DFA) and
- *  `constValueEqual` used by `Worklist.widenGuard`'s lineage walk — is
- *  wired in `dfa-analyses.ts` at module load, once the block analysis
- *  exists. Kept out of this file to avoid a top-level circular import
- *  with `dfa-analyses.ts`. */
+ *  The pairing with `constAnalysis` (block DFA) and `constValueEqual` used
+ *  by `Worklist.widenGuard`'s lineage walk is assembled as a `Narrowing` in
+ *  `dfa-analyses.ts` — kept out of this file to avoid a top-level circular
+ *  import. */
 export const constExprHandle: Analysis<number, ConstLattice> = {
   id: Symbol("constExprHandle"),
   debugName: "constExprHandle",
