@@ -59,15 +59,26 @@ context under which an analysis runs, not a property of the fact:
   collapse to ROOT — see (4) in "What's still open"). The
   `specContextChange` lifecycle event wakes jit-keyed analyses; evaluators
   use the shared `runWithDeopt` helper (`src/conductor/jit-deopt.ts`).
+- **Must-backward quadrant** ships as `typeRequirementAnalysis`
+  (`src/specialization/type-requirement-analysis/analysis.ts`). Runs
+  backward under a return-kind assumption bound via
+  `returnKindNarrowing`; seeds at each `Return` statement and produces a
+  per-slot entry requirement. `requirementAtEntry` returns a split
+  `{ provable, unprovable }` — provable slots are guard candidates,
+  unprovable slots signal "speculation can't hold for any input."
+  `ObservationEvent.requirementsAt()` exposes the entry fact to
+  strategies as a stability signal.
 
-Tests: `npx tsc --noEmit && npx jest` — 2663 green.
+Tests: `npx tsc --noEmit && npx jest` — 2695 green.
 
 ---
 
 ## What's still open
 
-Three pieces from the original thesis remain. They're independent — pick by
-value, not serial order.
+The thesis pieces (1), (3), (4) remain; (2) — the must-backward DFA
+itself — has shipped. The backlog now splits into: one thesis-level item
+(artifact tree), one orthogonal fix (`resolveBlock`), and a consumer
+cluster that turns must-backward facts into emitted guards and IR.
 
 ### (1) Artifact tree per `(unit, context)`
 
@@ -95,12 +106,43 @@ Today `handleObservationForSpec` stacks observations linearly
 precise either way, so this only matters when we want multiple compiled
 versions per unit to live side-by-side.
 
-### (2) Must-backward quadrant
+### (2) Must-backward consumers
 
-Propagates "return kind = int" backward through the body to find assignments
-that contradict the speculation, placing the guard at the function entry.
-Orthogonal to the artifact tree; depends only on contexts existing.
-Classical DFA quadrant currently missing; arguably the highest per-PR value.
+The DFA ships; nothing yet reads its facts at codegen time. Consumers
+below are independent — pick by value. All are backend-touching except
+where noted.
+
+- **Entry-guard emission.** The primary consumer. At compile-unit start,
+  call `requirementAtEntry(factStore, unit, specContextFor(unit))`; for
+  each slot in `provable`, emit a parameter kind-check and
+  `registerGuard(entryNodeId, { narrowing: returnKindNarrowing, key: fdId })`.
+  Slots in `unprovable` mean the speculation is statically impossible —
+  skip emission. Blocked on (4): until `resolveBlock` lands, deopt
+  through an entry guard collapses to `widenFullChain` instead of
+  pruning just the return-kind assumption.
+- **Guard coalescing.** Multiple forward-emitted guards on the same
+  `(slot, requiredType)` collapse to one at a dominating merge point if
+  the backward fact at that block already says "required." Needs a CFG
+  dominator pass (not yet present — confirm before picking up). Backend
+  IR-pass territory, not a `TransformRule`.
+- **Redundant-guard elimination.** Co-located with guard emission:
+  before emitting, query forward `typeAnalysis` and backward
+  `typeRequirementAnalysis` at the site's block; skip when
+  `forward ⊑ requirement`. Lives in the backend path — the
+  `StaticDfaQuery` gate forbids speculative reads from `TransformRule`s.
+- **Dead-branch under backward facts.** `dead-branch.ts` today reads
+  forward only. Backward adds cases like `if x == "foo"` under
+  `x: INT_BIT required`. Design gate first: widen `StaticDfaQuery` to
+  allow invariant-preserving reads, or move this logic into the backend.
+- **Transfer coverage, sign axis.** Current propagator is kind-axis only
+  (`int ⊗ int = int` for `+`, `-`, `*`, `//`, `%`; ternary). Sign-axis
+  inverses (e.g. `pos * pos = pos`) are deferred. Worth it once a guard
+  consumer can exploit tighter-than-kind refinements.
+- **Runtime integration test.** Mirror `speculative-narrowing.test.ts`'s
+  "lineage-precise widen" through `observeRuntimeReturn`: observe int
+  return ×N → entry guard emitted → observe str once → widenGuard →
+  guard retracted, body re-runs unspeculated. Blocked on entry-guard
+  emission.
 
 ### (3) Canonical sibling contexts
 
