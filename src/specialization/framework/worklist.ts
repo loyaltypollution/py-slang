@@ -246,9 +246,11 @@ export class Worklist {
       }
       const wake = spec.wake;
       const effect = spec.effect;
+      const toRoot = spec.contextPolicy === "root";
       this.subscribeFact(spec.analysis, (ctx, key) => {
         if (effect !== undefined) effect(this.factStore, ctx, key);
-        for (const k of wake(ctx, key)) this.enqueue(reader, k, ctx.currentContext);
+        const enqueueCtx = toRoot ? ROOT_CONTEXT : ctx.currentContext;
+        for (const k of wake(ctx, key)) this.enqueue(reader, k, enqueueCtx);
       });
     }
     // Replay existing-unit mints so registration order doesn't determine seeding.

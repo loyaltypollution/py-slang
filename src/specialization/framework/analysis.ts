@@ -69,6 +69,14 @@ export interface FactEdge<K> {
    *  through loops (a back-edge carrying a stale widened fact absorbs the
    *  narrowing from the entry block), so we restart from a clean slate. */
   effect?(factStore: FactStore, ctx: AnalysisCtx, key: unknown): void;
+  /** Which context the woken keys should be enqueued under.
+   *   - `"same-context"` (default): enqueue at `ctx.currentContext`, i.e. the
+   *     context the upstream write happened in. Ripple stays in-context.
+   *   - `"root"`: enqueue at ROOT regardless of the source context. Used by
+   *     context-blind consumers (e.g. the SVML JIT recompile analysis) whose
+   *     fact cells exist only at ROOT — waking them in a non-ROOT context
+   *     would write into an orphan cell no one ever reads. */
+  readonly contextPolicy?: "same-context" | "root";
 }
 
 export interface LifecycleEdge<K> {

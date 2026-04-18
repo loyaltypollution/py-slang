@@ -1,6 +1,7 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import type { Context } from "../framework/context";
+import type { Analysis, AnalysisCtx } from "../framework/analysis";
+import { findAssumption, ROOT_CONTEXT, type Context } from "../framework/context";
 import type { FactStore } from "../framework/fact-store";
 import type { MutableEnv } from "../framework/mutable-env";
 import { runtimeWriteAnalysis } from "../framework/runtime-analyses";
@@ -82,6 +83,24 @@ export const narrowObservation: CombineObservation = (staticVal, observed) => {
   return lifted !== undefined ? meet(staticVal, lifted) : staticVal;
 };
 
+/** Assumption-binding identity used by Context. Callers build a Context by
+ *  extending a parent with `(typeExprHandle, nodeId, narrowedValue)`; the
+ *  `TypeAnalysisVisitor` consults `findAssumption` at each node visit and
+ *  meets the computed static fact with the bound value. The handle itself
+ *  is never scheduled — its `transfer` is a no-op and the fact-store never
+ *  carries cells under this Analysis — it exists purely as a per-node
+ *  assumption namespace keyed into the Context chain. */
+export const typeExprHandle: Analysis<number, TypeLattice> = {
+  id: Symbol("typeExprHandle"),
+  debugName: "typeExprHandle",
+  lattice: { bottom: BOTTOM, leq, join },
+  edges: [],
+  tier: "analysis",
+  transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): TypeLattice | undefined {
+    return undefined;
+  },
+};
+
 class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
     private readonly factStore: FactStore,
@@ -89,16 +108,24 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: number, val: TypeLattice) => void,
     private readonly combineObservation: CombineObservation,
-    // Speculation context the current transfer is running under. Plumbed
-    // through for upcoming assumption-based narrowing; the visitor does not
-    // yet consult it — the migration lands when `speculativeTypeAnalysis` is
-    // replaced by `typeAnalysis`-under-context.
-    readonly context: Context,
+    private readonly context: Context,
   ) {}
 
+  /** Under ROOT: widen the static fact with any runtime observation at this
+   *  node (legacy may-forward behavior; see P1 for why this is nearly a no-op).
+   *  Under a non-ROOT context: ignore runtime observations and `meet` the
+   *  static fact with any ancestor-bound assumption at this node — the
+   *  narrowing mechanism that replaces `speculativeTypeAnalysis`'s parallel
+   *  pass. Nodes without a matching assumption pass the static fact through. */
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
-    const observed = this.factStore.tryRead(runtimeWriteAnalysis, node.id);
-    const combined = observed !== undefined ? this.combineObservation(val, observed) : val;
+    let combined: TypeLattice;
+    if (this.context === ROOT_CONTEXT) {
+      const observed = this.factStore.tryRead(runtimeWriteAnalysis, node.id);
+      combined = observed !== undefined ? this.combineObservation(val, observed) : val;
+    } else {
+      const assumption = findAssumption(this.context, typeExprHandle, node.id);
+      combined = assumption !== undefined ? meet(val, assumption) : val;
+    }
     this.recordExprFact(node.id, combined);
     return combined;
   }
