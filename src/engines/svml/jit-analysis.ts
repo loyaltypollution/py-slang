@@ -28,7 +28,7 @@ import { ROOT_CONTEXT, type Context } from "../../specialization/framework/conte
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import type { FactStore } from "../../specialization/framework/fact-store";
 import type { Analysis, AnalysisCtx, EdgeSpec, Narrowing } from "../../specialization/framework/analysis";
-import { DEFAULT_NARROWINGS } from "../../specialization/framework/dfa-analyses";
+import { JIT_RELEVANT_NARROWINGS } from "../../specialization/framework/dfa-analyses";
 import type { SVMLCompiler } from "./svml-compiler";
 import type { SVMLInterpreter } from "./svml-interpreter";
 import { SVMLIR } from "./types";
@@ -66,10 +66,10 @@ export interface JitPassDeps {
    *  Defaults to ROOT (no speculation visible) when omitted — appropriate
    *  only for fixtures that explicitly disable speculation. */
   readonly specContextFor?: (unit: FunctionUnit) => Context;
-  /** Narrowings whose block-level facts drive recompile. Defaults to
-   *  `DEFAULT_NARROWINGS`. A backend that registers additional narrowings
-   *  passes the extended list here so its fact edges and snapshot maps
-   *  widen accordingly. */
+  /** Narrowings whose block-level facts drive recompile. Defaults to the
+   *  subset the SVML backend actually consumes (`JIT_RELEVANT_NARROWINGS`).
+   *  A backend that starts reading additional speculative facts should pass
+   *  the widened list here so cache invalidation tracks them too. */
   readonly narrowings?: ReadonlyArray<Narrowing<any>>;
 }
 
@@ -94,7 +94,7 @@ const UNCOMPILED: SVMLIR = new SVMLIR(
 export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLIR> {
   const { compiler, interpreter } = deps;
   const specContextFor = deps.specContextFor ?? ((_: FunctionUnit) => ROOT_CONTEXT);
-  const narrowings = deps.narrowings ?? DEFAULT_NARROWINGS;
+  const narrowings = deps.narrowings ?? JIT_RELEVANT_NARROWINGS;
 
   /** Per-unit, per-context compiled-artifact cache. Outer key is the unit;
    *  inner key is the speculation context the IR was compiled under. Lookup
@@ -174,19 +174,23 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
       }
 
       const cached = perContext.get(specContext);
-      if (
+      const reusable =
         cached !== undefined &&
         cached.snapshot.structuralGen === unit.generation &&
         snapshotMatches(factStore, unit, cached.snapshot, specContext, narrowings)
-      ) {
-        // Cache hit: the IR we already built for this context is still
-        // valid. Patch the function table only if the backend isn't already
-        // dispatching to it (the ROOT fact-store cell tracks the current
-        // dispatch target).
+          ? cached
+          : findReusableEntry(factStore, unit, specContext, perContext, narrowings);
+      if (reusable !== undefined) {
+        // A sibling context may compile to the same artifact when the only
+        // changed assumptions are in speculation dimensions the backend does
+        // not consume directly (for example type-only write narrowings).
+        // Memoize that reusable artifact under the current context too so the
+        // next lookup hits directly.
+        perContext.set(specContext, reusable);
         const currentIR = factStore.read(jitAnalysis, unit);
-        if (structuralEquals(cached.ir, currentIR)) return undefined;
-        interpreter.patchFunction(index, cached.ir);
-        return cached.ir;
+        if (structuralEquals(reusable.ir, currentIR)) return undefined;
+        interpreter.patchFunction(index, reusable.ir);
+        return reusable.ir;
       }
 
       const newCode = compiler.compileFunction(unit);
@@ -245,6 +249,59 @@ function snapshotMatches(
     for (const block of unit.blockMap.values()) {
       if (factStore.tryRead(blockAnalysis, block) !== rootMap.get(block)) return false;
       if (factStore.tryRead(blockAnalysis, block, specContext) !== specMap.get(block)) return false;
+    }
+  }
+  return true;
+}
+
+/** Find an already-compiled artifact whose tracked inputs still match the
+ *  unit's current relevant facts under `specContext`, even if that artifact
+ *  was originally cached under a different speculation context. Cross-context
+ *  reuse compares semantically rather than by reference: identical fixpoints
+ *  in two contexts are stored as distinct fact-store cells, so the exact-hit
+ *  identity check in `snapshotMatches` is too strong here. */
+function findReusableEntry(
+  factStore: FactStore,
+  unit: FunctionUnit,
+  specContext: Context,
+  perContext: ReadonlyMap<Context, CacheEntry>,
+  narrowings: ReadonlyArray<Narrowing<any>>,
+): CacheEntry | undefined {
+  for (const [, entry] of perContext) {
+    if (entry.snapshot.structuralGen !== unit.generation) continue;
+    if (snapshotSemanticallyMatches(factStore, unit, entry.snapshot, specContext, narrowings)) {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
+function snapshotSemanticallyMatches(
+  factStore: FactStore,
+  unit: FunctionUnit,
+  prev: CompileSnapshot,
+  specContext: Context,
+  narrowings: ReadonlyArray<Narrowing<any>>,
+): boolean {
+  for (const n of narrowings) {
+    const blockAnalysis = n.blockAnalysis();
+    const rootMap = prev.rootFacts.get(n);
+    const specMap = prev.speculativeFacts.get(n);
+    if (rootMap === undefined || specMap === undefined) return false;
+    for (const block of unit.blockMap.values()) {
+      const rootNow = factStore.tryRead(blockAnalysis, block);
+      const rootPrev = rootMap.get(block);
+      if (rootNow !== rootPrev) {
+        if (rootNow === undefined || rootPrev === undefined) return false;
+        if (!blockAnalysis.lattice.eq(rootNow as never, rootPrev as never)) return false;
+      }
+      const specNow = factStore.tryRead(blockAnalysis, block, specContext)
+        ?? factStore.tryRead(blockAnalysis, block);
+      const specPrev = specMap.get(block);
+      if (specNow !== specPrev) {
+        if (specNow === undefined || specPrev === undefined) return false;
+        if (!blockAnalysis.lattice.eq(specNow as never, specPrev as never)) return false;
+      }
     }
   }
   return true;

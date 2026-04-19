@@ -209,6 +209,7 @@ export function makeJitObservers(
 ): {
   observeNodeWrite: (nodeId: number, value: unknown) => void;
   observeScopeCall: (scopeId: number) => void;
+  observeScopeReturn: (scopeId: number, value: unknown) => void;
 } {
   return {
     observeNodeWrite: (nodeId, value) => {
@@ -220,6 +221,11 @@ export function makeJitObservers(
       const cur = worklist.factStore.tryRead(runtimeCallAnalysis, scopeId) ?? 0;
       if (cur >= RUNTIME_CALL_COUNT_SAT) return;
       worklist.observe(runtimeCallAnalysis, scopeId, cur + 1);
+      if (worklist.hasPendingWork()) worklist.drain();
+    },
+    observeScopeReturn: (scopeId, value) => {
+      beforeObserve?.();
+      observeRuntimeReturn(worklist, scopeId, value);
       if (worklist.hasPendingWork()) worklist.drain();
     },
   };

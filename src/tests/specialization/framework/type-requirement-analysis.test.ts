@@ -53,7 +53,7 @@ import { typeNarrowing } from "../../../specialization/framework/dfa-analyses";
 
 function build(code: string): { ast: StmtNS.FileInput; worklist: Worklist } {
   const script = code + "\n";
-  const ast = parse(script) as StmtNS.FileInput;
+  const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const worklist = new Worklist(ast, environments);
   worklist.drain();
@@ -225,14 +225,11 @@ def hot(x):
   });
 
   test("unsatisfiable requirements classify as unprovable, not provable", () => {
-    // The current propagator rules rarely produce unsatisfiable entries
-    // from source code (all paths seeded by the same returnKindHandle
-    // target widen to INT_ANY on int-closed binops). Inject the two
-    // unsatisfiable shapes directly and verify the split classifies them:
-    //   - slot 10: full BOTTOM (kinds === 0).
-    //   - slot 11: meet(INT_POS, INT_NEG) — kinds=INT_BIT but intRef=0,
-    //     i.e. int kind with no admissible sign. Structurally non-BOTTOM
-    //     but semantically admits no value; `isSatisfiable` must see this.
+    // Empty requirements are now canonicalized to BOTTOM in TypeLattice.
+    // Inject two unsatisfiable entries directly and verify the split still
+    // classifies them as unprovable, with a satisfiable neighbor preserved.
+    //   - slot 10: full BOTTOM.
+    //   - slot 11: meet(INT_POS, INT_NEG), which now normalizes to BOTTOM.
     //   - slot 12: INT_POS, provable.
     const { ast, worklist } = build(`
 def hot(x):
@@ -259,6 +256,7 @@ def hot(x):
     expect(reqs.provable.get(12)).toEqual(INT_POS);
     expect(reqs.provable.has(10)).toBe(false);
     expect(reqs.provable.has(11)).toBe(false);
+    expect(meet(INT_POS, INT_NEG)).toBe(BOTTOM);
   });
 
   test("Worklist construction throws when narrowings on one source disagree on resolveUnit", () => {
@@ -277,7 +275,7 @@ def hot(x):
     };
 
     const script = "x = 1\n";
-    const ast = parse(script) as StmtNS.FileInput;
+    const ast = parse(script);
     const { environments } = analyzeWithEnvironments(ast, script, 4);
 
     expect(() =>

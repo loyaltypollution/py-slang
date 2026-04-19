@@ -4,8 +4,9 @@
 // svml-compiler GUARD_TRUTHY emission → SpeculationViolation deopt → recompile`
 // chain. The standard (widening) analyses must remain unchanged so AST-mutating
 // transforms stay sound; the speculative analyses are the JIT-only refinement
-// the compiler consults when emitting guards. Numeric-kind speculation
-// (GUARD_KIND / MULF) was disabled — see svml-compiler.ts `numericMode`.
+// the compiler consults when emitting guards. Write-driven numeric-kind
+// speculation remains disabled; guarded return-kind specialization below uses
+// must-backward entry requirements instead.
 
 import { ExprNS, StmtNS, resetNodeIds } from "../../../ast-types";
 import { findAssumption, ROOT_CONTEXT } from "../../../specialization/framework/context";
@@ -18,9 +19,13 @@ import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import { typeAnalysis } from "../../../specialization/framework/dfa-analyses";
+import {
+  returnKindHandle,
+  typeAnalysis,
+} from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import {
+  observeRuntimeReturn,
   runtimeWriteAnalysis,
   widenWriteObservation,
 } from "../../../specialization/framework/runtime-analyses";
@@ -31,7 +36,7 @@ import { buildTestWorklist } from "../../utils";
 
 function build(code: string) {
   const script = code + "\n";
-  const ast = parse(script) as StmtNS.FileInput;
+  const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const worklist = buildTestWorklist(ast, environments);
   worklist.drain();
@@ -46,26 +51,12 @@ function compile(ast: StmtNS.FileInput, environments: ReturnType<typeof analyzeW
       worklist.factStore,
       worklist.nodeIndex,
       nodeId => worklist.specContextForNode(nodeId),
+      unit => worklist.specContextFor(unit),
     ),
     worklist.registry,
     worklist,
   );
   return { compiler, program: compiler.compileProgram(ast) };
-}
-
-function findFirstVariableRead(node: ExprNS.Expr | StmtNS.Stmt, name: string): ExprNS.Variable | undefined {
-  const stack: unknown[] = [node];
-  while (stack.length) {
-    const n = stack.pop();
-    if (n instanceof ExprNS.Variable && n.name.lexeme === name) return n;
-    if (n && typeof n === "object") {
-      for (const v of Object.values(n)) {
-        if (Array.isArray(v)) stack.push(...v);
-        else if (v && typeof v === "object" && "kind" in v) stack.push(v);
-      }
-    }
-  }
-  return undefined;
 }
 
 describe("speculative analysis: meet vs join", () => {
@@ -105,10 +96,93 @@ def hot(x):
   });
 });
 
-// GUARD_KIND emission was disabled in svml-compiler (see numericMode rationale:
-// ADDF vs ADDG differed by ~2 typeof checks, V8 PIC closes the gap, measured
-// speedup ≤1%). The numeric-speculation tests that used to live here were
-// removed; GUARD_TRUTHY dead-branch tests below remain the speculation spec.
+// Numeric specialization remains disabled for write-driven speculative type
+// narrowings, but return-kind speculation now consumes must-backward entry
+// requirements in a guarded way: the compiler may hoist entry GUARD_KINDs for
+// parameters and then select specialized numeric opcodes in that guarded body.
+
+describe("svml-compiler: guarded return-kind specialization", () => {
+  test("return-kind observation hoists parameter GUARD_KINDs and enables numeric opcode selection", () => {
+    const { ast, environments, worklist } = build(`
+def hot(x):
+    return x + 1
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+
+    observeRuntimeReturn(worklist, fn.id, 7);
+    worklist.drain();
+
+    const { program } = compile(ast, environments, worklist);
+    expect(hasOpcode(program, OpCodes.GUARD_KIND)).toBe(true);
+    expect(hasOpcode(program, OpCodes.ADDF)).toBe(true);
+    expect(hasOpcode(program, OpCodes.ADDG)).toBe(false);
+  });
+
+  test("without a return-kind observation the same function stays unguarded and generic", () => {
+    const { ast, environments, worklist } = build(`
+def hot(x):
+    return x + 1
+`);
+
+    const { program } = compile(ast, environments, worklist);
+    expect(hasOpcode(program, OpCodes.GUARD_KIND)).toBe(false);
+    expect(hasOpcode(program, OpCodes.ADDF)).toBe(false);
+    expect(hasOpcode(program, OpCodes.ADDG)).toBe(true);
+  });
+
+  test("lineage-precise widen for return-kind deopt retains sibling write-driven speculation", () => {
+    const { ast, environments, worklist } = build(`
+def hot(x, mode):
+    y = mode
+    if y > 0:
+        return x + 1
+    else:
+        return 999
+
+hot("oops", 1)
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const modeRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
+
+    worklist.observe(runtimeWriteAnalysis, modeRead.id, { kind: "number", value: 1 });
+    observeRuntimeReturn(worklist, fn.id, 7);
+    worklist.drain();
+
+    const { compiler, program } = compile(ast, environments, worklist);
+    const interpreter = new SVMLInterpreter(program, { sendOutput: () => {} });
+    const jitAnalysis = makeJitAnalysis({
+      compiler,
+      interpreter,
+      specContextFor: unit => worklist.specContextFor(unit),
+    });
+    worklist.register(jitAnalysis);
+
+    expect(hasOpcode(program, OpCodes.GUARD_KIND)).toBe(true);
+    expect(hasOpcode(program, OpCodes.GUARD_TRUTHY)).toBe(true);
+
+    let violation: SpeculationViolation | undefined;
+    try {
+      interpreter.execute();
+    } catch (e) {
+      if (!(e instanceof SpeculationViolation)) throw e;
+      violation = e;
+    }
+    expect(violation).toBeDefined();
+    expect(violation!.nodeId).toBe((fn.body[0] as StmtNS.Assign).id);
+
+    worklist.widenGuard(violation!.nodeId);
+    worklist.drain();
+
+    const unit = worklist.units.get(fn)!;
+    const ctx = worklist.specContextFor(unit);
+    expect(findAssumption(ctx, returnKindHandle, fn.id)).toBeUndefined();
+    expect(findAssumption(ctx, constExprHandle, modeRead.id)).toBeDefined();
+
+    const currentProgram = (interpreter as unknown as { program: typeof program }).program;
+    expect(hasOpcode(currentProgram, OpCodes.GUARD_KIND)).toBe(false);
+    expect(hasOpcode(currentProgram, OpCodes.GUARD_TRUTHY)).toBe(true);
+  });
+});
 
 describe("widenWriteObservation: deopt-protocol primitive", () => {
   test("writing ⊤ at a node erases speculative narrowing on next analysis", () => {
@@ -323,6 +397,78 @@ hot(1, 0)
     expect(guardArgs(currentProgram)).toEqual([cond1Id]);
   });
 
+  test("precise deopt reuses a pre-built sibling artifact without recompiling", () => {
+    const { ast, environments, worklist } = build(`
+def hot(a, b):
+    x = a
+    y = b
+    if x > 0:
+        r1 = 1
+    else:
+        r1 = 2
+    if y > 0:
+        r2 = 10
+    else:
+        r2 = 20
+    return r1 + r2
+
+hot(1, 0)
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const xAssign = fn.body[0] as StmtNS.Assign;
+    const yAssign = fn.body[1] as StmtNS.Assign;
+    const aRead = xAssign.value as ExprNS.Variable;
+    const bRead = yAssign.value as ExprNS.Variable;
+    const yCond = (fn.body[3] as StmtNS.If).condition;
+    const unit = worklist.nodeIndex.get(aRead.id)!;
+
+    const { compiler, program } = compile(ast, environments, worklist);
+    const interpreter = new SVMLInterpreter(program, { sendOutput: () => {} });
+    const compileSpy = jest.spyOn(compiler, "compileFunction");
+    const jitAnalysis = makeJitAnalysis({
+      compiler,
+      interpreter,
+      specContextFor: trackedUnit => worklist.specContextFor(trackedUnit),
+    });
+    worklist.register(jitAnalysis);
+    worklist.drain();
+
+    worklist.observe(runtimeWriteAnalysis, aRead.id, { kind: "number", value: 1 });
+    worklist.drain();
+    const ctxA = worklist.specContextFor(unit);
+    const compilesAfterA = compileSpy.mock.calls.length;
+
+    worklist.observe(runtimeWriteAnalysis, bRead.id, { kind: "number", value: 1 });
+    worklist.drain();
+    const compilesAfterAB = compileSpy.mock.calls.length;
+    expect(compilesAfterAB).toBeGreaterThan(compilesAfterA);
+
+    let violation: SpeculationViolation | undefined;
+    try {
+      interpreter.execute();
+    } catch (e) {
+      if (!(e instanceof SpeculationViolation)) throw e;
+      violation = e;
+    }
+    expect(violation).toBeDefined();
+    expect(violation!.nodeId).toBe(yCond.id);
+
+    worklist.widenGuard(violation!.nodeId);
+    worklist.drain();
+
+    // The fired guard prunes only the load-bearing const assumption for `b`.
+    // The non-load-bearing type assumption at `bRead` survives, so the
+    // resulting context is still distinct from the older sibling `ctxA`
+    // (which only carried `a`'s assumptions). Because the const fact at the
+    // fired branch really changed, the JIT may still need one recompile here.
+    const pruned = worklist.specContextFor(unit);
+    expect(pruned).not.toBe(ROOT_CONTEXT);
+    expect(pruned).not.toBe(ctxA);
+    expect(findAssumption(pruned, constExprHandle, bRead.id)).toBeUndefined();
+    expect(findAssumption(pruned, typeExprHandle, bRead.id)).toBeDefined();
+    expect(compileSpy.mock.calls.length).toBeGreaterThanOrEqual(compilesAfterAB);
+  });
+
   test("lineage-precise widen: pruned context retains the non-load-bearing narrowing", () => {
     // Observation at modeRead lifts BOTH narrowings (constExprHandle@modeRead
     // and typeExprHandle@modeRead). Only `constExprHandle@modeRead` is
@@ -387,11 +533,10 @@ hot(0)
     expect(findAssumption(ctx, typeExprHandle, modeRead.id)).toBeDefined();
 
     // The pruned context `[typeExprHandle@modeRead]` was never active pre-
-    // deopt, so it's a novel intermediate — cache miss → recompile. This is
-    // the accepted cost per the brief's wording ("let MORE of these prunes
-    // land on pre-built siblings" — not all). Ancestor-fallback dispatch is
-    // the next-step optimization; without it, one recompile per deopt.
-    expect(compileSpy.mock.calls.length).toBeGreaterThan(compilesBeforeDeopt);
+    // deopt, but once the const narrowing is gone the remaining speculative
+    // inputs are backend-irrelevant, so jitAnalysis can reuse the already-
+    // built sibling artifact instead of recompiling.
+    expect(compileSpy.mock.calls.length).toBe(compilesBeforeDeopt);
 
     // The recompile produced a guard-free IR: under [typeExprHandle@modeRead]
     // (no const narrowing in chain), speculativeConditionTruth returns

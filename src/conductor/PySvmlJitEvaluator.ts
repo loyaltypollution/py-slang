@@ -36,6 +36,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           worklist.factStore,
           worklist.nodeIndex,
           nodeId => worklist.specContextForNode(nodeId),
+          unit => worklist.specContextFor(unit),
         ),
         worklist.registry,
         worklist,

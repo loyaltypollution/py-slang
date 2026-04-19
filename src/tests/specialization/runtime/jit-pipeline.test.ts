@@ -23,7 +23,7 @@ import { buildTestWorklist } from "../../utils";
 
 function buildUnit(code: string) {
   const script = code + "\n";
-  const ast = parse(script) as StmtNS.FileInput;
+  const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const reactive = buildTestWorklist(ast, environments);
   reactive.drain();
@@ -260,6 +260,7 @@ f(1)
     const jitAnalysis = makeJitAnalysis({
       compiler: compiler as never,
       interpreter: interpreter as never,
+      specContextFor: u => reactive.specContextFor(u),
     });
     reactive.register(jitAnalysis);
 
@@ -279,21 +280,25 @@ f(1)
     };
   }
 
-  test("runtime observation does not widen ROOT facts or force recompile", () => {
+  test("type-only spec-context change reuses the cached artifact", () => {
     const { worklist, unit, enqueue, counters } = setup();
     enqueue();
     const baseline = counters.compiles;
     expect(baseline).toBeGreaterThanOrEqual(1);
 
-    // ROOT facts are purely semantic — runtime observations no longer
-    // advance them. Observing at a unit-internal node creates a non-ROOT
-    // speculation cell but leaves the ROOT-keyed jitAnalysis snapshot
-    // unchanged, so no recompile fires.
+    // Observing a runtime write at a unit-internal expression still extends
+    // the unit's speculation context and wakes jitAnalysis through the
+    // `specContextChange` lifecycle edge. But write-driven speculative type
+    // facts are not backend-shaping inputs, so the JIT should reuse an
+    // existing artifact when those are the only relevant changes.
     const fd = unit.funcAst as StmtNS.FunctionDef;
     const ret = fd.body[0] as StmtNS.Return;
-    const binary = ret.value! as ExprNS.Binary;
-    const literal = binary.right as ExprNS.Literal;
-    observeRuntimeWrite(worklist, literal.id, "force-change");
+    const binary = ret.value! as ExprNS.Binary; // `x + 1`
+    const literal = binary.right as ExprNS.Literal; // `1` — statically const(1), INT_POS
+    // A None observation at the literal creates a fresh speculative context,
+    // but does not lift into const narrowing, so no backend-relevant fact
+    // changes and the current artifact stays valid.
+    observeRuntimeWrite(worklist, literal.id, null);
 
     expect(counters.compiles).toBe(baseline);
   });
@@ -303,9 +308,9 @@ f(1)
   // that broke jitAnalysis's wake on only one of the two analyses would be caught
   // here even though the `runtime-observation` test above still fires both.
   test.each([
-    { name: "typeAnalysis", analysis: typeAnalysis, top: TYPE_TOP },
-    { name: "constAnalysis", analysis: constAnalysis, top: CONST_TOP },
-  ])("$name change forces recompile", ({ analysis, top }) => {
+    { name: "typeAnalysis", analysis: typeAnalysis, top: TYPE_TOP, recompiles: false },
+    { name: "constAnalysis", analysis: constAnalysis, top: CONST_TOP, recompiles: true },
+  ])("$name change updates jit invalidation correctly", ({ analysis, top, recompiles }) => {
     const { worklist, unit, enqueue, counters } = setup();
     enqueue();
     const baseline = counters.compiles;
@@ -323,7 +328,8 @@ f(1)
       { outEnv, exprFacts: new Map() } as never,
     );
 
-    expect(counters.compiles).toBeGreaterThan(baseline);
+    if (recompiles) expect(counters.compiles).toBeGreaterThan(baseline);
+    else expect(counters.compiles).toBe(baseline);
   });
 
   test("re-enqueue without fact change short-circuits the memo", () => {

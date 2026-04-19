@@ -5,9 +5,17 @@ import type { TypeLattice } from "../../specialization/type-analysis/lattice";
 import type { FunctionUnit } from "../../specialization/framework/function-unit";
 import type { DfaQuery } from "../../specialization/dfa-query";
 import type { GuardRegistrar } from "../../specialization/framework/worklist";
-import { constNarrowing } from "../../specialization/framework/dfa-analyses";
+import { constNarrowing, returnKindNarrowing } from "../../specialization/framework/dfa-analyses";
 import { ScopeIndexMap } from "./scope-index-map";
-import { BOOL_BIT, FLOAT_BIT, INT_BIT } from "../../specialization/type-analysis/lattice";
+import {
+  BOOL_BIT,
+  CLOSURE_BIT,
+  FLOAT_BIT,
+  INT_BIT,
+  NULL_BIT,
+  STR_BIT,
+  meet,
+} from "../../specialization/type-analysis/lattice";
 import { Token } from "../../tokenizer";
 import { TokenType } from "../../tokens";
 import { SVMLIRBuilder } from "./SVMLIRBuilder";
@@ -112,10 +120,6 @@ export class SVMLCompiler
     return this.dfaQuery?.constOf(node.id);
   }
 
-  private getSpeculativeType(node: ExprNS.Expr | StmtNS.Stmt): TypeLattice | undefined {
-    return this.dfaQuery?.speculativeTypeOf(node.id);
-  }
-
   /** Speculation is sound to emit only when the enclosing function is pure:
    *  a guard violation re-enters the call from the top, replaying any side
    *  effects that already happened. Pure callees have nothing to replay.
@@ -134,9 +138,23 @@ export class SVMLCompiler
     return k !== undefined && k !== 0 && (k & ~SVMLCompiler.NUMERIC_KIND_MASK) === 0;
   }
 
-  private isSpeculativelyNumeric(node: ExprNS.Expr): boolean {
+  private entryRequirementOf(token: Token): TypeLattice | undefined {
+    const annotation = this.getTokenAnnotation(token);
+    if (annotation.isPrimitive || annotation.envLevel !== 0) return undefined;
+    return this.entryRequirementBySlot.get(annotation.slot);
+  }
+
+  private entryGuardedType(node: ExprNS.Expr | StmtNS.Stmt): TypeLattice | undefined {
+    if (!(node instanceof ExprNS.Variable)) return undefined;
+    const required = this.entryRequirementOf(node.name);
+    if (required === undefined) return undefined;
+    const staticType = this.getType(node);
+    return staticType === undefined ? required : meet(staticType, required);
+  }
+
+  private entryGuardedNumeric(node: ExprNS.Expr): boolean {
     if (!this.speculationAllowed()) return false;
-    const k = this.getSpeculativeType(node)?.kinds;
+    const k = this.entryGuardedType(node)?.kinds;
     return k !== undefined && k !== 0 && (k & ~SVMLCompiler.NUMERIC_KIND_MASK) === 0;
   }
 
@@ -146,8 +164,9 @@ export class SVMLCompiler
    *  interpreter differ by ~2 typeof checks per dispatch, which V8's
    *  optimizer closes via PIC/inlining; measured net speedup was ≤1%.
    *  The real JIT lever is dead-branch elimination (see visitIfStmt). */
-  private numericMode(node: ExprNS.Expr): "static" | "none" {
-    return this.isStaticallyNumeric(node) ? "static" : "none";
+  private numericMode(node: ExprNS.Expr): "static" | "entry-guarded" | "none" {
+    if (this.isStaticallyNumeric(node)) return "static";
+    return this.entryGuardedNumeric(node) ? "entry-guarded" : "none";
   }
 
   /** Slot key → expected const value, populated when visitAssignStmt emits
@@ -157,6 +176,10 @@ export class SVMLCompiler
    *  const-pinned and can skip runtime evaluation entirely. This is the
    *  anchor that lets visitIfStmt drop the cond eval and dead arm. */
   private constGuardedSlots = new Map<string, number>();
+  /** Entry-guarded parameter requirements for the current FunctionDef.
+   *  Populated only when compiling a function under a return-kind speculation
+   *  context whose `typeRequirementAnalysis` result is provable. */
+  private entryRequirementBySlot = new Map<number, TypeLattice>();
 
   /** If the speculative const analysis has pinned `cond` to a concrete value AND
    *  speculation is allowed in this scope, return the truthiness; otherwise
@@ -312,6 +335,43 @@ export class SVMLCompiler
    * excluding `FileInput`, which is the entry-point program and is rebuilt
    * via `compileProgram`). Lambdas are never `FunctionUnit` keys.
    */
+  private static typeToGuardMask(v: TypeLattice): number | undefined {
+    let mask = 0;
+    if (v.kinds & INT_BIT) mask |= SVMLKindBits.NUMBER;
+    if (v.kinds & FLOAT_BIT) mask |= SVMLKindBits.NUMBER;
+    if (v.kinds & BOOL_BIT) mask |= SVMLKindBits.BOOLEAN;
+    if (v.kinds & STR_BIT) mask |= SVMLKindBits.STRING;
+    if (v.kinds & NULL_BIT) mask |= SVMLKindBits.NULL;
+    if (v.kinds & CLOSURE_BIT) mask |= SVMLKindBits.CLOSURE;
+    const unsupported = v.kinds & ~(INT_BIT | FLOAT_BIT | BOOL_BIT | STR_BIT | NULL_BIT | CLOSURE_BIT);
+    return unsupported === 0 && mask !== 0 ? mask : undefined;
+  }
+
+  private emitEntryRequirementGuards(funcAst: StmtNS.FunctionDef): void {
+    if (funcAst.body.length === 0 || this.entryRequirementBySlot.size === 0) return;
+    // All-or-nothing: if any provable requirement is unrepresentable as a
+    // GUARD_KIND mask, abandon the whole set. A partial guard set would leave
+    // the return-kind speculation unprotected on the skipped slot, which is
+    // unsound for any consumer that baked the speculated return kind into
+    // its own codegen (see DfaQuery.entryRequirementsOf contract).
+    const masks: Array<[number, number]> = [];
+    for (const [slot, req] of this.entryRequirementBySlot) {
+      const mask = SVMLCompiler.typeToGuardMask(req);
+      if (mask === undefined) return;
+      masks.push([slot, mask]);
+    }
+    const guardNodeId = funcAst.body[0].id;
+    for (const [slot, mask] of masks) {
+      this.builder.emitUnary(OpCodes.LDLG, slot);
+      this.builder.emitBinary(OpCodes.GUARD_KIND, guardNodeId, mask);
+      this.guardRegistrar?.registerGuard(guardNodeId, {
+        narrowing: returnKindNarrowing,
+        key: funcAst.id,
+      });
+      this.builder.emitNullary(OpCodes.POPG);
+    }
+  }
+
   compileFunction(unit: FunctionUnit): SVMLIR {
     const funcAst = unit.funcAst;
     if (!(funcAst instanceof StmtNS.FunctionDef)) {
@@ -352,6 +412,12 @@ export class SVMLCompiler
     }
     subCompiler.envSlotCounters.set(nextEnvironment, numArgs);
 
+    const entryReqs = this.dfaQuery?.entryRequirementsOf(funcAst.id);
+    if (entryReqs !== undefined && entryReqs.unprovable.size === 0) {
+      subCompiler.entryRequirementBySlot = new Map(entryReqs.provable);
+    }
+
+    subCompiler.emitEntryRequirementGuards(funcAst);
     subCompiler.compileStatements(funcAst.body);
     builder.emitNullary(OpCodes.RETG);
 
@@ -746,6 +812,13 @@ export class SVMLCompiler
     compileBody: (compiler: SVMLCompiler) => ExpressionResult,
   ): ExpressionResult {
     const compiler = this.fromFunctionNode(node);
+    if (node instanceof StmtNS.FunctionDef) {
+      const entryReqs = this.dfaQuery?.entryRequirementsOf(node.id);
+      if (entryReqs !== undefined && entryReqs.unprovable.size === 0) {
+        compiler.entryRequirementBySlot = new Map(entryReqs.provable);
+      }
+      compiler.emitEntryRequirementGuards(node);
+    }
     const { maxStackSize } = compileBody(compiler);
     // Functions must always return a value
     compiler.builder.emitNullary(OpCodes.RETG);
@@ -808,7 +881,7 @@ export class SVMLCompiler
     if (!isConcrete(this.getType(stmt.value), this.getConst(stmt.value))) {
       this.builder.recordWriteSite(stmt.value);
     }
-    this.emitStoreSymbol((stmt.target as ExprNS.Variable).name);
+    this.emitStoreSymbol(stmt.target.name);
 
     this.builder.emitNullary(OpCodes.LGCU);
     return initResult;

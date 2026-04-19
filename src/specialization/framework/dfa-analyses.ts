@@ -59,8 +59,17 @@ export const constNarrowing: Narrowing<ConstLattice> = {
  *  from `runtimeReturnAnalysis`) than the node-keyed type/const dimensions
  *  (sourced from `runtimeWriteAnalysis`). The observation translator
  *  filters on `observationSource` so they never cross-trigger. */
-export const DEFAULT_NARROWINGS: ReadonlyArray<Narrowing<any>> = [
+export const DEFAULT_NARROWINGS: ReadonlyArray<Narrowing<unknown>> = [
   typeNarrowing,
+  constNarrowing,
+  returnKindNarrowing,
+];
+
+/** Narrowings that currently affect SVML code generation. Write-driven type
+ *  narrowings remain available in speculation contexts and lineage pruning,
+ *  but the backend does not consume speculative type facts directly, so the
+ *  JIT should not treat them as artifact-shaping inputs. */
+export const JIT_RELEVANT_NARROWINGS: ReadonlyArray<Narrowing<unknown>> = [
   constNarrowing,
   returnKindNarrowing,
 ];

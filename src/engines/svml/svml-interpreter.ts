@@ -16,7 +16,7 @@ import {
   SVMLProgram,
   SVMLType,
 } from "./types";
-import type { StmtNS } from "../../ast-types";
+import { StmtNS } from "../../ast-types";
 
 const __DEBUG__ =
   typeof (globalThis as Record<string, unknown>).__DEBUG__ !== "undefined" &&
@@ -67,6 +67,7 @@ export class SVMLInterpreter {
    */
   private observeNodeWrite: (nodeId: number, value: unknown) => void = () => {};
   private observeScopeCall: (scopeId: number) => void = () => {};
+  private observeScopeReturn: (scopeId: number, value: unknown) => void = () => {};
 
   constructor(
     program: SVMLProgram,
@@ -77,6 +78,7 @@ export class SVMLInterpreter {
       sendOutput?: (msg: string) => void;
       observeNodeWrite?: (nodeId: number, value: unknown) => void;
       observeScopeCall?: (scopeId: number) => void;
+      observeScopeReturn?: (scopeId: number, value: unknown) => void;
     },
   ) {
     this.program = program;
@@ -91,6 +93,7 @@ export class SVMLInterpreter {
       if (options.maxInstructions) this.maxInstructionLimit = options.maxInstructions;
       if (options.observeNodeWrite) this.observeNodeWrite = options.observeNodeWrite;
       if (options.observeScopeCall) this.observeScopeCall = options.observeScopeCall;
+      if (options.observeScopeReturn) this.observeScopeReturn = options.observeScopeReturn;
     }
   }
 
@@ -807,6 +810,16 @@ export class SVMLInterpreter {
     this.observeScopeCall(calleeKey.id);
   }
 
+  /** Emit a per-function return observation for user-defined functions only.
+   *  FileInput returns are ignored: return-kind speculation is keyed by
+   *  FunctionDef.id and only narrows function units. */
+  private dispatchReturnSite(value: SVMLBoxType): void {
+    if (!this.currentFrame) return;
+    const scopeKey = this.currentFrame.ir.scopeKey;
+    if (!(scopeKey instanceof StmtNS.FunctionDef)) return;
+    this.observeScopeReturn(scopeKey.id, value);
+  }
+
   // ========================================================================
   // Control Flow
   // ========================================================================
@@ -983,6 +996,7 @@ export class SVMLInterpreter {
 
     // Pop return value from CURRENT (callee's) stack
     const returnValue = this.pop();
+    this.dispatchReturnSite(returnValue);
 
     if (__DEBUG__)
       debug(`[RETG] Returning value: ${JSON.stringify(SVMLInterpreter.toJSValue(returnValue))}`);
