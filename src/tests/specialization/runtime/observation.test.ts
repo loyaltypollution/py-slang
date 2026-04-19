@@ -6,10 +6,13 @@ import { evaluate } from "../../../engines/cse/interpreter";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import {
+  observeRuntimeReturn,
   observeRuntimeWrite,
   runtimeCallAnalysis,
+  runtimeReturnAnalysis,
 } from "../../../specialization/framework/runtime-analyses";
-import { STR_BIT } from "../../../specialization/type-analysis/lattice";
+import { INT_BIT, STR_BIT } from "../../../specialization/type-analysis/lattice";
+import { ROOT_CONTEXT } from "../../../specialization/framework/context";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import { typeAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { makeDfaQuery } from "../../../specialization";
@@ -17,7 +20,7 @@ import { buildTestWorklist } from "../../utils";
 
 function build(code: string) {
   const script = code + "\n";
-  const ast = parse(script) as StmtNS.FileInput;
+  const ast = parse(script);
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const reactive = buildTestWorklist(ast, environments);
   return { ast, environments, reactive };
@@ -60,28 +63,56 @@ describe.each([
     },
   },
 ])("$engine observation sink", ({ observe }) => {
-  test("string store widens RHS fact to include STR_BIT", async () => {
-    const { ast, reactive } = await observe(`
-x = 1
-x = "hello"
-`);
-    const secondAssign = ast.statements[1] as StmtNS.Assign;
-    const type = readExprFact(
+  test("string store keeps ROOT fact baseline-only and narrows only under spec context", async () => {
+    const code = `
+def f(x):
+    y = x
+    return y
+f("hello")
+`;
+    const baseline = build(code);
+    baseline.reactive.drain();
+    const baselineFn = baseline.ast.statements[0] as StmtNS.FunctionDef;
+    const baselineRead = (baselineFn.body[0] as StmtNS.Assign).value;
+    const baselineType = readExprFact(
+      baseline.reactive.factStore,
+      typeAnalysis,
+      baseline.reactive.blockOfNode(baselineRead.id),
+      baselineRead.id,
+      ROOT_CONTEXT,
+    );
+
+    const { ast, reactive } = await observe(code);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const xRead = (fn.body[0] as StmtNS.Assign).value;
+    const block = reactive.blockOfNode(xRead.id);
+    const rootType = readExprFact(
       reactive.factStore,
       typeAnalysis,
-      reactive.blockOfNode(secondAssign.value.id),
-      secondAssign.value.id,
+      block,
+      xRead.id,
+      ROOT_CONTEXT,
     );
-    expect(type).toBeDefined();
-    expect(type!.kinds & STR_BIT).toBeTruthy();
+    const specCtx = reactive.specContextForNode(xRead.id);
+    const specType = readExprFact(
+      reactive.factStore,
+      typeAnalysis,
+      block,
+      xRead.id,
+      specCtx,
+    );
+    expect(rootType).toEqual(baselineType);
+    expect(specCtx).not.toBe(ROOT_CONTEXT);
+    expect(specType).toBeDefined();
+    expect(specType!.kinds & STR_BIT).toBeTruthy();
   });
 });
 
-// Idempotence: observing a value the static analysis already knows about
-// must not perturb the fact store. This is the guard rail that lets the
-// worklist quiesce after runtime input converges.
+// Idempotence: re-observing a value the static analysis already knows about
+// must not perturb ROOT facts. The observation may still allocate a
+// speculative context, but baseline facts remain unchanged.
 describe("observation: idempotence", () => {
-  test("re-observing a known value leaves the fact equal", () => {
+  test("re-observing a known value leaves the ROOT fact equal", () => {
     const { ast, reactive } = build("x = 42");
     reactive.drain();
     const assign = ast.statements[0] as StmtNS.Assign;
@@ -89,7 +120,10 @@ describe("observation: idempotence", () => {
     const before = readExprFact(reactive.factStore, typeAnalysis, block, assign.value.id);
     observeRuntimeWrite(reactive, assign.value.id, 42);
     const after = readExprFact(reactive.factStore, typeAnalysis, block, assign.value.id);
+    const specCtx = reactive.specContextForNode(assign.value.id);
+    const spec = readExprFact(reactive.factStore, typeAnalysis, block, assign.value.id, specCtx);
     expect(after).toEqual(before);
+    expect(spec).toEqual(before);
   });
 });
 
@@ -125,5 +159,48 @@ f()
     await interpreter.execute();
     reactive.drain();
     expect(calls).toContain(fDef.id);
+  });
+});
+
+describe("SVML observeScopeReturn", () => {
+  test("fires with the returning FunctionDef's scope id and seeds entry requirements", async () => {
+    const { ast, environments, reactive } = build(`
+def f(x):
+    return x + 1
+f(41)
+`);
+    reactive.drain();
+    const fDef = ast.statements[0] as StmtNS.FunctionDef;
+    const returns: Array<{ scopeId: number; value: unknown }> = [];
+
+    const compiler = SVMLCompiler.fromProgramUnit(
+      ast,
+      environments,
+      makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+      reactive.registry,
+    );
+    const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
+      observeScopeReturn: (scopeId, value) => {
+        returns.push({ scopeId, value });
+        observeRuntimeReturn(reactive, scopeId, value);
+      },
+    });
+
+    await interpreter.execute();
+    reactive.drain();
+
+    expect(returns).toContainEqual({ scopeId: fDef.id, value: 42 });
+    const observed = reactive.factStore.tryRead(runtimeReturnAnalysis, fDef.id);
+    expect(observed).toBeDefined();
+    expect(observed!.kind).toBe("number");
+
+    const reqs = makeDfaQuery(
+      reactive.factStore,
+      reactive.nodeIndex,
+      nodeId => reactive.specContextForNode(nodeId),
+      unit => reactive.specContextFor(unit),
+    ).entryRequirementsOf(fDef.id);
+    expect(reqs).toBeDefined();
+    expect(reqs!.provable.get(0)?.kinds).toBe(INT_BIT);
   });
 });

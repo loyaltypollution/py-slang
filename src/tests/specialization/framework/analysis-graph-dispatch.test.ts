@@ -45,7 +45,7 @@ function saturatingBucket(ceiling: number): Lattice<number> {
   };
 }
 
-function identityWake<K>(analysis: Analysis<any, any>): EdgeSpec<K> {
+function identityWake<K>(analysis: Analysis<unknown, unknown>): EdgeSpec<K> {
   return { on: "fact", analysis, wake: (_c, k) => [k as K] };
 }
 
@@ -64,7 +64,7 @@ function makeAnalysis<K, V>(opts: {
     edges: opts.edges ?? [],
     tier: opts.tier ?? "analysis",
     polarity: opts.polarity ?? "may",
-    transfer: (_fs, _ctx, key) => (opts.transfer ? opts.transfer(key as K) : undefined),
+    transfer: (_fs, _ctx, key) => (opts.transfer ? opts.transfer(key) : undefined),
   };
 }
 

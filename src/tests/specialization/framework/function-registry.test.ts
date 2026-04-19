@@ -40,7 +40,7 @@ function makeLifecycleObserver(): {
 }
 
 function parseProgram(code: string): StmtNS.FileInput {
-  return parse(code + "\n") as StmtNS.FileInput;
+  return parse(code + "\n");
 }
 
 describe("FunctionRegistry", () => {
