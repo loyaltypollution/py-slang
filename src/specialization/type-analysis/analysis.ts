@@ -4,7 +4,6 @@ import type { Analysis, AnalysisCtx } from "../framework/analysis";
 import { findAssumption, ROOT_CONTEXT, type Context } from "../framework/context";
 import type { FactStore } from "../framework/fact-store";
 import type { MutableEnv } from "../framework/mutable-env";
-import { runtimeWriteAnalysis } from "../framework/runtime-analyses";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
@@ -66,18 +65,9 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
   [TokenType.NOTEQUAL, "!="],
 ]);
 
-/** How a per-node static fact is combined with a runtime observation under
- *  ROOT. Only `widenObservation` remains — narrowing is now expressed as a
- *  Context assumption, consumed via `findAssumption` inside the visitor.
- *  `CombineObservation` is kept as a parameter on `makeTypeAnalysisModule`
- *  so tests/fixtures can swap in a stub if they need to exercise the ROOT
- *  widening branch in isolation. */
-export type CombineObservation = (staticVal: TypeLattice, observed: RawKind) => TypeLattice;
-
-export const widenObservation: CombineObservation = (staticVal, observed) => {
-  const lifted = liftType(observed);
-  return lifted !== undefined ? join(staticVal, lifted) : staticVal;
-};
+/** Runtime observations no longer strengthen ROOT facts. Baseline type facts
+ *  are derived from program semantics only; runtime/profile input participates
+ *  through non-ROOT Context assumptions instead. */
 
 /** Assumption-binding identity used by Context. Callers build a Context by
  *  extending a parent with `(typeExprHandle, nodeId, narrowedValue)`; the
@@ -97,6 +87,7 @@ export const typeExprHandle: Analysis<number, TypeLattice> = {
   lattice: { bottom: BOTTOM, leq, join, eq },
   edges: [],
   tier: "analysis",
+  polarity: "may",
   transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): TypeLattice | undefined {
     return undefined;
   },
@@ -104,29 +95,19 @@ export const typeExprHandle: Analysis<number, TypeLattice> = {
 
 class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
-    private readonly factStore: FactStore,
     private readonly slotTypes: MutableEnv<TypeLattice>,
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: number, val: TypeLattice) => void,
-    private readonly combineObservation: CombineObservation,
     private readonly context: Context,
   ) {}
 
-  /** Under ROOT: widen the static fact with any runtime observation at this
-   *  node (legacy may-forward behavior; see P1 for why this is nearly a no-op).
-   *  Under a non-ROOT context: ignore runtime observations and `meet` the
-   *  static fact with any ancestor-bound assumption at this node — the
-   *  narrowing mechanism that replaces `speculativeTypeAnalysis`'s parallel
-   *  pass. Nodes without a matching assumption pass the static fact through. */
+  /** ROOT facts are purely semantic. Non-ROOT contexts may narrow them via
+   *  assumptions carried in the Context chain. */
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
-    let combined: TypeLattice;
-    if (this.context === ROOT_CONTEXT) {
-      const observed = this.factStore.tryRead(runtimeWriteAnalysis, node.id);
-      combined = observed !== undefined ? this.combineObservation(val, observed) : val;
-    } else {
-      const assumption = findAssumption(this.context, typeExprHandle, node.id);
-      combined = assumption !== undefined ? meet(val, assumption) : val;
-    }
+    const assumption = this.context === ROOT_CONTEXT
+      ? undefined
+      : findAssumption(this.context, typeExprHandle, node.id);
+    const combined = assumption !== undefined ? meet(val, assumption) : val;
     this.recordExprFact(node.id, combined);
     return combined;
   }
@@ -295,13 +276,9 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   }
 }
 
-/** Build a type-analysis module. `combineObservation` is applied under
- *  ROOT only — non-ROOT contexts consult assumptions via `findAssumption`
- *  and ignore `runtimeWriteAnalysis`. Production wires `widenObservation`;
- *  tests can substitute a stub to isolate the observation-combine branch. */
-export function makeTypeAnalysisModule(
-  combineObservation: CombineObservation,
-): BlockDfaSpec<TypeLattice> {
+/** Build a type-analysis module. ROOT facts are context-free semantic facts;
+ *  non-ROOT contexts consult assumptions via `findAssumption`. */
+export function makeTypeAnalysisModule(): BlockDfaSpec<TypeLattice> {
   return {
   mergeKind: "may",
   direction: "forward",
@@ -318,7 +295,7 @@ export function makeTypeAnalysisModule(
     recordExprFact: (nodeId: number, val: TypeLattice) => void,
     context: Context,
   ): ExprNS.Visitor<TypeLattice> {
-    return new TypeAnalysisVisitor(factStore, env, slotLookup, recordExprFact, combineObservation, context);
+    return new TypeAnalysisVisitor(env, slotLookup, recordExprFact, context);
   },
   /**
    * Narrow the env when crossing a branch edge. Handles `slot OP literal`
@@ -340,7 +317,7 @@ export function makeTypeAnalysisModule(
 }
 
 // Forward may-analysis: env join = union; specialize only when numeric on all paths.
-export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = makeTypeAnalysisModule(widenObservation);
+export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = makeTypeAnalysisModule();
 
 // ---- Predicate narrowing helpers ----
 

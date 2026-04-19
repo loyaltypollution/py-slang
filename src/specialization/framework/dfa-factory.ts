@@ -222,6 +222,7 @@ export function makeBlockFixpointAnalysis<L>(
     lattice: envLattice,
     edges: edgesArr,
     tier: "analysis",
+    polarity: config.mergeKind,
     seed: seedKey,
     transfer(factStore: FactStore, ctx: AnalysisCtx, block: BasicBlock): DfaBlockFact<L> | undefined {
       const unit = block.unit;
@@ -274,7 +275,7 @@ export function makeBlockFixpointAnalysis<L>(
  *  to ROOT_CONTEXT; passing a non-ROOT context reads the per-context cell
  *  produced by running the analysis under that speculation's assumptions. */
 export function readExprFact<L>(
-  factStore: FactStore,
+  factStore: Pick<FactStore, "tryRead">,
   analysis: Analysis<BasicBlock, DfaBlockFact<L>>,
   block: BasicBlock | undefined,
   nodeId: number,

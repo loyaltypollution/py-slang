@@ -177,7 +177,6 @@ export class ContextInterner {
       if (a.analysis === handleAsKey && a.key === key) continue;
       links.push(a);
     }
-    links.reverse();
     links.push({
       analysis: handleAsKey,
       key: key as unknown,

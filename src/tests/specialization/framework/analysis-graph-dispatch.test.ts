@@ -54,6 +54,7 @@ function makeAnalysis<K, V>(opts: {
   lattice: Lattice<V>;
   edges?: ReadonlyArray<EdgeSpec<K>>;
   tier?: "runtime" | "analysis";
+  polarity?: "may" | "must" | "opaque";
   transfer?: (key: K) => V | undefined;
 }): Analysis<K, V> {
   return {
@@ -62,6 +63,7 @@ function makeAnalysis<K, V>(opts: {
     lattice: opts.lattice,
     edges: opts.edges ?? [],
     tier: opts.tier ?? "analysis",
+    polarity: opts.polarity ?? "may",
     transfer: (_fs, _ctx, key) => (opts.transfer ? opts.transfer(key as K) : undefined),
   };
 }
@@ -392,6 +394,7 @@ describe("Worklist analysis-graph dispatch", () => {
         lattice: intMax,
         edges: [{ on: "fact", analysis: producer, wake: (_c, k) => [k as number] }],
         tier: "analysis",
+        polarity: "may",
         transfer: (_fs, ctx, _k) => {
           seenContexts.push(ctx.currentContext);
           return undefined;
@@ -425,6 +428,7 @@ describe("Worklist analysis-graph dispatch", () => {
         lattice: intMax,
         edges: [{ on: "fact", analysis: producer, wake: (_c, k) => [k as number] }],
         tier: "analysis",
+        polarity: "may",
         transfer: (_fs, ctx, _k) => {
           rootSeen.push(ctx.currentContext);
           return undefined;

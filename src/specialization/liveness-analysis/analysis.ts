@@ -197,7 +197,7 @@ addEdge(livenessAnalysis, {
 /** Reconstruct live-OUT of `block`: join of live-INs (stored outEnvs) of
  *  CFG-successors. Terminal blocks have no successors ⇒ empty. */
 export function liveOutOf(
-  factStore: FactStore,
+  factStore: Pick<FactStore, "tryRead">,
   block: BasicBlock,
 ): MutableEnv<LiveVal> {
   const result = new MutableEnv<LiveVal>();
@@ -219,7 +219,7 @@ export function liveOutOf(
  *  do not alias any fact-store state. */
 export function perStatementLiveOut(
   block: BasicBlock,
-  factStore: FactStore,
+  factStore: Pick<FactStore, "tryRead">,
   slotLookup: SlotLookup,
 ): ReadonlyArray<ReadonlySet<number>> {
   const stmts = block.stmts;

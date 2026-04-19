@@ -29,6 +29,16 @@ const firedLattice: Lattice<"fired"> = {
   eq: () => true,
 };
 
+// Storage-combine regression fixture for must-style analyses: the incoming
+// value may be `<= prev` under the exposed order and still need to advance
+// the stored cell because the analysis's declared combine is `min`.
+const intMinCombine: Lattice<number> = {
+  bottom: Number.POSITIVE_INFINITY,
+  leq: (a, b) => a <= b,
+  join: (a, b) => Math.min(a, b),
+  eq: (a, b) => a === b,
+};
+
 function makeAnalysis<K, V>(
   name: string,
   lattice: Lattice<V>,
@@ -40,6 +50,7 @@ function makeAnalysis<K, V>(
     lattice,
     edges: [],
     tier: "analysis",
+    polarity: "may",
     transfer,
   };
 }
@@ -101,6 +112,21 @@ describe("FactStore", () => {
     store.write(p, "n1", "fired");
     store.write(p, "n1", "fired");
     expect(eventCount).toBe(1);
+  });
+
+  it("compares against the actual joined value, not leq(value, prev)", () => {
+    const store = new FactStore();
+    const p = makeAnalysis<string, number>("mustLike", intMinCombine);
+    const events: FactChange<unknown, unknown>[] = [];
+    store.onChange(e => events.push(e));
+
+    store.write(p, "k", 7);
+    const changed = store.write(p, "k", 3);
+
+    expect(changed).toBe(true);
+    expect(store.read(p, "k")).toBe(3);
+    expect(events).toHaveLength(2);
+    expect(events[1]).toEqual({ analysis: p, key: "k", context: ROOT_CONTEXT, oldValue: 7, newValue: 3 });
   });
 
   it("keeps different analyses' keyspaces independent", () => {

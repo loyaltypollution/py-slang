@@ -22,6 +22,7 @@ function makeAnalysis<K, V>(name: string, lattice: Lattice<V>): Analysis<K, V> {
     lattice,
     edges: [],
     tier: "analysis",
+    polarity: "may",
     transfer: (_: unknown, __: AnalysisCtx, ___: K) => undefined,
   };
 }

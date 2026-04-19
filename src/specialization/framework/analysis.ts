@@ -139,9 +139,27 @@ export interface Analysis<K, V> {
    *  to `"analysis"`, which was a miscompile vector for any future
    *  priority-sensitive consumer. */
   readonly tier: "runtime" | "analysis";
+  /** Merge polarity. Names which of the four classical DFA quadrants an
+   *  analysis occupies, surfaced at the Analysis level so reviewers don't
+   *  need to dereference a `BlockDfaSpec` to tell:
+   *
+   *    - `"may"`     — widening / over-approximate merge.
+   *    - `"must"`    — intersecting / requirement-style merge.
+   *    - `"opaque"`  — neither a semantic may/must fact surface nor a
+   *                    transform-visible refinement contract. Runtime
+   *                    observations (profiler evidence, call counts) live
+   *                    here — they feed policy/narrowing pipelines, not
+   *                    direct transform consumers.
+   *
+   *  This is an interpretation contract for reviewers and consumers, not a
+   *  promise that every analysis uses the same order/update discipline in the
+   *  fact store. `BlockDfaSpec` already carries `mergeKind`; polarity mirrors
+   *  it for the wrapping Analysis and adds the `"opaque"` case for non-DFA
+   *  analyses. */
+  readonly polarity: "may" | "must" | "opaque";
   /** Optional hook invoked at every `Worklist.observe` for this analysis,
    *  BEFORE the fact-store write. Fires once per observe call, including
-   *  repeats the monotone fact store would collapse — appropriate for
+   *  repeats the fact store may collapse — appropriate for
    *  policies that count observation calls (count-based speculation) and
    *  for driving the observation→context translator. The worklist has no
    *  analysis-identity branches in `observe`; whether an observation

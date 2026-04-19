@@ -82,6 +82,7 @@ export const returnKindHandle: Analysis<number, TypeLattice> = {
   lattice: { bottom: BOTTOM, leq, join, eq },
   edges: [],
   tier: "analysis",
+  polarity: "may",
   transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): TypeLattice | undefined {
     return undefined;
   },

@@ -14,11 +14,18 @@ export interface FactChange<K, V> {
 
 type FactChangeListener = (change: FactChange<unknown, unknown>) => void;
 
-/** Fact storage keyed by `(analysis, key, context)`. Writes are lattice-monotone:
- *  the stored cell is `join(prev, value)`, never `value` alone. A write where
- *  `leq(value, prev)` holds returns `false` and skips listener fan-out.
- *  Regressive writes (value ⊏ prev) collapse to no-ops rather than corrupting
- *  state.
+/** Fact storage keyed by `(analysis, key, context)`. Writes combine via the
+ *  analysis-declared storage merge `join(prev, value)`, never `value` alone.
+ *  A write where that actual combine is equal to `prev` returns `false` and
+ *  skips listener fan-out.
+ *
+ *  We intentionally compare the computed `joined` result against `prev`
+ *  instead of using a generic `leq(value, prev)` fast path. That shortcut is
+ *  valid only when `join` is the least-upper-bound for the same order exposed
+ *  by `leq`; some analyses (notably must-style DFA block facts) reuse the
+ *  `Lattice<V>` surface for a different storage-combine discipline, where a
+ *  "smaller" incoming value must still advance the cell. Equality on the
+ *  real combined value is correct for both regimes.
  *
  *  Context dimension: each (analysis, key) can hold independent cells under
  *  different `Context`s. Cells at different contexts do not merge. A read at
@@ -86,9 +93,8 @@ export class FactStore {
 
     const hadPrev = inner.has(key);
     const prev = hadPrev ? (inner.get(key) as V) : undefined;
-    // Monotone lattice fast-path: leq(value, prev) ⇒ join(prev, value) = prev.
-    if (hadPrev && analysis.lattice.leq(value, prev as V)) return false;
     const joined = hadPrev ? analysis.lattice.join(prev as V, value) : value;
+    if (hadPrev && analysis.lattice.eq(joined, prev as V)) return false;
 
     inner.set(key, joined);
     const change: FactChange<K, V> = {

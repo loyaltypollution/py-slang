@@ -430,6 +430,7 @@ export const purityScopeAnalysis: Analysis<number, boolean | undefined> = {
   id: Symbol("purityScopeAnalysis"),
   debugName: "purityScopeAnalysis",
   lattice: outerLattice,
+  polarity: "may",
   edges: [
     {
       on: "fact",

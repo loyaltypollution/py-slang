@@ -3,7 +3,6 @@ import { TokenType } from "../../tokens";
 import type { Analysis, AnalysisCtx } from "../framework/analysis";
 import { findAssumption, ROOT_CONTEXT, type Context } from "../framework/context";
 import type { FactStore } from "../framework/fact-store";
-import { runtimeWriteAnalysis } from "../framework/runtime-analyses";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { MutableEnv } from "../framework/mutable-env";
 import type { RawKind } from "../framework/raw-value";
@@ -30,16 +29,9 @@ export function liftConst(observed: RawKind): ConstLattice | undefined {
   }
 }
 
-/** See `type-analysis/analysis.ts:CombineObservation` for the contract.
- *  Only `widenConstObservation` is used in production — narrowing is now
- *  expressed as a Context assumption (see `constExprHandle` below) and the
- *  visitor consults `findAssumption` under non-ROOT contexts. */
-export type CombineConstObservation = (staticVal: ConstLattice, observed: RawKind) => ConstLattice;
-
-export const widenConstObservation: CombineConstObservation = (staticVal, observed) => {
-  const lifted = liftConst(observed);
-  return lifted !== undefined ? constJoin(staticVal, lifted) : staticVal;
-};
+/** Runtime observations no longer strengthen ROOT const facts. Baseline const
+ *  facts are semantic-only; runtime/profile input participates through
+ *  revocable non-ROOT Context assumptions instead. */
 
 export const constMeet = (a: ConstLattice, b: ConstLattice): ConstLattice => {
   if (a.tag === "top") return b;
@@ -70,6 +62,7 @@ export const constExprHandle: Analysis<number, ConstLattice> = {
   },
   edges: [],
   tier: "analysis",
+  polarity: "may",
   transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): ConstLattice | undefined {
     return undefined;
   },
@@ -77,27 +70,19 @@ export const constExprHandle: Analysis<number, ConstLattice> = {
 
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
-    private readonly factStore: FactStore,
     private readonly constEnv: MutableEnv<ConstLattice>,
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: number, val: ConstLattice) => void,
-    private readonly combineObservation: CombineConstObservation,
     private readonly context: Context,
   ) {}
 
-  /** Mirror of `TypeAnalysisVisitor.annotate`: ROOT combines static with any
-   *  runtime observation; non-ROOT ignores observations and `meet`s with any
-   *  ancestor-bound assumption at `node.id`. See
-   *  `type-analysis/analysis.ts:annotate` for the full rationale. */
+  /** ROOT facts are purely semantic. Non-ROOT contexts may narrow them via
+   *  assumptions carried in the Context chain. */
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
-    let combined: ConstLattice;
-    if (this.context === ROOT_CONTEXT) {
-      const observed = this.factStore.tryRead(runtimeWriteAnalysis, node.id);
-      combined = observed !== undefined ? this.combineObservation(val, observed) : val;
-    } else {
-      const assumption = findAssumption(this.context, constExprHandle, node.id);
-      combined = assumption !== undefined ? constMeet(val, assumption) : val;
-    }
+    const assumption = this.context === ROOT_CONTEXT
+      ? undefined
+      : findAssumption(this.context, constExprHandle, node.id);
+    const combined = assumption !== undefined ? constMeet(val, assumption) : val;
     this.recordExprFact(node.id, combined);
     return combined;
   }
@@ -274,9 +259,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 }
 
-export function makeConstAnalysisModule(
-  combineObservation: CombineConstObservation,
-): BlockDfaSpec<ConstLattice> {
+export function makeConstAnalysisModule(): BlockDfaSpec<ConstLattice> {
   return {
     mergeKind: "may",
     direction: "forward",
@@ -293,7 +276,7 @@ export function makeConstAnalysisModule(
       recordExprFact: (nodeId: number, val: ConstLattice) => void,
       context: Context,
     ): ExprNS.Visitor<ConstLattice> {
-      return new ConstAnalysisVisitor(factStore, env, slotLookup, recordExprFact, combineObservation, context);
+      return new ConstAnalysisVisitor(env, slotLookup, recordExprFact, context);
     },
     refineOnEdge(env, _edge) {
       return env;
@@ -301,4 +284,4 @@ export function makeConstAnalysisModule(
   };
 }
 
-export const constAnalysisModule: BlockDfaSpec<ConstLattice> = makeConstAnalysisModule(widenConstObservation);
+export const constAnalysisModule: BlockDfaSpec<ConstLattice> = makeConstAnalysisModule();

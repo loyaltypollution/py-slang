@@ -59,6 +59,7 @@ export const runtimeWriteAnalysis: Analysis<number, RawKind> = {
     },
   ],
   tier: "runtime",
+  polarity: "opaque",
   onObserve(host, key, value, context) {
     if (context !== ROOT_CONTEXT) return;
     host.handleObservationForSpec(runtimeWriteAnalysis, key, value);
@@ -123,6 +124,7 @@ export const runtimeReturnAnalysis: Analysis<number, RawKind> = {
     },
   ],
   tier: "runtime",
+  polarity: "opaque",
   onObserve(host, key, value, context) {
     if (context !== ROOT_CONTEXT) return;
     host.handleObservationForSpec(runtimeReturnAnalysis, key, value);
@@ -184,6 +186,7 @@ export const runtimeCallAnalysis: Analysis<number, number> = {
     },
   ],
   tier: "runtime",
+  polarity: "opaque",
   transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): number | undefined {
     return undefined;
   },

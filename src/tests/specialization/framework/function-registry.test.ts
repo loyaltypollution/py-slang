@@ -33,6 +33,7 @@ function makeLifecycleObserver(): {
       }},
     ],
     tier: "analysis",
+    polarity: "opaque",
     transfer: () => undefined,
   };
   return { analysis, minted, rebuilt, retired };

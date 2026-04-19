@@ -159,6 +159,7 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
     },
     edges,
     tier: "analysis",
+    polarity: "opaque",
     transfer(factStore: FactStore, _ctx: AnalysisCtx, unit: FunctionUnit): SVMLIR | undefined {
       const scope = unit.funcAst;
       if (!(scope instanceof StmtNS.FunctionDef)) return undefined;

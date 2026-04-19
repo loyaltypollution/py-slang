@@ -8,21 +8,17 @@ import {
   typeRequirementAnalysis,
 } from "../type-requirement-analysis/analysis";
 import { transferBlock } from "./block-transfer";
-import {
-  nodeIdToBlock,
-  type BlockFixpointAnalysis,
-  makeBlockFixpointAnalysis,
-} from "./dfa-factory";
+import { makeBlockFixpointAnalysis, type BlockFixpointAnalysis } from "./dfa-factory";
 import type { BlockDfaSpec } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
-import { addEdge, type Narrowing } from "./analysis";
+import type { Narrowing } from "./analysis";
 import { runtimeWriteAnalysis } from "./runtime-analyses";
 
 function dfaAnalysis<L>(
   debugName: string,
   spec: BlockDfaSpec<L>,
 ): BlockFixpointAnalysis<L> {
-  const analysis = makeBlockFixpointAnalysis<L>({
+  return makeBlockFixpointAnalysis<L>({
     debugName,
     direction: spec.direction,
     valueLattice: spec,
@@ -32,12 +28,6 @@ function dfaAnalysis<L>(
       transferBlock(block, inEnv, spec, factStore, unit.slotLookup, ctx.currentContext),
     refineOnEdge: (env, edge) => spec.refineOnEdge(env, edge),
   });
-  // Monotone widening edge: a ROOT observation change wakes the containing
-  // block so the static/widened fact can advance. Speculative narrowing
-  // rides the Context dimension instead — see the observation→context
-  // translator on Worklist.
-  addEdge(analysis, { on: "fact", analysis: runtimeWriteAnalysis, wake: nodeIdToBlock });
-  return analysis;
 }
 
 export const typeAnalysis: BlockFixpointAnalysis<TypeLattice> =

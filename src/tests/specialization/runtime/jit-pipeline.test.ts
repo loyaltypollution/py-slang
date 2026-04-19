@@ -62,6 +62,7 @@ f()
       },
       edges: [{ on: "fact", analysis: runtimeCallAnalysis, wake: (_c, k) => [k as number] }],
       tier: "analysis",
+      polarity: "may",
       transfer(factStore, _ctx, key) {
         transferRuns++;
         return factStore.read(runtimeCallAnalysis, key) ?? 0;
@@ -90,6 +91,7 @@ f()
       },
       edges: [{ on: "fact", analysis: runtimeCallAnalysis, wake: () => [unit] }],
       tier: "analysis",
+      polarity: "opaque",
       transfer(factStore, _ctx, u) {
         const c = factStore.read(runtimeCallAnalysis, fDef.id) ?? 0;
         if (c <= MEMOIZATION_THRESHOLD) return undefined;
@@ -164,6 +166,7 @@ g()
         { on: "rebuild", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },
       ],
       tier: "analysis",
+      polarity: "opaque",
       transfer(_fs, _ctx: AnalysisCtx, unit: FunctionUnit) {
         const scope = unit.funcAst;
         if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
@@ -276,27 +279,23 @@ f(1)
     };
   }
 
-  test("analysis fact change at a unit-internal node forces recompile", () => {
+  test("runtime observation does not widen ROOT facts or force recompile", () => {
     const { worklist, unit, enqueue, counters } = setup();
     enqueue();
     const baseline = counters.compiles;
     expect(baseline).toBeGreaterThanOrEqual(1);
 
-    // Observing a runtime write at a unit-internal expression advances the
-    // DFA analysis's fact for the containing block. jitAnalysis's CompileSnapshot
-    // does a reference-identity compare via `tryRead`, and FactStore.write
-    // replaces the stored reference on any lattice-advancing write — so the
-    // snapshot mismatches and the unit recompiles.
+    // ROOT facts are purely semantic — runtime observations no longer
+    // advance them. Observing at a unit-internal node creates a non-ROOT
+    // speculation cell but leaves the ROOT-keyed jitAnalysis snapshot
+    // unchanged, so no recompile fires.
     const fd = unit.funcAst as StmtNS.FunctionDef;
     const ret = fd.body[0] as StmtNS.Return;
-    const binary = ret.value! as ExprNS.Binary; // `x + 1`
-    const literal = binary.right as ExprNS.Literal; // `1` — statically const(1), INT_POS
-    // A string observation at the literal widens its const fact
-    // from const(1) → TOP and type fact from INT_POS → join with STRING,
-    // advancing the DFA block fact and forcing a jitAnalysis recompile.
+    const binary = ret.value! as ExprNS.Binary;
+    const literal = binary.right as ExprNS.Literal;
     observeRuntimeWrite(worklist, literal.id, "force-change");
 
-    expect(counters.compiles).toBeGreaterThan(baseline);
+    expect(counters.compiles).toBe(baseline);
   });
 
   // Direct per-analysis wake-up: bypasses the shared runtimeWriteAnalysis upstream so
