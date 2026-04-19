@@ -21,9 +21,8 @@ import { TokenType } from "../../tokens";
 import type { BasicBlock } from "../framework/cfg";
 import { typeAnalysis, constAnalysis } from "../framework/dfa-analyses";
 import { readExprFact } from "../framework/dfa-factory";
-import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
-import { unitSweepRule } from "../framework/transform-rule";
+import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
 import type { ConstLattice } from "../const-analysis/lattice";
 import {
   INT_BIT,
@@ -64,7 +63,7 @@ function zeroLiteralLike(e: ExprNS.Expr): ExprNS.Literal {
 class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
   constructor(
-    private readonly factStore: FactStore,
+    private readonly factStore: TransformFactView,
     private readonly unit: FunctionUnit,
   ) {}
 
@@ -238,7 +237,7 @@ class AlgebraicSimplifyStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: AlgebraicSimplifyVisitor;
 
-  constructor(factStore: FactStore, unit: FunctionUnit) {
+  constructor(factStore: TransformFactView, unit: FunctionUnit) {
     this.exprVisitor = new AlgebraicSimplifyVisitor(factStore, unit);
   }
 
@@ -297,7 +296,7 @@ class AlgebraicSimplifyStmtVisitor implements StmtNS.Visitor<void> {
 
 export const algebraicSimplifyRule = unitSweepRule(
   "algebraicSimplifyRule",
-  (unit: FunctionUnit, factStore: FactStore) => {
+  (unit: FunctionUnit, factStore: TransformFactView) => {
     const v = new AlgebraicSimplifyStmtVisitor(factStore, unit);
     v.sweep(unit.body);
     return v.changed;

@@ -12,7 +12,7 @@
 //
 //   TransformRule     — imperative AST sweep (defined below). Registered via
 //                       `worklist.registerTransform`; no lattice, no transfer,
-//                       no FactStore write. `sweep(unit, ctx)` returns `true`
+//                       no FactStore write. `sweep(unit, facts)` returns `true`
 //                       to trigger CFG rebuild.
 
 import type { FunctionUnit } from "./function-unit";
@@ -246,6 +246,15 @@ export interface AnalysisCtx {
   readonly currentContext: Context;
 }
 
+/** Root-only fact surface exposed to transforms. Unconditional AST rewrites
+ *  must not consult speculative/non-ROOT cells, so the transform contract is
+ *  intentionally narrower than the full `FactStore` API. */
+export interface TransformFactView {
+  read<K, V>(analysis: Analysis<K, V>, key: K): V;
+  tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined;
+  readAll<K, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V>;
+}
+
 /** One-shot or cascading imperative AST sweep gated on analyses. Transforms
  *  are not `Analysis<_, _>` — they have no lattice, no transfer, and do not
  *  participate in the fact-store fixpoint. Worklist dirties a rule on unit
@@ -270,6 +279,7 @@ export interface TransformRule {
    *  inside `Worklist.registerTransform`. */
   readonly autoDirtyOn?: ReadonlyArray<"mint" | "rebuild">;
   /** Returns `true` iff `unit.body` was mutated — the worklist then schedules
-   *  a CFG rebuild for `unit`. */
-  sweep(unit: FunctionUnit, factStore: FactStore, ctx: AnalysisCtx): boolean;
+   *  a CFG rebuild for `unit`. The fact surface is root-only by type, so a
+   *  transform cannot accidentally read speculative context cells. */
+  sweep(unit: FunctionUnit, facts: TransformFactView): boolean;
 }

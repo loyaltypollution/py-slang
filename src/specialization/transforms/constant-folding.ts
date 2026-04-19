@@ -4,15 +4,14 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import { constAnalysis } from "../framework/dfa-analyses";
 import { readExprFact } from "../framework/dfa-factory";
-import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
-import { unitSweepRule } from "../framework/transform-rule";
+import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
 
 class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
 
   constructor(
-    private readonly factStore: FactStore,
+    private readonly factStore: TransformFactView,
     private readonly unit: FunctionUnit,
   ) {}
 
@@ -112,7 +111,7 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: ConstFoldExprVisitor;
 
-  constructor(factStore: FactStore, unit: FunctionUnit) {
+  constructor(factStore: TransformFactView, unit: FunctionUnit) {
     this.exprVisitor = new ConstFoldExprVisitor(factStore, unit);
   }
 
@@ -172,7 +171,7 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
 
 export const constantFoldingRule = unitSweepRule(
   "constantFoldingRule",
-  (unit: FunctionUnit, factStore: FactStore) => {
+  (unit: FunctionUnit, factStore: TransformFactView) => {
     const v = new ConstFoldStmtVisitor(factStore, unit);
     v.sweep(unit.body);
     return v.changed;

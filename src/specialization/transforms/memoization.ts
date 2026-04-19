@@ -1,7 +1,6 @@
 import { StmtNS, ExprNS } from "../../ast-types";
-import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
-import type { AnalysisCtx, TransformRule } from "../framework/analysis";
+import type { TransformRule, TransformFactView } from "../framework/analysis";
 import { runtimeCallAnalysis, RUNTIME_CALL_COUNT_SAT } from "../framework/runtime-analyses";
 import { purityScopeAnalysis } from "../purity-analysis/analysis";
 
@@ -106,14 +105,14 @@ export const memoizationRule: TransformRule = {
       return u ? [u] : [];
     }},
   ],
-  sweep(unit: FunctionUnit, factStore: FactStore, _ctx: AnalysisCtx): boolean {
+  sweep(unit: FunctionUnit, facts: TransformFactView): boolean {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
     if (hasMemoPrelude(fd)) return false;
     // runtimeCallAnalysis already saturates at RUNTIME_CALL_COUNT_SAT via its
-    // lattice join, so factStore.read returns the capped count directly.
-    if (factStore.read(runtimeCallAnalysis, fd.id) < MEMOIZATION_THRESHOLD) return false;
-    if (factStore.read(purityScopeAnalysis, fd.id) !== true) return false;
+    // lattice join, so facts.read returns the capped count directly.
+    if (facts.read(runtimeCallAnalysis, fd.id) < MEMOIZATION_THRESHOLD) return false;
+    if (facts.read(purityScopeAnalysis, fd.id) !== true) return false;
     return applyMemoizationWrap(unit);
   },
 };

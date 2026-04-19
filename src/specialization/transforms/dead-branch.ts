@@ -4,14 +4,13 @@ import { StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import { constAnalysis } from "../framework/dfa-analyses";
 import { readExprFact } from "../framework/dfa-factory";
-import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
-import { unitSweepRule } from "../framework/transform-rule";
+import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
 
 class DeadBranchVisitor implements StmtNS.Visitor<void> {
   changed = false;
   constructor(
-    private readonly factStore: FactStore,
+    private readonly factStore: TransformFactView,
     private readonly unit: FunctionUnit,
   ) {}
 
@@ -69,7 +68,7 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
 
 export const deadBranchRule = unitSweepRule(
   "deadBranchRule",
-  (unit: FunctionUnit, factStore: FactStore) => {
+  (unit: FunctionUnit, factStore: TransformFactView) => {
     const v = new DeadBranchVisitor(factStore, unit);
     v.sweep(unit.body);
     return v.changed;

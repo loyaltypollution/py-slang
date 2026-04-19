@@ -19,10 +19,9 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 // `StmtNS.FileInput` import via namespace below.
 import type { BasicBlock } from "../framework/cfg";
-import type { FactStore } from "../framework/fact-store";
 import type { FunctionUnit } from "../framework/function-unit";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
-import { unitSweepRule } from "../framework/transform-rule";
+import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
 import { livenessAnalysis, liveOutOf } from "../liveness-analysis/analysis";
 import { LIVE } from "../liveness-analysis/lattice";
 import { MutableEnv } from "../framework/mutable-env";
@@ -209,8 +208,8 @@ function escapedLocalSlots(unit: FunctionUnit): Set<number> {
   };
   const walkForLambdas = (node: unknown, seen: WeakSet<object>): void => {
     if (node === null || typeof node !== "object") return;
-    if (seen.has(node as object)) return;
-    seen.add(node as object);
+    if (seen.has(node)) return;
+    seen.add(node);
     if (node instanceof ExprNS.Lambda) {
       walkExprInsideLambda(node.body);
       return;
@@ -241,7 +240,7 @@ function escapedLocalSlots(unit: FunctionUnit): Set<number> {
  *  while walking the AST without needing to know the containing block. */
 function buildLiveOutMap(
   unit: FunctionUnit,
-  factStore: FactStore,
+  factStore: TransformFactView,
 ): Map<StmtNS.Stmt, Set<number>> {
   const out = new Map<StmtNS.Stmt, Set<number>>();
   for (const block of unit.blockMap.values()) {
@@ -307,7 +306,7 @@ function sweepStmts(
 
 export const deadStoreRule = unitSweepRule(
   "deadStoreRule",
-  (unit: FunctionUnit, factStore: FactStore) => {
+  (unit: FunctionUnit, factStore: TransformFactView) => {
     // Skip the module (FileInput) scope. Module-top-level names are part of
     // the program's observable namespace — other modules can import them,
     // REPL/tool consumers can inspect them after execution, and the

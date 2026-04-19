@@ -6,9 +6,19 @@
 // its own prelude). Rules that cannot become precondition-false on their own
 // should not be expressed as sweep-transforms.
 
+import type { Analysis, FactEdge, TransformRule, TransformFactView } from "./analysis";
 import type { FactStore } from "./fact-store";
 import type { FunctionUnit } from "./function-unit";
-import type { FactEdge, AnalysisCtx, TransformRule } from "./analysis";
+
+export type { TransformFactView };
+
+export function rootTransformFacts(factStore: FactStore): TransformFactView {
+  return {
+    read: (analysis, key) => factStore.read(analysis, key),
+    tryRead: (analysis, key) => factStore.tryRead(analysis, key),
+    readAll: analysis => factStore.readAll(analysis),
+  };
+}
 
 /** Build a unit-keyed transform rule from a sweep function that reads
  *  fact-store state and mutates `unit.body`. Returns `true` iff the AST
@@ -16,15 +26,15 @@ import type { FactEdge, AnalysisCtx, TransformRule } from "./analysis";
  *  dirty this rule; omitted, the rule only fires on mint / rebuild. */
 export function unitSweepRule(
   name: string,
-  sweep: (unit: FunctionUnit, factStore: FactStore) => boolean,
+  sweep: (unit: FunctionUnit, facts: TransformFactView) => boolean,
   edges: ReadonlyArray<FactEdge<FunctionUnit>> = [],
 ): TransformRule {
   return {
     id: Symbol(name),
     debugName: name,
     edges,
-    sweep(unit: FunctionUnit, factStore: FactStore, _ctx: AnalysisCtx): boolean {
-      return sweep(unit, factStore);
+    sweep(unit: FunctionUnit, facts: TransformFactView): boolean {
+      return sweep(unit, facts);
     },
   };
 }

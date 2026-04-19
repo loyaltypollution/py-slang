@@ -17,6 +17,7 @@ import {
   type FunctionUnit,
 } from "./function-unit";
 import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type Narrowing, type TransformRule, type LifecycleEdge } from "./analysis";
+import { rootTransformFacts } from "./transform-rule";
 import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Assumption, type Context } from "./context";
 import { immediateStrategy, type SpeculationStrategy } from "./speculation-strategy";
 import { runtimeCallAnalysis, runtimeWriteAnalysis } from "./runtime-analyses";
@@ -450,8 +451,9 @@ export class Worklist {
       if (dirty.size === 0) continue;
       const units = Array.from(dirty);
       dirty.clear();
+      const facts = rootTransformFacts(this.factStore);
       for (const unit of units) {
-        if (r.sweep(unit, this.factStore, this.passCtx)) {
+        if (r.sweep(unit, facts)) {
           this.pendingRebuilds.add(unit);
           anyFired = true;
         }
