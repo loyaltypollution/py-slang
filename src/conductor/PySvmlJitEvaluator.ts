@@ -1,5 +1,5 @@
 import { BasicEvaluator } from "@sourceacademy/conductor/runner";
-import { makeJitAnalysis } from "../engines/svml/jit-analysis";
+import { makeJitAnalysis } from "./svml-jit-analysis";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
@@ -16,7 +16,7 @@ import { runWithDeopt } from "./jit-deopt";
  * SVML evaluator with JIT specialization. After static convergence and
  * compile, runtime observations drive further transforms; each mutated
  * FunctionDef is recompiled and patched into the function table via
- * `jitAnalysis` (see `engines/svml/jit-analysis.ts`).
+ * `jitAnalysis` (see `./svml-jit-analysis.ts`).
  */
 export class PySvmlJitEvaluator extends BasicEvaluator {
   async evaluateChunk(chunk: string): Promise<void> {
@@ -33,8 +33,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         ast,
         environments,
         makeDfaQuery(
-          worklist.factStore,
-          worklist.nodeIndex,
+          worklist.topology,
           nodeId => worklist.specContextForNode(nodeId),
           unit => worklist.specContextFor(unit),
         ),

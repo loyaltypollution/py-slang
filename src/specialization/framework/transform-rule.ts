@@ -6,34 +6,39 @@
 // its own prelude). Rules that cannot become precondition-false on their own
 // should not be expressed as sweep-transforms.
 
-import type { Analysis, FactEdge, TransformRule, TransformFactView } from "./analysis";
-import type { FactStore } from "./fact-store";
-import type { FunctionUnit } from "./function-unit";
+import { ROOT_CONTEXT } from "./context";
+import type { FactEdge, TransformRule, TransformFactView } from "./analysis";
+import type { Unit } from "./function-unit";
+import type { ProgramTopology } from "./topology";
 
 export type { TransformFactView };
 
-export function rootTransformFacts(factStore: FactStore): TransformFactView {
+/** Construct the root-only `TransformFactView` that transforms see inside
+ *  `sweep`. Every read delegates to `analysis.store` at `ROOT_CONTEXT` —
+ *  the type-level gate that keeps transforms off speculative cells. */
+export function rootTransformFacts(topology: ProgramTopology): TransformFactView {
   return {
-    read: (analysis, key) => factStore.read(analysis, key),
-    tryRead: (analysis, key) => factStore.tryRead(analysis, key),
-    readAll: analysis => factStore.readAll(analysis),
+    read: (analysis, key) => analysis.store.read(key, ROOT_CONTEXT),
+    tryRead: (analysis, key) => analysis.store.tryRead(key, ROOT_CONTEXT),
+    readAll: analysis => analysis.store.readAll(ROOT_CONTEXT),
+    topology,
   };
 }
 
 /** Build a unit-keyed transform rule from a sweep function that reads
- *  fact-store state and mutates `unit.body`. Returns `true` iff the AST
- *  was rewritten. `edges` declares upstream analyses whose writes should
+ *  fact state and mutates `unit.body`. Returns `true` iff the AST was
+ *  rewritten. `edges` declares upstream analyses whose writes should
  *  dirty this rule; omitted, the rule only fires on mint / rebuild. */
 export function unitSweepRule(
   name: string,
-  sweep: (unit: FunctionUnit, facts: TransformFactView) => boolean,
-  edges: ReadonlyArray<FactEdge<FunctionUnit>> = [],
+  sweep: (unit: Unit, facts: TransformFactView) => boolean,
+  edges: ReadonlyArray<FactEdge<Unit>> = [],
 ): TransformRule {
   return {
     id: Symbol(name),
     debugName: name,
     edges,
-    sweep(unit: FunctionUnit, facts: TransformFactView): boolean {
+    sweep(unit: Unit, facts: TransformFactView): boolean {
       return sweep(unit, facts);
     },
   };

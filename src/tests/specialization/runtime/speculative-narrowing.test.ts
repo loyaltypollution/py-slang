@@ -13,7 +13,7 @@ import { findAssumption, ROOT_CONTEXT } from "../../../specialization/framework/
 import { constExprHandle } from "../../../specialization/const-analysis/analysis";
 import { typeExprHandle } from "../../../specialization/type-analysis/analysis";
 import { SpeculationViolation } from "../../../engines/svml/errors";
-import { makeJitAnalysis } from "../../../engines/svml/jit-analysis";
+import { makeJitAnalysis } from "../../../conductor/svml-jit-analysis";
 import OpCodes, { SVMLKindBits } from "../../../engines/svml/opcodes";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
@@ -48,8 +48,7 @@ function compile(ast: StmtNS.FileInput, environments: ReturnType<typeof analyzeW
     ast,
     environments,
     makeDfaQuery(
-      worklist.factStore,
-      worklist.nodeIndex,
+      worklist.topology,
       nodeId => worklist.specContextForNode(nodeId),
       unit => worklist.specContextFor(unit),
     ),
@@ -75,16 +74,16 @@ def hot(x):
     worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
     worklist.drain();
 
-    expect(worklist.factStore.tryRead(runtimeWriteAnalysis, xRead.id)).toEqual({ kind: "number", value: 5 });
+    expect(worklist.tryRead(runtimeWriteAnalysis, xRead.id)).toEqual({ kind: "number", value: 5 });
 
-    const block = worklist.blockOfNode(xRead.id)!;
-    const widened = readExprFact(worklist.factStore, typeAnalysis, block, xRead.id);
+    const widened = readExprFact(
+      worklist.topology,
+      typeAnalysis, xRead.id);
     // Speculative read: same typeAnalysis, per-unit speculation context that
     // the observation→context translator extended on the observe above.
     const narrowed = readExprFact(
-      worklist.factStore,
+      worklist.topology,
       typeAnalysis,
-      block,
       xRead.id,
       worklist.specContextForNode(xRead.id),
     );
@@ -173,7 +172,7 @@ hot("oops", 1)
     worklist.widenGuard(violation!.nodeId);
     worklist.drain();
 
-    const unit = worklist.units.get(fn)!;
+    const unit = worklist.units.get(fn.id)!;
     const ctx = worklist.specContextFor(unit);
     expect(findAssumption(ctx, returnKindHandle, fn.id)).toBeUndefined();
     expect(findAssumption(ctx, constExprHandle, modeRead.id)).toBeDefined();
@@ -196,11 +195,9 @@ def hot(x):
     worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
     worklist.drain();
 
-    const block = worklist.blockOfNode(xRead.id)!;
     const before = readExprFact(
-      worklist.factStore,
+      worklist.topology,
       typeAnalysis,
-      block,
       xRead.id,
       worklist.specContextForNode(xRead.id),
     );
@@ -213,9 +210,8 @@ def hot(x):
     // context collapses back to ROOT (or one level below, if other
     // assumptions exist). Re-read under the current context.
     const after = readExprFact(
-      worklist.factStore,
+      worklist.topology,
       typeAnalysis,
-      block,
       xRead.id,
       worklist.specContextForNode(xRead.id),
     );
@@ -420,7 +416,7 @@ hot(1, 0)
     const aRead = xAssign.value as ExprNS.Variable;
     const bRead = yAssign.value as ExprNS.Variable;
     const yCond = (fn.body[3] as StmtNS.If).condition;
-    const unit = worklist.nodeIndex.get(aRead.id)!;
+    const unit = worklist.topology.unitOfNode(aRead.id)!;
 
     const { compiler, program } = compile(ast, environments, worklist);
     const interpreter = new SVMLInterpreter(program, { sendOutput: () => {} });
@@ -524,7 +520,7 @@ hot(0)
     worklist.widenGuard(violation!.nodeId);
     worklist.drain();
 
-    const unit = worklist.nodeIndex.get(modeRead.id)!;
+    const unit = worklist.topology.unitOfNode(modeRead.id)!;
     const ctx = worklist.specContextFor(unit);
     // Lineage-precise: only the load-bearing const assumption was pruned.
     // Under whole-chain reset (the widenFullChain branch), ctx === ROOT.
@@ -645,7 +641,7 @@ def hot(x, y):
     const yReadA = binA.right as ExprNS.Variable;
     wlA.observe(runtimeWriteAnalysis, xReadA.id, { kind: "number", value: 5 });
     wlA.observe(runtimeWriteAnalysis, yReadA.id, { kind: "number", value: 10 });
-    const unitA = wlA.nodeIndex.get(xReadA.id)!;
+    const unitA = wlA.topology.unitOfNode(xReadA.id)!;
     const ctxA = wlA.specContextFor(unitA);
 
     // Worklist B: observe y, then x (swapped).
@@ -663,7 +659,7 @@ def hot(x, y):
 
     wlB.observe(runtimeWriteAnalysis, yReadB.id, { kind: "number", value: 10 });
     wlB.observe(runtimeWriteAnalysis, xReadB.id, { kind: "number", value: 5 });
-    const unitB = wlB.nodeIndex.get(xReadB.id)!;
+    const unitB = wlB.topology.unitOfNode(xReadB.id)!;
     const ctxB = wlB.specContextFor(unitB);
 
     // Not vacuous: both observations landed, so the context is non-ROOT.
@@ -688,19 +684,21 @@ def hot(x, y):
 
     worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
     worklist.observe(runtimeWriteAnalysis, yRead.id, { kind: "number", value: 10 });
-    const ctxForward = worklist.specContextFor(worklist.nodeIndex.get(xRead.id)!);
+    const ctxForward = worklist.specContextFor(worklist.topology.unitOfNode(xRead.id)!);
 
     // Re-observe the same values. Under canonical interning the context does
     // not shift (the translator's valueEqual check skips the extend) and no
     // new fact-store cell is allocated.
-    const xBlock = worklist.blockOfNode(xRead.id)!;
-    const cellsBefore = worklist.factStore.readAll(typeAnalysis, ctxForward).size;
+    const xBlock = worklist.topology.blockOfNode(xRead.id)!;
+    const cellsBefore = worklist.readAll(typeAnalysis.env, ctxForward).size;
     worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
     worklist.observe(runtimeWriteAnalysis, yRead.id, { kind: "number", value: 10 });
-    const cellsAfter = worklist.factStore.readAll(typeAnalysis, ctxForward).size;
+    const cellsAfter = worklist.readAll(typeAnalysis.env, ctxForward).size;
 
     expect(cellsAfter).toBe(cellsBefore);
-    // And the narrowed fact is present under exactly the canonical context.
-    expect(worklist.factStore.tryRead(typeAnalysis, xBlock, ctxForward)).toBeDefined();
+    // And the narrowed fact is present under exactly the canonical context —
+    // the env cell is the one the Kildall driver writes directly; `.facts`
+    // is populated as its paired side effect.
+    expect(worklist.tryRead(typeAnalysis.env, xBlock, ctxForward)).toBeDefined();
   });
 });

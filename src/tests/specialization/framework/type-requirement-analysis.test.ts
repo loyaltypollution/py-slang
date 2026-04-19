@@ -67,9 +67,9 @@ def hot(x):
     return x
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn)!;
+    const unit = worklist.units.get(fn.id)!;
 
-    const reqs = requirementAtEntry(worklist.factStore, unit, ROOT_CONTEXT);
+    const reqs = requirementAtEntry(unit, ROOT_CONTEXT);
     expect(reqs.provable.size).toBe(0);
     expect(reqs.unprovable.size).toBe(0);
   });
@@ -80,13 +80,13 @@ def hot(x):
     return x
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn)!;
+    const unit = worklist.units.get(fn.id)!;
 
     const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
-    worklist.enqueue(typeRequirementAnalysis, unit.cfg.exit, ctx);
+    worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
-    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    const reqs = requirementAtEntry(unit, ctx);
     expect(reqs.provable.get(0)).toEqual(INT_POS);
     expect(reqs.unprovable.size).toBe(0);
   });
@@ -98,13 +98,13 @@ def hot(x):
     return y
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn)!;
+    const unit = worklist.units.get(fn.id)!;
 
     const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
-    worklist.enqueue(typeRequirementAnalysis, unit.cfg.exit, ctx);
+    worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
-    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    const reqs = requirementAtEntry(unit, ctx);
     // Slot 0 = parameter `x`; non-zero slot(s) = locals. `x` carries the
     // requirement; `y` is killed by its own assignment before the backward
     // flow reaches the entry block.
@@ -123,13 +123,13 @@ def hot(x):
     return x + 1
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn)!;
+    const unit = worklist.units.get(fn.id)!;
 
     const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
-    worklist.enqueue(typeRequirementAnalysis, unit.cfg.exit, ctx);
+    worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
-    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    const reqs = requirementAtEntry(unit, ctx);
     const xReq = reqs.provable.get(0);
     // Kind mask constrained to INT; sign inverse is deferred — the first-cut
     // propagator widens sign to INT_ANY so the target's sign refinement does
@@ -149,13 +149,13 @@ def hot(x):
     return ${rhs}
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn)!;
+    const unit = worklist.units.get(fn.id)!;
 
     const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
-    worklist.enqueue(typeRequirementAnalysis, unit.cfg.exit, ctx);
+    worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
-    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    const reqs = requirementAtEntry(unit, ctx);
     expect(reqs.provable.get(0)?.kinds).toBe(INT_BIT);
     expect(reqs.unprovable.size).toBe(0);
   });
@@ -169,13 +169,13 @@ def hot(x):
     return x / 2
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn)!;
+    const unit = worklist.units.get(fn.id)!;
 
     const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
-    worklist.enqueue(typeRequirementAnalysis, unit.cfg.exit, ctx);
+    worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
-    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    const reqs = requirementAtEntry(unit, ctx);
     expect(reqs.provable.size).toBe(0);
     expect(reqs.unprovable.size).toBe(0);
   });
@@ -186,13 +186,13 @@ def hot(x, y, c):
     return x if c else y
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn)!;
+    const unit = worklist.units.get(fn.id)!;
 
     const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
-    worklist.enqueue(typeRequirementAnalysis, unit.cfg.exit, ctx);
+    worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
-    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    const reqs = requirementAtEntry(unit, ctx);
     // Parameters are slots 0 (x), 1 (y), 2 (c). Both x and y must be int;
     // the predicate c carries no requirement because the predicate type
     // doesn't flow into the result.
@@ -208,7 +208,7 @@ def hot(x):
     return x
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn)!;
+    const unit = worklist.units.get(fn.id)!;
 
     // Immediate strategy is the default — a single observation extends the
     // context on the first liftable value.
@@ -219,7 +219,7 @@ def hot(x):
     expect(ctx).not.toBe(ROOT_CONTEXT);
     expect(findAssumption(ctx, returnKindHandle, fn.id)).toBeDefined();
 
-    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    const reqs = requirementAtEntry(unit, ctx);
     expect(reqs.provable.get(0)?.kinds).toBe(INT_BIT);
     expect(reqs.unprovable.size).toBe(0);
   });
@@ -236,21 +236,21 @@ def hot(x):
     return x
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn)!;
+    const unit = worklist.units.get(fn.id)!;
 
     const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
     const env = new MutableEnv<TypeLattice>();
     env.set(10, BOTTOM);
     env.set(11, meet(INT_POS, INT_NEG));
     env.set(12, INT_POS);
-    worklist.factStore.write(
-      typeRequirementAnalysis,
+    worklist.write(
+      typeRequirementAnalysis.env,
       unit.cfg.entry,
-      { outEnv: env, exprFacts: new Map<number, TypeLattice>() },
+      env,
       ctx,
     );
 
-    const reqs = requirementAtEntry(worklist.factStore, unit, ctx);
+    const reqs = requirementAtEntry(unit, ctx);
     expect(reqs.unprovable.has(10)).toBe(true);
     expect(reqs.unprovable.has(11)).toBe(true);
     expect(reqs.provable.get(12)).toEqual(INT_POS);
@@ -264,14 +264,14 @@ def hot(x):
     // declaring different resolveUnits used to silently defer to the first.
     // Now construction throws so the misconfiguration surfaces before any
     // observation fires.
-    const byFdId: Narrowing<TypeLattice> = {
+    const byFunctionId: Narrowing<number, TypeLattice> = {
       ...returnKindNarrowing,
     };
     // Copy the handle identity but swap resolveUnit to the node resolver —
-    // conflicts with returnKindNarrowing's fdId resolver.
-    const byNode: Narrowing<TypeLattice> = {
+    // conflicts with returnKindNarrowing's functionId resolver.
+    const byNode: Narrowing<number, TypeLattice> = {
       ...returnKindNarrowing,
-      resolveUnit: (ctx, key) => ctx.unitForNode(key),
+      resolveUnit: (ctx, key) => ctx.topology.unitOfNode(key),
     };
 
     const script = "x = 1\n";
@@ -286,7 +286,7 @@ def hot(x):
         undefined,
         DEFAULT_TRANSFORMS,
         undefined,
-        [typeNarrowing, byFdId, byNode],
+        [typeNarrowing, byFunctionId, byNode],
       ),
     ).toThrow(/disagree on resolveUnit/);
   });
@@ -294,7 +294,7 @@ def hot(x):
   test("write observation does NOT extend return-kind context", () => {
     // The observationSource filter is what prevents cross-narrowing
     // triggering. A write observation at a node inside `hot` must not
-    // attach a returnKindHandle assumption at any fdId — only the
+    // attach a returnKindHandle assumption at any functionId — only the
     // typeNarrowing / constNarrowing (both sourced from
     // runtimeWriteAnalysis) may respond.
     const { ast, worklist } = build(`
@@ -302,7 +302,7 @@ def hot(x):
     return x
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn)!;
+    const unit = worklist.units.get(fn.id)!;
     const retStmt = fn.body[0] as StmtNS.Return;
     const xRead = retStmt.value as ExprNS.Variable;
 

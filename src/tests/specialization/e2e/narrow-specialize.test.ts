@@ -39,9 +39,8 @@ def f(x):
     const bin = assign.value as import("../../../ast-types").ExprNS.Binary;
     const xNode = bin.left; // Variable x
     const t = readExprFact(
-      reactive.factStore,
+      reactive.topology,
       typeAnalysis,
-      reactive.blockOfNode(xNode.id),
       xNode.id,
     );
     // Narrowing produces the mixed numeric kind INT|FLOAT|BOOL with Pos in

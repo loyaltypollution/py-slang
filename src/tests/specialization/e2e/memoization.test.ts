@@ -10,7 +10,7 @@ import {
   memoPut,
 } from "../../../runtime/memo";
 import { runtimeCallAnalysis } from "../../../specialization/framework/runtime-analyses";
-import type { FunctionUnit } from "../../../specialization/framework/function-unit";
+import type { Unit } from "../../../specialization/framework/function-unit";
 import type { Worklist } from "../../../specialization/framework/worklist";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { makeDfaQuery } from "../../../specialization";
@@ -36,7 +36,7 @@ function observeCallsTo(reactive: Worklist, fd: StmtNS.FunctionDef, n: number): 
   for (let i = 1; i <= n; i++) reactive.observe(runtimeCallAnalysis, fd.id, i);
 }
 
-function memoFired(_reactive: Worklist, unit: FunctionUnit): boolean {
+function memoFired(_reactive: Worklist, unit: Unit): boolean {
   const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return false;
   const first = fd.body[0];
@@ -54,9 +54,9 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
     const { ast, reactive } = setup("def f(x):\n    return x + 1");
     reactive.drain();
     const fd = findFunctionDef(ast, "f");
-    expect(reactive.factStore.tryRead(runtimeCallAnalysis, fd.id)).toBeUndefined();
+    expect(reactive.tryRead(runtimeCallAnalysis, fd.id)).toBeUndefined();
     observeCallsTo(reactive, fd, 3);
-    expect(reactive.factStore.tryRead(runtimeCallAnalysis, fd.id)).toBe(3);
+    expect(reactive.tryRead(runtimeCallAnalysis, fd.id)).toBe(3);
   });
 
   test("below threshold: body unchanged", () => {
@@ -65,7 +65,7 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
     const fd = findFunctionDef(ast, "f");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD - 1);
     reactive.drain();
-    expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(false);
+    expect(memoFired(reactive, reactive.units.get(fd.id)!)).toBe(false);
     expect(fd.body).toHaveLength(1);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.Return);
   });
@@ -77,7 +77,7 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
     reactive.drain();
 
-    expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(true);
+    expect(memoFired(reactive, reactive.units.get(fd.id)!)).toBe(true);
     expect(fd.body).toHaveLength(2);
 
     const guard = fd.body[0] as StmtNS.If;
@@ -146,7 +146,7 @@ describe("memoization: purity gate", () => {
     const fd = findFunctionDef(ast, "g");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD * 2);
     reactive.drain();
-    expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(false);
+    expect(memoFired(reactive, reactive.units.get(fd.id)!)).toBe(false);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.Return);
   });
 
@@ -156,7 +156,7 @@ describe("memoization: purity gate", () => {
     const fd = findFunctionDef(ast, "f");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD * 2);
     reactive.drain();
-    expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(false);
+    expect(memoFired(reactive, reactive.units.get(fd.id)!)).toBe(false);
     expect(fd.body).toHaveLength(2);
   });
 });
@@ -221,7 +221,7 @@ describe("memoization: SVML wiring", () => {
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+      makeDfaQuery(reactive.topology),
       reactive.registry,
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast));
@@ -252,12 +252,12 @@ f(5)
     const fd = findFunctionDef(ast, "f");
     observeCallsTo(reactive, fd, MEMOIZATION_THRESHOLD);
     reactive.drain();
-    expect(memoFired(reactive, reactive.units.get(fd)!)).toBe(true);
+    expect(memoFired(reactive, reactive.units.get(fd.id)!)).toBe(true);
 
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+      makeDfaQuery(reactive.topology),
       reactive.registry,
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast));

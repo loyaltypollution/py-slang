@@ -44,7 +44,7 @@ describe("SpeculationStrategy", () => {
     const { ast, worklist } = buildWith(immediateStrategy, SOURCE);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    const block = worklist.blockOfNode(xRead.id)!;
+    const block = worklist.topology.blockOfNode(xRead.id)!;
     const unit = block.unit;
 
     expect(worklist.specContextFor(unit)).toBe(
@@ -55,9 +55,8 @@ describe("SpeculationStrategy", () => {
     worklist.drain();
 
     const narrowed = readExprFact(
-      worklist.factStore,
+      worklist.topology,
       typeAnalysis,
-      block,
       xRead.id,
       worklist.specContextForNode(xRead.id),
     );
@@ -68,7 +67,7 @@ describe("SpeculationStrategy", () => {
     const { ast, worklist } = buildWith(countBasedStrategy(3), SOURCE);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    const block = worklist.blockOfNode(xRead.id)!;
+    const block = worklist.topology.blockOfNode(xRead.id)!;
     const unit = block.unit;
 
     // First two identical observations: counter advances but no extension.
@@ -86,9 +85,8 @@ describe("SpeculationStrategy", () => {
     expect(worklist.specContextFor(unit).depth).toBeGreaterThan(0);
 
     const narrowed = readExprFact(
-      worklist.factStore,
+      worklist.topology,
       typeAnalysis,
-      block,
       xRead.id,
       worklist.specContextForNode(xRead.id),
     );
@@ -99,7 +97,7 @@ describe("SpeculationStrategy", () => {
     const { ast, worklist } = buildWith(countBasedStrategy(3), SOURCE);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    const block = worklist.blockOfNode(xRead.id)!;
+    const block = worklist.topology.blockOfNode(xRead.id)!;
     const unit = block.unit;
 
     // Mixed observations never let any single discriminant reach threshold.

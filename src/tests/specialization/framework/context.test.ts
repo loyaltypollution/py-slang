@@ -6,24 +6,13 @@ import {
   hasAncestor,
   isRoot,
 } from "../../../specialization/framework/context";
-import type { Analysis, AnalysisCtx, Lattice } from "../../../specialization/framework/analysis";
+import type { AssumptionHandle } from "../../../specialization/framework/analysis";
 
-const trivialLattice: Lattice<number> = {
-  bottom: 0,
-  leq: (a, b) => a <= b,
-  join: (a, b) => Math.max(a, b),
-  eq: (a, b) => a === b,
-};
-
-function makeAnalysis<K, V>(name: string, lattice: Lattice<V>): Analysis<K, V> {
+function makeAnalysis<K, V>(name: string): AssumptionHandle<K, V> {
   return {
     id: Symbol(name),
     debugName: name,
-    lattice,
-    edges: [],
-    tier: "analysis",
-    polarity: "may",
-    transfer: (_: unknown, __: AnalysisCtx, ___: K) => undefined,
+    eq: (a, b) => a === b,
   };
 }
 
@@ -36,7 +25,7 @@ describe("Context", () => {
   });
 
   it("extendContext produces a child with parent, assumption, depth+1", () => {
-    const p = makeAnalysis<number, number>("p", trivialLattice);
+    const p = makeAnalysis<number, number>("p");
     const c1 = extendContext(ROOT_CONTEXT, p, 7, 42);
 
     expect(c1.parent).toBe(ROOT_CONTEXT);
@@ -46,7 +35,7 @@ describe("Context", () => {
   });
 
   it("extendContext chains and tracks depth", () => {
-    const p = makeAnalysis<number, number>("p", trivialLattice);
+    const p = makeAnalysis<number, number>("p");
     const c1 = extendContext(ROOT_CONTEXT, p, 1, 10);
     const c2 = extendContext(c1, p, 2, 20);
     const c3 = extendContext(c2, p, 3, 30);
@@ -58,8 +47,8 @@ describe("Context", () => {
   });
 
   it("findAssumption returns the deepest matching binding", () => {
-    const p = makeAnalysis<number, number>("p", trivialLattice);
-    const q = makeAnalysis<number, number>("q", trivialLattice);
+    const p = makeAnalysis<number, number>("p");
+    const q = makeAnalysis<number, number>("q");
     const c1 = extendContext(ROOT_CONTEXT, p, 7, 10);
     const c2 = extendContext(c1, p, 7, 20); // shadows c1's p@7
     const c3 = extendContext(c2, q, 7, 30);
@@ -70,12 +59,12 @@ describe("Context", () => {
   });
 
   it("findAssumption returns undefined at ROOT", () => {
-    const p = makeAnalysis<number, number>("p", trivialLattice);
+    const p = makeAnalysis<number, number>("p");
     expect(findAssumption(ROOT_CONTEXT, p, 1)).toBeUndefined();
   });
 
   it("hasAncestor: ctx is its own ancestor; ROOT is ancestor of any child", () => {
-    const p = makeAnalysis<number, number>("p", trivialLattice);
+    const p = makeAnalysis<number, number>("p");
     const c1 = extendContext(ROOT_CONTEXT, p, 1, 10);
     const c2 = extendContext(c1, p, 2, 20);
 
@@ -86,7 +75,7 @@ describe("Context", () => {
   });
 
   it("siblings do not see each other's assumptions", () => {
-    const p = makeAnalysis<number, number>("p", trivialLattice);
+    const p = makeAnalysis<number, number>("p");
     const left = extendContext(ROOT_CONTEXT, p, 1, 10);
     const right = extendContext(ROOT_CONTEXT, p, 1, 20);
 
@@ -97,22 +86,22 @@ describe("Context", () => {
   });
 
   it("extendContext freezes the returned node", () => {
-    const p = makeAnalysis<number, number>("p", trivialLattice);
+    const p = makeAnalysis<number, number>("p");
     const c1 = extendContext(ROOT_CONTEXT, p, 1, 10);
     expect(Object.isFrozen(c1)).toBe(true);
     expect(Object.isFrozen(c1.assumption)).toBe(true);
   });
 
   it("excludeAssumption returns ctx unchanged when no link matches", () => {
-    const p = makeAnalysis<number, number>("p", trivialLattice);
+    const p = makeAnalysis<number, number>("p");
     const c1 = extendContext(ROOT_CONTEXT, p, 1, 10);
     expect(excludeAssumption(c1, p, 99)).toBe(c1);
     expect(excludeAssumption(ROOT_CONTEXT, p, 1)).toBe(ROOT_CONTEXT);
   });
 
   it("excludeAssumption prunes matching links and rebuilds the chain above them", () => {
-    const p = makeAnalysis<number, number>("p", trivialLattice);
-    const q = makeAnalysis<number, number>("q", trivialLattice);
+    const p = makeAnalysis<number, number>("p");
+    const q = makeAnalysis<number, number>("q");
     const c1 = extendContext(ROOT_CONTEXT, p, 1, 10);
     const c2 = extendContext(c1, q, 2, 20);
     const c3 = extendContext(c2, p, 3, 30);
@@ -125,7 +114,7 @@ describe("Context", () => {
   });
 
   it("excludeAssumption removes every matching link, not just the first", () => {
-    const p = makeAnalysis<number, number>("p", trivialLattice);
+    const p = makeAnalysis<number, number>("p");
     const c1 = extendContext(ROOT_CONTEXT, p, 7, 10);
     const c2 = extendContext(c1, p, 7, 20);
 

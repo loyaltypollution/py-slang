@@ -10,7 +10,7 @@
 // removed once the last consumer migrated.
 
 import type { ExprNS, StmtNS } from "../../ast-types";
-import type { FunctionUnit } from "./function-unit";
+import type { Unit } from "./function-unit";
 
 export type BlockId = number;
 
@@ -43,7 +43,7 @@ export interface BasicBlock {
   /** Incoming control-flow edges. */
   readonly predecessorEdges: CFGEdge[];
   /** Back-pointer to owning unit; set by `buildCFG` at creation. */
-  readonly unit: FunctionUnit;
+  readonly unit: Unit;
 }
 
 export interface CFG {
@@ -53,8 +53,8 @@ export interface CFG {
 }
 
 /** Build CFG from a flat stmt list. Single entry/exit; unreachable tails not represented.
- *  `unit` is the owning FunctionUnit; every block's `unit` back-pointer is set at creation. */
-export function buildCFG(body: StmtNS.Stmt[], unit: FunctionUnit): CFG {
+ *  `unit` is the owning Unit; every block's `unit` back-pointer is set at creation. */
+export function buildCFG(body: StmtNS.Stmt[], unit: Unit): CFG {
   let nextId = 0;
   const blocks: BasicBlock[] = [];
 

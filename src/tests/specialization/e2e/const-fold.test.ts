@@ -71,9 +71,8 @@ describe("const fold: factStore carries constVal", () => {
     const { ast, reactive } = analyse("x = 3 + 4");
     const assign = ast.statements[0] as StmtNS.Assign;
     const cv = readExprFact(
-      reactive.factStore,
+      reactive.topology,
       constAnalysis,
-      reactive.blockOfNode(assign.value.id),
       assign.value.id,
     );
     expect(cv?.tag).toBe("const");
@@ -84,9 +83,8 @@ describe("const fold: factStore carries constVal", () => {
     const { ast, reactive } = analyse("x = 5\ny = x + 2");
     const assign = ast.statements[1] as StmtNS.Assign;
     const cv = readExprFact(
-      reactive.factStore,
+      reactive.topology,
       constAnalysis,
-      reactive.blockOfNode(assign.value.id),
       assign.value.id,
     );
     expect(cv?.tag).toBe("const");
@@ -103,9 +101,8 @@ describe("const fold: factStore carries constVal", () => {
       expect(rhs.value).toBe(6);
     } else {
       const cv = readExprFact(
-        reactive.factStore,
-        constAnalysis,
-        reactive.blockOfNode(rhs.id),
+      reactive.topology,
+      constAnalysis,
         rhs.id,
       );
       expect(cv?.tag).toBe("const");

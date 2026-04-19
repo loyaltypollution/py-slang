@@ -1,174 +1,265 @@
-# Next Steps After the Soundness Review
+# Specialization framework: authoritative next steps
 
-This note records what is next, what is most urgent, and why. It stays at the
-level of architectural priorities rather than prescribing implementation steps,
-but each item names code or tests that capture the invariant in question so a
-future agent can check the claim without reconstructing the argument.
+This is the single planning note for the post-`FactStore` / post-`DfaBlockFact`
+framework.
 
----
+The old notes in:
 
-## What is urgent
+- `docs/dream-state-analysis-stack.md`
+- `docs/factstore-keyspaces-and-domains.md`
+- `docs/factstore-analysis-classification.md`
+- `factstore-lattice-unification-plan.md`
 
-### 1. Keep semantic facts and profiler-driven speculation visibly separate
+are historical only. They were useful while the architecture was still being
+named, but they now mix three kinds of stale content:
 
-The most urgent task is to preserve a boundary that reviewers can inspect
-quickly: baseline analysis results must remain semantic, while profiler-driven
-narrowing must remain revocable and guarded.
+- assumptions that were true before `AnalysisStore` / citizen-split landed;
+- concerns that disappeared once `DfaBlockFact` and `FactStore` were removed;
+- intentions that are still right, but whose interface has shifted.
 
-Why this is urgent:
-- it is the core soundness boundary of the whole stack;
-- once semantic and speculative facts blur together, every consumer becomes
-  harder to trust;
-- later optimizations are only as sound as this separation is clear.
-
-Checkable by:
-- `src/specialization/framework/worklist.ts` — `handleObservationForSpec`
-  places narrowed facts in a non-ROOT context, not in the ROOT cell;
-- `src/specialization/transforms/*.ts` — every `readExprFact` call omits the
-  context argument (defaults to ROOT); any future context argument here
-  breaks the boundary and should require explicit justification.
-
-### 2. Make the framework's real support for may/must analysis explicit
-
-The framework should be described in terms that match what it reliably supports
-now, especially around must-style reasoning and the four classical quadrants.
-
-Why this is urgent:
-- the current architecture is stronger in some quadrants than others;
-- over-claiming genericity invites future misuse;
-- reviewability improves when the supported contracts are named honestly.
-
-Checkable by:
-- `src/specialization/framework/analysis.ts` — `Analysis.polarity` is
-  declared per analysis and tested in
-  `src/tests/specialization/framework/analysis-polarity.test.ts`;
-- `src/specialization/type-requirement-analysis/analysis.ts` is the single
-  `polarity:"must"` consumer today; a new must-forward analysis would be the
-  first to exercise the meet-merge branch end-to-end.
-
-### 3. Keep unconditional transforms on a non-speculative fact surface
-
-Transforms that rewrite the AST must continue to depend only on unconditional
-facts. This boundary is already important and should remain easy to audit.
-
-Why this is urgent:
-- unconditional rewrites cannot rely on facts that may later retract;
-- this is the main guard against speculative facts leaking into permanent code
-  changes;
-- a clear boundary reduces future soundness regressions.
-
-Checkable by:
-- `src/specialization/framework/transform-rule.ts` — `TransformFactView` is
-  the only surface transforms see, and it does not carry a context parameter;
-- any transform that starts routing through `specContextFor` or reading a
-  non-ROOT cell should be treated as a speculative IR selector, not an AST
-  rewrite.
+This file replaces them.
 
 ---
 
-## What is important next
+## Current architecture, as it actually exists
 
-### 4. Keep lattice meaning checkable at a glance
+### 1. Analysis identity is a singleton + store algebra + transfer + owned storage
 
-The next phase should make it easy to verify that each lattice says what the
-analysis thinks it says, especially where representation conventions differ
-between domains.
+Each scheduled analysis is an `Analysis<K, V>` singleton defined once and owning
+its own `AnalysisStore<K, V>`.
 
-Why this matters:
-- lattice coherence is foundational;
-- subtle contract drift is hard to detect once more analyses accumulate;
-- review should not require reconstructing hidden conventions.
+What that means in practice:
 
-Checkable by:
-- `src/tests/harness/lattice-laws.ts` + `lattice-laws.test.ts` enumerate
-  `leq ⇔ join=b`, absorption, identity, and idempotence over representative
-  slices of `TypeLattice`, `ConstLattice`, `AbsVal`, and the runtime
-  observation lattices. Any new lattice should register a slice here.
+- storage is per-analysis, not in a global fact registry;
+- `storeAlgebra` is the algebra of the stored cell domain `V`;
+- `emptyValue` names unwritten-cell semantics when `bottom` is not the right
+  default to infer implicitly;
+- `transfer(ctx, key)` computes the next stored value for that analysis.
 
-### 5. Preserve precise speculation retraction
+### 2. Block DFAs are paired analyses, not one compound stored cell
 
-Speculation is most valuable when the system can retract only the assumptions
-that actually mattered, rather than collapsing broadly.
+`makeBlockFixpointAnalysis(...)` now produces:
 
-Why this matters:
-- precision affects both performance and comprehensibility;
-- broad widening is safe but expensive;
-- guard provenance is part of the architecture's promise, not just an
-  optimization detail.
+- `.env: Analysis<BasicBlock, MutableEnv<L>>`
+- `.facts: Analysis<BasicBlock, ReadonlyMap<number, L>>`
 
-Checkable by:
-- `src/specialization/framework/worklist.ts` — `widenGuard` takes a
-  lineage-precise path; `widenFullChain` is the coarse fallback. Every
-  guard-registration site should supply provenance so `widenGuard` never
-  has to fall back silently;
-- `src/tests/specialization/runtime/speculative-narrowing.test.ts` covers
-  the lineage-recovery path for both node-keyed and fdId-keyed narrowings;
-  return-kind uses the `Narrowing.lineageValue` / `lineageEq` hooks in
-  `src/specialization/type-requirement-analysis/analysis.ts` to read the
-  entry-block requirement fact under each synthetic context.
+This is the real split in the system:
 
-### 6. Clarify the role of runtime observation and profiling
+- `.env` is the fixpoint driver and CFG-propagated summary surface;
+- `.facts` is the per-node fact surface and sentinel store;
+- the worklist dispatches each separately, so expr-fact-only changes no longer
+  pretend to be CFG-propagation changes.
 
-Runtime signals should remain easy to classify: some are speculative evidence,
-some are profitability signals, and they should not read as one undifferentiated
-kind of enrichment.
+### 3. Worklist is the scheduler and the change-dispatch hub
 
-Why this matters:
-- different runtime inputs justify different downstream uses;
-- reviewers need to know whether a fact changes semantics, enables guarded
-  specialization, or merely prioritizes work;
-- architecture descriptions should match those distinctions.
+`src/specialization/framework/worklist.ts` is the one place that:
 
-Checkable by:
-- `src/specialization/framework/runtime-analyses.ts` — each runtime analysis
-  declares `polarity: "opaque"`, marking it as neither semantic nor a
-  lattice-refining speculative dimension;
-- `src/specialization/framework/speculation-strategy.ts` — observation →
-  narrowing translation lives in one place; `countBasedStrategy` is the only
-  path that turns evidence into an assumption today.
+- drains the analysis queue;
+- dispatches fact-change edges;
+- dispatches lifecycle events;
+- drives transform dirtying/sweeps;
+- routes observation-driven speculation updates.
 
----
+A write is only fully "real" when it goes through worklist dispatch.
 
-## What can wait
+### 4. `AnalysisCtx` is the transfer-visible read/write surface
 
-### 7. Throughput and scaling work
+Transfers and edge wake/effect code do not own dispatch.
+They see an `AnalysisCtx` that:
 
-Performance work remains important, but it should follow the soundness and
-contract-clarity questions rather than lead them.
+- reads at `currentContext`;
+- writes through the worklist so listeners stay consistent;
+- evicts at `currentContext`.
 
-### 8. Additional speculative dimensions
+That boundary is sound for transfer-time computation, but lifecycle cleanup that
+must span *all* contexts cannot rely on `currentContext`; it must sweep the
+analysis-owned store across its context partitions directly.
 
-New speculative enrichments can wait until the current semantic/speculative
-split and the quadrant story remain stable under review. `returnKindNarrowing`
-is the most recent addition (paired with `typeRequirementAnalysis`); the next
-dimension should land only after its consumer path is fully exercised.
+### 5. Citizen kinds are split
 
----
+The framework now has meaningfully different roles:
 
-## Guiding themes
+- `Analysis<K, V>` — scheduled, stored, dispatched computations;
+- `AssumptionHandle<K, V>` — context namespace tokens with equality only;
+- `TransformRule` — imperative root-only AST sweeps;
+- `Narrowing<K, V>` — observation-to-context bridge objects.
 
-As work continues, the architecture should keep the following true:
+This split is real and should stay visible.
 
-- semantic facts stay semantic;
-- profiler-driven narrowing stays guarded and retractable;
-- must and may reasoning are not described as more interchangeable than they
-  really are;
-- unconditional transforms remain non-speculative;
-- lattice and framework contracts remain audit-friendly.
+### 6. Key spaces are explicit program topology, not one generic universe
+
+The important key spaces today are:
+
+- `nodeId`
+- `FunctionId`
+- `BasicBlock`
+- `Unit`
+
+Bridges between them are not accidental glue; they are the framework's topology
+layer (`ProgramTopology`, `readExprFact`, `resolveUnit`, etc.).
 
 ---
 
-## Cold-start reading
+## What truly still needs doing
 
-For an implementing agent arriving fresh:
+The major architectural simplification is already done. The remaining work is
+mostly about making the new contracts harder to misuse and easier to review.
 
+### A. Make lifecycle-wide cleanup impossible to get wrong
+
+**Why:**
+Lifecycle events (`mint`, `rebuild`, `retire`, `specContextChange`) are unit-
+level events, but `AnalysisStore` is partitioned by `Context`. Any cleanup that
+means "drop all cells for this unit" must sweep *every* context, not just ROOT.
+
+A concrete soundness bug existed here and is now fixed for block analyses:
+`src/specialization/framework/dfa-factory.ts` evicts stale `.env` / `.facts`
+block cells across all store contexts on rebuild/retire.
+
+**What remains:**
+Keep this invariant explicit everywhere new lifecycle cleanup is added.
+
+**Light suggestion on how:**
+When cleanup semantics are "all cells for this unit/key family", use the
+analysis-owned store as the source of truth and iterate its contexts directly.
+Do not infer that a lifecycle callback's `ctx.currentContext` tells you the full
+cleanup scope.
+
+### B. Keep the root-only transform boundary strict
+
+**Why:**
+Permanent AST rewrites must not consume speculative facts.
+This remains the central semantic/speculative safety boundary.
+
+**What remains:**
+Preserve the contract that transforms only see `TransformFactView`, which reads
+ROOT cells only.
+
+**Light suggestion on how:**
+If a future optimization needs speculative facts, model it as guarded backend
+selection / compilation, not as an unconditional AST transform.
+
+### C. Keep observation-driven speculation separate from semantic facts
+
+**Why:**
+The framework is now clear enough that this separation should stay mechanical,
+not rhetorical:
+
+- runtime observations accumulate in opaque runtime analyses;
+- narrowings extend non-ROOT contexts;
+- speculative reads are opt-in and guarded;
+- baseline semantic facts remain readable at ROOT.
+
+**What remains:**
+Avoid reintroducing helper surfaces that blur ROOT and speculative reads.
+
+**Light suggestion on how:**
+New readers should choose one of three explicit shapes:
+
+- ROOT-only transform/query surface;
+- transfer-local `AnalysisCtx` read surface;
+- explicit store read with an explicit `Context`.
+
+### D. Keep the citizen split and topology vocabulary intact
+
+**Why:**
+A lot of the earlier confusion came from structurally similar things being
+presented as though they were one category.
+That confusion is much lower now.
+
+**What remains:**
+Preserve the language and type boundaries around:
+
+- scheduled analyses,
+- assumption handles,
+- transforms,
+- program topology bridges.
+
+**Light suggestion on how:**
+Prefer small helper APIs that name a bridge (`blockOfNode`, `unitOfFunctionId`,
+`readExprFact`) over generic helpers that hide which key space is being crossed.
+
+### E. Keep comments/tests aligned with the new interfaces
+
+**Why:**
+The biggest remaining source of confusion is stale explanation, not stale
+implementation.
+
+**What remains:**
+As new work lands, update comments/tests to describe:
+
+- `AnalysisStore`, not `FactStore`;
+- paired `.env` / `.facts` analyses, not `DfaBlockFact`;
+- `FunctionId`, not the old `fdId` wording where the semantic distinction
+  matters.
+
+**Light suggestion on how:**
+Treat stale architectural comments as correctness debt. If a change alters a
+boundary, update the nearest architectural comment and one regression test in
+that same patch.
+
+---
+
+## What does *not* currently need doing
+
+These were active concerns in the older notes, but they are no longer the right
+next steps.
+
+### Not a current task: re-theorize one global "FactStore lattice"
+
+That concern belonged to the old interface.
+The new code already names the real contract more honestly:
+`storeAlgebra` is the algebra of the stored cell domain owned by one analysis.
+
+### Not a current task: recover `DfaBlockFact`
+
+The env/facts split was the right simplification.
+The meaningful boundary now is between CFG-propagated env cells and per-node
+fact cells, not between an "inner" and "outer" summary object bundled back
+into one stored cell.
+
+### Not a current task: collapse citizen kinds back together
+
+`AssumptionHandle`, `Analysis`, `TransformRule`, and `Narrowing` overlap in how
+some code talks about them, but they should not be recompressed into one more
+abstract interface.
+
+### Not a current task: infer absent-cell meaning from may/must polarity alone
+
+Absent-cell semantics live on the stored cell contract (`emptyValue` /
+`storeAlgebra.bottom`), not on `polarity` by itself.
+
+---
+
+## Practical review checklist for future changes
+
+When reviewing a framework change, the important questions are now:
+
+1. What key space does this thing live on?
+2. Is it a scheduled analysis, an assumption handle, a transform, or a
+   narrowing?
+3. What is the stored cell domain?
+4. Which reads are ROOT-only, and which are context-explicit?
+5. If lifecycle cleanup runs, does it need one context or all contexts?
+6. Does every side-effect write still route through worklist dispatch?
+
+If those answers are obvious, the architecture is still legible.
+
+---
+
+## Cold-start reading order
+
+For someone arriving fresh, read these first:
+
+- `src/specialization/framework/analysis.ts`
+- `src/specialization/framework/analysis-store.ts`
 - `src/specialization/framework/worklist.ts`
-- `src/specialization/framework/fact-store.ts`
 - `src/specialization/framework/dfa-factory.ts`
-- `src/specialization/framework/interfaces.ts`
-- `src/specialization/type-analysis/lattice.ts`
-- `src/specialization/type-requirement-analysis/analysis.ts`
-- `src/tests/specialization/framework/lattice-laws.test.ts`
-- `src/tests/specialization/runtime/speculative-narrowing.test.ts`
+- `src/specialization/framework/transform-rule.ts`
+- `src/specialization/framework/topology.ts`
+- `src/tests/specialization/framework/analysis-store.test.ts`
+- `src/tests/specialization/framework/analysis-graph-dispatch.test.ts`
+- `src/tests/specialization/framework/function-registry.test.ts`
 
-That set is enough to verify most claims above before making changes.
+That set captures the real current contracts better than the older planning
+notes did.

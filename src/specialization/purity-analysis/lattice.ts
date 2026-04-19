@@ -31,15 +31,15 @@
 //            \                        /
 //             Closure(fd, undefined)          (pending, bottom of sub-lattice)
 //
-// Same `fdId`, `undefined` ⊑ `true|false`; `true` vs `false` at same fdId
-// widens to Unknown (contested); different `fdId` widens to Unknown.
+// Same `functionId`, `undefined` ⊑ `true|false`; `true` vs `false` at same functionId
+// widens to Unknown (contested); different `functionId` widens to Unknown.
 
 export type AbsVal =
   | { readonly kind: "bottom" }
   | { readonly kind: "fresh"; readonly origin: number }
   | { readonly kind: "param"; readonly slot: number }
   | { readonly kind: "global" }
-  // Closure value produced by a nested FunctionDef. `fdId` identifies the
+  // Closure value produced by a nested FunctionDef. `functionId` identifies the
   // nested function; `pure` records whether its body was determined pure by
   // `purityScopeAnalysis`. `undefined` means "inner not yet analyzed" — treated
   // as pending at call sites (no tainting until the verdict lands), which
@@ -48,7 +48,7 @@ export type AbsVal =
   // Closure is pure; an impure Closure taints the enclosing function.
   | {
       readonly kind: "closure";
-      readonly fdId: number;
+      readonly functionId: number;
       readonly pure: boolean | undefined;
     }
   // Block-global "impure" marker. Never stored in a slot; stashed in the
@@ -73,7 +73,7 @@ function absEquals(a: AbsVal, b: AbsVal): boolean {
   if (a.kind === "fresh" && b.kind === "fresh") return a.origin === b.origin;
   if (a.kind === "param" && b.kind === "param") return a.slot === b.slot;
   if (a.kind === "closure" && b.kind === "closure") {
-    return a.fdId === b.fdId && a.pure === b.pure;
+    return a.functionId === b.functionId && a.pure === b.pure;
   }
   return true;
 }
@@ -85,9 +85,9 @@ export function absLeq(a: AbsVal, b: AbsVal): boolean {
   if (b.kind === "impure") return true;
   if (a.kind === "impure") return false;
   if (b.kind === "unknown") return true;
-  // Closure sub-lattice: same-fdId `undefined` is below `defined`; defined
-  // peers (true vs false) are incomparable. Different fdIds fall through.
-  if (a.kind === "closure" && b.kind === "closure" && a.fdId === b.fdId) {
+  // Closure sub-lattice: same-functionId `undefined` is below `defined`; defined
+  // peers (true vs false) are incomparable. Different functionIds fall through.
+  if (a.kind === "closure" && b.kind === "closure" && a.functionId === b.functionId) {
     if (a.pure === b.pure) return true;
     return a.pure === undefined;
   }
@@ -102,9 +102,9 @@ export function absJoin(a: AbsVal, b: AbsVal): AbsVal {
   if (a.kind === "unknown" || b.kind === "unknown") return UNKNOWN;
   // Closure sub-lattice: monotonically refine `undefined` → `defined`, so
   // the `pending → pure` transition from `purityScopeAnalysis` survives the
-  // fact-store's monotone join. `true` vs `false` at the same fdId is a
-  // genuine contestation → Unknown. Different fdIds → Unknown.
-  if (a.kind === "closure" && b.kind === "closure" && a.fdId === b.fdId) {
+  // fact-store's monotone join. `true` vs `false` at the same functionId is a
+  // genuine contestation → Unknown. Different functionIds → Unknown.
+  if (a.kind === "closure" && b.kind === "closure" && a.functionId === b.functionId) {
     if (a.pure === b.pure) return a;
     if (a.pure === undefined) return b;
     if (b.pure === undefined) return a;

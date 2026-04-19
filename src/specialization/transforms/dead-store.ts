@@ -19,7 +19,7 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 // `StmtNS.FileInput` import via namespace below.
 import type { BasicBlock } from "../framework/cfg";
-import type { FunctionUnit } from "../framework/function-unit";
+import type { Unit } from "../framework/function-unit";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
 import { livenessAnalysis, liveOutOf } from "../liveness-analysis/analysis";
@@ -179,7 +179,7 @@ function applyBackward(
  *  the set iff it resolves to a local of THIS unit. Names that resolve in
  *  the lambda's own scope (or an inner scope) throw and are correctly
  *  ignored; names that resolve to builtins are non-local and also ignored. */
-function escapedLocalSlots(unit: FunctionUnit): Set<number> {
+function escapedLocalSlots(unit: Unit): Set<number> {
   const escaped = new Set<number>();
   const tryLookupLocal = (name: ExprNS.Variable["name"]): number | undefined => {
     try {
@@ -239,12 +239,11 @@ function escapedLocalSlots(unit: FunctionUnit): Set<number> {
  *  object itself (identity), so downstream consumers can look up liveness
  *  while walking the AST without needing to know the containing block. */
 function buildLiveOutMap(
-  unit: FunctionUnit,
-  factStore: TransformFactView,
+  unit: Unit,
 ): Map<StmtNS.Stmt, Set<number>> {
   const out = new Map<StmtNS.Stmt, Set<number>>();
   for (const block of unit.blockMap.values()) {
-    const env = liveOutOf(factStore, block);
+    const env = liveOutOf(block);
     const stmts = block.stmts;
     for (let i = stmts.length - 1; i >= 0; i--) {
       const snapshot = new Set<number>();
@@ -306,7 +305,7 @@ function sweepStmts(
 
 export const deadStoreRule = unitSweepRule(
   "deadStoreRule",
-  (unit: FunctionUnit, factStore: TransformFactView) => {
+  (unit: Unit, factStore: TransformFactView) => {
     // Skip the module (FileInput) scope. Module-top-level names are part of
     // the program's observable namespace — other modules can import them,
     // REPL/tool consumers can inspect them after execution, and the
@@ -315,9 +314,9 @@ export const deadStoreRule = unitSweepRule(
     // module would change observable state. Function-scope locals, by
     // contrast, are dead at return; DSE on them is always sound.
     if (unit.funcAst instanceof StmtNS.FileInput) return false;
-    const liveOutMap = buildLiveOutMap(unit, factStore);
+    const liveOutMap = buildLiveOutMap(unit);
     const escaped = escapedLocalSlots(unit);
     return sweepStmts(unit.body, liveOutMap, unit.slotLookup, escaped);
   },
-  [{ on: "fact", analysis: livenessAnalysis, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  [{ on: "fact", analysis: livenessAnalysis.env, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
 );

@@ -12,6 +12,7 @@ import { makeBlockFixpointAnalysis, type BlockFixpointAnalysis } from "./dfa-fac
 import type { BlockDfaSpec } from "./interfaces";
 import { MutableEnv } from "./mutable-env";
 import type { Narrowing } from "./analysis";
+import type { FunctionId, NodeId } from "./key-spaces";
 import { runtimeWriteAnalysis } from "./runtime-analyses";
 
 function dfaAnalysis<L>(
@@ -24,8 +25,8 @@ function dfaAnalysis<L>(
     valueLattice: spec,
     mergeKind: spec.mergeKind,
     seedEnv: () => new MutableEnv<L>(),
-    transferBlock: (factStore, ctx, block, inEnv, unit) =>
-      transferBlock(block, inEnv, spec, factStore, unit.slotLookup, ctx.currentContext),
+    transferBlock: (ctx, block, inEnv, unit) =>
+      transferBlock(block, inEnv, spec, unit.slotLookup, ctx.currentContext),
     refineOnEdge: (env, edge) => spec.refineOnEdge(env, edge),
   });
 }
@@ -39,13 +40,13 @@ export const constAnalysis: BlockFixpointAnalysis<ConstLattice> =
  *  Registering one here is the full surface for adding a speculation
  *  dimension: the worklist's observation translator, widen primitives,
  *  and `lineageOf` iterate this list. No framework edits required. */
-export const typeNarrowing: Narrowing<TypeLattice> = {
+export const typeNarrowing: Narrowing<NodeId, TypeLattice> = {
   handle: typeExprHandle,
   blockAnalysis: () => typeAnalysis,
   observationSource: runtimeWriteAnalysis,
   lift: liftType,
 };
-export const constNarrowing: Narrowing<ConstLattice> = {
+export const constNarrowing: Narrowing<NodeId, ConstLattice> = {
   handle: constExprHandle,
   blockAnalysis: () => constAnalysis,
   observationSource: runtimeWriteAnalysis,
@@ -55,11 +56,11 @@ export const constNarrowing: Narrowing<ConstLattice> = {
 /** Default narrowing set. Worklist callers that omit the constructor's
  *  `narrowings` parameter get this list.
  *
- *  The return-kind dimension is keyed in a different space (fdId, sourced
+ *  The return-kind dimension is keyed in a different space (functionId, sourced
  *  from `runtimeReturnAnalysis`) than the node-keyed type/const dimensions
  *  (sourced from `runtimeWriteAnalysis`). The observation translator
  *  filters on `observationSource` so they never cross-trigger. */
-export const DEFAULT_NARROWINGS: ReadonlyArray<Narrowing<unknown>> = [
+export const DEFAULT_NARROWINGS: ReadonlyArray<Narrowing<NodeId | FunctionId, unknown>> = [
   typeNarrowing,
   constNarrowing,
   returnKindNarrowing,
@@ -69,7 +70,7 @@ export const DEFAULT_NARROWINGS: ReadonlyArray<Narrowing<unknown>> = [
  *  narrowings remain available in speculation contexts and lineage pruning,
  *  but the backend does not consume speculative type facts directly, so the
  *  JIT should not treat them as artifact-shaping inputs. */
-export const JIT_RELEVANT_NARROWINGS: ReadonlyArray<Narrowing<unknown>> = [
+export const JIT_RELEVANT_NARROWINGS: ReadonlyArray<Narrowing<NodeId | FunctionId, unknown>> = [
   constNarrowing,
   returnKindNarrowing,
 ];

@@ -1,15 +1,15 @@
 import type { ExprNS } from "../../ast-types";
 import type { CFGEdge } from "./cfg";
 import type { Context } from "./context";
-import type { FactStore } from "./fact-store";
 import type { MutableEnv } from "./mutable-env";
 import type { BoundedLattice } from "./analysis";
+import type { NodeId } from "./key-spaces";
 import type { SlotLookup } from "./slot-table";
 
 /**
  * Structural-mutation contract for transforms.
  *
- * Function identity is owned by `FunctionRegistry` (fdId ↔ node ↔ slot).
+ * Function identity is owned by `FunctionRegistry` (functionId ↔ node ↔ slot).
  * Worklist and SVMLCompiler consume the registry; they do not re-derive slot
  * layout from AST traversal order. Any transform that adds or removes a
  * FunctionDef / Lambda / MultiLambda MUST cooperate with the registry or the
@@ -20,7 +20,7 @@ import type { SlotLookup } from "./slot-table";
  *   1. Populate `functionEnvironments` for the new node (if adding).
  *   2. `registry.mint(newNode)` / `registry.retire(oldNode.id)` — this updates
  *      slot layout and fires the worklist's onMint/onRetire listener, which
- *      builds (or drops) the corresponding FunctionUnit and fires the
+ *      builds (or drops) the corresponding Unit and fires the
  *      `onUnitMinted` / `onUnitRetired` lifecycle event.
  *
  * The enclosing unit's CFG rebuild is handled automatically: the transform's
@@ -41,10 +41,11 @@ export interface BlockDfaSpec<L> extends BoundedLattice<L> {
 
   /** Per-subtree visitor. Reads upstream observations from `factStore`
    *  (read-only — `runtimeWriteAnalysis` lookups for lattice widening) and
-   *  records per-node output facts into `recordExprFact`. The visitor MUST
-   *  NOT write back into `factStore` — per-node facts flow out via
-   *  `recordExprFact` and are attached to the block analysis's `DfaBlockFact`
-   *  by `transferBlock`.
+   *  records per-node output facts into `recordExprFact`. Per-node facts
+   *  flow out via `recordExprFact` and are written into the block
+   *  analysis's `.facts` cell by the factory's paired-cell write. Visitors
+   *  that need cross-analysis reads do so directly via
+   *  `otherAnalysis.store.read(key, context)`.
    *
    *  `context` is the speculation context this transfer is running under.
    *  ROOT_CONTEXT for the unspeculated pass; a non-ROOT context carries
@@ -52,10 +53,9 @@ export interface BlockDfaSpec<L> extends BoundedLattice<L> {
    *  narrow per-node facts. Modules that are speculation-oblivious ignore
    *  the parameter. */
   makeExprVisitor(
-    factStore: FactStore,
     env: MutableEnv<L>,
     slotLookup: SlotLookup,
-    recordExprFact: (nodeId: number, val: L) => void,
+    recordExprFact: (nodeId: NodeId, val: L) => void,
     context: Context,
   ): ExprNS.Visitor<L>;
 

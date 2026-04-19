@@ -16,13 +16,13 @@
 // analyses stay untouched.
 
 import type { Context } from "./context";
-import type { FunctionUnit } from "./function-unit";
+import type { Unit } from "./function-unit";
 import type { RawKind } from "./raw-value";
 
 export interface ObservationEvent {
-  readonly unit: FunctionUnit;
+  readonly unit: Unit;
   /** The observation's key in its source analysis's keyspace — nodeId
-   *  for `runtimeWriteAnalysis`, fdId for `runtimeReturnAnalysis`, and
+   *  for `runtimeWriteAnalysis`, functionId for `runtimeReturnAnalysis`, and
    *  whatever future narrowing dimensions define. Treat as an opaque
    *  identity for dedup/counting; do not assume it names an AST node. */
   readonly key: number;
@@ -45,7 +45,7 @@ export interface SpeculationStrategy {
 
   /** Hook for strategies that track per-site history and need a clean
    *  slate when a unit retires. Optional — noop strategies can omit.  */
-  onUnitRetired?(unit: FunctionUnit): void;
+  onUnitRetired?(unit: Unit): void;
 }
 
 /** Reproduces the pre-strategy behavior: every observation triggers an
@@ -71,7 +71,7 @@ export function countBasedStrategy(threshold: number): SpeculationStrategy {
     throw new Error(`[countBasedStrategy] threshold must be a positive integer, got ${threshold}`);
   }
   const counts = new Map<number, Map<string, number>>();
-  const unitKeys = new WeakMap<FunctionUnit, Set<number>>();
+  const unitKeys = new WeakMap<Unit, Set<number>>();
 
   const discriminant = (raw: RawKind): string => {
     switch (raw.kind) {

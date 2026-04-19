@@ -5,37 +5,38 @@ import {
   FunctionRegistry,
   buildFunctionRegistry,
 } from "../../../specialization/framework/function-registry";
-import type { FunctionUnit } from "../../../specialization/framework/function-unit";
-import type { Analysis } from "../../../specialization/framework/analysis";
+import type { Unit } from "../../../specialization/framework/function-unit";
+import { defineAnalysis, type Analysis } from "../../../specialization/framework/analysis";
 import { Worklist } from "../../../specialization/framework/worklist";
 
 /** Test helper: an analysis that records mint/rebuild/retire events via onRegister. */
 function makeLifecycleObserver(): {
-  analysis: Analysis<FunctionUnit, number>;
-  minted: FunctionUnit[];
-  rebuilt: FunctionUnit[];
-  retired: Array<{ unit: FunctionUnit; fdId: number }>;
+  analysis: Analysis<Unit, number>;
+  minted: Unit[];
+  rebuilt: Unit[];
+  retired: Array<{ unit: Unit; functionId: number }>;
 } {
-  const minted: FunctionUnit[] = [];
-  const rebuilt: FunctionUnit[] = [];
-  const retired: Array<{ unit: FunctionUnit; fdId: number }> = [];
-  const analysis: Analysis<FunctionUnit, number> = {
+  const minted: Unit[] = [];
+  const rebuilt: Unit[] = [];
+  const retired: Array<{ unit: Unit; functionId: number }> = [];
+  const lifecycleStoreAlgebra = { bottom: 0, leq: (a: number, b: number) => a <= b, join: Math.max, eq: (a: number, b: number) => a === b };
+  const analysis: Analysis<Unit, number> = defineAnalysis({
     id: Symbol("observer"),
     debugName: "observer",
-    lattice: { bottom: 0, leq: (a, b) => a <= b, join: Math.max, eq: (a, b) => a === b },
+    storeAlgebra: lifecycleStoreAlgebra,
     edges: [
-      { on: "mint", effect: (_fs, _ctx, u) => { minted.push(u); } },
-      { on: "rebuild", effect: (_fs, _ctx, u) => { rebuilt.push(u); } },
-      { on: "retire", effect: (_fs, _ctx, u) => {
+      { on: "mint", effect: (_ctx, u) => { minted.push(u); } },
+      { on: "rebuild", effect: (_ctx, u) => { rebuilt.push(u); } },
+      { on: "retire", effect: (_ctx, u) => {
         const fd = u.funcAst;
-        const fdId = fd instanceof StmtNS.FunctionDef ? fd.id : -1;
-        retired.push({ unit: u, fdId });
+        const functionId = fd instanceof StmtNS.FunctionDef ? fd.id : -1;
+        retired.push({ unit: u, functionId });
       }},
     ],
     tier: "analysis",
     polarity: "opaque",
     transfer: () => undefined,
-  };
+  });
   return { analysis, minted, rebuilt, retired };
 }
 
@@ -89,11 +90,11 @@ describe("FunctionRegistry", () => {
     const ast = parseProgram("def f():\n    return 1");
     const registry = buildFunctionRegistry(ast);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const fdId = fn.id;
-    expect(registry.slotOf(fdId)).toBe(1);
-    registry.retire(fdId);
-    expect(() => registry.slotOf(fdId)).toThrow(/not registered/);
-    expect(registry.has(fdId)).toBe(false);
+    const functionId = fn.id;
+    expect(registry.slotOf(functionId)).toBe(1);
+    registry.retire(functionId);
+    expect(() => registry.slotOf(functionId)).toThrow(/not registered/);
+    expect(registry.has(functionId)).toBe(false);
     expect(registry.hasNode(fn)).toBe(false);
   });
 
@@ -121,7 +122,7 @@ describe("FunctionRegistry", () => {
     expect(entries[1].node).toBeInstanceOf(ExprNS.Lambda);
   });
 
-  it("snapshot returns fdId -> slot map", () => {
+  it("snapshot returns functionId -> slot map", () => {
     const ast = parseProgram("def f():\n    return 1");
     const registry = buildFunctionRegistry(ast);
     const snap = registry.snapshot();
@@ -162,14 +163,14 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
     );
     const g = ast.statements[1] as StmtNS.FunctionDef;
 
-    const gUnit = worklist.units.get(g);
+    const gUnit = worklist.units.get(g.id);
     expect(gUnit).toBeDefined();
     expect(obs.minted).toContain(gUnit);
 
     worklist.registry.retire(g.id);
 
-    expect(worklist.units.has(g)).toBe(false);
-    expect(obs.retired.map(r => r.fdId)).toContain(g.id);
+    expect(worklist.units.has(g.id)).toBe(false);
+    expect(obs.retired.map(r => r.functionId)).toContain(g.id);
     expect(() => worklist.registry.slotOf(g.id)).toThrow(/not registered/);
   });
 
@@ -185,23 +186,23 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
       [runtimeWriteAnalysis, runtimeCallAnalysis, purityScopeAnalysis],
     );
     const g = ast.statements[1] as StmtNS.FunctionDef;
-    const gUnit = worklist.units.get(g)!;
+    const gUnit = worklist.units.get(g.id)!;
 
-    // Seed cells for g's fdId and one of g's node ids.
-    const someNodeId = gUnit.blockOfNode.keys().next().value as number;
-    worklist.factStore.write(runtimeWriteAnalysis, someNodeId, { kind: "number", value: 7 });
-    worklist.factStore.write(runtimeCallAnalysis, g.id, 3);
-    worklist.factStore.write(purityScopeAnalysis, g.id, true);
+    // Seed cells for g's functionId and one of g's node ids.
+    const someNodeId = [...worklist.topology.nodesOfUnit(gUnit)][0];
+    worklist.write(runtimeWriteAnalysis, someNodeId, { kind: "number", value: 7 });
+    worklist.write(runtimeCallAnalysis, g.id, 3);
+    worklist.write(purityScopeAnalysis, g.id, true);
 
-    expect(worklist.factStore.tryRead(runtimeWriteAnalysis, someNodeId)).toBeDefined();
-    expect(worklist.factStore.tryRead(runtimeCallAnalysis, g.id)).toBeDefined();
-    expect(worklist.factStore.tryRead(purityScopeAnalysis, g.id)).toBeDefined();
+    expect(worklist.tryRead(runtimeWriteAnalysis, someNodeId)).toBeDefined();
+    expect(worklist.tryRead(runtimeCallAnalysis, g.id)).toBeDefined();
+    expect(worklist.tryRead(purityScopeAnalysis, g.id)).toBeDefined();
 
     worklist.registry.retire(g.id);
 
-    expect(worklist.factStore.tryRead(runtimeWriteAnalysis, someNodeId)).toBeUndefined();
-    expect(worklist.factStore.tryRead(runtimeCallAnalysis, g.id)).toBeUndefined();
-    expect(worklist.factStore.tryRead(purityScopeAnalysis, g.id)).toBeUndefined();
+    expect(worklist.tryRead(runtimeWriteAnalysis, someNodeId)).toBeUndefined();
+    expect(worklist.tryRead(runtimeCallAnalysis, g.id)).toBeUndefined();
+    expect(worklist.tryRead(purityScopeAnalysis, g.id)).toBeUndefined();
   });
 
   it("mint after retire re-materializes a unit and fires onUnitMinted again", () => {
@@ -213,14 +214,97 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
     const g = ast.statements[1] as StmtNS.FunctionDef;
 
     worklist.registry.retire(g.id);
-    expect(worklist.units.has(g)).toBe(false);
+    expect(worklist.units.has(g.id)).toBe(false);
     const beforeMintCount = obs.minted.length;
 
     const newSlot = worklist.registry.mint(g);
-    const reborn = worklist.units.get(g);
+    const reborn = worklist.units.get(g.id);
     expect(reborn).toBeDefined();
     expect(reborn!.slot).toBe(newSlot);
     expect(obs.minted.length).toBe(beforeMintCount + 1);
     expect(obs.minted[obs.minted.length - 1]).toBe(reborn);
+  });
+
+  it("retire evicts block-analysis cells across speculative contexts too", async () => {
+    const { runtimeWriteAnalysis, observeRuntimeWrite } = await import(
+      "../../../specialization/framework/runtime-analyses"
+    );
+    const { typeAnalysis, constAnalysis } = await import(
+      "../../../specialization/framework/dfa-analyses"
+    );
+    const { ast, worklist } = build(
+      ["def g(x):", "    return x + 1"].join("\n"),
+      [
+        runtimeWriteAnalysis,
+        typeAnalysis.env,
+        typeAnalysis.facts,
+        constAnalysis.env,
+        constAnalysis.facts,
+      ],
+    );
+    const g = ast.statements[0] as StmtNS.FunctionDef;
+    const gUnit = worklist.units.get(g.id)!;
+    const ret = g.body[0] as StmtNS.Return;
+    const add = ret.value as ExprNS.Binary;
+    const literal = add.right as ExprNS.Literal;
+    const oldEntry = gUnit.cfg.entry;
+
+    observeRuntimeWrite(worklist, literal.id, 7);
+
+    const specCtx = worklist.specContextFor(gUnit);
+    expect(typeAnalysis.env.store.tryRead(oldEntry, specCtx)).toBeDefined();
+    expect(typeAnalysis.facts.store.tryRead(oldEntry, specCtx)).toBeDefined();
+
+    worklist.registry.retire(g.id);
+
+    expect(typeAnalysis.env.store.tryRead(oldEntry, specCtx)).toBeUndefined();
+    expect(typeAnalysis.facts.store.tryRead(oldEntry, specCtx)).toBeUndefined();
+  });
+
+  it("rebuild evicts block-analysis cells across speculative contexts too", async () => {
+    const { runtimeWriteAnalysis, observeRuntimeWrite } = await import(
+      "../../../specialization/framework/runtime-analyses"
+    );
+    const { typeAnalysis, constAnalysis } = await import(
+      "../../../specialization/framework/dfa-analyses"
+    );
+    const { ast, worklist } = build(
+      ["def g(x):", "    return x + 1"].join("\n"),
+      [
+        runtimeWriteAnalysis,
+        typeAnalysis.env,
+        typeAnalysis.facts,
+        constAnalysis.env,
+        constAnalysis.facts,
+      ],
+    );
+    const g = ast.statements[0] as StmtNS.FunctionDef;
+    const gUnit = worklist.units.get(g.id)!;
+    const ret = g.body[0] as StmtNS.Return;
+    const add = ret.value as ExprNS.Binary;
+    const literal = add.right as ExprNS.Literal;
+    const oldEntry = gUnit.cfg.entry;
+
+    observeRuntimeWrite(worklist, literal.id, 7);
+
+    const specCtx = worklist.specContextFor(gUnit);
+    expect(typeAnalysis.env.store.tryRead(oldEntry, specCtx)).toBeDefined();
+    expect(typeAnalysis.facts.store.tryRead(oldEntry, specCtx)).toBeDefined();
+
+    let fired = false;
+    worklist.registerTransform({
+      id: Symbol("one-shot-rebuild"),
+      debugName: "one-shot-rebuild",
+      sweep: unit => {
+        if (fired || unit !== gUnit) return false;
+        fired = true;
+        return true;
+      },
+    });
+    worklist.drain();
+
+    expect(fired).toBe(true);
+    expect(typeAnalysis.env.store.tryRead(oldEntry, specCtx)).toBeUndefined();
+    expect(typeAnalysis.facts.store.tryRead(oldEntry, specCtx)).toBeUndefined();
   });
 });

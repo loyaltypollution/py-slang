@@ -1,57 +1,64 @@
 import type { BasicBlock, CFGEdge } from "./cfg";
-import type { Context } from "./context";
-import type { FactStore } from "./fact-store";
-import type { FunctionUnit } from "./function-unit";
+import { ROOT_CONTEXT, type Context } from "./context";
+import type { Unit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
 import type { BoundedLattice, EdgeSpec, Lattice, Analysis, AnalysisCtx } from "./analysis";
+import { defineAnalysis } from "./analysis";
+import type { ProgramTopology } from "./topology";
 
-/** Packages a Kildall block DFA as a `Analysis<BasicBlock, DfaBlockFact<L>>`.
- *  The fact carries the block's OUT env (used for CFG successor propagation)
- *  and the per-node lattice facts the transfer computed inside this block.
- *  Analyses that need block-global sticky state (e.g. purity's "impure" bit)
- *  stash it in `exprFacts` at a sentinel nodeId — exprFacts is joined
- *  per-key via the value lattice, so the sentinel participates in the
- *  usual monotone propagation without a separate summary channel. */
+/** Packages a Kildall block DFA as a PAIR of `Analysis` objects over the
+ *  same BasicBlock keyspace:
+ *
+ *    - `.env`   stores the block's OUT env (slot-lifted semantic domain).
+ *               Owns the fixpoint: CFG-successor propagation, seed on
+ *               mint/rebuild, eviction on rebuild/retire.
+ *    - `.facts` stores per-node expression facts and analysis-specific
+ *               sticky sentinel keys (e.g. purity's `IMPURE_SENTINEL_NODE_ID`).
+ *               Populated as a side effect of `.env`'s transfer — its own
+ *               transfer is a no-op. Consumers read per-node facts via
+ *               `readExprFact`; sentinel-reading outer analyses subscribe
+ *               via `{on:"fact", analysis: bfa.facts}`.
+ *
+ *  Splitting the old single-cell `DfaBlockFact<L>` into two paired cells
+ *  removes the spurious-ripple problem of the compound store algebra: an
+ *  `exprFacts`-only change (e.g. an observation narrowing a sub-expression)
+ *  used to wake every CFG successor even though no successor's OUT env
+ *  could shift. With the split, successor wake fires only on `.env` changes;
+ *  per-node-fact consumers wake only on `.facts` changes. */
 
 /** Edge projector: map a node-keyed upstream key to its containing block.
  *  Exported so callers of `makeBlockFixpointAnalysis` declare node-fact
- *  upstreams via `addEdge(analysis, {on:"fact", analysis: upstream, wake: nodeIdToBlock})`
+ *  upstreams via `addEdge(bfa.env, {on:"fact", analysis: upstream, wake: nodeIdToBlock})`
  *  rather than a dedicated factory-level `reads` channel. Returns an empty
- *  iterable when the key isn't a number or the node isn't indexed in any
- *  unit's `blockOfNode`. */
+ *  iterable when the key isn't a number or the node isn't indexed in the
+ *  program topology. */
 export const nodeIdToBlock = (
   ctx: AnalysisCtx,
   key: unknown,
 ): Iterable<BasicBlock> => {
   if (typeof key !== "number") return [];
-  const u = ctx.unitForNode(key);
-  const block = u?.blockOfNode.get(key);
+  const block = ctx.topology.blockOfNode(key);
   return block === undefined ? [] : [block];
 };
 
-/** Analysis produced by `makeBlockFixpointAnalysis`. Adds `seed(unit)` —
- *  the block at which the fixpoint is seeded for `unit`: entry for
- *  forward, exit for backward. Exposed so consumers re-seeding the
- *  fixpoint (e.g. the worklist's narrowing translator) don't re-derive
- *  direction from a parallel surface field. */
-export interface BlockFixpointAnalysis<L>
-  extends Analysis<BasicBlock, DfaBlockFact<L>> {
-  seed(unit: FunctionUnit): BasicBlock;
+/** Paired block-DFA analyses produced by `makeBlockFixpointAnalysis`.
+ *
+ *  `env` drives the fixpoint. `facts` is a side-written cell read by
+ *  per-node consumers (transforms via `readExprFact`, sentinel-reading
+ *  outer analyses). `seed(unit)` returns the block at which the fixpoint
+ *  is seeded for `unit`: entry for forward, exit for backward. */
+export interface BlockFixpointAnalysis<L> {
+  readonly env: Analysis<BasicBlock, MutableEnv<L>>;
+  readonly facts: Analysis<BasicBlock, ReadonlyMap<number, L>>;
+  seed(unit: Unit): BasicBlock;
 }
 
-/** Output fact for one block under an analysis analysis. */
-export interface DfaBlockFact<L> {
-  /** Slot-keyed OUT env for forward successor / backward predecessor merging. */
+/** Result of one block-transfer pass: the updated OUT env plus per-node
+ *  expr facts. Stored into `.env` and `.facts` respectively. Negative
+ *  nodeIds in `exprFacts` are reserved as analysis-specific block-global
+ *  sentinels (see `IMPURE_SENTINEL_NODE_ID` in purity). */
+export interface BlockPassResult<L> {
   readonly outEnv: MutableEnv<L>;
-  /** NodeId → lattice value for expressions visited in this block's transfer.
-   *
-   *  Negative nodeIds are reserved as analysis-specific block-global
-   *  sentinels. Real AST nodeIds are always non-negative, so a negative key
-   *  never collides with a syntactic expression. Sentinels participate in the
-   *  factory's per-key lattice join just like regular exprFacts — this lets
-   *  an analysis carry sticky block-global state (e.g. an "impure" marker)
-   *  without a separate summary channel. Canonical example:
-   *  `IMPURE_SENTINEL_NODE_ID` in `purity-analysis/lattice.ts`. */
   readonly exprFacts: ReadonlyMap<number, L>;
 }
 
@@ -60,16 +67,17 @@ type DfaDirection = "forward" | "backward";
 interface DfaConfigBase<L> {
   readonly debugName: string;
   readonly direction: DfaDirection;
-  /** Pure: IN env → OUT env + per-node exprFacts. No fact-store writes. */
+  /** IN env → OUT env + per-node exprFacts. Called from `.env`'s transfer;
+   *  the factory performs both cell writes (`.env` via return value,
+   *  `.facts` via the factory's paired-cell side effect). */
   readonly transferBlock: (
-    factStore: FactStore,
     ctx: AnalysisCtx,
     block: BasicBlock,
     inEnv: MutableEnv<L>,
-    unit: FunctionUnit,
-  ) => DfaBlockFact<L>;
+    unit: Unit,
+  ) => BlockPassResult<L>;
   /** Seed the entry (forward) / exit (backward) block's IN env. */
-  readonly seedEnv: (unit: FunctionUnit) => MutableEnv<L>;
+  readonly seedEnv: (unit: Unit) => MutableEnv<L>;
   /** Per-edge env refinement. See `BlockDfaSpec.refineOnEdge` for the contract.
    *  Mandatory so forgotten implementations surface at compile time; analyses
    *  that don't narrow return `env` unchanged. */
@@ -89,19 +97,34 @@ type DfaConfig<L> = DfaConfigBase<L> & (
 export function makeBlockFixpointAnalysis<L>(
   config: DfaConfig<L>,
 ): BlockFixpointAnalysis<L> {
-  // Frozen singleton: `FactStore.read` returns this for unwritten cells. Any
-  // caller that mutates `outEnv` or `exprFacts` in place corrupts every other
-  // unwritten read through the same analysis. `Object.freeze` prevents
-  // re-assignment of the outer fields; `outEnv.freeze()` makes the internal
-  // slot array mutators throw — callers MUST `snapshot()` before mutation.
-  // `inEnvFor` does exactly that; `readExprFact` only reads via `tryRead`/
-  // `.get`, which never touches the bottom object.
-  const bottomFact: DfaBlockFact<L> = Object.freeze({
-    outEnv: new MutableEnv<L>().freeze(),
-    exprFacts: new Map<number, L>(),
-  });
+  // Frozen shared bottoms. `bottomEnv.freeze()` makes the slot-array mutators
+  // throw — `inEnvFor` must `snapshot()` before any mutation. Forgotten
+  // snapshots used to silently corrupt every unwritten read through the
+  // shared bottom; now they throw at the first offending write.
+  const bottomEnv = new MutableEnv<L>().freeze();
+  const EMPTY_FACTS: ReadonlyMap<number, L> = new Map();
 
-  const exprFactsJoin = (
+  const envLattice: Lattice<MutableEnv<L>> = {
+    bottom: bottomEnv,
+    leq: (a, b) => a.leq(b, config.valueLattice),
+    // Mutating `a` would corrupt the stored env other readers hold a
+    // reference to; snapshot first. Commutative monotone combine on the
+    // slot-lifted domain: under the DFA's monotone transfer, this collapses
+    // to `b` when `a ⊑ b`, matching the store's join(prev, new) fast path.
+    join: (a, b) => {
+      const merged = a.snapshot();
+      if (config.mergeKind === "must") {
+        merged.meetWith(b, config.valueLattice);
+      } else {
+        merged.joinWith(b, config.valueLattice);
+      }
+      return merged;
+    },
+    eq: (a, b) => a === b
+      || (a.leq(b, config.valueLattice) && b.leq(a, config.valueLattice)),
+  };
+
+  const factsJoin = (
     a: ReadonlyMap<number, L>,
     b: ReadonlyMap<number, L>,
   ): ReadonlyMap<number, L> => {
@@ -118,7 +141,7 @@ export function makeBlockFixpointAnalysis<L>(
   // Pointwise `a ⊑ b`. Missing keys are ⊥; the `a.size === 0` shortcut
   // handles the common case where a freshly-built fact is compared against
   // an established one.
-  const exprFactsLeq = (
+  const factsLeq = (
     a: ReadonlyMap<number, L>,
     b: ReadonlyMap<number, L>,
   ): boolean => {
@@ -131,44 +154,24 @@ export function makeBlockFixpointAnalysis<L>(
     return true;
   };
 
-  // Both parts participate in change detection — exprFacts can advance while
-  // outEnv stays invariant (e.g. runtime observation widening a sub-expression
-  // in `return e`), and readers of any projection must wake on those. Ripple
-  // cost is bounded: a change to exprFacts alone still wakes CFG successors
-  // via the self-reader edge, but each successor's transfer then produces an
-  // unchanged OUT, so the ripple dies after one hop per successor — O(|CFG|)
-  // per observation.
-  const compoundLeq = (a: DfaBlockFact<L>, b: DfaBlockFact<L>): boolean =>
-    a.outEnv.leq(b.outEnv, config.valueLattice) &&
-    exprFactsLeq(a.exprFacts, b.exprFacts);
-  const envLattice: Lattice<DfaBlockFact<L>> = {
-    bottom: bottomFact,
-    leq: compoundLeq,
-    // Commutative monotone join: outEnv merges slot-wise, exprFacts merge
-    // per-nodeId via the value lattice. Under the DFA's expected monotone
-    // transfer, FactStore.write's join(prev, new) collapses to `new`;
-    // commutativity makes that independent of operand order.
-    join: (a, b) => {
-      const merged = a.outEnv.snapshot();
-      if (config.mergeKind === "must") {
-        merged.meetWith(b.outEnv, config.valueLattice);
-      } else {
-        merged.joinWith(b.outEnv, config.valueLattice);
-      }
-      return {
-        outEnv: merged,
-        exprFacts: exprFactsJoin(a.exprFacts, b.exprFacts),
-      };
-    },
-    eq: (a, b) => a === b || (compoundLeq(a, b) && compoundLeq(b, a)),
+  const factsLattice: Lattice<ReadonlyMap<number, L>> = {
+    bottom: EMPTY_FACTS,
+    leq: factsLeq,
+    join: factsJoin,
+    eq: (a, b) => a === b || (factsLeq(a, b) && factsLeq(b, a)),
   };
 
-  const blockPassId = Symbol(`${config.debugName}:blocks`);
+  // `edges` arrays stay unfrozen so callers with mutually-recursive edges
+  // (e.g. purity block ↔ scope) can append via `addEdge` after construction.
+  const envEdges: EdgeSpec<BasicBlock>[] = [];
+  const factsEdges: EdgeSpec<BasicBlock>[] = [];
+
+  const seedKey = (unit: Unit): BasicBlock =>
+    config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
 
   function inEnvFor(
-    factStore: FactStore,
     block: BasicBlock,
-    unit: FunctionUnit,
+    unit: Unit,
     context: Context,
   ): MutableEnv<L> {
     // Iterate predecessor *edges* so `refineOnEdge` sees the labeled edge
@@ -180,19 +183,16 @@ export function makeBlockFixpointAnalysis<L>(
     if (preds.length === 0) return config.seedEnv(unit);
     let env: MutableEnv<L> | undefined;
     for (const edge of preds) {
-      // `factStore.read` returns the frozen bottomFact for unwritten cells;
-      // we never mutate it in place. Read is scoped to `context` so a
-      // speculative context's predecessors don't leak ROOT state.
+      // `envAnalysis.store.read` returns `bottomEnv` (frozen) for unwritten
+      // cells; we never mutate it in place. Read is scoped to `context` so
+      // a speculative context's predecessors don't leak ROOT state.
       const predBlock = config.direction === "forward" ? edge.from : edge.to;
-      const predOut = factStore.read(blockKeyedAnalysis, predBlock, context).outEnv;
+      const predOut = envAnalysis.store.read(predBlock, context);
       // Refine across the edge. Identity returns are common and must not
       // allocate; the factory absorbs that by snapshotting only when the
       // refinement returned a truly different env.
       const refined = config.refineOnEdge(predOut, edge);
       if (env === undefined) {
-        // If `refined` is the frozen bottomFact env or the pred's shared
-        // outEnv, we must snapshot before mutation downstream. If the
-        // refinement returned a fresh snapshot already, reuse it.
         env = refined === predOut ? predOut.snapshot() : refined;
       } else {
         if (config.mergeKind === "must") {
@@ -205,82 +205,123 @@ export function makeBlockFixpointAnalysis<L>(
     return env ?? config.seedEnv(unit);
   }
 
-  // `edges` is a live array passed to the analysis; construct the analysis first,
-  // then push the self-edge referring to `blockKeyedAnalysis` directly. Callers
-  // that need node-keyed upstreams add them via `addEdge` after construction
-  // using the exported `nodeIdToBlock` projector. The array stays unfrozen
-  // to make both self-wake and post-hoc amendments (e.g. purity block ↔
-  // scope cycles) safe.
-  const edgesArr: EdgeSpec<BasicBlock>[] = [];
-
-  const seedKey = (unit: FunctionUnit): BasicBlock =>
-    config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
-
-  const blockKeyedAnalysis: BlockFixpointAnalysis<L> = {
-    id: blockPassId,
-    debugName: `${config.debugName}:blocks`,
-    lattice: envLattice,
-    edges: edgesArr,
+  const envAnalysis: Analysis<BasicBlock, MutableEnv<L>> = defineAnalysis({
+    id: Symbol(`${config.debugName}:env`),
+    debugName: `${config.debugName}:env`,
+    keySpace: "BasicBlock",
+    storeAlgebra: envLattice,
+    emptyValue: bottomEnv,
+    edges: envEdges,
     tier: "analysis",
     polarity: config.mergeKind,
-    seed: seedKey,
-    transfer(factStore: FactStore, ctx: AnalysisCtx, block: BasicBlock): DfaBlockFact<L> | undefined {
+    transfer(ctx, block): MutableEnv<L> | undefined {
       const unit = block.unit;
-      const inEnv = inEnvFor(factStore, block, unit, ctx.currentContext);
-      return config.transferBlock(factStore, ctx, block, inEnv, unit);
+      const inEnv = inEnvFor(block, unit, ctx.currentContext);
+      const result = config.transferBlock(ctx, block, inEnv, unit);
+      // Paired-cell write. `.facts` has no transfer of its own — its cell is
+      // populated exclusively from here so the two cells always advance
+      // together under a single block pass. Route through `ctx.write` (not
+      // `factsAnalysis.store.write`) so the eq-gated advance publishes a
+      // FactChange to every subscriber of `factsAnalysis` — analyses like
+      // purityScopeAnalysis that wake on `.facts` writes would otherwise
+      // never see the update.
+      ctx.write(factsAnalysis, block, result.exprFacts);
+      return result.outEnv;
     },
-  };
+  });
 
-  const evictStaleBlocks = (factStore: FactStore, _ctx: AnalysisCtx, unit: FunctionUnit): void => {
-    for (const b of factStore.readAll(blockKeyedAnalysis).keys()) {
-      if (b.unit === unit) factStore.evict(blockKeyedAnalysis, b);
+  const factsAnalysis: Analysis<BasicBlock, ReadonlyMap<number, L>> = defineAnalysis({
+    id: Symbol(`${config.debugName}:facts`),
+    debugName: `${config.debugName}:facts`,
+    keySpace: "BasicBlock",
+    storeAlgebra: factsLattice,
+    emptyValue: EMPTY_FACTS,
+    edges: factsEdges,
+    tier: "analysis",
+    polarity: config.mergeKind,
+    // Facts cell is populated as a side effect of envAnalysis.transfer;
+    // returning undefined means "no write from this transfer path." The
+    // worklist only ever enqueues this analysis if something explicitly
+    // calls `enqueue(factsAnalysis, ...)`, which nothing does today.
+    transfer: () => undefined,
+  });
+
+  const evictStaleEnvCells = (_ctx: AnalysisCtx, unit: Unit): void => {
+    for (const context of envAnalysis.store.contexts()) {
+      for (const b of envAnalysis.store.readAll(context).keys()) {
+        if (b.unit === unit) envAnalysis.store.evict(b, context);
+      }
     }
   };
 
-  // Lifecycle edges: seed entry/exit on mint, re-seed after rebuild (post
-  // eviction of stale block cells), and drop stale blocks on retire. Block
-  // cells are keyed by `BasicBlock` (not `FunctionUnit`), so the worklist's
+  const evictStaleFactsCells = (_ctx: AnalysisCtx, unit: Unit): void => {
+    for (const context of factsAnalysis.store.contexts()) {
+      for (const b of factsAnalysis.store.readAll(context).keys()) {
+        if (b.unit === unit) factsAnalysis.store.evict(b, context);
+      }
+    }
+  };
+
+  // envAnalysis: lifecycle seeds and evictions, plus CFG-successor self-wake.
+  // Block cells are keyed by `BasicBlock` (not `Unit`), so the worklist's
   // universal unit-keyed eviction doesn't reach them; we do it here.
-  edgesArr.push(
+  envEdges.push(
     { on: "mint", wake: (_ctx, unit) => [seedKey(unit)] },
     {
       on: "rebuild",
       wake: (_ctx, unit) => [seedKey(unit)],
-      effect: evictStaleBlocks,
+      effect: evictStaleEnvCells,
     },
-    { on: "retire", effect: evictStaleBlocks },
+    { on: "retire", effect: evictStaleEnvCells },
   );
 
-  // Self-wake: block OUT change → CFG successors recompute IN. Appended after
-  // construction so we can reference `blockKeyedAnalysis` directly, no getter.
-  edgesArr.push({
+  // Self-wake: block OUT env change → CFG successors recompute IN. Appended
+  // after construction so we can reference `envAnalysis` directly, no getter.
+  envEdges.push({
     on: "fact",
-    analysis: blockKeyedAnalysis as Analysis<any, any>,
+    analysis: envAnalysis as Analysis<any, any>,
     wake: (_ctx, key) => {
       const b = key as BasicBlock;
       const edges = config.direction === "forward" ? b.successorEdges : b.predecessorEdges;
-      // Forward: successor blocks recompute their IN from our OUT.
-      // Backward: predecessor blocks recompute from our OUT.
       return edges.map(e => (config.direction === "forward" ? e.to : e.from));
     },
   });
 
-  return blockKeyedAnalysis;
+  // factsAnalysis: eviction only. No mint seed (envAnalysis drives the seed
+  // and paired-writes produce facts as a side effect); no self-wake (expr
+  // facts do not propagate through CFG successors — the old compound analysis
+  // conflated the two cases and produced spurious ripples per observation,
+  // now eliminated by the split).
+  factsEdges.push(
+    { on: "rebuild", effect: evictStaleFactsCells },
+    { on: "retire", effect: evictStaleFactsCells },
+  );
+
+  return {
+    env: envAnalysis,
+    facts: factsAnalysis,
+    seed: seedKey,
+  };
 }
 
-/** Resolve a per-expression fact from the DFA block analysis.
- *  `block` must be the BasicBlock that contains `nodeId` in the unit whose
- *  `transferBlock` visited this expression — usually `unit.blockOfNode.get(nodeId)`
- *  where `unit` is the innermost unit containing the node. `context` defaults
- *  to ROOT_CONTEXT; passing a non-ROOT context reads the per-context cell
- *  produced by running the analysis under that speculation's assumptions. */
+/** Resolve a per-expression fact from a paired block-DFA analysis.
+ *
+ *  The topology bridge — node → block — is centralized here so callers
+ *  never recompute `unit.blockOfNode.get(nodeId)` or similar. `context`
+ *  defaults to ROOT_CONTEXT; passing a non-ROOT context reads the
+ *  per-context cell produced by running the analysis under that
+ *  speculation's assumptions.
+ *
+ *  Returns `undefined` if the node is unknown to `topology` (e.g. freshly
+ *  minted outside any indexed unit) or if the block's facts cell has no
+ *  fact for that node yet. */
 export function readExprFact<L>(
-  factStore: Pick<FactStore, "tryRead">,
-  analysis: Analysis<BasicBlock, DfaBlockFact<L>>,
-  block: BasicBlock | undefined,
+  topology: ProgramTopology,
+  analysis: BlockFixpointAnalysis<L>,
   nodeId: number,
-  context?: Context,
+  context: Context = ROOT_CONTEXT,
 ): L | undefined {
+  const block = topology.blockOfNode(nodeId);
   if (block === undefined) return undefined;
-  return factStore.tryRead(analysis, block, context)?.exprFacts.get(nodeId);
+  return analysis.facts.store.tryRead(block, context)?.get(nodeId);
 }

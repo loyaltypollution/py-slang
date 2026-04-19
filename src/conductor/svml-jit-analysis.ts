@@ -1,9 +1,87 @@
-// JIT recompile-and-patch analysis. Reads compile-relevant fact-store signals
-// (structural + DFA block facts) and, on lattice-change, recompiles the
-// affected FunctionDef and patches its entry in the interpreter's function
-// table. Side-effect idempotence: patchFunction only fires when the
-// produced IR differs structurally from the previously-stored one; the
-// IR itself is the lattice value, so equal writes suppress onChange.
+// SVML JIT recompile-and-patch analysis.
+//
+// Evaluator-scoped, not framework. This file lives in `src/conductor/`
+// because it is one concrete strategy for connecting the specialization
+// engine to the SVML backend — compile a FunctionDef's IR, patch it into
+// the interpreter's function table, memoize per (unit, speculation
+// context). A different SVML evaluator could wire a different strategy
+// (e.g. compile lazily on first dispatch, skip per-context caching,
+// batch-compile at deopt). None of that belongs in the framework.
+//
+// WASM and CSE will each pick their own strategy (CSE: nothing — the
+// AST-mutation transform loop already carries specialization to a
+// tree-walker for free). The symbols this file imports from
+// `../specialization/**` are therefore the empirical "flexible-enough
+// integration surface" that any future evaluator-side recompile loop
+// will lean on.
+//
+// ===== AUDIT: framework↔evaluator integration surface =====
+//
+// Types / values imported from `src/specialization/framework/**`:
+//
+//   analysis.ts
+//     - `Analysis<K, V>`       — the registered citizen shape.
+//     - `AnalysisCtx`          — handed to `transfer`. Carries `topology`
+//                                (node/block/unit/fd lookups) and
+//                                `currentContext`.
+//     - `EdgeSpec<K>`          — both fact and lifecycle edges.
+//     - `Narrowing<K, V>`      — for enumerating the relevant speculation
+//                                dimensions (cache partitioning).
+//
+//   cfg.ts
+//     - `BasicBlock`           — snapshot map keys. A backend that does
+//                                not snapshot per-block DFA facts would
+//                                not need this.
+//
+//   context.ts
+//     - `Context`, `ROOT_CONTEXT` — the speculation-context axis. Any
+//                                   backend that partitions artifacts by
+//                                   speculation will consume these.
+//
+//   function-unit.ts
+//     - `Unit`         — the key for jit-keyed cells.
+//
+//   analysis-store.ts
+//     - `AnalysisStore<K, V>`  — per-Analysis storage. The jit Analysis's
+//                                own `.store` carries its compiled-IR
+//                                cell; snapshot reads tap other
+//                                analyses' stores directly.
+//
+//   dfa-analyses.ts
+//     - `JIT_RELEVANT_NARROWINGS` — default narrowing set for SVML; an
+//                                   evaluator can override via `deps.narrowings`.
+//
+// Backend-supplied primitives (the other "end" of the interface):
+//
+//   - `compile(unit): IR`      — `SVMLCompiler.compileFunction`.
+//   - `patch(index, ir): void` — `SVMLInterpreter.patchFunction` on a
+//                                live function table.
+//   - `indexOf(scope)`         — backend knows its own function index space.
+//   - IR equality              — `structuralEquals` below; SVML-specific
+//                                because `SVMLIR`'s shape is SVML-specific.
+//   - Bottom IR sentinel       — `UNCOMPILED` below; a reference-unique
+//                                `SVMLIR` distinct from every real compile.
+//
+// Gaps a WASM evaluator would expose (to be addressed in a separate
+// design pass):
+//
+//   - WASM has no live function table today — `src/engines/wasm/index.ts`
+//     builds one monolithic WAT and instantiates once. A JIT strategy
+//     needs `WebAssembly.Table` of funcrefs + per-function mini-modules
+//     whose exports can be set() into the table. That is an engine-side
+//     redesign, not a framework change.
+//   - Guard emission in WASM would need an equivalent of
+//     `SVMLCompiler.guardRegistrar?.registerGuard(...)`; the worklist's
+//     `GuardRegistrar` interface is already backend-agnostic.
+//
+// ===== end AUDIT =====
+//
+// Reads compile-relevant fact-store signals (structural + DFA block
+// facts) and, on lattice-change, recompiles the affected FunctionDef and
+// patches its entry in the interpreter's function table. Side-effect
+// idempotence: patchFunction only fires when the produced IR differs
+// structurally from the previously-stored one; the IR itself is the
+// stored cell value, so equal writes suppress onChange.
 //
 // Per-context artifact cache. The unit's active speculation context
 // (`specContextFor(unit)`) drives which IR the backend dispatches to. Each
@@ -22,31 +100,44 @@
 // to RUNTIME_CALL_COUNT_SAT) for a function whose IR does not change, which
 // dominated runtime on tight hot loops.
 
-import { StmtNS } from "../../ast-types";
-import type { BasicBlock } from "../../specialization/framework/cfg";
-import { ROOT_CONTEXT, type Context } from "../../specialization/framework/context";
-import type { FunctionUnit } from "../../specialization/framework/function-unit";
-import type { FactStore } from "../../specialization/framework/fact-store";
-import type { Analysis, AnalysisCtx, EdgeSpec, Narrowing } from "../../specialization/framework/analysis";
-import { JIT_RELEVANT_NARROWINGS } from "../../specialization/framework/dfa-analyses";
-import type { SVMLCompiler } from "./svml-compiler";
-import type { SVMLInterpreter } from "./svml-interpreter";
-import { SVMLIR } from "./types";
+import { StmtNS } from "../ast-types";
+import type { BasicBlock } from "../specialization/framework/cfg";
+import { ROOT_CONTEXT, type Context } from "../specialization/framework/context";
+import type { Unit } from "../specialization/framework/function-unit";
+import { defineAnalysis, type Analysis, type AnalysisCtx, type EdgeSpec, type Narrowing } from "../specialization/framework/analysis";
+import { JIT_RELEVANT_NARROWINGS } from "../specialization/framework/dfa-analyses";
+import type { SVMLCompiler } from "../engines/svml/svml-compiler";
+import type { SVMLInterpreter } from "../engines/svml/svml-interpreter";
+import { SVMLIR } from "../engines/svml/types";
 
 /** Snapshot of the inputs that determined a unit's compiled IR at some
  *  past compile under a specific context. Block-fact entries are
- *  reference-compared against `factStore.tryRead` on the next transfer:
- *  `FactStore.write` preserves the previous reference when the new value is
- *  lattice-equal, so identity inequality is exactly "the DFA fact
- *  advanced".
+ *  reference-compared against `analysis.store.tryRead` on the next
+ *  transfer: the store's eq-gated write preserves the previous reference
+ *  when the new value is store-algebra-equal, so identity inequality is
+ *  exactly "the DFA fact advanced".
  *
- *  `rootFacts` and `speculativeFacts` are keyed by the narrowing whose
- *  block analysis produced them — one entry per registered narrowing.
- *  Adding a new narrowing extends the maps without touching this module. */
+ *  Keyed by cell Analysis (each narrowing contributes its block DFA's
+ *  paired `.env` and `.facts` cells) so the snapshot tracks both sides of
+ *  the split block-fact domain. Adding a new narrowing extends the maps
+ *  without touching this module. */
 interface CompileSnapshot {
   structuralGen: number;
-  rootFacts: Map<Narrowing<any>, Map<BasicBlock, unknown>>;
-  speculativeFacts: Map<Narrowing<any>, Map<BasicBlock, unknown>>;
+  rootFacts: Map<Analysis<BasicBlock, unknown>, Map<BasicBlock, unknown>>;
+  speculativeFacts: Map<Analysis<BasicBlock, unknown>, Map<BasicBlock, unknown>>;
+}
+
+/** Expand a narrowing into its cell analyses (both `.env` and `.facts`).
+ *  JIT-relevant narrowings may read either side — return-kind's artifact
+ *  shaping lives in the `.env` cell of typeRequirement; const narrowing's
+ *  in the `.facts` cell of constAnalysis — so the snapshot captures both
+ *  cells per narrowing and the edge list wakes on either's advance. */
+function cellsOfNarrowing(n: Narrowing<any>): Array<Analysis<BasicBlock, unknown>> {
+  const bfa = n.blockAnalysis();
+  return [
+    bfa.env as Analysis<BasicBlock, unknown>,
+    bfa.facts as Analysis<BasicBlock, unknown>,
+  ];
 }
 
 /** Per-context cache entry: the compiled IR and the snapshot of inputs it
@@ -65,7 +156,7 @@ export interface JitPassDeps {
    *  when a new narrowing observation has landed and a recompile is due.
    *  Defaults to ROOT (no speculation visible) when omitted — appropriate
    *  only for fixtures that explicitly disable speculation. */
-  readonly specContextFor?: (unit: FunctionUnit) => Context;
+  readonly specContextFor?: (unit: Unit) => Context;
   /** Narrowings whose block-level facts drive recompile. Defaults to the
    *  subset the SVML backend actually consumes (`JIT_RELEVANT_NARROWINGS`).
    *  A backend that starts reading additional speculative facts should pass
@@ -73,7 +164,7 @@ export interface JitPassDeps {
   readonly narrowings?: ReadonlyArray<Narrowing<any>>;
 }
 
-function blockToOwningUnit(_ctx: AnalysisCtx, key: unknown): Iterable<FunctionUnit> {
+function blockToOwningUnit(_ctx: AnalysisCtx, key: unknown): Iterable<Unit> {
   const block = key as BasicBlock;
   const unit = block.unit;
   if (unit === undefined) return [];
@@ -91,9 +182,9 @@ const UNCOMPILED: SVMLIR = new SVMLIR(
   0,
 );
 
-export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLIR> {
+export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
   const { compiler, interpreter } = deps;
-  const specContextFor = deps.specContextFor ?? ((_: FunctionUnit) => ROOT_CONTEXT);
+  const specContextFor = deps.specContextFor ?? ((_: Unit) => ROOT_CONTEXT);
   const narrowings = deps.narrowings ?? JIT_RELEVANT_NARROWINGS;
 
   /** Per-unit, per-context compiled-artifact cache. Outer key is the unit;
@@ -103,25 +194,27 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
    *  and just re-patches the cached IR. On unit rebuild (structural edit),
    *  the per-unit Map is cleared; stale contexts would never validate
    *  anyway, but dropping them also keeps the Map bounded. */
-  const cache = new WeakMap<FunctionUnit, Map<Context, CacheEntry>>();
+  const cache = new WeakMap<Unit, Map<Context, CacheEntry>>();
 
   // Block-keyed DFA analysis: a fact-advancing change on a block invalidates
   // the memo of the owning unit. `transfer` decides whether the change
   // materially differs from the last compile via reference-identity compare
   // against the cache entry for the unit's active context.
   //
-  // `contextPolicy: "root"` on every fact edge: jit cells are FunctionUnit-
+  // `contextPolicy: "root"` on every fact edge: jit cells are Unit-
   // keyed and the fact-store cell exists only at ROOT (holding the
   // currently-dispatched IR). A non-ROOT wake would enqueue jit at that
   // non-ROOT context, creating an orphan cell no one reads. The "root"
   // crossing lands the recompile request on the single fact-store cell per
   // unit; the per-context cache lives outside the fact store.
-  const edges: EdgeSpec<FunctionUnit>[] = narrowings.map(n => ({
-    on: "fact",
-    analysis: n.blockAnalysis(),
-    wake: blockToOwningUnit,
-    contextPolicy: "root",
-  }));
+  const edges: EdgeSpec<Unit>[] = narrowings.flatMap(n =>
+    cellsOfNarrowing(n).map(cell => ({
+      on: "fact" as const,
+      analysis: cell,
+      wake: blockToOwningUnit,
+      contextPolicy: "root" as const,
+    })),
+  );
   edges.push(
     {
       on: "mint",
@@ -148,19 +241,21 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
     },
   );
 
-  const jitAnalysis: Analysis<FunctionUnit, SVMLIR> = {
+  const jitStoreAlgebra = {
+    bottom: UNCOMPILED,
+    leq: structuralEquals,
+    join: (_a: SVMLIR, b: SVMLIR) => b,
+    eq: structuralEquals,
+  };
+
+  const jitAnalysis: Analysis<Unit, SVMLIR> = defineAnalysis({
     id: Symbol("jitAnalysis"),
     debugName: "jitAnalysis",
-    lattice: {
-      bottom: UNCOMPILED,
-      leq: structuralEquals,
-      join: (_a, b) => b,
-      eq: structuralEquals,
-    },
+    storeAlgebra: jitStoreAlgebra,
     edges,
     tier: "analysis",
     polarity: "opaque",
-    transfer(factStore: FactStore, _ctx: AnalysisCtx, unit: FunctionUnit): SVMLIR | undefined {
+    transfer(_ctx: AnalysisCtx, unit: Unit): SVMLIR | undefined {
       const scope = unit.funcAst;
       if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
       const index = compiler.indexOf(scope);
@@ -177,9 +272,9 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
       const reusable =
         cached !== undefined &&
         cached.snapshot.structuralGen === unit.generation &&
-        snapshotMatches(factStore, unit, cached.snapshot, specContext, narrowings)
+        snapshotMatches(unit, cached.snapshot, specContext, narrowings)
           ? cached
-          : findReusableEntry(factStore, unit, specContext, perContext, narrowings);
+          : findReusableEntry(unit, specContext, perContext, narrowings);
       if (reusable !== undefined) {
         // A sibling context may compile to the same artifact when the only
         // changed assumptions are in speculation dimensions the backend does
@@ -187,7 +282,7 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
         // Memoize that reusable artifact under the current context too so the
         // next lookup hits directly.
         perContext.set(specContext, reusable);
-        const currentIR = factStore.read(jitAnalysis, unit);
+        const currentIR = jitAnalysis.store.read(unit, ROOT_CONTEXT);
         if (structuralEquals(reusable.ir, currentIR)) return undefined;
         interpreter.patchFunction(index, reusable.ir);
         return reusable.ir;
@@ -195,30 +290,30 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
 
       const newCode = compiler.compileFunction(unit);
       perContext.set(specContext, {
-        snapshot: captureSnapshot(factStore, unit, specContext, narrowings),
+        snapshot: captureSnapshot(unit, specContext, narrowings),
         ir: newCode,
       });
-      const prevIR = factStore.read(jitAnalysis, unit);
+      const prevIR = jitAnalysis.store.read(unit, ROOT_CONTEXT);
       if (structuralEquals(newCode, prevIR)) return undefined;
       interpreter.patchFunction(index, newCode);
       return newCode;
     },
-  };
+  });
   // One lifecycle edge needs the jitAnalysis reference itself (for eviction);
   // appended after construction rather than inside `edges` to keep the fact-
   // edge list assembly straightforward.
-  (jitAnalysis.edges as EdgeSpec<FunctionUnit>[]).push({
+  (jitAnalysis.edges as EdgeSpec<Unit>[]).push({
     on: "retire",
-    effect: (factStore, _ctx, unit) => {
-      factStore.evict(jitAnalysis, unit);
+    effect: (_ctx, unit) => {
+      jitAnalysis.store.evict(unit, ROOT_CONTEXT);
       cache.delete(unit);
     },
   });
   // Rebuild invalidates every cached context's IR (CFG identities change,
   // and `structuralGen` mismatches anyway). Clear so the Map stays bounded.
-  (jitAnalysis.edges as EdgeSpec<FunctionUnit>[]).push({
+  (jitAnalysis.edges as EdgeSpec<Unit>[]).push({
     on: "rebuild",
-    effect: (_factStore, _ctx, unit) => {
+    effect: (_ctx, unit) => {
       cache.delete(unit);
     },
   });
@@ -235,20 +330,20 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<FunctionUnit, SVMLI
  *  speculative facts under. Cache partitioning by context means `prev`
  *  was always captured under this `specContext`. */
 function snapshotMatches(
-  factStore: FactStore,
-  unit: FunctionUnit,
+  unit: Unit,
   prev: CompileSnapshot,
   specContext: Context,
   narrowings: ReadonlyArray<Narrowing<any>>,
 ): boolean {
   for (const n of narrowings) {
-    const blockAnalysis = n.blockAnalysis();
-    const rootMap = prev.rootFacts.get(n);
-    const specMap = prev.speculativeFacts.get(n);
-    if (rootMap === undefined || specMap === undefined) return false;
-    for (const block of unit.blockMap.values()) {
-      if (factStore.tryRead(blockAnalysis, block) !== rootMap.get(block)) return false;
-      if (factStore.tryRead(blockAnalysis, block, specContext) !== specMap.get(block)) return false;
+    for (const cell of cellsOfNarrowing(n)) {
+      const rootMap = prev.rootFacts.get(cell);
+      const specMap = prev.speculativeFacts.get(cell);
+      if (rootMap === undefined || specMap === undefined) return false;
+      for (const block of unit.blockMap.values()) {
+        if (cell.store.tryRead(block, ROOT_CONTEXT) !== rootMap.get(block)) return false;
+        if (cell.store.tryRead(block, specContext) !== specMap.get(block)) return false;
+      }
     }
   }
   return true;
@@ -261,15 +356,14 @@ function snapshotMatches(
  *  in two contexts are stored as distinct fact-store cells, so the exact-hit
  *  identity check in `snapshotMatches` is too strong here. */
 function findReusableEntry(
-  factStore: FactStore,
-  unit: FunctionUnit,
+  unit: Unit,
   specContext: Context,
   perContext: ReadonlyMap<Context, CacheEntry>,
   narrowings: ReadonlyArray<Narrowing<any>>,
 ): CacheEntry | undefined {
   for (const [, entry] of perContext) {
     if (entry.snapshot.structuralGen !== unit.generation) continue;
-    if (snapshotSemanticallyMatches(factStore, unit, entry.snapshot, specContext, narrowings)) {
+    if (snapshotSemanticallyMatches(unit, entry.snapshot, specContext, narrowings)) {
       return entry;
     }
   }
@@ -277,30 +371,30 @@ function findReusableEntry(
 }
 
 function snapshotSemanticallyMatches(
-  factStore: FactStore,
-  unit: FunctionUnit,
+  unit: Unit,
   prev: CompileSnapshot,
   specContext: Context,
   narrowings: ReadonlyArray<Narrowing<any>>,
 ): boolean {
   for (const n of narrowings) {
-    const blockAnalysis = n.blockAnalysis();
-    const rootMap = prev.rootFacts.get(n);
-    const specMap = prev.speculativeFacts.get(n);
-    if (rootMap === undefined || specMap === undefined) return false;
-    for (const block of unit.blockMap.values()) {
-      const rootNow = factStore.tryRead(blockAnalysis, block);
-      const rootPrev = rootMap.get(block);
-      if (rootNow !== rootPrev) {
-        if (rootNow === undefined || rootPrev === undefined) return false;
-        if (!blockAnalysis.lattice.eq(rootNow as never, rootPrev as never)) return false;
-      }
-      const specNow = factStore.tryRead(blockAnalysis, block, specContext)
-        ?? factStore.tryRead(blockAnalysis, block);
-      const specPrev = specMap.get(block);
-      if (specNow !== specPrev) {
-        if (specNow === undefined || specPrev === undefined) return false;
-        if (!blockAnalysis.lattice.eq(specNow as never, specPrev as never)) return false;
+    for (const cell of cellsOfNarrowing(n)) {
+      const rootMap = prev.rootFacts.get(cell);
+      const specMap = prev.speculativeFacts.get(cell);
+      if (rootMap === undefined || specMap === undefined) return false;
+      for (const block of unit.blockMap.values()) {
+        const rootNow = cell.store.tryRead(block, ROOT_CONTEXT);
+        const rootPrev = rootMap.get(block);
+        if (rootNow !== rootPrev) {
+          if (rootNow === undefined || rootPrev === undefined) return false;
+          if (!cell.storeAlgebra.eq(rootNow as never, rootPrev as never)) return false;
+        }
+        const specNow = cell.store.tryRead(block, specContext)
+          ?? cell.store.tryRead(block, ROOT_CONTEXT);
+        const specPrev = specMap.get(block);
+        if (specNow !== specPrev) {
+          if (specNow === undefined || specPrev === undefined) return false;
+          if (!cell.storeAlgebra.eq(specNow as never, specPrev as never)) return false;
+        }
       }
     }
   }
@@ -308,23 +402,23 @@ function snapshotSemanticallyMatches(
 }
 
 function captureSnapshot(
-  factStore: FactStore,
-  unit: FunctionUnit,
+  unit: Unit,
   specContext: Context,
   narrowings: ReadonlyArray<Narrowing<any>>,
 ): CompileSnapshot {
-  const rootFacts = new Map<Narrowing<any>, Map<BasicBlock, unknown>>();
-  const speculativeFacts = new Map<Narrowing<any>, Map<BasicBlock, unknown>>();
+  const rootFacts = new Map<Analysis<BasicBlock, unknown>, Map<BasicBlock, unknown>>();
+  const speculativeFacts = new Map<Analysis<BasicBlock, unknown>, Map<BasicBlock, unknown>>();
   for (const n of narrowings) {
-    const blockAnalysis = n.blockAnalysis();
-    const rootMap = new Map<BasicBlock, unknown>();
-    const specMap = new Map<BasicBlock, unknown>();
-    for (const block of unit.blockMap.values()) {
-      rootMap.set(block, factStore.tryRead(blockAnalysis, block));
-      specMap.set(block, factStore.tryRead(blockAnalysis, block, specContext));
+    for (const cell of cellsOfNarrowing(n)) {
+      const rootMap = new Map<BasicBlock, unknown>();
+      const specMap = new Map<BasicBlock, unknown>();
+      for (const block of unit.blockMap.values()) {
+        rootMap.set(block, cell.store.tryRead(block, ROOT_CONTEXT));
+        specMap.set(block, cell.store.tryRead(block, specContext));
+      }
+      rootFacts.set(cell, rootMap);
+      speculativeFacts.set(cell, specMap);
     }
-    rootFacts.set(n, rootMap);
-    speculativeFacts.set(n, specMap);
   }
   return {
     structuralGen: unit.generation,

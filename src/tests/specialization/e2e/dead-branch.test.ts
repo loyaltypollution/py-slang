@@ -17,7 +17,7 @@ function optimise(code: string): StmtNS.Stmt[] {
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const reactive = buildTestWorklist(ast, environments);
   reactive.drain();
-  return reactive.units.get(ast)!.body;
+  return reactive.units.get(ast.id)!.body;
 }
 
 describe("dead-branch elimination", () => {

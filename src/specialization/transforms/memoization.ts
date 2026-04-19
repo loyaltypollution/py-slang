@@ -1,5 +1,5 @@
 import { StmtNS, ExprNS } from "../../ast-types";
-import type { FunctionUnit } from "../framework/function-unit";
+import type { Unit } from "../framework/function-unit";
 import type { TransformRule, TransformFactView } from "../framework/analysis";
 import { runtimeCallAnalysis, RUNTIME_CALL_COUNT_SAT } from "../framework/runtime-analyses";
 import { purityScopeAnalysis } from "../purity-analysis/analysis";
@@ -24,7 +24,7 @@ function hasMemoPrelude(fd: StmtNS.FunctionDef): boolean {
   return callee instanceof ExprNS.Variable && callee.name.lexeme === MEMO_HAS;
 }
 
-function applyMemoizationWrap(unit: FunctionUnit): boolean {
+function applyMemoizationWrap(unit: Unit): boolean {
   const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return false;
 
@@ -96,16 +96,16 @@ export const memoizationRule: TransformRule = {
   id: Symbol("memoizationRule"),
   debugName: "memoizationRule",
   edges: [
-    { on: "fact", analysis: runtimeCallAnalysis, wake: (ctx, fdId) => {
-      const u = ctx.unitForFdId(fdId as number);
+    { on: "fact", analysis: runtimeCallAnalysis, wake: (ctx, functionId) => {
+      const u = ctx.topology.unitOfFunctionId(functionId as number);
       return u ? [u] : [];
     }},
-    { on: "fact", analysis: purityScopeAnalysis, wake: (ctx, fdId) => {
-      const u = ctx.unitForFdId(fdId as number);
+    { on: "fact", analysis: purityScopeAnalysis, wake: (ctx, functionId) => {
+      const u = ctx.topology.unitOfFunctionId(functionId as number);
       return u ? [u] : [];
     }},
   ],
-  sweep(unit: FunctionUnit, facts: TransformFactView): boolean {
+  sweep(unit: Unit, facts: TransformFactView): boolean {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
     if (hasMemoPrelude(fd)) return false;

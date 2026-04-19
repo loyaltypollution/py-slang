@@ -24,7 +24,7 @@ function build(code: string) {
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(engine.factStore, engine.nodeIndex),
+    makeDfaQuery(engine.topology),
     engine.registry,
   );
   return { ast, environments, units, compiler };
@@ -54,8 +54,8 @@ g(2)
     const a = build(program);
     const programA = a.compiler.compileProgram(a.ast);
     const mapA: Array<[string, number]> = [];
-    for (const [scope, unit] of a.units) {
-      void unit;
+    for (const unit of a.units.values()) {
+      const scope = unit.funcAst;
       const idx = a.compiler.indexOf(scope)!;
       const name = scope instanceof StmtNS.FunctionDef ? scope.name.lexeme : "<file>";
       mapA.push([name, idx]);
@@ -64,8 +64,8 @@ g(2)
     const b = build(program);
     const programB = b.compiler.compileProgram(b.ast);
     const mapB: Array<[string, number]> = [];
-    for (const [scope, unit] of b.units) {
-      void unit;
+    for (const unit of b.units.values()) {
+      const scope = unit.funcAst;
       const idx = b.compiler.indexOf(scope)!;
       const name = scope instanceof StmtNS.FunctionDef ? scope.name.lexeme : "<file>";
       mapB.push([name, idx]);
@@ -81,7 +81,8 @@ g(2)
 
     // Pick the `h` unit (nested inside `g`)
     let hUnit: ReturnType<typeof units.get> | undefined;
-    for (const [scope, unit] of units) {
+    for (const unit of units.values()) {
+      const scope = unit.funcAst;
       if (scope instanceof StmtNS.FunctionDef && scope.name.lexeme === "h") {
         hUnit = unit;
         break;
@@ -109,7 +110,8 @@ g(2)
     // the index compileFunction would build for h's unit.
     let gIndex = -1;
     let hIndex = -1;
-    for (const [scope] of units) {
+    for (const unit of units.values()) {
+      const scope = unit.funcAst;
       if (scope instanceof StmtNS.FunctionDef) {
         if (scope.name.lexeme === "g") gIndex = compiler.indexOf(scope)!;
         if (scope.name.lexeme === "h") hIndex = compiler.indexOf(scope)!;
@@ -139,7 +141,8 @@ g(2)
 
     const b = build(program);
     let hUnitB: ReturnType<typeof b.units.get> | undefined;
-    for (const [scope, unit] of b.units) {
+    for (const unit of b.units.values()) {
+      const scope = unit.funcAst;
       if (scope instanceof StmtNS.FunctionDef && scope.name.lexeme === "h") hUnitB = unit;
     }
     const hIndex = b.compiler.indexOf(hUnitB!.funcAst)!;

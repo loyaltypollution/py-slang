@@ -13,7 +13,7 @@ export type FunctionScopeNode =
  *  it only dispatches "what happened to whom". */
 export interface FunctionRegistryListener {
   onMint(node: FunctionScopeNode, slot: number): void;
-  onRetire(fdId: number, node: FunctionScopeNode): void;
+  onRetire(functionId: number, node: FunctionScopeNode): void;
 }
 
 /**
@@ -40,8 +40,8 @@ export interface FunctionRegistryListener {
  */
 export class FunctionRegistry {
   private nextSlot = 0;
-  private readonly byFdId = new Map<number, { node: FunctionScopeNode; slot: number }>();
-  private readonly nodeToFdId = new WeakMap<FunctionScopeNode, number>();
+  private readonly byFunctionId = new Map<number, { node: FunctionScopeNode; slot: number }>();
+  private readonly nodeToFunctionId = new WeakMap<FunctionScopeNode, number>();
   private listener: FunctionRegistryListener | undefined;
 
   /** Attach the single structural-event listener (the owning Worklist).
@@ -52,31 +52,31 @@ export class FunctionRegistry {
 
   /** Allocate and record a slot for `node`. Throws if already registered. */
   mint(node: FunctionScopeNode): number {
-    if (this.nodeToFdId.has(node)) {
+    if (this.nodeToFunctionId.has(node)) {
       throw new Error(`FunctionRegistry: node id=${node.id} already registered`);
     }
     const slot = this.nextSlot++;
-    this.byFdId.set(node.id, { node, slot });
-    this.nodeToFdId.set(node, node.id);
+    this.byFunctionId.set(node.id, { node, slot });
+    this.nodeToFunctionId.set(node, node.id);
     this.listener?.onMint(node, slot);
     return slot;
   }
 
-  /** Remove `fdId` from the registry. Slot number is not reused. */
-  retire(fdId: number): void {
-    const entry = this.byFdId.get(fdId);
+  /** Remove `functionId` from the registry. Slot number is not reused. */
+  retire(functionId: number): void {
+    const entry = this.byFunctionId.get(functionId);
     if (!entry) {
-      throw new Error(`FunctionRegistry: fdId=${fdId} not registered`);
+      throw new Error(`FunctionRegistry: functionId=${functionId} not registered`);
     }
-    this.byFdId.delete(fdId);
-    this.nodeToFdId.delete(entry.node);
-    this.listener?.onRetire(fdId, entry.node);
+    this.byFunctionId.delete(functionId);
+    this.nodeToFunctionId.delete(entry.node);
+    this.listener?.onRetire(functionId, entry.node);
   }
 
-  slotOf(fdId: number): number {
-    const entry = this.byFdId.get(fdId);
+  slotOf(functionId: number): number {
+    const entry = this.byFunctionId.get(functionId);
     if (!entry) {
-      throw new Error(`FunctionRegistry: fdId=${fdId} not registered`);
+      throw new Error(`FunctionRegistry: functionId=${functionId} not registered`);
     }
     return entry.slot;
   }
@@ -85,26 +85,26 @@ export class FunctionRegistry {
     return this.slotOf(node.id);
   }
 
-  nodeOf(fdId: number): FunctionScopeNode {
-    const entry = this.byFdId.get(fdId);
+  nodeOf(functionId: number): FunctionScopeNode {
+    const entry = this.byFunctionId.get(functionId);
     if (!entry) {
-      throw new Error(`FunctionRegistry: fdId=${fdId} not registered`);
+      throw new Error(`FunctionRegistry: functionId=${functionId} not registered`);
     }
     return entry.node;
   }
 
-  has(fdId: number): boolean {
-    return this.byFdId.has(fdId);
+  has(functionId: number): boolean {
+    return this.byFunctionId.has(functionId);
   }
 
   hasNode(node: FunctionScopeNode): boolean {
-    return this.nodeToFdId.has(node);
+    return this.nodeToFunctionId.has(node);
   }
 
-  /** Snapshot of `fdId → slot` for tests and debugging. */
+  /** Snapshot of `functionId → slot` for tests and debugging. */
   snapshot(): ReadonlyMap<number, number> {
     const out = new Map<number, number>();
-    for (const [fdId, entry] of this.byFdId) out.set(fdId, entry.slot);
+    for (const [functionId, entry] of this.byFunctionId) out.set(functionId, entry.slot);
     return out;
   }
 
@@ -112,12 +112,12 @@ export class FunctionRegistry {
    *  insertion-order, and `mint` assigns `nextSlot++`, so this matches
    *  slot order without an explicit sort — `retire` only removes entries,
    *  it does not reorder survivors. */
-  *entries(): IterableIterator<{ fdId: number; node: FunctionScopeNode; slot: number }> {
-    for (const [fdId, { node, slot }] of this.byFdId) yield { fdId, node, slot };
+  *entries(): IterableIterator<{ functionId: number; node: FunctionScopeNode; slot: number }> {
+    for (const [functionId, { node, slot }] of this.byFunctionId) yield { functionId, node, slot };
   }
 
   get size(): number {
-    return this.byFdId.size;
+    return this.byFunctionId.size;
   }
 }
 

@@ -18,14 +18,14 @@
 //      produced — enabling sibling IR cache hits.
 //
 // Trie shape: `parent -> handle -> key -> ValueBucket`. A ValueBucket is a
-// small array scanned linearly via `handle.lattice.eq`. Per-bucket
-// cardinality is bounded by the distinct observed values at one (handle,
-// nodeId) site (typically 1–3). `handle.lattice.eq` is the canonical
-// structural equality (see `Lattice<V>` in `./analysis`); using ref-equality
-// here would fork the trie where it should have converged — `const(v)` from
-// separate `liftConst` calls is structurally equal but reference-different.
+// small array scanned linearly via `handle.eq`. Per-bucket cardinality is
+// bounded by the distinct observed values at one (handle, nodeId) site
+// (typically 1–3). `handle.eq` is the canonical structural equality for
+// assumption values; using ref-equality here would fork the trie where it
+// should have converged — `const(v)` from separate `liftConst` calls is
+// structurally equal but reference-different.
 
-import type { Analysis } from "./analysis";
+import { type AssumptionHandle } from "./analysis";
 import type { Assumption, Context } from "./context";
 import { ROOT_CONTEXT } from "./context";
 
@@ -55,15 +55,15 @@ interface ValueEntry {
 export class ContextInterner {
   private readonly children: Map<
     Context,
-    Map<Analysis<any, any>, Map<unknown, ValueEntry[]>>
+    Map<AssumptionHandle<any, any>, Map<unknown, ValueEntry[]>>
   > = new Map();
 
   /** Extend `parent` with `(handle, key, value)`, returning a canonical
-   *  Context. Equal values are dedup'd via `handle.lattice.eq`; the caller
-   *  does not supply an equality predicate. */
+   *  Context. Equal values are dedup'd via the handle's value/store algebra;
+   *  the caller does not supply an equality predicate. */
   extend<K, V>(
     parent: Context,
-    handle: Analysis<K, V>,
+    handle: AssumptionHandle<K, V>,
     key: K,
     value: V,
   ): Context {
@@ -72,7 +72,7 @@ export class ContextInterner {
       return this.internChild(parent, handle, key, value);
     }
     const newLink: Assumption = {
-      analysis: handle as Analysis<unknown, unknown>,
+      analysis: handle as AssumptionHandle<unknown, unknown>,
       key: key as unknown,
       value: value as unknown,
     };
@@ -89,13 +89,13 @@ export class ContextInterner {
    *  when no link matches — callers can short-circuit on reference equality.
    *  The canonical invariant guarantees at most one match (collisions at the
    *  same `(handle, key)` are replaced at extend-time, not layered). */
-  exclude<K>(ctx: Context, handle: Analysis<K, any>, key: K): Context {
+  exclude<K>(ctx: Context, handle: AssumptionHandle<K, any>, key: K): Context {
     const links: Assumption[] = [];
     let found = false;
     for (let cur: Context | undefined = ctx; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
       if (a === undefined) continue;
-      if (a.analysis === (handle as unknown as Analysis<unknown, unknown>) && a.key === key) {
+      if (a.analysis === (handle as unknown as AssumptionHandle<unknown, unknown>) && a.key === key) {
         found = true;
         continue;
       }
@@ -124,11 +124,11 @@ export class ContextInterner {
 
   private internChild<K, V>(
     parent: Context,
-    handle: Analysis<K, V>,
+    handle: AssumptionHandle<K, V>,
     key: K,
     value: V,
   ): Context {
-    const handleAsKey = handle as unknown as Analysis<any, any>;
+    const handleAsKey = handle as unknown as AssumptionHandle<any, any>;
     let byHandle = this.children.get(parent);
     if (byHandle === undefined) {
       byHandle = new Map();
@@ -145,12 +145,12 @@ export class ContextInterner {
       byKey.set(key, bucket);
     }
     for (const entry of bucket) {
-      if (handle.lattice.eq(entry.value as V, value)) return entry.node;
+      if (handle.eq(entry.value as V, value)) return entry.node;
     }
     const node: Context = Object.freeze({
       parent,
       assumption: Object.freeze({
-        analysis: handle as Analysis<unknown, unknown>,
+        analysis: handle as AssumptionHandle<unknown, unknown>,
         key: key as unknown,
         value: value as unknown,
       }),
@@ -165,12 +165,12 @@ export class ContextInterner {
    *  an existing one or collides at the same `(handle, key)`. */
   private rebuildWith<K, V>(
     parent: Context,
-    handle: Analysis<K, V>,
+    handle: AssumptionHandle<K, V>,
     key: K,
     value: V,
   ): Context {
     const links: Assumption[] = [];
-    const handleAsKey = handle as unknown as Analysis<unknown, unknown>;
+    const handleAsKey = handle as unknown as AssumptionHandle<unknown, unknown>;
     for (let cur: Context | undefined = parent; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
       if (a === undefined) continue;

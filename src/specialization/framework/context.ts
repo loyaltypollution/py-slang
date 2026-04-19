@@ -1,13 +1,17 @@
 // A speculation context is a path of assumptions through an immutable tree.
 // Root = ∅ = "assume nothing." A child extends its parent with a single
-// assumption of the form "at analysis A, key K, the fact is V". Transfer
-// functions running under a non-root context meet their computed fact with
-// any ancestor assumption that applies to the (analysis, key) being computed.
+// assumption of the form "for handle/analysis A, key K, the assumed value is V".
+// Transfer functions running under a non-root context meet their computed fact
+// with any ancestor assumption that applies to the (analysis, key) being
+// computed.
 //
 // Operations on Context are navigational (parent, depth, findAssumption) —
 // never lattice-valued (join, meet). Two contexts are not combined. Siblings
 // represent independent speculations; a path from root to a leaf is the
-// chain one compiled version depends on.
+// chain one compiled version depends on. In today's codebase the `analysis`
+// field on an assumption is often a narrowing handle rather than a scheduled
+// fixpoint analysis; the shared `Analysis<K, V>` shape is structural reuse,
+// not proof that both citizen kinds play the same role.
 //
 // Chains are canonicalized and interned: `extendContext` / `excludeAssumption`
 // return a canonical Context keyed by the assumption *set*. Two call paths
@@ -16,11 +20,11 @@
 // de-fragments automatically. Canonical order is `(analysis.debugName, key)`
 // ascending; the interner lives in `./context-interner.ts`.
 
-import type { Analysis } from "./analysis";
+import type { AssumptionHandle } from "./analysis";
 import { defaultInterner } from "./context-interner";
 
 export interface Assumption<K = unknown, V = unknown> {
-  readonly analysis: Analysis<K, V>;
+  readonly analysis: AssumptionHandle<K, V>;
   readonly key: K;
   readonly value: V;
 }
@@ -42,10 +46,10 @@ export function isRoot(ctx: Context): boolean {
 }
 
 /** Build a canonical child context. Equivalent calls (same `parent`, same
- *  `(analysis, key)`, and lattice-equal value) return the same object —
- *  identity is a sound proxy for structural equality. Value dedup uses
- *  mutual `analysis.lattice.leq` (see `latticeEqual` in `./analysis`), so
- *  no per-caller equality parameter is needed.
+ *  `(analysis, key)`, and algebra-equal value) return the same object —
+ *  identity is a sound proxy for structural equality. Value dedup uses the
+ *  handle/analysis value algebra, so no per-caller equality parameter is
+ *  needed.
  *
  *  Chains are stored in canonical order by `(analysis.debugName, key)`, so
  *  adding an assumption that sorts before an existing link triggers a
@@ -53,7 +57,7 @@ export function isRoot(ctx: Context): boolean {
  *  `.parent` pointer when the sort order requires insertion mid-chain. */
 export function extendContext<K, V>(
   parent: Context,
-  analysis: Analysis<K, V>,
+  analysis: AssumptionHandle<K, V>,
   key: K,
   value: V,
 ): Context {
@@ -65,10 +69,10 @@ export function extendContext<K, V>(
  *  `undefined` when no ancestor carries such an assumption. */
 export function findAssumption<K, V>(
   ctx: Context,
-  analysis: Analysis<K, V>,
+  analysis: AssumptionHandle<K, V>,
   key: K,
 ): V | undefined {
-  const target = analysis as Analysis<unknown, unknown>;
+  const target = analysis as AssumptionHandle<unknown, unknown>;
   for (let cur: Context | undefined = ctx; cur !== undefined; cur = cur.parent) {
     const a = cur.assumption;
     if (a !== undefined && a.analysis === target && a.key === key) {
@@ -96,7 +100,7 @@ export function hasAncestor(ctx: Context, anc: Context): boolean {
  *  any prior compilation was built under returns the `===` pre-built sibling. */
 export function excludeAssumption<K, V>(
   ctx: Context,
-  analysis: Analysis<K, V>,
+  analysis: AssumptionHandle<K, V>,
   key: K,
 ): Context {
   return defaultInterner.exclude(ctx, analysis, key);

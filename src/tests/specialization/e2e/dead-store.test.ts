@@ -18,7 +18,7 @@ function optimiseFn(fnBody: string): StmtNS.Stmt[] {
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const reactive = new Worklist(ast, environments);
   reactive.drain();
-  const fnDef = reactive.units.get(ast)!.body[0] as StmtNS.FunctionDef;
+  const fnDef = reactive.units.get(ast.id)!.body[0] as StmtNS.FunctionDef;
   return fnDef.body;
 }
 
@@ -92,7 +92,7 @@ describe("dead-store elimination", () => {
     const { environments } = analyzeWithEnvironments(ast, script, 4);
     const reactive = new Worklist(ast, environments);
     reactive.drain();
-    const stmts = reactive.units.get(ast)!.body;
+    const stmts = reactive.units.get(ast.id)!.body;
     // Both assignments preserved — module globals are observable.
     expect(stmts.filter(s => s instanceof StmtNS.Assign)).toHaveLength(2);
   });

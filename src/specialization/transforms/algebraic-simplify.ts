@@ -21,7 +21,7 @@ import { TokenType } from "../../tokens";
 import type { BasicBlock } from "../framework/cfg";
 import { typeAnalysis, constAnalysis } from "../framework/dfa-analyses";
 import { readExprFact } from "../framework/dfa-factory";
-import type { FunctionUnit } from "../framework/function-unit";
+import type { Unit } from "../framework/function-unit";
 import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
 import type { ConstLattice } from "../const-analysis/lattice";
 import {
@@ -64,7 +64,6 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
   constructor(
     private readonly factStore: TransformFactView,
-    private readonly unit: FunctionUnit,
   ) {}
 
   rewrite(expr: ExprNS.Expr): ExprNS.Expr {
@@ -77,10 +76,10 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   }
 
   private typeOf(node: ExprNS.Expr): TypeLattice | undefined {
-    return readExprFact(this.factStore, typeAnalysis, this.unit.blockOfNode.get(node.id), node.id);
+    return readExprFact(this.factStore.topology, typeAnalysis, node.id);
   }
   private constOf(node: ExprNS.Expr): ConstLattice | undefined {
-    return readExprFact(this.factStore, constAnalysis, this.unit.blockOfNode.get(node.id), node.id);
+    return readExprFact(this.factStore.topology, constAnalysis, node.id);
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
@@ -237,8 +236,8 @@ class AlgebraicSimplifyStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: AlgebraicSimplifyVisitor;
 
-  constructor(factStore: TransformFactView, unit: FunctionUnit) {
-    this.exprVisitor = new AlgebraicSimplifyVisitor(factStore, unit);
+  constructor(factStore: TransformFactView) {
+    this.exprVisitor = new AlgebraicSimplifyVisitor(factStore);
   }
 
   private rewriteExpr(expr: ExprNS.Expr): ExprNS.Expr {
@@ -296,10 +295,13 @@ class AlgebraicSimplifyStmtVisitor implements StmtNS.Visitor<void> {
 
 export const algebraicSimplifyRule = unitSweepRule(
   "algebraicSimplifyRule",
-  (unit: FunctionUnit, factStore: TransformFactView) => {
-    const v = new AlgebraicSimplifyStmtVisitor(factStore, unit);
+  (unit: Unit, factStore: TransformFactView) => {
+    const v = new AlgebraicSimplifyStmtVisitor(factStore);
     v.sweep(unit.body);
     return v.changed;
   },
-  [{ on: "fact", analysis: typeAnalysis, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  // Subscribe to `.facts` — this transform reads per-node type lattice values
+  // via `readExprFact`. `.env` changes that don't advance `.facts` wouldn't
+  // produce new rewrites; watching `.facts` avoids spurious sweeps.
+  [{ on: "fact", analysis: typeAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
 );

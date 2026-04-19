@@ -18,7 +18,7 @@ export function compileOptimized(code: string): SVMLProgram {
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(engine.factStore, engine.nodeIndex),
+    makeDfaQuery(engine.topology),
     engine.registry,
   );
   return compiler.compileProgram(ast);

@@ -1,12 +1,12 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import type { Analysis, AnalysisCtx } from "../framework/analysis";
+import type { AssumptionHandle } from "../framework/analysis";
 import { findAssumption, ROOT_CONTEXT, type Context } from "../framework/context";
-import type { FactStore } from "../framework/fact-store";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { MutableEnv } from "../framework/mutable-env";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
+import type { NodeId } from "../framework/key-spaces";
 import {
   type ConstLattice,
   CONST_BOTTOM,
@@ -51,28 +51,18 @@ export const constMeet = (a: ConstLattice, b: ConstLattice): ConstLattice => {
  *  by `Worklist.widenGuard`'s lineage walk is assembled as a `Narrowing` in
  *  `dfa-analyses.ts` — kept out of this file to avoid a top-level circular
  *  import. */
-export const constExprHandle: Analysis<number, ConstLattice> = {
+export const constExprHandle: AssumptionHandle<NodeId, ConstLattice> = {
   id: Symbol("constExprHandle"),
   debugName: "constExprHandle",
-  lattice: {
-    bottom: CONST_BOTTOM,
-    leq: constLeq,
-    join: constJoin,
-    eq: constEq,
-  },
-  edges: [],
-  tier: "analysis",
-  polarity: "may",
-  transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): ConstLattice | undefined {
-    return undefined;
-  },
+  keySpace: "nodeId",
+  eq: constEq,
 };
 
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
     private readonly constEnv: MutableEnv<ConstLattice>,
     private readonly slotLookup: SlotLookup,
-    private readonly recordExprFact: (nodeId: number, val: ConstLattice) => void,
+    private readonly recordExprFact: (nodeId: NodeId, val: ConstLattice) => void,
     private readonly context: Context,
   ) {}
 
@@ -270,10 +260,9 @@ export function makeConstAnalysisModule(): BlockDfaSpec<ConstLattice> {
     leq: constLeq,
     eq: constEq,
     makeExprVisitor(
-      factStore: FactStore,
       env: MutableEnv<ConstLattice>,
       slotLookup: SlotLookup,
-      recordExprFact: (nodeId: number, val: ConstLattice) => void,
+      recordExprFact: (nodeId: NodeId, val: ConstLattice) => void,
       context: Context,
     ): ExprNS.Visitor<ConstLattice> {
       return new ConstAnalysisVisitor(env, slotLookup, recordExprFact, context);

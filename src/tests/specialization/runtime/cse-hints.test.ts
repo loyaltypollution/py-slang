@@ -10,9 +10,10 @@ import { INT_BIT } from "../../../specialization/type-analysis/lattice";
 import { buildTestWorklist } from "../../utils";
 
 // The CSE stepper does not read facts directly; the visualizer joins the
-// worklist's FactStore against stepper state externally by node id. These
-// tests pin: (a) facts get populated, (b) the content matches what the
-// visualizer will surface, (c) the stepper survives with no fact store.
+// worklist's per-analysis stores against stepper state externally by node
+// id. These tests pin: (a) facts get populated, (b) the content matches
+// what the visualizer will surface, (c) the stepper survives with no fact
+// reads at all.
 
 function optimise(code: string) {
   const script = code + "\n";
@@ -28,9 +29,8 @@ describe("factStore contents after optimization", () => {
   test("integer literal has INT_BIT type and const(42)", () => {
     const { ast, engine } = optimise("x = 42");
     const rhs = (ast.statements[0] as StmtNS.Assign).value;
-    const block = engine.blockOfNode(rhs.id);
-    const type = readExprFact(engine.factStore, typeAnalysis, block, rhs.id);
-    const cv = readExprFact(engine.factStore, constAnalysis, block, rhs.id);
+    const type = readExprFact(engine.topology, typeAnalysis, rhs.id);
+    const cv = readExprFact(engine.topology, constAnalysis, rhs.id);
     expect(type).toBeDefined();
     expect(type!.kinds & INT_BIT).toBeTruthy();
     expect(cv?.tag).toBe("const");
@@ -41,9 +41,8 @@ describe("factStore contents after optimization", () => {
     const { ast, engine } = optimise("x = 1 + 2");
     const rhs = (ast.statements[0] as StmtNS.Assign).value;
     const cv = readExprFact(
-      engine.factStore,
+      engine.topology,
       constAnalysis,
-      engine.blockOfNode(rhs.id),
       rhs.id,
     );
     expect(cv?.tag).toBe("const");
@@ -54,9 +53,8 @@ describe("factStore contents after optimization", () => {
     const { ast, engine } = optimise("def f():\n    return 1 + 2\nf()");
     const ret = (ast.statements[0] as StmtNS.FunctionDef).body[0] as StmtNS.Return;
     const type = readExprFact(
-      engine.factStore,
+      engine.topology,
       typeAnalysis,
-      engine.blockOfNode(ret.value!.id),
       ret.value!.id,
     );
     expect(type).toBeDefined();
@@ -67,15 +65,13 @@ describe("factStore contents after optimization", () => {
     const rootRhs = (ast.statements[0] as StmtNS.Assign).value;
     const fnRet = (ast.statements[1] as StmtNS.FunctionDef).body[0] as StmtNS.Return;
     const rootCv = readExprFact(
-      engine.factStore,
+      engine.topology,
       constAnalysis,
-      engine.blockOfNode(rootRhs.id),
       rootRhs.id,
     );
     const retType = readExprFact(
-      engine.factStore,
+      engine.topology,
       typeAnalysis,
-      engine.blockOfNode(fnRet.value!.id),
       fnRet.value!.id,
     );
     expect(rootCv?.tag).toBe("const");
@@ -105,9 +101,8 @@ describe("stepper ↔ factStore join", () => {
       const node = context.runtime.nodes[0];
       if (node && "id" in node && typeof node.id === "number") {
         const cv = readExprFact(
-          engine.factStore,
-          constAnalysis,
-          engine.blockOfNode(node.id),
+      engine.topology,
+      constAnalysis,
           node.id,
         );
         if (cv !== undefined) hits.push({ id: node.id, cv });

@@ -17,7 +17,7 @@ function optimise(code: string): { stmts: StmtNS.Stmt[]; rebuilds: number } {
   const { environments } = analyzeWithEnvironments(ast, script, 4);
   const wl = buildTestWorklist(ast, environments);
   const changed = wl.drain();
-  return { stmts: wl.units.get(ast)!.body, rebuilds: changed.size };
+  return { stmts: wl.units.get(ast.id)!.body, rebuilds: changed.size };
 }
 
 function countNodes(stmts: readonly StmtNS.Stmt[]): number {

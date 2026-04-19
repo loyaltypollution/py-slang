@@ -1,12 +1,12 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import type { Analysis, AnalysisCtx } from "../framework/analysis";
+import type { AssumptionHandle } from "../framework/analysis";
 import { findAssumption, ROOT_CONTEXT, type Context } from "../framework/context";
-import type { FactStore } from "../framework/fact-store";
 import type { MutableEnv } from "../framework/mutable-env";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
+import type { NodeId } from "../framework/key-spaces";
 import {
   type TypeLattice,
   ALL_KINDS_MASK,
@@ -81,23 +81,18 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
  *  `Worklist.widenGuard`'s lineage walk is assembled as a `Narrowing` in
  *  `dfa-analyses.ts` — kept out of this file to avoid a top-level circular
  *  import. */
-export const typeExprHandle: Analysis<number, TypeLattice> = {
+export const typeExprHandle: AssumptionHandle<NodeId, TypeLattice> = {
   id: Symbol("typeExprHandle"),
   debugName: "typeExprHandle",
-  lattice: { bottom: BOTTOM, leq, join, eq },
-  edges: [],
-  tier: "analysis",
-  polarity: "may",
-  transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): TypeLattice | undefined {
-    return undefined;
-  },
+  keySpace: "nodeId",
+  eq,
 };
 
 class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
     private readonly slotTypes: MutableEnv<TypeLattice>,
     private readonly slotLookup: SlotLookup,
-    private readonly recordExprFact: (nodeId: number, val: TypeLattice) => void,
+    private readonly recordExprFact: (nodeId: NodeId, val: TypeLattice) => void,
     private readonly context: Context,
   ) {}
 
@@ -289,10 +284,9 @@ export function makeTypeAnalysisModule(): BlockDfaSpec<TypeLattice> {
   leq,
   eq,
   makeExprVisitor(
-    factStore: FactStore,
     env: MutableEnv<TypeLattice>,
     slotLookup: SlotLookup,
-    recordExprFact: (nodeId: number, val: TypeLattice) => void,
+    recordExprFact: (nodeId: NodeId, val: TypeLattice) => void,
     context: Context,
   ): ExprNS.Visitor<TypeLattice> {
     return new TypeAnalysisVisitor(env, slotLookup, recordExprFact, context);

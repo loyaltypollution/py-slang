@@ -2,7 +2,7 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { ConstLattice } from "../../specialization/const-analysis/lattice";
 import type { TypeLattice } from "../../specialization/type-analysis/lattice";
-import type { FunctionUnit } from "../../specialization/framework/function-unit";
+import type { Unit } from "../../specialization/framework/function-unit";
 import type { DfaQuery } from "../../specialization/dfa-query";
 import type { GuardRegistrar } from "../../specialization/framework/worklist";
 import { constNarrowing, returnKindNarrowing } from "../../specialization/framework/dfa-analyses";
@@ -325,15 +325,15 @@ export class SVMLCompiler
   }
 
   /**
-   * Recompile a single `FunctionUnit`'s body into fresh SVMLIR, without
+   * Recompile a single `Unit`'s body into fresh SVMLIR, without
    * touching any sibling builder. The returned IR's function index matches
    * what `compileProgram` would have assigned, so callers can splice it
    * into an existing `SVMLProgram` via `withSpecializedFunction(index, ir)`
    * and every `NEWC <index>` operand in unaffected siblings remains valid.
    *
-   * Only `FunctionDef` bodies are supported (matches `FunctionUnit.funcAst`
+   * Only `FunctionDef` bodies are supported (matches `Unit.funcAst`
    * excluding `FileInput`, which is the entry-point program and is rebuilt
-   * via `compileProgram`). Lambdas are never `FunctionUnit` keys.
+   * via `compileProgram`). Lambdas are never `Unit` keys.
    */
   private static typeToGuardMask(v: TypeLattice): number | undefined {
     let mask = 0;
@@ -372,7 +372,7 @@ export class SVMLCompiler
     }
   }
 
-  compileFunction(unit: FunctionUnit): SVMLIR {
+  compileFunction(unit: Unit): SVMLIR {
     const funcAst = unit.funcAst;
     if (!(funcAst instanceof StmtNS.FunctionDef)) {
       throw new Error(

@@ -51,7 +51,7 @@ describe.each([
       const compiler = SVMLCompiler.fromProgramUnit(
         ast,
         environments,
-        makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+        makeDfaQuery(reactive.topology),
         reactive.registry,
       );
       const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
@@ -75,9 +75,8 @@ f("hello")
     const baselineFn = baseline.ast.statements[0] as StmtNS.FunctionDef;
     const baselineRead = (baselineFn.body[0] as StmtNS.Assign).value;
     const baselineType = readExprFact(
-      baseline.reactive.factStore,
+      baseline.reactive.topology,
       typeAnalysis,
-      baseline.reactive.blockOfNode(baselineRead.id),
       baselineRead.id,
       ROOT_CONTEXT,
     );
@@ -85,19 +84,16 @@ f("hello")
     const { ast, reactive } = await observe(code);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const xRead = (fn.body[0] as StmtNS.Assign).value;
-    const block = reactive.blockOfNode(xRead.id);
     const rootType = readExprFact(
-      reactive.factStore,
+      reactive.topology,
       typeAnalysis,
-      block,
       xRead.id,
       ROOT_CONTEXT,
     );
     const specCtx = reactive.specContextForNode(xRead.id);
     const specType = readExprFact(
-      reactive.factStore,
+      reactive.topology,
       typeAnalysis,
-      block,
       xRead.id,
       specCtx,
     );
@@ -116,12 +112,17 @@ describe("observation: idempotence", () => {
     const { ast, reactive } = build("x = 42");
     reactive.drain();
     const assign = ast.statements[0] as StmtNS.Assign;
-    const block = reactive.blockOfNode(assign.value.id);
-    const before = readExprFact(reactive.factStore, typeAnalysis, block, assign.value.id);
+    const before = readExprFact(
+      reactive.topology,
+      typeAnalysis, assign.value.id);
     observeRuntimeWrite(reactive, assign.value.id, 42);
-    const after = readExprFact(reactive.factStore, typeAnalysis, block, assign.value.id);
+    const after = readExprFact(
+      reactive.topology,
+      typeAnalysis, assign.value.id);
     const specCtx = reactive.specContextForNode(assign.value.id);
-    const spec = readExprFact(reactive.factStore, typeAnalysis, block, assign.value.id, specCtx);
+    const spec = readExprFact(
+      reactive.topology,
+      typeAnalysis, assign.value.id, specCtx);
     expect(after).toEqual(before);
     expect(spec).toEqual(before);
   });
@@ -144,7 +145,7 @@ f()
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+      makeDfaQuery(reactive.topology),
       reactive.registry,
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
@@ -176,7 +177,7 @@ f(41)
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+      makeDfaQuery(reactive.topology),
       reactive.registry,
     );
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
@@ -190,13 +191,12 @@ f(41)
     reactive.drain();
 
     expect(returns).toContainEqual({ scopeId: fDef.id, value: 42 });
-    const observed = reactive.factStore.tryRead(runtimeReturnAnalysis, fDef.id);
+    const observed = reactive.tryRead(runtimeReturnAnalysis, fDef.id);
     expect(observed).toBeDefined();
     expect(observed!.kind).toBe("number");
 
     const reqs = makeDfaQuery(
-      reactive.factStore,
-      reactive.nodeIndex,
+      reactive.topology,
       nodeId => reactive.specContextForNode(nodeId),
       unit => reactive.specContextFor(unit),
     ).entryRequirementsOf(fDef.id);

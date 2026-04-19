@@ -5,9 +5,9 @@
 // `xs = [] / xs = param` joins to `Unknown`, so subsequent mutation widens to
 // impure — flow-sensitivity a linear scan can't express.
 //
-// Nested `FunctionDef` bodies are analyzed as their own `FunctionUnit`s; the
+// Nested `FunctionDef` bodies are analyzed as their own `Unit`s; the
 // enclosing block reads the nested `purityScopeAnalysis` verdict via a cross-analysis
-// reads-edge and binds the name's slot to `Closure(fdId, pure)`. Pending
+// reads-edge and binds the name's slot to `Closure(functionId, pure)`. Pending
 // closures (inner not yet analyzed) defer judgment until the scope-analysis
 // refinement arrives.
 //
@@ -17,13 +17,13 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import {
   makeBlockFixpointAnalysis,
-  type DfaBlockFact,
+  type BlockFixpointAnalysis,
 } from "../framework/dfa-factory";
-import type { FactStore } from "../framework/fact-store";
-import type { FunctionUnit } from "../framework/function-unit";
+import type { Unit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
 import type { EdgeSpec, Lattice, Analysis, AnalysisCtx } from "../framework/analysis";
-import { addEdge } from "../framework/analysis";
+import { addEdge, defineAnalysis } from "../framework/analysis";
+import { ROOT_CONTEXT } from "../framework/context";
 import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   absJoin,
@@ -84,7 +84,6 @@ class BlockState {
     readonly env: MutableEnv<AbsVal>,
     readonly slotLookup: SlotLookup,
     readonly selfName: string | undefined,
-    readonly factStore: FactStore,
   ) {}
 }
 
@@ -323,7 +322,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
     }
 
     case "FunctionDef": {
-      // Nested FunctionDef is its own FunctionUnit with its own purity
+      // Nested FunctionDef is its own Unit with its own purity
       // analysis. Bind the name's slot to a Closure value carrying the
       // inner's purity verdict. Creating a closure is *not* itself a side
       // effect — only calling or escaping an impure one is.
@@ -333,14 +332,14 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
         state.impure = true;
         return;
       }
-      const innerPure = state.factStore.tryRead(purityScopeAnalysis, fd.id);
+      const innerPure = purityScopeAnalysis.store.tryRead(fd.id, ROOT_CONTEXT);
       // Defer on `undefined`: the inner hasn't been analyzed yet — record a
       // *pending* Closure. Call sites and escape points treat pending as
       // "deferred" (no markImpure), keeping this block's summary monotone
       // under the cross-analysis dependency. When the inner converges, the
       // reads-edge `purityBlockAnalysis ← purityScopeAnalysis` wakes this block
       // and the binding resolves to a definite true/false verdict.
-      state.env.set(info.slot, { kind: "closure", fdId: fd.id, pure: innerPure });
+      state.env.set(info.slot, { kind: "closure", functionId: fd.id, pure: innerPure });
       return;
     }
 
@@ -368,10 +367,8 @@ const absValLattice: Lattice<AbsVal> = {
   eq: (a, b) => a === b || (absLeq(a, b) && absLeq(b, a)),
 };
 
-export const purityBlockAnalysis: Analysis<
-  BasicBlock,
-  DfaBlockFact<AbsVal>
-> = makeBlockFixpointAnalysis<AbsVal>({
+export const purityBlockAnalysis: BlockFixpointAnalysis<AbsVal> =
+  makeBlockFixpointAnalysis<AbsVal>({
   debugName: "purityAnalysis",
   direction: "forward",
   valueLattice: absValLattice,
@@ -386,10 +383,10 @@ export const purityBlockAnalysis: Analysis<
     }
     return env;
   },
-  transferBlock: (factStore, _ctx, block, inEnv, unit) => {
+  transferBlock: (_ctx, block, inEnv, unit) => {
     const fd = unit.funcAst;
     const selfName = fd instanceof StmtNS.FunctionDef ? fd.name.lexeme : undefined;
-    const state = new BlockState(inEnv, unit.slotLookup, selfName, factStore);
+    const state = new BlockState(inEnv, unit.slotLookup, selfName);
     for (const stmt of block.stmts) transferStmt(stmt, state);
     // Block-global impure flag lives at a sentinel key in `exprFacts`. The
     // DFA factory's per-key lattice join handles monotone propagation; a
@@ -426,15 +423,19 @@ const outerLattice: Lattice<boolean | undefined> = {
   eq: (a, b) => a === b,
 };
 
-export const purityScopeAnalysis: Analysis<number, boolean | undefined> = {
+export const purityScopeAnalysis: Analysis<number, boolean | undefined> = defineAnalysis({
   id: Symbol("purityScopeAnalysis"),
   debugName: "purityScopeAnalysis",
-  lattice: outerLattice,
+  keySpace: "functionId",
+  storeAlgebra: outerLattice,
   polarity: "may",
   edges: [
     {
+      // Subscribe to `.facts` changes — that's where `IMPURE_SENTINEL_NODE_ID`
+      // lives. `.env` changes don't affect the sentinel, so waking on them
+      // would fire this scope transfer for no reason.
       on: "fact",
-      analysis: purityBlockAnalysis,
+      analysis: purityBlockAnalysis.facts,
       wake: (_ctx, key) => {
         const fd = (key as BasicBlock).unit.funcAst;
         return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
@@ -456,17 +457,17 @@ export const purityScopeAnalysis: Analysis<number, boolean | undefined> = {
     },
     {
       on: "retire",
-      effect: (factStore, _ctx, unit) => {
+      effect: (_ctx, unit) => {
         const fd = unit.funcAst;
         if (fd instanceof StmtNS.FunctionDef) {
-          factStore.evict(purityScopeAnalysis, fd.id);
+          purityScopeAnalysis.store.evict(fd.id, ROOT_CONTEXT);
         }
       },
     },
   ],
   tier: "analysis",
-  transfer(factStore: FactStore, ctx: AnalysisCtx, fdId: number): boolean | undefined {
-    const unit = ctx.unitForFdId(fdId);
+  transfer(ctx: AnalysisCtx, functionId: number): boolean | undefined {
+    const unit = ctx.topology.unitOfFunctionId(functionId);
     if (unit === undefined) return undefined;
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
@@ -477,30 +478,33 @@ export const purityScopeAnalysis: Analysis<number, boolean | undefined> = {
     // has been visited yet, defer until the inner analysis has run.
     let anyVisited = false;
     for (const block of unit.cfg.blocks) {
-      const fact = factStore.tryRead(purityBlockAnalysis, block);
-      if (fact === undefined) continue;
+      const facts = purityBlockAnalysis.facts.store.tryRead(block, ROOT_CONTEXT);
+      if (facts === undefined) continue;
       anyVisited = true;
-      if (fact.exprFacts.has(IMPURE_SENTINEL_NODE_ID)) return false;
+      if (facts.has(IMPURE_SENTINEL_NODE_ID)) return false;
     }
     return anyVisited ? true : undefined;
   },
-};
+});
 
-// Cross-analysis edge: the block analysis consults `purityScopeAnalysis` when it hits a
-// nested `FunctionDef` stmt (to learn the nested function's purity verdict).
-// Declared post-hoc because both analyses reference each other. The factory
-// returns `edges` as a plain (unfrozen) array so late amendments are safe.
-// Wake-up path: when the nested fd's scope-analysis writes for `fdId`, project
-// to the outer block containing that `def` stmt via `unitForNode` +
-// `blockOfNode`.
+// Cross-analysis edge: the block analysis consults `purityScopeAnalysis`
+// when it hits a nested `FunctionDef` stmt (to learn the nested function's
+// purity verdict). Declared post-hoc because both analyses reference each
+// other. The factory returns `edges` as a plain (unfrozen) array so late
+// amendments are safe. Wake-up path: when the nested fd's scope-analysis
+// writes for `functionId`, project to the outer block containing that `def` stmt
+// via `topology.blockOfNode(functionId)` — the FunctionDef's own node id lives in
+// the enclosing unit's indexing walk, so a direct topology lookup hits the
+// caller's block.
 const scopeToBlock: EdgeSpec<BasicBlock> = {
   on: "fact",
   analysis: purityScopeAnalysis,
   wake: (ctx, key) => {
     if (typeof key !== "number") return [];
-    const u = ctx.unitForNode(key);
-    const block = u?.blockOfNode.get(key);
+    const block = ctx.topology.blockOfNode(key);
     return block === undefined ? [] : [block];
   },
 };
-addEdge(purityBlockAnalysis, scopeToBlock);
+// The scope→block wake re-runs the block transfer (which is on the `.env`
+// side); `.facts` is populated as a paired-cell side effect of that pass.
+addEdge(purityBlockAnalysis.env, scopeToBlock);

@@ -30,7 +30,7 @@ export function constLeq(a: ConstLattice, b: ConstLattice): boolean {
 }
 
 /** Structural equality: antisymmetric closure of `constLeq` plus an
- *  `a === b` shortcut. Shared between `constExprHandle.lattice` and
- *  `constAnalysisModule`. */
+ *  `a === b` shortcut. Shared between the const assumption handle's value
+ *  algebra and `constAnalysisModule`. */
 export const constEq = (a: ConstLattice, b: ConstLattice): boolean =>
   a === b || (constLeq(a, b) && constLeq(b, a));

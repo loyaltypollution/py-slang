@@ -1,5 +1,5 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
-import { makeJitAnalysis } from "../../../engines/svml/jit-analysis";
+import { makeJitAnalysis } from "../../../conductor/svml-jit-analysis";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import { SVMLIR } from "../../../engines/svml/types";
@@ -16,8 +16,8 @@ import { purityScopeAnalysis } from "../../../specialization/purity-analysis/ana
 import { CONST_TOP } from "../../../specialization/const-analysis/lattice";
 import { TOP as TYPE_TOP } from "../../../specialization/type-analysis/lattice";
 import { MutableEnv } from "../../../specialization/framework/mutable-env";
-import type { FunctionUnit } from "../../../specialization/framework/function-unit";
-import type { Analysis, AnalysisCtx } from "../../../specialization/framework/analysis";
+import type { Unit } from "../../../specialization/framework/function-unit";
+import { defineAnalysis, type Analysis, type AnalysisCtx } from "../../../specialization/framework/analysis";
 import { makeDfaQuery } from "../../../specialization";
 import { buildTestWorklist } from "../../utils";
 
@@ -30,7 +30,7 @@ function buildUnit(code: string) {
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(reactive.factStore, reactive.nodeIndex),
+    makeDfaQuery(reactive.topology),
     reactive.registry,
   );
   return { ast, environments, reactive, compiler, program: compiler.compileProgram(ast) };
@@ -45,29 +45,30 @@ def f():
 f()
 `);
     const fDef = ast.statements[0] as StmtNS.FunctionDef;
-    return { worklist: reactive, unit: reactive.units.get(fDef)!, fDef };
+    return { worklist: reactive, unit: reactive.units.get(fDef.id)!, fDef };
   }
 
   test("consumer wakeups capped at MEMOIZATION_THRESHOLD + 1", () => {
     const { worklist, fDef } = setup();
     let transferRuns = 0;
-    const observer: Analysis<number, number> = {
+    const observerStoreAlgebra = {
+      bottom: 0,
+      leq: (a: number, b: number) => a <= b,
+      join: (a: number, b: number) => Math.max(a, b),
+      eq: (a: number, b: number) => a === b,
+    };
+    const observer: Analysis<number, number> = defineAnalysis({
       id: Symbol("observer"),
       debugName: "observer",
-      lattice: {
-        bottom: 0,
-        leq: (a, b) => a <= b,
-        join: (a, b) => Math.max(a, b),
-        eq: (a, b) => a === b,
-      },
+      storeAlgebra: observerStoreAlgebra,
       edges: [{ on: "fact", analysis: runtimeCallAnalysis, wake: (_c, k) => [k as number] }],
       tier: "analysis",
       polarity: "may",
-      transfer(factStore, _ctx, key) {
+      transfer(_ctx, key) {
         transferRuns++;
-        return factStore.read(runtimeCallAnalysis, key) ?? 0;
+        return runtimeCallAnalysis.store.read(key) ?? 0;
       },
-    };
+    });
     worklist.register(observer);
 
     for (let i = 1; i <= MEMOIZATION_THRESHOLD * 5; i++) {
@@ -80,27 +81,28 @@ f()
   test("jit-style transfer fires exactly once at saturation", () => {
     const { worklist, unit, fDef } = setup();
     let patchCalls = 0;
-    const jitAnalysis: Analysis<FunctionUnit, number> = {
+    const jitCounterStoreAlgebra = {
+      bottom: 0,
+      leq: (a: number, b: number) => a <= b,
+      join: (a: number, b: number) => Math.max(a, b),
+      eq: (a: number, b: number) => a === b,
+    };
+    const jitAnalysis: Analysis<Unit, number> = defineAnalysis({
       id: Symbol("test-jitAnalysis"),
       debugName: "test-jitAnalysis",
-      lattice: {
-        bottom: 0,
-        leq: (a, b) => a <= b,
-        join: (a, b) => Math.max(a, b),
-        eq: (a, b) => a === b,
-      },
+      storeAlgebra: jitCounterStoreAlgebra,
       edges: [{ on: "fact", analysis: runtimeCallAnalysis, wake: () => [unit] }],
       tier: "analysis",
       polarity: "opaque",
-      transfer(factStore, _ctx, u) {
-        const c = factStore.read(runtimeCallAnalysis, fDef.id) ?? 0;
+      transfer(_ctx, u) {
+        const c = runtimeCallAnalysis.store.read(fDef.id) ?? 0;
         if (c <= MEMOIZATION_THRESHOLD) return undefined;
-        const prev = factStore.read(jitAnalysis, u);
+        const prev = jitAnalysis.store.read(u);
         if (prev === 1) return undefined;
         patchCalls++;
         return 1;
       },
-    };
+    });
     worklist.register(jitAnalysis);
     worklist.enqueue(jitAnalysis, unit);
     worklist.drain();
@@ -128,7 +130,7 @@ g()
     const { ast, reactive, compiler, program } = buildUnit(code);
     const interpreter = new SVMLInterpreter(program);
     const gDef = ast.statements[0] as StmtNS.FunctionDef;
-    const gUnit = reactive.units.get(gDef)!;
+    const gUnit = reactive.units.get(gDef.id)!;
     const patchSpy = jest.spyOn(interpreter, "patchFunction");
 
     const expectedIndex = compiler.indexOf(gDef)!;
@@ -150,24 +152,25 @@ g()
     const gDef = ast.statements[0] as StmtNS.FunctionDef;
     const patchSpy = jest.spyOn(interpreter, "patchFunction");
 
-    const jitAnalysis: Analysis<FunctionUnit, "fired" | undefined> = {
+    const firedStoreAlgebra = {
+      bottom: undefined,
+      leq: (a: "fired" | undefined, b: "fired" | undefined) => a === undefined || a === b,
+      join: (a: "fired" | undefined, b: "fired" | undefined) => a ?? b,
+      eq: (a: "fired" | undefined, b: "fired" | undefined) => a === b,
+    };
+    const jitAnalysis: Analysis<Unit, "fired" | undefined> = defineAnalysis({
       id: Symbol("test-jitAnalysis"),
       debugName: "test-jitAnalysis",
-      lattice: {
-        bottom: undefined,
-        leq: (a, b) => a === undefined || a === b,
-        join: (a, b) => a ?? b,
-        eq: (a, b) => a === b,
-      },
+      storeAlgebra: firedStoreAlgebra,
       edges: [
-        { on: "fact", analysis: runtimeCallAnalysis, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
-        { on: "fact", analysis: purityScopeAnalysis, wake: (c, k) => { const u = c.unitForFdId(k as number); return u === undefined ? [] : [u]; } },
+        { on: "fact", analysis: runtimeCallAnalysis, wake: (c, k) => { const u = c.topology.unitOfFunctionId(k as number); return u === undefined ? [] : [u]; } },
+        { on: "fact", analysis: purityScopeAnalysis, wake: (c, k) => { const u = c.topology.unitOfFunctionId(k as number); return u === undefined ? [] : [u]; } },
         { on: "mint", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },
         { on: "rebuild", wake: (_c, u) => u.funcAst instanceof StmtNS.FunctionDef ? [u] : [] },
       ],
       tier: "analysis",
       polarity: "opaque",
-      transfer(_fs, _ctx: AnalysisCtx, unit: FunctionUnit) {
+      transfer(_ctx: AnalysisCtx, unit: Unit) {
         const scope = unit.funcAst;
         if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
         const index = compiler.indexOf(scope);
@@ -175,7 +178,7 @@ g()
         interpreter.patchFunction(index, compiler.compileFunction(unit));
         return "fired";
       },
-    };
+    });
     reactive.register(jitAnalysis);
     await interpreter.execute();
     reactive.drain();
@@ -244,7 +247,7 @@ def f(x):
 f(1)
 `);
     const fDef = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = reactive.units.get(fDef)!;
+    const unit = reactive.units.get(fDef.id)!;
 
     let compileCalls = 0;
     let tag = 0;
@@ -315,17 +318,19 @@ f(1)
     enqueue();
     const baseline = counters.compiles;
 
-    // Write a synthesized block fact that strictly advances outEnv by
-    // populating a fresh slot. Equality on the block lattice flags the
-    // change, jitAnalysis wakes via its `reads` on this analysis, analysisGen bumps
-    // and the memo invalidates for the owning unit.
+    // Write a synthesized env-cell fact that strictly advances outEnv by
+    // populating a fresh slot. JIT edges watch both cells of each
+    // JIT-relevant narrowing; writing to `.env` exercises the env-side wake
+    // path. Equality on the env lattice flags the change, jitAnalysis wakes
+    // via its `reads` edge on this cell, and the memo invalidates for the
+    // owning unit.
     const block = unit.cfg.entry;
     const outEnv = new MutableEnv<unknown>();
     outEnv.set(9999, top);
     worklist.observe(
-      analysis as unknown as Analysis<unknown, unknown>,
+      analysis.env as unknown as Analysis<unknown, unknown>,
       block,
-      { outEnv, exprFacts: new Map() } as never,
+      outEnv as never,
     );
 
     if (recompiles) expect(counters.compiles).toBeGreaterThan(baseline);
@@ -341,30 +346,30 @@ f(1)
   });
 
   // Pins the load-bearing invariant of the reference-identity snapshot: a
-  // lattice-equal FactStore.write (one that does not advance the lattice)
-  // must NOT trigger a recompile. FactStore.write short-circuits on
+  // store-algebra-equal AnalysisStore.write (one that does not advance the cell)
+  // must NOT trigger a recompile. AnalysisStore.write short-circuits on
   // `latticeEquals(prev, joined)` and keeps the prior reference; the
   // CompileSnapshot's identity-compare therefore matches and transfer
   // short-circuits before invoking compileFunction. If anyone ever changes
-  // FactStore.write to replace the reference on equal writes, or the
+  // AnalysisStore.write to replace the reference on equal writes, or the
   // snapshot to deep-compare values, this test catches the regression.
-  test("lattice-equal DFA write does not recompile", () => {
+  test("store-algebra-equal DFA write does not recompile", () => {
     const { worklist, unit, enqueue, counters } = setup();
     enqueue();
     const baseline = counters.compiles;
     expect(baseline).toBeGreaterThanOrEqual(1);
 
     const block = unit.cfg.entry;
-    const currentConst = worklist.factStore.tryRead(constAnalysis, block);
+    const currentConst = worklist.tryRead(constAnalysis.env, block);
     expect(currentConst).toBeDefined();
 
-    // Re-observe the exact same fact value. FactStore.write joins with
+    // Re-observe the exact same fact value. AnalysisStore.write joins with
     // prev; identical input → identical join → lattice.equals returns true
     // → write returns false, no listener fan-out. We drive a drain anyway
     // to prove that, even if a transfer did fire, the snapshot still
     // matches by reference.
     worklist.observe(
-      constAnalysis as unknown as Analysis<unknown, unknown>,
+      constAnalysis.env as unknown as Analysis<unknown, unknown>,
       block,
       currentConst as never,
     );

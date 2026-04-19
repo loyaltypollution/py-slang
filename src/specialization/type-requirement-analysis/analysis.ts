@@ -19,9 +19,9 @@
 // model that dataflow direction.
 //
 // The seed is context-driven: at each `Return e`, the analysis reads
-// `findAssumption(ctx.currentContext, returnKindHandle, fdId)`. When the
+// `findAssumption(ctx.currentContext, returnKindHandle, functionId)`. When the
 // context carries no assumption (ROOT, or a chain without a return-kind
-// link for this fdId), the transfer is sound-no-op: all requirements stay
+// link for this functionId), the transfer is sound-no-op: all requirements stay
 // at TOP. Consumers (entry-guard hoisting, redundant-check elimination,
 // unboxing) observe the analysis result via `requirementAtEntry` or direct
 // fact-store reads.
@@ -29,26 +29,25 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { BasicBlock } from "../framework/cfg";
-import type { FactStore } from "../framework/fact-store";
-import type { FunctionUnit } from "../framework/function-unit";
+import type { Unit } from "../framework/function-unit";
 import {
   ROOT_CONTEXT,
   findAssumption,
   type Context,
 } from "../framework/context";
-import type {
-  Analysis,
-  AnalysisCtx,
-  Narrowing,
+import {
+  type AssumptionHandle,
+  type Narrowing,
 } from "../framework/analysis";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
-  type DfaBlockFact,
+  type BlockPassResult,
 } from "../framework/dfa-factory";
 import { MutableEnv } from "../framework/mutable-env";
 import { runtimeReturnAnalysis } from "../framework/runtime-analyses";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
+import type { FunctionId } from "../framework/key-spaces";
 import { liftType } from "../type-analysis/analysis";
 import {
   BOTTOM,
@@ -64,23 +63,16 @@ import {
 } from "../type-analysis/lattice";
 
 /** Narrowing-chain identity for per-function return-kind assumptions. Keyed
- *  by FunctionDef.id (fdId). The handle is never scheduled — its transfer
- *  is a no-op and the fact store never carries cells under it. Its sole
- *  role is to give the Context chain a stable namespace for return-kind
- *  bindings, parallel to `typeExprHandle` / `constExprHandle`.
- *
- *  `lattice` matches the TypeLattice semantics so Context's canonical
- *  dedup (`lattice.eq` at `extendContext`) behaves correctly. */
-export const returnKindHandle: Analysis<number, TypeLattice> = {
+ *  by FunctionDef.id (functionId). Parallel to `typeExprHandle` /
+ *  `constExprHandle` — a namespace token for Context bindings, never
+ *  scheduled, never writes to the fact store. `eq` matches the TypeLattice
+ *  semantics so Context's canonical dedup at `extendContext` behaves
+ *  correctly. */
+export const returnKindHandle: AssumptionHandle<FunctionId, TypeLattice> = {
   id: Symbol("returnKindHandle"),
   debugName: "returnKindHandle",
-  lattice: { bottom: BOTTOM, leq, join, eq },
-  edges: [],
-  tier: "analysis",
-  polarity: "may",
-  transfer(_factStore: FactStore, _ctx: AnalysisCtx, _key: number): TypeLattice | undefined {
-    return undefined;
-  },
+  keySpace: "functionId",
+  eq,
 };
 
 /** Unconstrained int requirement — kind INT, sign unknown (Top). The
@@ -239,7 +231,7 @@ function transferBlockBackward(
   inEnv: MutableEnv<TypeLattice>,
   slotLookup: SlotLookup,
   returnRequirement: TypeLattice | undefined,
-): DfaBlockFact<TypeLattice> {
+): BlockPassResult<TypeLattice> {
   const outEnv = inEnv.snapshot();
   const stmts = block.stmts;
   for (let i = stmts.length - 1; i >= 0; i--) {
@@ -260,7 +252,7 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
     mergeKind: "must",
     valueLattice: { bottom: BOTTOM, top: TOP, join, meet, leq, eq },
     seedEnv: () => new MutableEnv<TypeLattice>(),
-    transferBlock: (_factStore, ctx, block, inEnv, unit) => {
+    transferBlock: (ctx, block, inEnv, unit) => {
       const fd = unit.funcAst;
       const required = fd instanceof StmtNS.FunctionDef
         ? findAssumption(ctx.currentContext, returnKindHandle, fd.id)
@@ -271,21 +263,24 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
   });
 
 /** Narrowing dimension: runtime return observations. An observation at
- *  `fdId` (classified via `liftType`) extends the called unit's context
- *  with `(returnKindHandle, fdId, value)`; the analysis above consumes
- *  that assumption at Return statements. `resolveUnit` maps the fdId to
+ *  `functionId` (classified via `liftType`) extends the called unit's context
+ *  with `(returnKindHandle, functionId, value)`; the analysis above consumes
+ *  that assumption at Return statements. `resolveUnit` maps the functionId to
  *  the function's own unit (not its containing caller) so the extension
  *  lands where the body's requirement-propagation runs. */
-export const returnKindNarrowing: Narrowing<TypeLattice> = {
+export const returnKindNarrowing: Narrowing<FunctionId, TypeLattice> = {
   handle: returnKindHandle,
   blockAnalysis: () => typeRequirementAnalysis,
   observationSource: runtimeReturnAnalysis,
-  resolveUnit: (ctx, key) => ctx.unitForFdId(key),
-  lineageValue: (factStore, unit, _fdId, context) =>
-    factStore.tryRead(typeRequirementAnalysis, unit.cfg.entry, context),
-  lineageEq: (a, b) => typeRequirementAnalysis.lattice.eq(
-    a as DfaBlockFact<TypeLattice>,
-    b as DfaBlockFact<TypeLattice>,
+  resolveUnit: (ctx, key) => ctx.topology.unitOfFunctionId(key),
+  // Lineage is tracked over the entry block's requirement-IN env — the
+  // fact surface that drives guard hoisting. Reading `.env` here matches
+  // what `requirementAtEntry` below consumes.
+  lineageValue: (unit, _functionId, context) =>
+    typeRequirementAnalysis.env.store.tryRead(unit.cfg.entry, context),
+  lineageEq: (a, b) => typeRequirementAnalysis.env.storeAlgebra.eq(
+    a as MutableEnv<TypeLattice>,
+    b as MutableEnv<TypeLattice>,
   ),
   lift: liftType,
 };
@@ -321,16 +316,15 @@ function isSatisfiable(v: TypeLattice): boolean {
  *  the analysis short-circuited. Consumers: guard-hoisting, redundant-
  *  check elimination. */
 export function requirementAtEntry(
-  factStore: FactStore,
-  unit: FunctionUnit,
+  unit: Unit,
   context: Context = ROOT_CONTEXT,
 ): EntryRequirement {
   const provable = new Map<number, TypeLattice>();
   const unprovable = new Set<number>();
-  const fact = factStore.tryRead(typeRequirementAnalysis, unit.cfg.entry, context);
-  if (fact === undefined) return { provable, unprovable };
-  for (const slot of fact.outEnv.definedSlots()) {
-    const req = fact.outEnv.get(slot);
+  const env = typeRequirementAnalysis.env.store.tryRead(unit.cfg.entry, context);
+  if (env === undefined) return { provable, unprovable };
+  for (const slot of env.definedSlots()) {
+    const req = env.get(slot);
     if (req === undefined || req === TOP) continue;
     if (isSatisfiable(req)) provable.set(slot, req);
     else unprovable.add(slot);

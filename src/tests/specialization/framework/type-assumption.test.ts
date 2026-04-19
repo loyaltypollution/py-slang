@@ -33,25 +33,25 @@ def hot(x):
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    const block = worklist.blockOfNode(xRead.id)!;
+    const block = worklist.topology.blockOfNode(xRead.id)!;
 
     // ROOT-context fact: x is a parameter slot → TOP.
-    expect(readExprFact(worklist.factStore, typeAnalysis, block, xRead.id)?.kinds)
+    expect(readExprFact(worklist.topology, typeAnalysis, xRead.id)?.kinds)
       .not.toBe(INT_BIT);
 
     // Build a Context with a single assumption: x at `xRead.id` is INT_POS.
     const ctx = extendContext(ROOT_CONTEXT, typeExprHandle, xRead.id, INT_POS);
 
     // Re-run typeAnalysis under the context.
-    worklist.enqueue(typeAnalysis, block.unit.cfg.entry, ctx);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctx);
     worklist.drain();
 
     // The non-ROOT cell holds the narrowed fact.
-    const narrowed = worklist.factStore.tryRead(typeAnalysis, block, ctx)?.exprFacts.get(xRead.id);
+    const narrowed = worklist.tryRead(typeAnalysis.facts, block, ctx)?.get(xRead.id);
     expect(narrowed?.kinds).toBe(INT_BIT);
 
     // The ROOT cell is unaffected — independent Kildall per context.
-    const rootStill = readExprFact(worklist.factStore, typeAnalysis, block, xRead.id);
+    const rootStill = readExprFact(worklist.topology, typeAnalysis, xRead.id);
     expect(rootStill?.kinds).not.toBe(INT_BIT);
   });
 
@@ -78,15 +78,15 @@ def hot(x, z):
     ) as StmtNS.Assign;
     const xRead = xAssign.value as ExprNS.Variable;
     const zRead = zAssign.value as ExprNS.Variable;
-    const block = worklist.blockOfNode(xRead.id)!;
+    const block = worklist.topology.blockOfNode(xRead.id)!;
 
     // Assumption only at xRead.id, not zRead.id.
     const ctx = extendContext(ROOT_CONTEXT, typeExprHandle, xRead.id, INT_POS);
-    worklist.enqueue(typeAnalysis, block.unit.cfg.entry, ctx);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctx);
     worklist.drain();
 
-    const xFact = worklist.factStore.tryRead(typeAnalysis, block, ctx)?.exprFacts.get(xRead.id);
-    const zFact = worklist.factStore.tryRead(typeAnalysis, block, ctx)?.exprFacts.get(zRead.id);
+    const xFact = worklist.tryRead(typeAnalysis.facts, block, ctx)?.get(xRead.id);
+    const zFact = worklist.tryRead(typeAnalysis.facts, block, ctx)?.get(zRead.id);
 
     expect(xFact?.kinds).toBe(INT_BIT);
     // z passes static through (TOP for a parameter) — unchanged by the
@@ -102,7 +102,7 @@ def hot(x):
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    const block = worklist.blockOfNode(xRead.id)!;
+    const block = worklist.topology.blockOfNode(xRead.id)!;
 
     const ctxIntPos = extendContext(ROOT_CONTEXT, typeExprHandle, xRead.id, INT_POS);
     // A different assumption value at the same node.
@@ -111,12 +111,12 @@ def hot(x):
       intRef: 1, // IntRef.Neg
     });
 
-    worklist.enqueue(typeAnalysis, block.unit.cfg.entry, ctxIntPos);
-    worklist.enqueue(typeAnalysis, block.unit.cfg.entry, ctxNeg);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctxIntPos);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctxNeg);
     worklist.drain();
 
-    const posFact = worklist.factStore.tryRead(typeAnalysis, block, ctxIntPos)?.exprFacts.get(xRead.id);
-    const negFact = worklist.factStore.tryRead(typeAnalysis, block, ctxNeg)?.exprFacts.get(xRead.id);
+    const posFact = worklist.tryRead(typeAnalysis.facts, block, ctxIntPos)?.get(xRead.id);
+    const negFact = worklist.tryRead(typeAnalysis.facts, block, ctxNeg)?.get(xRead.id);
 
     expect(posFact).not.toEqual(negFact);
     expect(posFact?.intRef).toBe(INT_POS.intRef);

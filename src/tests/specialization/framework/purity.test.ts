@@ -24,7 +24,7 @@ function purityOf(code: string, fnName: string): boolean | undefined {
 
   for (const stmt of ast.statements) {
     if (stmt instanceof StmtNS.FunctionDef && stmt.name.lexeme === fnName) {
-      return worklist.factStore.tryRead(purityScopeAnalysis, stmt.id);
+      return worklist.tryRead(purityScopeAnalysis, stmt.id);
     }
   }
   throw new Error(`FunctionDef ${fnName} not found`);

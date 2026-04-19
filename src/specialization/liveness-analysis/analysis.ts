@@ -1,13 +1,14 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
-import type { FactStore } from "../framework/fact-store";
-import { type Analysis, addEdge } from "../framework/analysis";
+import { addEdge } from "../framework/analysis";
+import { ROOT_CONTEXT } from "../framework/context";
 import {
   makeBlockFixpointAnalysis,
   nodeIdToBlock,
-  type DfaBlockFact,
+  type BlockFixpointAnalysis,
+  type BlockPassResult,
 } from "../framework/dfa-factory";
-import type { FunctionUnit } from "../framework/function-unit";
+import type { Unit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
 import { runtimeWriteAnalysis } from "../framework/runtime-analyses";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
@@ -155,7 +156,7 @@ function transferBlock(
   block: BasicBlock,
   inEnv: MutableEnv<LiveVal>,
   slotLookup: SlotLookup,
-): DfaBlockFact<LiveVal> {
+): BlockPassResult<LiveVal> {
   // `inEnv` is factory-provided: represents live-OUT of this block.
   // We mutate it in place into live-IN and publish it as `outEnv`.
   const outEnv = inEnv.snapshot();
@@ -171,14 +172,14 @@ function transferBlock(
  *  live-IN; a block's live-OUT is the join of CFG-successors' live-INs and
  *  can be reconstructed via `liveOutOf` below.
  */
-export const livenessAnalysis: Analysis<BasicBlock, DfaBlockFact<LiveVal>> =
+export const livenessAnalysis: BlockFixpointAnalysis<LiveVal> =
   makeBlockFixpointAnalysis<LiveVal>({
     debugName: "liveness",
     direction: "backward",
     mergeKind: "may",
     valueLattice: livenessLattice,
     seedEnv: () => new MutableEnv<LiveVal>(),
-    transferBlock: (_factStore, _ctx, block, inEnv, unit) =>
+    transferBlock: (_ctx, block, inEnv, unit) =>
       transferBlock(block, inEnv, unit.slotLookup),
     refineOnEdge: (env, _edge) => env,
   });
@@ -188,7 +189,9 @@ export const livenessAnalysis: Analysis<BasicBlock, DfaBlockFact<LiveVal>> =
 // on fact-changes to runtimeWriteAnalysis not for correctness but for parity
 // with the forward passes — any observation that drives a transform cascade
 // downstream still rebuilds the CFG and re-seeds us via lifecycle.
-addEdge(livenessAnalysis, {
+// Wake the env-side transfer on runtime writes — `.env` owns the block
+// transfer; `.facts` is populated as a paired side effect.
+addEdge(livenessAnalysis.env, {
   on: "fact",
   analysis: runtimeWriteAnalysis,
   wake: nodeIdToBlock,
@@ -196,15 +199,12 @@ addEdge(livenessAnalysis, {
 
 /** Reconstruct live-OUT of `block`: join of live-INs (stored outEnvs) of
  *  CFG-successors. Terminal blocks have no successors ⇒ empty. */
-export function liveOutOf(
-  factStore: Pick<FactStore, "tryRead">,
-  block: BasicBlock,
-): MutableEnv<LiveVal> {
+export function liveOutOf(block: BasicBlock): MutableEnv<LiveVal> {
   const result = new MutableEnv<LiveVal>();
   for (const edge of block.successorEdges) {
-    const fact = factStore.tryRead(livenessAnalysis, edge.to);
-    if (fact === undefined) continue;
-    for (const slot of fact.outEnv.definedSlots()) {
+    const env = livenessAnalysis.env.store.tryRead(edge.to, ROOT_CONTEXT);
+    if (env === undefined) continue;
+    for (const slot of env.definedSlots()) {
       result.set(slot, LIVE);
     }
   }
@@ -219,12 +219,11 @@ export function liveOutOf(
  *  do not alias any fact-store state. */
 export function perStatementLiveOut(
   block: BasicBlock,
-  factStore: Pick<FactStore, "tryRead">,
   slotLookup: SlotLookup,
 ): ReadonlyArray<ReadonlySet<number>> {
   const stmts = block.stmts;
   const liveOuts: Set<number>[] = new Array(stmts.length);
-  const env = liveOutOf(factStore, block);
+  const env = liveOutOf(block);
   const visitor = new ReadCollector(env, slotLookup);
   for (let i = stmts.length - 1; i >= 0; i--) {
     const snapshot = new Set<number>();
@@ -236,4 +235,4 @@ export function perStatementLiveOut(
 }
 
 // Re-export for consumers that need the unit-level context.
-export type { FunctionUnit };
+export type { Unit };

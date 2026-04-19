@@ -125,11 +125,11 @@ describe("reusable lattice-law verification", () => {
       { kind: "complex" },
     ];
 
-    expectLatticeLaws(runtimeWriteAnalysis.lattice, {
+    expectLatticeLaws(runtimeWriteAnalysis.storeAlgebra, {
       values: rawValues,
       describeValue: value => JSON.stringify(value),
     });
-    expectLatticeLaws(runtimeReturnAnalysis.lattice, {
+    expectLatticeLaws(runtimeReturnAnalysis.storeAlgebra, {
       values: rawValues,
       describeValue: value => JSON.stringify(value),
     });
@@ -151,10 +151,10 @@ describe("reusable lattice-law verification", () => {
       { kind: "fresh", origin: 2 },
       { kind: "param", slot: 0 },
       { kind: "param", slot: 1 },
-      { kind: "closure", fdId: 1, pure: undefined },
-      { kind: "closure", fdId: 1, pure: true },
-      { kind: "closure", fdId: 1, pure: false },
-      { kind: "closure", fdId: 2, pure: true },
+      { kind: "closure", functionId: 1, pure: undefined },
+      { kind: "closure", functionId: 1, pure: true },
+      { kind: "closure", functionId: 1, pure: false },
+      { kind: "closure", functionId: 2, pure: true },
     ];
 
     expectLatticeLaws(
@@ -170,7 +170,7 @@ describe("reusable lattice-law verification", () => {
           switch (value.kind) {
             case "fresh": return `fresh(${value.origin})`;
             case "param": return `param(${value.slot})`;
-            case "closure": return `closure(${value.fdId},${String(value.pure)})`;
+            case "closure": return `closure(${value.functionId},${String(value.pure)})`;
             default: return value.kind;
           }
         },

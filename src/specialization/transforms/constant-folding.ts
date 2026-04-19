@@ -4,7 +4,7 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import { constAnalysis } from "../framework/dfa-analyses";
 import { readExprFact } from "../framework/dfa-factory";
-import type { FunctionUnit } from "../framework/function-unit";
+import type { Unit } from "../framework/function-unit";
 import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
 
 class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
@@ -12,13 +12,11 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
 
   constructor(
     private readonly factStore: TransformFactView,
-    private readonly unit: FunctionUnit,
   ) {}
 
   private tryRewrite(expr: ExprNS.Expr): ExprNS.Expr {
     if (!(expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare)) return expr;
-    const block = this.unit.blockOfNode.get(expr.id);
-    const cv = readExprFact(this.factStore, constAnalysis, block, expr.id);
+    const cv = readExprFact(this.factStore.topology, constAnalysis, expr.id);
     if (cv?.tag !== "const") return expr;
     this.changed = true;
     return new ExprNS.Literal(
@@ -111,8 +109,8 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: ConstFoldExprVisitor;
 
-  constructor(factStore: TransformFactView, unit: FunctionUnit) {
-    this.exprVisitor = new ConstFoldExprVisitor(factStore, unit);
+  constructor(factStore: TransformFactView) {
+    this.exprVisitor = new ConstFoldExprVisitor(factStore);
   }
 
   private rewriteExpr(expr: ExprNS.Expr): ExprNS.Expr {
@@ -171,10 +169,10 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
 
 export const constantFoldingRule = unitSweepRule(
   "constantFoldingRule",
-  (unit: FunctionUnit, factStore: TransformFactView) => {
-    const v = new ConstFoldStmtVisitor(factStore, unit);
+  (unit: Unit, factStore: TransformFactView) => {
+    const v = new ConstFoldStmtVisitor(factStore);
     v.sweep(unit.body);
     return v.changed;
   },
-  [{ on: "fact", analysis: constAnalysis, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  [{ on: "fact", analysis: constAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
 );

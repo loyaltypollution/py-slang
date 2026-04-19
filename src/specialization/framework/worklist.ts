@@ -8,15 +8,16 @@ import {
   buildFunctionRegistry,
   type FunctionScopeNode,
 } from "./function-registry";
-import type { BasicBlock } from "./cfg";
-import { FactStore, type FactChange } from "./fact-store";
+import { type FactChange } from "./analysis-store";
 import {
-  buildFunctionUnits,
-  buildOneFunctionUnit,
+  buildUnits,
+  buildOneUnit,
   wireCFG,
-  type FunctionUnit,
+  type Unit,
 } from "./function-unit";
 import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type Narrowing, type TransformRule, type LifecycleEdge } from "./analysis";
+import type { FunctionId, NodeId } from "./key-spaces";
+import { MutableProgramTopology, type ProgramTopology } from "./topology";
 import { rootTransformFacts } from "./transform-rule";
 import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Assumption, type Context } from "./context";
 import { immediateStrategy, type SpeculationStrategy } from "./speculation-strategy";
@@ -47,14 +48,13 @@ type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq
  *  narrowing's block analysis, keyed by node id); no value is carried — the
  *  live value is read at deopt time from the fact store.
  *
- *  Typed against `Narrowing<unknown>`: the lineage walk only calls
- *  `narrowing.blockAnalysis()` and reads `narrowing.handle.lattice` to
- *  derive equality via `latticeEqual`, neither of which needs the specific
- *  V. Keeping the interface ungenericized matches actual usage and removes
- *  a cosmetic type parameter. */
+ *  Typed against `Narrowing<_, unknown>`: the lineage walk only calls
+ *  `narrowing.blockAnalysis()` and reads the handle's store/value algebra for
+ *  equality, neither of which needs the specific V. Keeping the interface
+ *  ungenericized matches actual usage and removes a cosmetic type parameter. */
 export interface SpecFactRef {
-  readonly narrowing: Narrowing<unknown>;
-  readonly key: number;
+  readonly narrowing: Narrowing<NodeId | FunctionId, unknown>;
+  readonly key: NodeId | FunctionId;
 }
 
 /** Narrow backend-facing interface for publishing guard provenance. Exposed
@@ -82,8 +82,8 @@ function specRefKey(r: SpecFactRef): string {
 /** Default unit resolver for narrowings whose key is a nodeId. Shared
  *  identity so `buildUnitResolverBySource`'s agreement check compares
  *  function references rather than structural equivalents. */
-const NODE_UNIT_RESOLVER = (ctx: AnalysisCtx, key: number): FunctionUnit | undefined =>
-  ctx.unitForNode(key);
+const NODE_UNIT_RESOLVER = (ctx: AnalysisCtx, key: NodeId): Unit | undefined =>
+  ctx.topology.unitOfNode(key);
 
 /** Group narrowings by `observationSource` and assert each group agrees on
  *  `resolveUnit`. Disagreement used to silently resolve to the first
@@ -91,11 +91,11 @@ const NODE_UNIT_RESOLVER = (ctx: AnalysisCtx, key: number): FunctionUnit | undef
  *  the wrong unit with no error. Throws at construction so the registration
  *  bug surfaces before any observation fires. */
 function buildUnitResolverBySource(
-  narrowings: ReadonlyArray<Narrowing<any>>,
-): Map<Analysis<number, RawKind>, (ctx: AnalysisCtx, key: number) => FunctionUnit | undefined> {
+  narrowings: ReadonlyArray<Narrowing<any, any>>,
+): Map<Analysis<any, RawKind>, (ctx: AnalysisCtx, key: any) => Unit | undefined> {
   const bySource = new Map<
-    Analysis<number, RawKind>,
-    (ctx: AnalysisCtx, key: number) => FunctionUnit | undefined
+    Analysis<any, RawKind>,
+    (ctx: AnalysisCtx, key: any) => Unit | undefined
   >();
   for (const n of narrowings) {
     const resolver = n.resolveUnit ?? NODE_UNIT_RESOLVER;
@@ -122,14 +122,16 @@ const compareItems = (a: QItem, b: QItem): number => {
 };
 
 export class Worklist {
-  private readonly _units: Map<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> = new Map();
-  private readonly unitsByFdId: Map<number, FunctionUnit> = new Map();
-  private readonly nodeToUnit: Map<number, FunctionUnit> = new Map();
+  /** Single source of truth for every cross-unit index — scope-node → unit,
+   *  functionId → unit, nodeId → {unit, block}. Replaces the worklist's old
+   *  `_units`, `unitsByFunctionId`, and `nodeToUnit` maps, and the per-unit
+   *  `blockOfNode` field that used to live on `Unit`. */
+  private readonly _topology = new MutableProgramTopology();
 
   /** Units awaiting CFG rebuild after a transform fire. */
-  private readonly pendingRebuilds = new Set<FunctionUnit>();
+  private readonly pendingRebuilds = new Set<Unit>();
 
-  readonly factStore = new FactStore();
+  private readonly changeListeners: Array<(change: FactChange<unknown, unknown>) => void> = [];
   private readonly registeredAnalyses: Analysis<any, any>[] = [];
   private readonly queue = new PriorityQueue<QItem>(compareItems);
   private seqCounter = 0;
@@ -146,7 +148,7 @@ export class Worklist {
    *  on mint, rebuild, or a write to an upstream analysis declared in the rule's
    *  `edges`; sweep clears it. */
   private readonly transforms: TransformRule[] = [];
-  private readonly transformDirty = new Map<TransformRule, Set<FunctionUnit>>();
+  private readonly transformDirty = new Map<TransformRule, Set<Unit>>();
 
   /** Per-unit active speculation context. Grows as `runtimeWriteAnalysis`
    *  observations land — each observation adds one assumption per
@@ -157,7 +159,7 @@ export class Worklist {
    *  ROOT_CONTEXT means the unit is currently emitting unspeculated IR.
    *  The tree structure is sibling-capable by construction; sibling
    *  materialization and subtree pruning follow in a later step. */
-  private readonly currentSpecContext: Map<FunctionUnit, Context> = new Map();
+  private readonly currentSpecContext: Map<Unit, Context> = new Map();
 
   /** Single fact-change dispatch index. Analyses and transforms both compile
    *  their fact edges into callbacks here; no per-subscriber-kind branching
@@ -170,14 +172,20 @@ export class Worklist {
    *  `LifecycleEdge`s and transforms' mint/rebuild auto-dirtying both
    *  compile into callbacks here. */
   private readonly lifecycleSubs: Record<"mint" | "rebuild" | "retire" | "specContextChange",
-    Array<(ctx: AnalysisCtx, unit: FunctionUnit) => void>
+    Array<(ctx: AnalysisCtx, unit: Unit) => void>
   > = { mint: [], rebuild: [], retire: [], specContextChange: [] };
 
   readonly registry: FunctionRegistry;
   private readonly functionEnvironments: FunctionEnvironments;
 
-  get units(): ReadonlyMap<StmtNS.FileInput | StmtNS.FunctionDef, FunctionUnit> {
-    return this._units;
+  /** Readonly projection of the topology — the surface consumers (DfaQuery,
+   *  transforms outside the worklist, backends, tests) read through. */
+  get topology(): ProgramTopology {
+    return this._topology;
+  }
+
+  get units(): ReadonlyMap<FunctionId, Unit> {
+    return this._topology.units;
   }
 
   /** Policy for when observations should extend the unit's speculation
@@ -189,7 +197,7 @@ export class Worklist {
   /** Registered speculation-narrowing dimensions. The observation translator,
    *  widen primitives, and `lineageOf` iterate this list — adding a new
    *  narrowing is a one-line registration here, not a framework edit. */
-  private readonly narrowings: ReadonlyArray<Narrowing<any>>;
+  private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
 
   /** Per-observation-source unit resolver, derived from `narrowings` at
    *  construction. All narrowings sharing an `observationSource` must
@@ -198,8 +206,8 @@ export class Worklist {
    *  first narrowing's value, leaving the later narrowing's context
    *  extension to land on the wrong unit with no error. */
   private readonly unitResolverBySource: Map<
-    Analysis<number, RawKind>,
-    (ctx: AnalysisCtx, key: number) => FunctionUnit | undefined
+    Analysis<any, RawKind>,
+    (ctx: AnalysisCtx, key: any) => Unit | undefined
   >;
 
   constructor(
@@ -209,34 +217,29 @@ export class Worklist {
     registry?: FunctionRegistry,
     transforms: ReadonlyArray<TransformRule> = DEFAULT_TRANSFORMS,
     specStrategy: SpeculationStrategy = immediateStrategy,
-    narrowings: ReadonlyArray<Narrowing<any>> = DEFAULT_NARROWINGS,
+    narrowings: ReadonlyArray<Narrowing<any, any>> = DEFAULT_NARROWINGS,
   ) {
     this.specStrategy = specStrategy;
     this.narrowings = narrowings;
     this.unitResolverBySource = buildUnitResolverBySource(narrowings);
     this.registry = registry ?? buildFunctionRegistry(ast);
     this.functionEnvironments = functionEnvironments;
-    const built = buildFunctionUnits(ast, functionEnvironments, this.registry);
-    for (const [node, unit] of built) {
-      this._units.set(node, unit);
-      if (unit.funcAst instanceof StmtNS.FunctionDef) {
-        this.unitsByFdId.set(unit.funcAst.id, unit);
-      }
+    const built = buildUnits(ast, functionEnvironments, this.registry);
+    for (const [, unit] of built) {
       if (!this.registry.hasNode(unit.funcAst)) {
         throw new Error(
-          `[Worklist] unit for fdId=${unit.funcAst.id} missing from FunctionRegistry — registry likely built from a different AST`,
+          `[Worklist] unit for functionId=${unit.funcAst.id} missing from FunctionRegistry — registry likely built from a different AST`,
         );
       }
+      this._topology.registerUnit(unit);
     }
-    this.rebuildNodeToUnit();
 
     for (const p of analyses) this.register(p);
     for (const r of transforms) this.registerTransform(r);
-    this.factStore.onChange(c => this.handleFactChange(c));
     // The observation→context translator hooks directly into `observe`, not
-    // via a factStore listener — the fact store short-circuits repeated
-    // same-value writes (the monotone fast path), and count-based policies
-    // need to see every call, not every lattice change.
+    // via the change-listener list — an eq-gated write short-circuits
+    // repeated same-value writes (the monotone fast path), and count-based
+    // policies need to see every call, not every lattice change.
 
     // Initial units are seeded lazily: `register` replays onUnitMinted to each
     // analysis's subscriber, and `registerTransform` populates each rule's dirty
@@ -245,38 +248,36 @@ export class Worklist {
 
     this.registry.setListener({
       onMint: (node, slot) => this.onRegistryMint(node, slot),
-      onRetire: (fdId, node) => this.onRegistryRetire(fdId, node),
+      onRetire: (functionId, node) => this.onRegistryRetire(functionId, node),
     });
   }
 
   private onRegistryMint(node: FunctionScopeNode, _slot: number): void {
     if (!(node instanceof StmtNS.FunctionDef)) return;
-    const unit = buildOneFunctionUnit(node, this.functionEnvironments, this.registry);
-    this._units.set(node, unit);
-    this.unitsByFdId.set(node.id, unit);
-    this.rebuildNodeToUnit();
+    const unit = buildOneUnit(node, this.functionEnvironments, this.registry);
+    this._topology.registerUnit(unit);
     this.fireLifecycle("mint", unit);
   }
 
-  private onRegistryRetire(fdId: number, node: FunctionScopeNode): void {
-    const unit = this.unitsByFdId.get(fdId);
+  private onRegistryRetire(functionId: FunctionId, _node: FunctionScopeNode): void {
+    const unit = this._topology.unitOfFunctionId(functionId);
     if (unit === undefined) return;
-    this.unitsByFdId.delete(fdId);
-    this._units.delete(node as StmtNS.FileInput | StmtNS.FunctionDef);
     this.pendingRebuilds.delete(unit);
     this.currentSpecContext.delete(unit);
     this.guardProvenance.delete(unit);
     this.specStrategy.onUnitRetired?.(unit);
     for (const s of this.transformDirty.values()) s.delete(unit);
     // Each analysis declares its own eviction via `{on:"retire", effect}`.
+    // Fire lifecycle BEFORE dropping topology indices so retire effects that
+    // walk `topology.nodesOfUnit(unit)` still see the unit's nodes.
     this.fireLifecycle("retire", unit);
-    this.rebuildNodeToUnit();
+    this._topology.unregisterUnit(unit);
   }
 
   /** Return `rule`'s dirty set, asserting it exists. `registerTransform` is
    *  the only site that populates this map; call sites that touch it outside
    *  that function go through here so the invariant is named. */
-  private dirtyFor(rule: TransformRule): Set<FunctionUnit> {
+  private dirtyFor(rule: TransformRule): Set<Unit> {
     const s = this.transformDirty.get(rule);
     if (s === undefined) {
       throw new Error(`[Worklist] transform "${rule.debugName}" has no dirty set — missed registerTransform?`);
@@ -284,17 +285,10 @@ export class Worklist {
     return s;
   }
 
-  private fireLifecycle(kind: "mint" | "rebuild" | "retire" | "specContextChange", unit: FunctionUnit): void {
+  private fireLifecycle(kind: "mint" | "rebuild" | "retire" | "specContextChange", unit: Unit): void {
     for (const sub of this.lifecycleSubs[kind]) sub(this.passCtx, unit);
   }
 
-  blockOfNode(nodeId: number): BasicBlock | undefined {
-    return this.nodeToUnit.get(nodeId)?.blockOfNode.get(nodeId);
-  }
-
-  get nodeIndex(): ReadonlyMap<number, FunctionUnit> {
-    return this.nodeToUnit;
-  }
 
   /** Subscribe `fn` to writes against `upstream`. Called via `register` /
    *  `registerTransform`; not public API. */
@@ -316,11 +310,11 @@ export class Worklist {
     this.registeredAnalyses.push(analysis as Analysis<any, any>);
     REGISTERED_ANALYSES.add(analysis as Analysis<any, any>);
     const reader = analysis as Analysis<any, any>;
-    const fireLifecycleEdge = (lc: LifecycleEdge<any>, unit: FunctionUnit): void => {
+    const fireLifecycleEdge = (lc: LifecycleEdge<any>, unit: Unit): void => {
       if (lc.wake !== undefined) {
         for (const k of lc.wake(this.passCtx, unit)) this.enqueue(reader, k);
       }
-      if (lc.effect !== undefined) lc.effect(this.factStore, this.passCtx, unit);
+      if (lc.effect !== undefined) lc.effect(this.passCtx, unit);
     };
     for (const spec of analysis.edges) {
       if (spec.on !== "fact") {
@@ -331,7 +325,7 @@ export class Worklist {
       const effect = spec.effect;
       const toRoot = spec.contextPolicy === "root";
       this.subscribeFact(spec.analysis, (ctx, key) => {
-        if (effect !== undefined) effect(this.factStore, ctx, key);
+        if (effect !== undefined) effect(ctx, key);
         const enqueueCtx = toRoot ? ROOT_CONTEXT : ctx.currentContext;
         for (const k of wake(ctx, key)) this.enqueue(reader, k, enqueueCtx);
       });
@@ -339,7 +333,7 @@ export class Worklist {
     // Replay existing-unit mints so registration order doesn't determine seeding.
     for (const spec of analysis.edges) {
       if (spec.on !== "mint") continue;
-      for (const unit of this._units.values()) fireLifecycleEdge(spec, unit);
+      for (const unit of this._topology.units.values()) fireLifecycleEdge(spec, unit);
     }
   }
 
@@ -351,11 +345,11 @@ export class Worklist {
   registerTransform(rule: TransformRule): void {
     if (this.transforms.indexOf(rule) !== -1) return;
     this.transforms.push(rule);
-    const dirty = new Set<FunctionUnit>();
-    for (const u of this._units.values()) dirty.add(u);
+    const dirty = new Set<Unit>();
+    for (const u of this._topology.units.values()) dirty.add(u);
     this.transformDirty.set(rule, dirty);
 
-    const addUnit = (_ctx: AnalysisCtx, unit: FunctionUnit): void => { dirty.add(unit); };
+    const addUnit = (_ctx: AnalysisCtx, unit: Unit): void => { dirty.add(unit); };
     const auto = rule.autoDirtyOn ?? ["mint", "rebuild"];
     for (const kind of auto) this.lifecycleSubs[kind].push(addUnit);
 
@@ -369,6 +363,36 @@ export class Worklist {
     }
   }
 
+  /** Public read surface for tests and backends that hold a Worklist but
+   *  not a specific Analysis reference's store. Thin delegation to
+   *  `analysis.store.*`. Preferred path for external callers is to reach
+   *  the store directly via the Analysis reference, but these helpers
+   *  preserve the short `worklist.read(A, k)` style. */
+  read<K, V>(analysis: Analysis<K, V>, key: K, context: Context = ROOT_CONTEXT): V {
+    return analysis.store.read(key, context);
+  }
+  tryRead<K, V>(analysis: Analysis<K, V>, key: K, context: Context = ROOT_CONTEXT): V | undefined {
+    return analysis.store.tryRead(key, context);
+  }
+  readAll<K, V>(analysis: Analysis<K, V>, context: Context = ROOT_CONTEXT): ReadonlyMap<K, V> {
+    return analysis.store.readAll(context);
+  }
+  /** Writes through `analysis.store` AND publishes a `FactChange` to
+   *  every subscriber — the single advancing-write site alongside
+   *  `writeAndDispatch` (which is private, reused by `observe` and
+   *  transfer-result handling). Returns `true` iff the cell advanced. */
+  write<K, V>(
+    analysis: Analysis<K, V>,
+    key: K,
+    value: V,
+    context: Context = ROOT_CONTEXT,
+  ): boolean {
+    return this.writeAndDispatch(analysis, key, value, context);
+  }
+  evict<K, V>(analysis: Analysis<K, V>, key: K, context: Context = ROOT_CONTEXT): void {
+    analysis.store.evict(key, context);
+  }
+
   observe<K, V>(analysis: Analysis<K, V>, key: K, value: V, context: Context = ROOT_CONTEXT): void {
     // Analyses that want to run observe-time logic (e.g. extend the unit's
     // speculation context) declare `onObserve`. Fires BEFORE the monotone
@@ -377,7 +401,7 @@ export class Worklist {
     // identity branches here — participation is a property each analysis
     // declares on itself.
     analysis.onObserve?.(this.observationHost, key, value, context);
-    this.factStore.write(analysis, key, value, context);
+    this.writeAndDispatch(analysis, key, value, context);
     if (this.batchDepth === 0) this.processQueue();
   }
 
@@ -386,8 +410,8 @@ export class Worklist {
    *  analyses don't receive the full `Worklist`. */
   private readonly observationHost = {
     handleObservationForSpec: (
-      source: Analysis<number, RawKind>,
-      key: number,
+      source: Analysis<any, RawKind>,
+      key: any,
       observed: RawKind,
     ): void => {
       this.handleObservationForSpec(source, key, observed);
@@ -435,11 +459,32 @@ export class Worklist {
       const item = this.queue.dequeue()!;
       this.pendingKeysByAnalysis.get(item.analysis)?.get(item.context)?.delete(item.key);
       const ctx = this.ctxFor(item.context);
-      const value = item.analysis.transfer(this.factStore, ctx, item.key);
+      const value = item.analysis.transfer(ctx, item.key);
       if (value !== undefined) {
-        this.factStore.write(item.analysis, item.key, value, item.context);
+        this.writeAndDispatch(item.analysis, item.key, value, item.context);
       }
     }
+  }
+
+  /** Write via `analysis.store.write` and publish a `FactChange` to every
+   *  listener registered on `factSubs`. This is the single site that
+   *  funnels transfer results into the cell + fans them out to subscribers. */
+  private writeAndDispatch<K, V>(
+    analysis: Analysis<K, V>,
+    key: K,
+    value: V,
+    context: Context,
+  ): boolean {
+    const result = analysis.store.write(key, value, context);
+    if (result === null) return false;
+    this.handleFactChange({
+      analysis: analysis as Analysis<unknown, unknown>,
+      key,
+      context,
+      oldValue: result.prev,
+      newValue: result.next,
+    });
+    return true;
   }
 
   /** Sweep every registered transform over its dirty units. Units that
@@ -451,7 +496,7 @@ export class Worklist {
       if (dirty.size === 0) continue;
       const units = Array.from(dirty);
       dirty.clear();
-      const facts = rootTransformFacts(this.factStore);
+      const facts = rootTransformFacts(this._topology);
       for (const unit of units) {
         if (r.sweep(unit, facts)) {
           this.pendingRebuilds.add(unit);
@@ -462,48 +507,87 @@ export class Worklist {
     return anyFired;
   }
 
-  private readonly passCtx: AnalysisCtx = {
-    unitForNode: (nodeId: number) => this.nodeToUnit.get(nodeId),
-    unitForFdId: (fdId: number) => this.unitsByFdId.get(fdId),
-    currentContext: ROOT_CONTEXT,
-  };
-
-  /** Build an `AnalysisCtx` scoped to `context`. The root context reuses
-   *  `passCtx` (hot path); non-root contexts allocate a wrapper sharing the
-   *  same unit-topology lookups but swapping `currentContext`. */
-  private ctxFor(context: Context): AnalysisCtx {
-    if (context === ROOT_CONTEXT) return this.passCtx;
+  /** Allocate an `AnalysisCtx` bound to `context`. `read`/`tryRead`/`readAll`
+   *  delegate to `analysis.store.*` at this context — the transfer-level
+   *  read surface. `write`/`evict` go through the worklist's dispatch so
+   *  side-effect writes fan out to subscribers (critical for the DFA
+   *  factory's paired-cell `.facts` write from inside `.env`'s transfer).
+   *  Cross-context reads still go through `analysis.store.read(key,
+   *  otherContext)` directly when needed. */
+  private makeCtx(context: Context): AnalysisCtx {
+    const topology = this._topology;
+    const worklist = this;
     return {
-      unitForNode: this.passCtx.unitForNode,
-      unitForFdId: this.passCtx.unitForFdId,
+      topology,
       currentContext: context,
+      read<K, V>(analysis: Analysis<K, V>, key: K): V {
+        return analysis.store.read(key, context);
+      },
+      tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined {
+        return analysis.store.tryRead(key, context);
+      },
+      readAll<K, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V> {
+        return analysis.store.readAll(context);
+      },
+      write<K, V>(analysis: Analysis<K, V>, key: K, value: V): boolean {
+        return worklist.writeAndDispatch(analysis, key, value, context);
+      },
+      evict<K, V>(analysis: Analysis<K, V>, key: K): void {
+        analysis.store.evict(key, context);
+      },
     };
   }
 
-  /** FactStore listener. Invariant: runs inside `FactStore.write`'s
-   *  listener-dispatch loop; MUST NOT invoke `factStore.write`. Dispatches
-   *  to every subscriber registered against `change.analysis` — analysis reader
-   *  wake-ups and transform dirty-additions compiled into the same list.
+  private readonly passCtx: AnalysisCtx = this.makeCtx(ROOT_CONTEXT);
+
+  /** Build an `AnalysisCtx` scoped to `context`. The root context reuses
+   *  `passCtx` (hot path); non-root contexts allocate a fresh one. */
+  private ctxFor(context: Context): AnalysisCtx {
+    if (context === ROOT_CONTEXT) return this.passCtx;
+    return this.makeCtx(context);
+  }
+
+  /** Publish a change event. Called by `writeAndDispatch` after the store
+   *  reports an advancing write. Dispatches to every subscriber registered
+   *  against `change.analysis` — analysis reader wake-ups and transform
+   *  dirty-additions compiled into the same list — and also to any
+   *  `onChange` listeners attached at the worklist level (used by poster /
+   *  tracing harnesses).
    *
    *  The `ctx` passed to subscribers carries `change.context` as
    *  `currentContext`, so wake-ups enqueue under the same context the write
-   *  originated in — cross-context ripple doesn't happen without an explicit
-   *  context-crossing edge. */
+   *  originated in — cross-context ripple doesn't happen without an
+   *  explicit context-crossing edge. */
   private handleFactChange(change: FactChange<unknown, unknown>): void {
+    for (const l of this.changeListeners) l(change);
     const subs = this.factSubs.get(change.analysis as Analysis<any, any>);
     if (subs === undefined) return;
     const ctx = this.ctxFor(change.context);
     for (const sub of subs) sub(ctx, change.key);
   }
 
+  /** Subscribe to every fact-advancing write published through this worklist.
+   *  Narrower alternatives exist for specific patterns (analysis edges,
+   *  transform edges); this list is for cross-cutting consumers like
+   *  poster tracing. Returns a disposer that removes the listener. */
+  onChange(listener: (change: FactChange<unknown, unknown>) => void): () => void {
+    this.changeListeners.push(listener);
+    return () => {
+      const idx = this.changeListeners.indexOf(listener);
+      if (idx !== -1) this.changeListeners.splice(idx, 1);
+    };
+  }
+
   /** Re-seed Kildall for every registered narrowing's block analysis at
    *  `unit`'s entry block under `context`. Used whenever the unit's active
    *  speculation context shifts (observation-extend, widen-guard,
    *  widen-unit, lineageOf synthesis). */
-  private enqueueNarrowingEntry(unit: FunctionUnit, context: Context): void {
+  private enqueueNarrowingEntry(unit: Unit, context: Context): void {
     for (const n of this.narrowings) {
-      const analysis = n.blockAnalysis();
-      this.enqueue(analysis, analysis.seed(unit), context);
+      const bfa = n.blockAnalysis();
+      // `.env` is the fixpoint driver; enqueuing the seed block on it
+      // re-runs Kildall and produces paired `.facts` writes as a side effect.
+      this.enqueue(bfa.env, bfa.seed(unit), context);
     }
   }
 
@@ -517,10 +601,10 @@ export class Worklist {
    *  `source` identifies which observation analysis produced the event;
    *  only narrowings whose `observationSource === source` participate. A
    *  node-keyed observation from `runtimeWriteAnalysis` therefore drives
-   *  only the node-keyed narrowings; an fdId-keyed observation from
+   *  only the node-keyed narrowings; an functionId-keyed observation from
    *  `runtimeReturnAnalysis` drives only the return-kind narrowing. `key`
-   *  is in that narrowing's key-space — nodeId for writes, fdId for
-   *  returns — and `n.resolveUnit` (default `unitForNode`) maps it to the
+   *  is in that narrowing's key-space — nodeId for writes, functionId for
+   *  returns — and `n.resolveUnit` (default `topology.unitOfNode`) maps it to the
    *  owning unit.
    *
    *  Invoked directly from `observe` (not via factStore.onChange) so count-
@@ -539,8 +623,8 @@ export class Worklist {
    *    key, extend with the new bindings, update `currentSpecContext[unit]`,
    *    enqueue entry block on each applicable narrowing's analysis. */
   private handleObservationForSpec(
-    source: Analysis<number, RawKind>,
-    key: number,
+    source: Analysis<any, RawKind>,
+    key: any,
     observed: RawKind,
   ): void {
     const applicable = this.narrowings.filter(n => n.observationSource === source);
@@ -582,7 +666,7 @@ export class Worklist {
       const lifted = n.lift(observed);
       if (lifted === undefined) continue;
       const existing = findAssumption(newCtx, n.handle, key);
-      if (existing !== undefined && n.handle.lattice.eq(existing, lifted)) continue;
+      if (existing !== undefined && n.handle.eq(existing, lifted)) continue;
       const cleaned = existing !== undefined
         ? excludeAssumption(newCtx, n.handle, key)
         : newCtx;
@@ -598,14 +682,14 @@ export class Worklist {
   /** Active speculation context for a unit. Readers of `typeAnalysis`
    *  looking for speculatively-narrowed facts should pass this context to
    *  `readExprFact` / `factStore.tryRead`. */
-  specContextFor(unit: FunctionUnit): Context {
+  specContextFor(unit: Unit): Context {
     return this.currentSpecContext.get(unit) ?? ROOT_CONTEXT;
   }
 
   /** Same as `specContextFor`, keyed by nodeId. Convenience for consumers
    *  that only have an AST node id (e.g. the DfaQuery projection). */
-  specContextForNode(nodeId: number): Context {
-    const unit = this.nodeToUnit.get(nodeId);
+  specContextForNode(nodeId: NodeId): Context {
+    const unit = this._topology.unitOfNode(nodeId);
     return unit === undefined ? ROOT_CONTEXT : this.specContextFor(unit);
   }
 
@@ -624,7 +708,7 @@ export class Worklist {
    *  keyed analyses re-seed themselves on the next drain. Returns the unit
    *  that was widened, or `undefined` if the unit already has no active
    *  speculation. */
-  private widenFullChain(unit: FunctionUnit): FunctionUnit | undefined {
+  private widenFullChain(unit: Unit): Unit | undefined {
     if (!this.currentSpecContext.has(unit)) return undefined;
     this.currentSpecContext.delete(unit);
     this.guardProvenance.get(unit)?.clear();
@@ -638,13 +722,13 @@ export class Worklist {
    *  `widenGuard` on deopt to compute the load-bearing assumption set. Keyed
    *  by `guardNodeId` — the AST node id the backend baked into the guard
    *  opcode; that's the id `SpeculationViolation` carries. */
-  private readonly guardProvenance: Map<FunctionUnit, Map<number, SpecFactRef>> = new Map();
+  private readonly guardProvenance: Map<Unit, Map<NodeId, SpecFactRef>> = new Map();
 
   /** Backend-facing hook, called once per emitted guard. Identifies the
    *  speculative fact whose narrowing the guard is protecting. No-op if
    *  `guardNodeId` doesn't resolve to a known unit. */
-  registerGuard(guardNodeId: number, ref: SpecFactRef): void {
-    const unit = this.nodeToUnit.get(guardNodeId);
+  registerGuard(guardNodeId: NodeId, ref: SpecFactRef): void {
+    const unit = this._topology.unitOfNode(guardNodeId);
     if (unit === undefined) return;
     let perUnit = this.guardProvenance.get(unit);
     if (perUnit === undefined) {
@@ -670,8 +754,8 @@ export class Worklist {
    *  readable lineage surface for the current ref/context pair.
    *
    *  Returns the widened unit, or `undefined` if no unit owns `guardNodeId`. */
-  widenGuard(guardNodeId: number): FunctionUnit | undefined {
-    const unit = this.nodeToUnit.get(guardNodeId);
+  widenGuard(guardNodeId: NodeId): Unit | undefined {
+    const unit = this._topology.unitOfNode(guardNodeId);
     if (unit === undefined) return undefined;
     const ref = this.guardProvenance.get(unit)?.get(guardNodeId);
     if (ref === undefined) {
@@ -727,20 +811,21 @@ export class Worklist {
   private lineageOf(
     ref: SpecFactRef,
     ctx: Context,
-    unit: FunctionUnit,
+    unit: Unit,
   ): Assumption[] {
     const { narrowing, key } = ref;
+    const topology = this._topology;
     const lineageValue = narrowing.lineageValue
-      ?? ((factStore: FactStore, owner: FunctionUnit, nodeId: number, context: Context) => {
-        const block = owner.blockOfNode.get(nodeId);
-        return block === undefined
-          ? undefined
-          : readExprFact(factStore, narrowing.blockAnalysis(), block, nodeId, context);
-      });
-    const current = lineageValue(this.factStore, unit, key, ctx);
+      ?? ((_owner: Unit, nodeId: NodeId, context: Context) =>
+        readExprFact(topology, narrowing.blockAnalysis(), nodeId, context));
+    const current = lineageValue(unit, key, ctx);
+    // No readable fact under `ctx` ⇒ narrowing has no lineage surface here;
+    // `widenGuard` will fall back to `widenFullChain`. Distinct from the
+    // per-iteration `widened === undefined` case below, which means "link
+    // removal happened to land the pruned context on an unvisited cell."
     if (current === undefined) return [];
     const lineageEq = narrowing.lineageEq
-      ?? ((a: unknown, b: unknown) => narrowing.handle.lattice.eq(a, b));
+      ?? ((a: unknown, b: unknown) => narrowing.handle.eq(a as never, b as never));
     const loadBearing: Assumption[] = [];
     for (let cur: Context | undefined = ctx; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
@@ -749,7 +834,7 @@ export class Worklist {
       if (without === ctx) continue;
       this.enqueueNarrowingEntry(unit, without);
       this.processQueue();
-      const widened = lineageValue(this.factStore, unit, key, without);
+      const widened = lineageValue(unit, key, without);
       // A link is load-bearing iff removing it widens the fact at `ref`.
       // Both reads can miss (returning undefined) if the pruned context has
       // no cell yet; treat `undefined === undefined` as unchanged, any
@@ -764,12 +849,13 @@ export class Worklist {
   }
 
   /** Rebuild CFG for every pending unit, then fire `onUnitRebuilt`. */
-  private flushPendingRebuilds(): FunctionUnit[] {
+  private flushPendingRebuilds(): Unit[] {
     if (this.pendingRebuilds.size === 0) return [];
-    const rebuilt: FunctionUnit[] = [];
+    const rebuilt: Unit[] = [];
     for (const unit of this.pendingRebuilds) {
       unit.generation++;
       wireCFG(unit);
+      this._topology.reindexUnit(unit);
       // A CFG rebuild invalidates every guard's nodeId: the old ids belong
       // to AST subtrees that the backend hasn't seen yet. The next compile
       // will re-register guards with ids valid under the new generation.
@@ -777,18 +863,8 @@ export class Worklist {
       rebuilt.push(unit);
     }
     this.pendingRebuilds.clear();
-    this.rebuildNodeToUnit();
     for (const unit of rebuilt) this.fireLifecycle("rebuild", unit);
     return rebuilt;
-  }
-
-  private rebuildNodeToUnit(): void {
-    this.nodeToUnit.clear();
-    for (const unit of this.units.values()) {
-      for (const nodeId of unit.blockOfNode.keys()) {
-        this.nodeToUnit.set(nodeId, unit);
-      }
-    }
   }
 
   /** Drain to fixed point. Each iteration:
@@ -832,17 +908,21 @@ export class Worklist {
   static readonly DEFAULT_DRAIN_LIMIT = 1000;
 }
 
-/** Default production analysis set. Tests may use a subset for isolation. */
+/** Default production analysis set. Tests may use a subset for isolation.
+ *  Block DFAs contribute two analyses each — `.env` (the Kildall driver) and
+ *  `.facts` (the per-node expr-facts cell populated as a paired side effect).
+ *  Both must be registered: `.env` for its transfer + CFG self-wake, `.facts`
+ *  for its rebuild/retire eviction edges. */
 export const DEFAULT_PASSES: ReadonlyArray<Analysis<any, any>> = [
   runtimeWriteAnalysis,
   runtimeReturnAnalysis,
   runtimeCallAnalysis,
-  typeAnalysis,
-  constAnalysis,
-  typeRequirementAnalysis,
-  purityBlockAnalysis,
+  typeAnalysis.env, typeAnalysis.facts,
+  constAnalysis.env, constAnalysis.facts,
+  typeRequirementAnalysis.env, typeRequirementAnalysis.facts,
+  purityBlockAnalysis.env, purityBlockAnalysis.facts,
   purityScopeAnalysis,
-  livenessAnalysis,
+  livenessAnalysis.env, livenessAnalysis.facts,
 ];
 
 export const DEFAULT_TRANSFORMS: ReadonlyArray<TransformRule> = [
