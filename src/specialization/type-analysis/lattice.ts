@@ -35,13 +35,44 @@ export interface TypeLattice {
 
 // IntRef/BoolRef are bit-subset lattices: join = OR, meet = AND, leq = subset.
 
+export function normalizeType(v: TypeLattice): TypeLattice {
+  let kinds = v.kinds;
+  const intRef = (kinds & INT_BIT) !== 0 ? v.intRef : (0 as IntRef);
+  const boolRef = (kinds & BOOL_BIT) !== 0 ? v.boolRef : (0 as BoolRef);
+  const floatRef = (kinds & FLOAT_BIT) !== 0 ? v.floatRef : (0 as IntRef);
+
+  if ((kinds & INT_BIT) !== 0 && intRef === IntRef.Bottom) kinds &= ~INT_BIT;
+  if ((kinds & BOOL_BIT) !== 0 && boolRef === BoolRef.Bottom) kinds &= ~BOOL_BIT;
+  if ((kinds & FLOAT_BIT) !== 0 && floatRef === IntRef.Bottom) kinds &= ~FLOAT_BIT;
+
+  if (kinds === 0) return BOTTOM;
+  if (kinds === INT_BIT) return INT_SINGLETONS[intRef];
+  if (kinds === BOOL_BIT) return BOOL_SINGLETONS[boolRef];
+  if (kinds === FLOAT_BIT) return FLOAT_SINGLETONS[floatRef];
+  if (
+    kinds === ALL_KINDS_MASK
+    && intRef === IntRef.Top
+    && boolRef === BoolRef.Top
+    && floatRef === IntRef.Top
+  ) {
+    return TOP;
+  }
+
+  return Object.freeze({
+    kinds,
+    intRef: (kinds & INT_BIT) !== 0 ? intRef : (0 as IntRef),
+    boolRef: (kinds & BOOL_BIT) !== 0 ? boolRef : (0 as BoolRef),
+    floatRef: (kinds & FLOAT_BIT) !== 0 ? floatRef : (0 as IntRef),
+  });
+}
+
 export function join(a: TypeLattice, b: TypeLattice): TypeLattice {
   if (a === b) return a;
   const kinds = a.kinds | b.kinds;
   const intRef = kinds & INT_BIT ? ((a.intRef | b.intRef) as IntRef) : (0 as IntRef);
   const boolRef = kinds & BOOL_BIT ? ((a.boolRef | b.boolRef) as BoolRef) : (0 as BoolRef);
   const floatRef = kinds & FLOAT_BIT ? ((a.floatRef | b.floatRef) as IntRef) : (0 as IntRef);
-  return { kinds, intRef, boolRef, floatRef };
+  return normalizeType({ kinds, intRef, boolRef, floatRef });
 }
 
 export function meet(a: TypeLattice, b: TypeLattice): TypeLattice {
@@ -50,7 +81,7 @@ export function meet(a: TypeLattice, b: TypeLattice): TypeLattice {
   const intRef = kinds & INT_BIT ? ((a.intRef & b.intRef) as IntRef) : (0 as IntRef);
   const boolRef = kinds & BOOL_BIT ? ((a.boolRef & b.boolRef) as BoolRef) : (0 as BoolRef);
   const floatRef = kinds & FLOAT_BIT ? ((a.floatRef & b.floatRef) as IntRef) : (0 as IntRef);
-  return { kinds, intRef, boolRef, floatRef };
+  return normalizeType({ kinds, intRef, boolRef, floatRef });
 }
 
 export function leq(a: TypeLattice, b: TypeLattice): boolean {
@@ -102,6 +133,10 @@ export const TOP: TypeLattice = makeSingleton(
 );
 export const BOTTOM: TypeLattice = makeSingleton(0, 0 as IntRef, 0 as BoolRef);
 
+export function isSatisfiableType(v: TypeLattice): boolean {
+  return normalizeType(v) !== BOTTOM;
+}
+
 // Exported frozen singletons (zero allocation at call sites).
 export const STRING: TypeLattice = makeSingleton(STR_BIT, 0 as IntRef, 0 as BoolRef);
 export const NULL: TypeLattice = makeSingleton(NULL_BIT, 0 as IntRef, 0 as BoolRef);
@@ -121,14 +156,14 @@ export const FLOAT_POS: TypeLattice = FLOAT_SINGLETONS[4]; // IntRef.Pos
 
 // Parameterized constructors retained (take refinement args).
 export function integer(intRef: IntRef = 7 as IntRef): TypeLattice {
-  return INT_SINGLETONS[intRef];
+  return intRef === IntRef.Bottom ? BOTTOM : INT_SINGLETONS[intRef];
 }
 
 export function boolValue(ref: BoolRef = 3 as BoolRef): TypeLattice {
-  return BOOL_SINGLETONS[ref];
+  return ref === BoolRef.Bottom ? BOTTOM : BOOL_SINGLETONS[ref];
 }
 
 /** Default IntRef.Top covers NaN (no meaningful sign). */
 export function floatValue(floatRef: IntRef = 7 as IntRef): TypeLattice {
-  return FLOAT_SINGLETONS[floatRef];
+  return floatRef === IntRef.Bottom ? BOTTOM : FLOAT_SINGLETONS[floatRef];
 }

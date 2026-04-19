@@ -51,17 +51,12 @@ import { runtimeReturnAnalysis } from "../framework/runtime-analyses";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import { liftType } from "../type-analysis/analysis";
 import {
-  BOOL_BIT,
   BOTTOM,
-  CLOSURE_BIT,
-  COMPLEX_BIT,
-  FLOAT_BIT,
   INT_BIT,
-  NULL_BIT,
-  STR_BIT,
   TOP,
   eq,
   integer,
+  isSatisfiableType,
   join,
   leq,
   meet,
@@ -311,23 +306,11 @@ export interface EntryRequirement {
   readonly unprovable: ReadonlySet<number>;
 }
 
-/** True iff `v` describes at least one concrete runtime value. Empty
- *  kinds mask means outright BOTTOM. A kind bit with an empty refinement
- *  (e.g. `kinds=INT_BIT` with `intRef=0`, as produced by
- *  `meet(INT_POS, INT_NEG)`) is structurally non-BOTTOM but semantically
- *  admits no integer — the distinction matters because `eq(v, BOTTOM)`
- *  alone would misclassify such a slot as provable. Refinementless kinds
- *  (STR, NULL, CLOSURE, COMPLEX) are satisfiable whenever their bit is
- *  set; refinement-bearing kinds (INT, BOOL, FLOAT) require a non-zero
- *  refinement bit. */
+/** True iff `v` describes at least one concrete runtime value. `TypeLattice`
+ *  now canonicalizes empty refinements back to `BOTTOM`, so satisfiability is
+ *  the domain-level question "does normalization collapse this to bottom?". */
 function isSatisfiable(v: TypeLattice): boolean {
-  if (v.kinds === 0) return false;
-  const refinementless = STR_BIT | NULL_BIT | CLOSURE_BIT | COMPLEX_BIT;
-  if ((v.kinds & refinementless) !== 0) return true;
-  if ((v.kinds & INT_BIT) !== 0 && v.intRef !== 0) return true;
-  if ((v.kinds & BOOL_BIT) !== 0 && v.boolRef !== 0) return true;
-  if ((v.kinds & FLOAT_BIT) !== 0 && v.floatRef !== 0) return true;
-  return false;
+  return isSatisfiableType(v);
 }
 
 /** Read the per-slot type requirement at `unit`'s entry block under
