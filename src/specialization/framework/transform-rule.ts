@@ -8,20 +8,23 @@
 
 import { ROOT_CONTEXT } from "./context";
 import type { FactEdge, TransformRule, TransformFactView } from "./analysis";
+import { readExprFact } from "./dfa-factory";
 import type { Unit } from "./function-unit";
 import type { ProgramTopology } from "./topology";
 
 export type { TransformFactView };
 
 /** Construct the root-only `TransformFactView` that transforms see inside
- *  `sweep`. Every read delegates to `analysis.store` at `ROOT_CONTEXT` —
- *  the type-level gate that keeps transforms off speculative cells. */
+ *  `sweep`. Every read delegates to `analysis.store` at `ROOT_CONTEXT`.
+ *  Semantic reads and opaque/profitability reads are split at the type level
+ *  so transforms must name profitability evidence explicitly. */
 export function rootTransformFacts(topology: ProgramTopology): TransformFactView {
   return {
     read: (analysis, key) => analysis.store.read(key, ROOT_CONTEXT),
     tryRead: (analysis, key) => analysis.store.tryRead(key, ROOT_CONTEXT),
     readAll: analysis => analysis.store.readAll(ROOT_CONTEXT),
-    topology,
+    readExprFact: (analysis, nodeId) => readExprFact(topology, analysis, nodeId, ROOT_CONTEXT),
+    readProfitability: (analysis, key) => analysis.store.read(key, ROOT_CONTEXT),
   };
 }
 

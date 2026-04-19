@@ -1,4 +1,4 @@
-import type { BoundedLattice, Lattice } from "../../specialization/framework/analysis";
+import type { Lattice, JoinSemiLattice } from "../../specialization/framework/analysis";
 
 interface LatticeLawOptions<V> {
   readonly values: ReadonlyArray<V>;
@@ -29,8 +29,8 @@ function dedupeByEq<V>(values: ReadonlyArray<V>, eq: (a: V, b: V) => boolean): V
   return out;
 }
 
-export function expectLatticeLaws<V>(
-  lattice: Lattice<V>,
+export function expectJoinSemiLatticeLaws<V>(
+  lattice: JoinSemiLattice<V>,
   { values, describeValue }: LatticeLawOptions<V>,
 ): void {
   const elems = dedupeByEq([lattice.bottom, ...values], lattice.eq);
@@ -63,12 +63,12 @@ export function expectLatticeLaws<V>(
   }
 }
 
-export function expectBoundedLatticeLaws<V>(
-  lattice: BoundedLattice<V>,
+export function expectLatticeLaws<V>(
+  lattice: Lattice<V>,
   { values, describeValue }: LatticeLawOptions<V>,
 ): void {
   const elems = dedupeByEq([lattice.bottom, lattice.top, ...values], lattice.eq);
-  expectLatticeLaws(lattice, { values: elems, describeValue });
+  expectJoinSemiLatticeLaws(lattice, { values: elems, describeValue });
 
   for (const a of elems) {
     expect(lattice.leq(lattice.bottom, a)).toBe(true);

@@ -2,8 +2,9 @@ import type { ExprNS } from "../../ast-types";
 import type { CFGEdge } from "./cfg";
 import type { Context } from "./context";
 import type { MutableEnv } from "./mutable-env";
-import type { BoundedLattice } from "./analysis";
+import type { Lattice } from "./analysis";
 import type { NodeId } from "./key-spaces";
+import type { Unit } from "./function-unit";
 import type { SlotLookup } from "./slot-table";
 
 /**
@@ -32,20 +33,20 @@ import type { SlotLookup } from "./slot-table";
  */
 
 /** Expression-level DFA module for block-fixpoint analyses. Extends
- *  `BoundedLattice<L>` so the module itself IS the per-slot value lattice —
+ *  `Lattice<L>` so the module itself IS the per-slot value lattice —
  *  no separate field, no duplication between `BlockDfaSpec` and the
  *  `valueLattice` passed to `makeBlockFixpointAnalysis`. */
-export interface BlockDfaSpec<L> extends BoundedLattice<L> {
+export interface BlockDfaSpec<L> extends Lattice<L> {
   readonly mergeKind: "may" | "must";
   readonly direction: "forward" | "backward";
 
-  /** Per-subtree visitor. Reads upstream observations from `factStore`
-   *  (read-only — `runtimeWriteAnalysis` lookups for lattice widening) and
-   *  records per-node output facts into `recordExprFact`. Per-node facts
-   *  flow out via `recordExprFact` and are written into the block
-   *  analysis's `.facts` cell by the factory's paired-cell write. Visitors
-   *  that need cross-analysis reads do so directly via
-   *  `otherAnalysis.store.read(key, context)`.
+  /** Per-subtree visitor. Records per-node output facts into
+   *  `recordExprFact`; those flow out via `recordExprFact` and are written
+   *  into the block analysis's `.facts` cell by the factory's paired-cell
+   *  write. Visitors that need cross-analysis reads (e.g.
+   *  `runtimeWriteAnalysis` for lattice widening) do so directly via
+   *  `otherAnalysis.store.read(key, context)` — the store is read-only on
+   *  the public surface, so no accidental write path is introduced.
    *
    *  `context` is the speculation context this transfer is running under.
    *  ROOT_CONTEXT for the unspeculated pass; a non-ROOT context carries
@@ -54,6 +55,7 @@ export interface BlockDfaSpec<L> extends BoundedLattice<L> {
    *  the parameter. */
   makeExprVisitor(
     env: MutableEnv<L>,
+    unit: Unit,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: L) => void,
     context: Context,

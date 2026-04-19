@@ -3,14 +3,13 @@
 import { StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import { constAnalysis } from "../framework/dfa-analyses";
-import { readExprFact } from "../framework/dfa-factory";
 import type { Unit } from "../framework/function-unit";
 import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
 
 class DeadBranchVisitor implements StmtNS.Visitor<void> {
   changed = false;
   constructor(
-    private readonly factStore: TransformFactView,
+    private readonly facts: TransformFactView,
   ) {}
 
   sweep(stmts: StmtNS.Stmt[]): void {
@@ -31,11 +30,7 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
 
   private tryReplaceIf(stmt: StmtNS.Stmt): StmtNS.Stmt[] | null {
     if (!(stmt instanceof StmtNS.If)) return null;
-    const cv = readExprFact(
-      this.factStore.topology,
-      constAnalysis,
-      stmt.condition.id,
-    );
+    const cv = this.facts.readExprFact(constAnalysis, stmt.condition.id);
     if (cv?.tag !== "const" || typeof cv.value !== "boolean") return null;
     return cv.value ? stmt.body : (stmt.elseBlock ?? []);
   }
@@ -70,8 +65,8 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
 
 export const deadBranchRule = unitSweepRule(
   "deadBranchRule",
-  (unit: Unit, factStore: TransformFactView) => {
-    const v = new DeadBranchVisitor(factStore);
+  (unit: Unit, facts: TransformFactView) => {
+    const v = new DeadBranchVisitor(facts);
     v.sweep(unit.body);
     return v.changed;
   },

@@ -9,7 +9,7 @@
 import { parse } from "../../../parser/parser-adapter";
 import { Resolver } from "../../../resolver";
 import { Worklist } from "../../../specialization/framework/worklist";
-import { defineAnalysis, type EdgeSpec, type Lattice, type Analysis, type StoreAlgebra, type TransformRule } from "../../../specialization/framework/analysis";
+import { defineAnalysis, type EdgeSpec, type JoinSemiLattice, type Analysis, type StoreAlgebra, type TransformRule } from "../../../specialization/framework/analysis";
 import type { Unit } from "../../../specialization/framework/function-unit";
 import { ROOT_CONTEXT, extendContext } from "../../../specialization/framework/context";
 
@@ -22,21 +22,21 @@ function buildWorklist(src = "x = 1\n"): Worklist {
   return new Worklist(ast, resolver.functionEnvironments, [], undefined, []);
 }
 
-const intMax: Lattice<number> = {
+const intMax: JoinSemiLattice<number> = {
   bottom: 0,
   leq: (a, b) => a <= b,
   join: (a, b) => Math.max(a, b),
   eq: (a, b) => a === b,
 };
 
-const topOnly: Lattice<"fired"> = {
+const topOnly: JoinSemiLattice<"fired"> = {
   bottom: "fired",
   leq: () => true,
   join: () => "fired",
   eq: () => true,
 };
 
-function saturatingBucket(ceiling: number): Lattice<number> {
+function saturatingBucket(ceiling: number): JoinSemiLattice<number> {
   return {
     bottom: 0,
     leq: (a, b) => a <= b,
@@ -90,20 +90,20 @@ describe("Worklist analysis-graph dispatch", () => {
     wl.register(producer);
     wl.register(consumer);
 
-    wl.write(consumer, "k", 1);
+    wl.write(consumer, "k", 1, ROOT_CONTEXT);
     consumerRuns = 0;
 
-    wl.write(producer, "k", 1);
+    wl.write(producer, "k", 1, ROOT_CONTEXT);
     wl.drain();
     const runsAfterFirst = consumerRuns;
     expect(runsAfterFirst).toBeGreaterThan(0);
 
-    wl.write(producer, "k", 3);
+    wl.write(producer, "k", 3, ROOT_CONTEXT);
     wl.drain();
     const runsAtCeiling = consumerRuns;
 
-    wl.write(producer, "k", 3);
-    wl.write(producer, "k", 3);
+    wl.write(producer, "k", 3, ROOT_CONTEXT);
+    wl.write(producer, "k", 3, ROOT_CONTEXT);
     wl.drain();
     expect(consumerRuns).toBe(runsAtCeiling);
   });
@@ -119,7 +119,7 @@ describe("Worklist analysis-graph dispatch", () => {
     });
     wl.register(unread);
     wl.register(consumer);
-    wl.write(consumer, "k", 1);
+    wl.write(consumer, "k", 1, ROOT_CONTEXT);
 
     let enqueued = false;
     const observer = makeAnalysis<string, number>({
@@ -132,9 +132,9 @@ describe("Worklist analysis-graph dispatch", () => {
       },
     });
     wl.register(observer);
-    wl.write(observer, "k", 1);
+    wl.write(observer, "k", 1, ROOT_CONTEXT);
 
-    wl.write(unread, "k", 5);
+    wl.write(unread, "k", 5, ROOT_CONTEXT);
     wl.drain();
     expect(enqueued).toBe(true);
 
@@ -149,7 +149,7 @@ describe("Worklist analysis-graph dispatch", () => {
       },
     });
     wl.register(consumer2);
-    wl.write(unread, "k", 6);
+    wl.write(unread, "k", 6, ROOT_CONTEXT);
     wl.drain();
     expect(consumerRan).toBe(false);
   });
@@ -269,14 +269,14 @@ describe("Worklist analysis-graph dispatch", () => {
     });
     wl.register(rule);
     wl.register(reader);
-    wl.write(reader, "k", 1);
+    wl.write(reader, "k", 1, ROOT_CONTEXT);
 
-    wl.write(rule, "n1", "fired");
+    wl.write(rule, "n1", "fired", ROOT_CONTEXT);
     wl.drain();
     const firstReads = reads;
     expect(firstReads).toBeGreaterThan(0);
 
-    wl.write(rule, "n1", "fired");
+    wl.write(rule, "n1", "fired", ROOT_CONTEXT);
     wl.drain();
     expect(reads).toBe(firstReads);
   });
@@ -300,10 +300,10 @@ describe("Worklist analysis-graph dispatch", () => {
     wl.register(producer);
     wl.register(reader);
 
-    for (let i = 0; i < 10; i++) wl.write(reader, i, 1);
+    for (let i = 0; i < 10; i++) wl.write(reader, i, 1, ROOT_CONTEXT);
     seenKeys.length = 0;
 
-    wl.write(producer, 3, 1);
+    wl.write(producer, 3, 1, ROOT_CONTEXT);
     wl.drain();
 
     expect(seenKeys).toEqual([3]);
@@ -330,7 +330,7 @@ describe("Worklist analysis-graph dispatch", () => {
       });
       wl.register(producer);
       wl.register(reader);
-      for (let i = 0; i < 5; i++) wl.write(reader, i, 1);
+      for (let i = 0; i < 5; i++) wl.write(reader, i, 1, ROOT_CONTEXT);
       order.length = 0;
 
       if (batched) wl.beginBatch();
@@ -454,7 +454,7 @@ describe("Worklist analysis-graph dispatch", () => {
       };
       const ctx = extendContext(ROOT_CONTEXT, producerHandle, 1, 99);
 
-      wl.write(producer, 1, 5); // ROOT
+      wl.write(producer, 1, 5, ROOT_CONTEXT); // ROOT
       wl.drain();
       const afterRoot = rootSeen.slice();
 

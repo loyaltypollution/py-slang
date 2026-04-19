@@ -39,8 +39,8 @@ export interface SpeculationStrategy {
    *  threshold-based strategies: the observation is counted/queued but
    *  not yet acted on.
    *
-   *  The strategy MUST NOT mutate `event` or the fact store; it may mutate
-   *  its own private state. */
+   *  The strategy MUST NOT mutate `event` or any analysis store; it may
+   *  mutate its own private state. */
   onObservation(event: ObservationEvent): boolean;
 
   /** Hook for strategies that track per-site history and need a clean

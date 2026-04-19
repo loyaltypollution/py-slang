@@ -1,4 +1,4 @@
-import type { BoundedLattice, Lattice } from "./analysis";
+import type { Lattice, JoinSemiLattice } from "./analysis";
 
 /** Lifted per-function slot-map domain over a value lattice `L`.
  *
@@ -71,7 +71,7 @@ export class MutableEnv<L> {
 
   /** In-place pointwise join on the lifted slot-map domain; missing slots are
    *  treated as the join-side default (conceptually ⊥ for may-style merge). */
-  joinWith(other: MutableEnv<L>, lattice: Lattice<L>): void {
+  joinWith(other: MutableEnv<L>, lattice: JoinSemiLattice<L>): void {
     this.assertMutable();
     const len = Math.max(this.slots.length, other.slots.length);
     for (let i = 0; i < len; i++) {
@@ -87,7 +87,7 @@ export class MutableEnv<L> {
 
   /** In-place pointwise meet on the lifted slot-map domain; missing slots are
    *  treated as ⊤ on the side where the binding is absent. */
-  meetWith(other: MutableEnv<L>, lattice: BoundedLattice<L>): void {
+  meetWith(other: MutableEnv<L>, lattice: Lattice<L>): void {
     this.assertMutable();
     const len = Math.max(this.slots.length, other.slots.length);
     for (let i = 0; i < len; i++) {
@@ -109,7 +109,7 @@ export class MutableEnv<L> {
    *  `undefined`. Callers must supply the same lattice they use for
    *  `join`/`meet` — inconsistent lattices would make the order disagree with
    *  the combine-induced one. */
-  leq(other: MutableEnv<L>, lattice: Lattice<L>): boolean {
+  leq(other: MutableEnv<L>, lattice: JoinSemiLattice<L>): boolean {
     const len = Math.max(this.slots.length, other.slots.length);
     for (let i = 0; i < len; i++) {
       const a = this.slots[i];

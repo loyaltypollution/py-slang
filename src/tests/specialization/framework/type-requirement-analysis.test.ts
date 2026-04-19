@@ -243,6 +243,12 @@ def hot(x):
     env.set(10, BOTTOM);
     env.set(11, meet(INT_POS, INT_NEG));
     env.set(12, INT_POS);
+    // Direct `.env` injection for a targeted assertion on the requirement
+    // classifier. This intentionally bypasses the factory's paired `.env` +
+    // `.facts` write — `requirementAtEntry` reads only `.env`, so leaving
+    // `.facts` empty is safe for this test. Tests that need the paired
+    // cell populated must drive an observation through the worklist so
+    // `env.transfer` runs and produces the paired-cell side effect.
     worklist.write(
       typeRequirementAnalysis.env,
       unit.cfg.entry,

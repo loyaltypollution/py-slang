@@ -3,7 +3,7 @@
  *
  * `constJoin` is the only standalone exported function; `leq`/`meet`/`top`/
  * `bottom` are accessed via `constAnalysisModule` (which conforms to
- * `BoundedLattice<ConstLattice>`).
+ * `Lattice<ConstLattice>`).
  *
  * End-to-end const-analysis behaviour (e.g. `x = 3 + 4 → const(7)`,
  * variable propagation, while-loop convergence) is covered in

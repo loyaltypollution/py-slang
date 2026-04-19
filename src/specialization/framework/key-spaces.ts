@@ -20,3 +20,20 @@ export type NodeId = number;
  *  node whose optimization unit is registered with the topology. Same
  *  runtime representation as `NodeId`; the alias documents intent. */
 export type FunctionId = number;
+
+/** Function-entry parameter identity. Encoded as `${functionId}:${paramIndex}` so
+ *  it is stable, comparable by value, and usable directly as a Context/store
+ *  key without object-identity pitfalls. */
+export type ParamKey = `${FunctionId}:${number}`;
+
+export function paramKey(functionId: FunctionId, paramIndex: number): ParamKey {
+  return `${functionId}:${paramIndex}`;
+}
+
+export function paramKeyFunctionId(key: ParamKey): FunctionId {
+  return Number(key.slice(0, key.indexOf(":")));
+}
+
+export function paramKeyIndex(key: ParamKey): number {
+  return Number(key.slice(key.indexOf(":") + 1));
+}

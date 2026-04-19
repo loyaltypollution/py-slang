@@ -43,7 +43,7 @@ export class Context {
     breakpointSteps: number[];
     changepointSteps: number[];
     /**
-     * Fact-store push hooks for the reactive optimizer. Wired by
+     * Runtime-observation push hooks for the reactive optimizer. Wired by
      * `PyCseEvaluator` for JIT-capable evaluators; `undefined` for
      * standalone runs.
      */

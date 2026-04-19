@@ -305,7 +305,7 @@ function sweepStmts(
 
 export const deadStoreRule = unitSweepRule(
   "deadStoreRule",
-  (unit: Unit, factStore: TransformFactView) => {
+  (unit: Unit, _facts: TransformFactView) => {
     // Skip the module (FileInput) scope. Module-top-level names are part of
     // the program's observable namespace — other modules can import them,
     // REPL/tool consumers can inspect them after execution, and the

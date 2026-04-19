@@ -44,7 +44,7 @@ import {
   TOP,
   type TypeLattice,
 } from "../../../specialization/type-analysis/lattice";
-import { expectBoundedLatticeLaws, expectLatticeLaws } from "../../harness/lattice-laws";
+import { expectLatticeLaws, expectJoinSemiLatticeLaws } from "../../harness/lattice-laws";
 
 describe("reusable lattice-law verification", () => {
   test("TypeLattice satisfies bounded-lattice laws on a representative slice", () => {
@@ -71,7 +71,7 @@ describe("reusable lattice-law verification", () => {
       join(join(INT_NEG, STRING), BOOL_FALSE),
     ];
 
-    expectBoundedLatticeLaws(
+    expectLatticeLaws(
       {
         bottom: BOTTOM,
         top: TOP,
@@ -88,7 +88,7 @@ describe("reusable lattice-law verification", () => {
   });
 
   test("ConstLattice satisfies lattice laws for a representative finite slice", () => {
-    expectLatticeLaws(
+    expectJoinSemiLatticeLaws(
       {
         bottom: CONST_BOTTOM,
         leq: constLeq,
@@ -125,18 +125,18 @@ describe("reusable lattice-law verification", () => {
       { kind: "complex" },
     ];
 
-    expectLatticeLaws(runtimeWriteAnalysis.storeAlgebra, {
+    expectJoinSemiLatticeLaws(runtimeWriteAnalysis.storeAlgebra, {
       values: rawValues,
       describeValue: value => JSON.stringify(value),
     });
-    expectLatticeLaws(runtimeReturnAnalysis.storeAlgebra, {
+    expectJoinSemiLatticeLaws(runtimeReturnAnalysis.storeAlgebra, {
       values: rawValues,
       describeValue: value => JSON.stringify(value),
     });
   });
 
   test("saturatingCountLattice satisfies lattice laws including post-SAT values", () => {
-    expectLatticeLaws(saturatingCountLattice, {
+    expectJoinSemiLatticeLaws(saturatingCountLattice, {
       values: Array.from({ length: RUNTIME_CALL_COUNT_SAT + 4 }, (_, i) => i),
     });
   });
@@ -157,7 +157,7 @@ describe("reusable lattice-law verification", () => {
       { kind: "closure", functionId: 2, pure: true },
     ];
 
-    expectLatticeLaws(
+    expectJoinSemiLatticeLaws(
       {
         bottom: ABS_BOTTOM,
         leq: absLeq,

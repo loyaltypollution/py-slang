@@ -8,6 +8,7 @@ import {
 import type { Unit } from "../../../specialization/framework/function-unit";
 import { defineAnalysis, type Analysis } from "../../../specialization/framework/analysis";
 import { Worklist } from "../../../specialization/framework/worklist";
+import { ROOT_CONTEXT } from "../../../specialization/framework/context";
 
 /** Test helper: an analysis that records mint/rebuild/retire events via onRegister. */
 function makeLifecycleObserver(): {
@@ -174,7 +175,7 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
     expect(() => worklist.registry.slotOf(g.id)).toThrow(/not registered/);
   });
 
-  it("retire evicts fact-store cells for number-keyed analyses", async () => {
+  it("retire evicts analysis-store cells for number-keyed analyses", async () => {
     const { runtimeWriteAnalysis, runtimeCallAnalysis } = await import(
       "../../../specialization/framework/runtime-analyses"
     );
@@ -190,19 +191,19 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
 
     // Seed cells for g's functionId and one of g's node ids.
     const someNodeId = [...worklist.topology.nodesOfUnit(gUnit)][0];
-    worklist.write(runtimeWriteAnalysis, someNodeId, { kind: "number", value: 7 });
-    worklist.write(runtimeCallAnalysis, g.id, 3);
-    worklist.write(purityScopeAnalysis, g.id, true);
+    worklist.write(runtimeWriteAnalysis, someNodeId, { kind: "number", value: 7 }, ROOT_CONTEXT);
+    worklist.write(runtimeCallAnalysis, g.id, 3, ROOT_CONTEXT);
+    worklist.write(purityScopeAnalysis, g.id, true, ROOT_CONTEXT);
 
-    expect(worklist.tryRead(runtimeWriteAnalysis, someNodeId)).toBeDefined();
-    expect(worklist.tryRead(runtimeCallAnalysis, g.id)).toBeDefined();
-    expect(worklist.tryRead(purityScopeAnalysis, g.id)).toBeDefined();
+    expect(worklist.tryRead(runtimeWriteAnalysis, someNodeId, ROOT_CONTEXT)).toBeDefined();
+    expect(worklist.tryRead(runtimeCallAnalysis, g.id, ROOT_CONTEXT)).toBeDefined();
+    expect(worklist.tryRead(purityScopeAnalysis, g.id, ROOT_CONTEXT)).toBeDefined();
 
     worklist.registry.retire(g.id);
 
-    expect(worklist.tryRead(runtimeWriteAnalysis, someNodeId)).toBeUndefined();
-    expect(worklist.tryRead(runtimeCallAnalysis, g.id)).toBeUndefined();
-    expect(worklist.tryRead(purityScopeAnalysis, g.id)).toBeUndefined();
+    expect(worklist.tryRead(runtimeWriteAnalysis, someNodeId, ROOT_CONTEXT)).toBeUndefined();
+    expect(worklist.tryRead(runtimeCallAnalysis, g.id, ROOT_CONTEXT)).toBeUndefined();
+    expect(worklist.tryRead(purityScopeAnalysis, g.id, ROOT_CONTEXT)).toBeUndefined();
   });
 
   it("mint after retire re-materializes a unit and fires onUnitMinted again", () => {

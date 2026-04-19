@@ -1,12 +1,13 @@
-import { ExprNS } from "../../ast-types";
+import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { AssumptionHandle } from "../framework/analysis";
 import { findAssumption, ROOT_CONTEXT, type Context } from "../framework/context";
 import type { MutableEnv } from "../framework/mutable-env";
+import { paramTypeHandle } from "../entry-guards";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
-import type { NodeId } from "../framework/key-spaces";
+import { paramKey, type FunctionId, type NodeId } from "../framework/key-spaces";
 import {
   type TypeLattice,
   ALL_KINDS_MASK,
@@ -73,7 +74,7 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
  *  extending a parent with `(typeExprHandle, nodeId, narrowedValue)`; the
  *  `TypeAnalysisVisitor` consults `findAssumption` at each node visit and
  *  meets the computed static fact with the bound value. The handle itself
- *  is never scheduled — its `transfer` is a no-op and the fact-store never
+ *  is never scheduled — its `transfer` is a no-op and no analysis store
  *  carries cells under this Analysis — it exists purely as a per-node
  *  assumption namespace keyed into the Context chain.
  *
@@ -91,6 +92,8 @@ export const typeExprHandle: AssumptionHandle<NodeId, TypeLattice> = {
 class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   constructor(
     private readonly slotTypes: MutableEnv<TypeLattice>,
+    private readonly functionId: FunctionId,
+    private readonly paramCount: number,
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: NodeId, val: TypeLattice) => void,
     private readonly context: Context,
@@ -131,11 +134,17 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     return this.annotate(expr, info);
   }
 
+  private paramAssumption(slot: number): TypeLattice | undefined {
+    if (this.context === ROOT_CONTEXT || slot < 0 || slot >= this.paramCount) return undefined;
+    return findAssumption(this.context, paramTypeHandle, paramKey(this.functionId, slot));
+  }
+
   visitVariableExpr(expr: ExprNS.Variable): TypeLattice {
     const info = this.slotLookup(expr.name);
     if (!isLocal(info)) return this.annotate(expr, TOP);
     const slotInfo = this.slotTypes.get(info.slot) ?? TOP;
-    return this.annotate(expr, slotInfo);
+    const param = this.paramAssumption(info.slot);
+    return this.annotate(expr, param !== undefined ? meet(slotInfo, param) : slotInfo);
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): TypeLattice {
@@ -285,11 +294,19 @@ export function makeTypeAnalysisModule(): BlockDfaSpec<TypeLattice> {
   eq,
   makeExprVisitor(
     env: MutableEnv<TypeLattice>,
+    unit,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: TypeLattice) => void,
     context: Context,
   ): ExprNS.Visitor<TypeLattice> {
-    return new TypeAnalysisVisitor(env, slotLookup, recordExprFact, context);
+    return new TypeAnalysisVisitor(
+      env,
+      unit.funcAst.id,
+      unit.funcAst instanceof StmtNS.FunctionDef ? unit.funcAst.parameters.length : 0,
+      slotLookup,
+      recordExprFact,
+      context,
+    );
   },
   /**
    * Narrow the env when crossing a branch edge. Handles `slot OP literal`

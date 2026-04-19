@@ -8,7 +8,7 @@ import {
   buildFunctionRegistry,
   type FunctionScopeNode,
 } from "./function-registry";
-import { type FactChange } from "./analysis-store";
+import { storeEvict, storeWrite, type FactChange } from "./analysis-store";
 import {
   buildUnits,
   buildOneUnit,
@@ -16,7 +16,7 @@ import {
   type Unit,
 } from "./function-unit";
 import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type Narrowing, type TransformRule, type LifecycleEdge } from "./analysis";
-import type { FunctionId, NodeId } from "./key-spaces";
+import type { FunctionId, NodeId, ParamKey } from "./key-spaces";
 import { MutableProgramTopology, type ProgramTopology } from "./topology";
 import { rootTransformFacts } from "./transform-rule";
 import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Assumption, type Context } from "./context";
@@ -29,6 +29,7 @@ import { deadBranchRule } from "../transforms/dead-branch";
 import { deadStoreRule } from "../transforms/dead-store";
 import { memoizationRule } from "../transforms/memoization";
 import { livenessAnalysis } from "../liveness-analysis/analysis";
+import { definitelyBoundAnalysis } from "../definitely-bound-analysis/analysis";
 import {
   typeAnalysis,
   constAnalysis,
@@ -44,17 +45,17 @@ type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq
 /** Reference to a speculative fact site. A backend emitting a guard for
  *  this fact publishes this ref via `Worklist.registerGuard` so the engine
  *  can trace back to the assumption(s) that drove the narrowing when the
- *  guard fires. `narrowing` + `key` together name the fact-store cell (the
- *  narrowing's block analysis, keyed by node id); no value is carried — the
- *  live value is read at deopt time from the fact store.
+ *  guard fires. `narrowing` + `key` together name the per-analysis store cell
+ *  (the narrowing's block analysis, keyed by node id); no value is carried —
+ *  the live value is read at deopt time from the owning analysis store.
  *
  *  Typed against `Narrowing<_, unknown>`: the lineage walk only calls
  *  `narrowing.blockAnalysis()` and reads the handle's store/value algebra for
  *  equality, neither of which needs the specific V. Keeping the interface
  *  ungenericized matches actual usage and removes a cosmetic type parameter. */
 export interface SpecFactRef {
-  readonly narrowing: Narrowing<NodeId | FunctionId, unknown>;
-  readonly key: NodeId | FunctionId;
+  readonly narrowing: Narrowing<NodeId | FunctionId | ParamKey, unknown>;
+  readonly key: NodeId | FunctionId | ParamKey;
 }
 
 /** Narrow backend-facing interface for publishing guard provenance. Exposed
@@ -66,7 +67,7 @@ export interface GuardRegistrar {
 
 /** Identity-key for an assumption. `analysis` is compared by symbol identity
  *  (Analyses are module singletons); `key` is compared by the JS `===`
- *  encoding used across the fact store. */
+ *  encoding used across the per-analysis stores. */
 function assumptionKey(a: Assumption): string {
   return `${a.analysis.debugName}:${String(a.key)}`;
 }
@@ -365,16 +366,16 @@ export class Worklist {
 
   /** Public read surface for tests and backends that hold a Worklist but
    *  not a specific Analysis reference's store. Thin delegation to
-   *  `analysis.store.*`. Preferred path for external callers is to reach
-   *  the store directly via the Analysis reference, but these helpers
-   *  preserve the short `worklist.read(A, k)` style. */
-  read<K, V>(analysis: Analysis<K, V>, key: K, context: Context = ROOT_CONTEXT): V {
+   *  `analysis.store.*`. `context` is mandatory on every helper: `Context`
+   *  is the primitive, ROOT is one tree-root position inside it, and the
+   *  worklist does not guess which position a caller meant. */
+  read<K, V>(analysis: Analysis<K, V>, key: K, context: Context): V {
     return analysis.store.read(key, context);
   }
-  tryRead<K, V>(analysis: Analysis<K, V>, key: K, context: Context = ROOT_CONTEXT): V | undefined {
+  tryRead<K, V>(analysis: Analysis<K, V>, key: K, context: Context): V | undefined {
     return analysis.store.tryRead(key, context);
   }
-  readAll<K, V>(analysis: Analysis<K, V>, context: Context = ROOT_CONTEXT): ReadonlyMap<K, V> {
+  readAll<K, V>(analysis: Analysis<K, V>, context: Context): ReadonlyMap<K, V> {
     return analysis.store.readAll(context);
   }
   /** Writes through `analysis.store` AND publishes a `FactChange` to
@@ -385,23 +386,31 @@ export class Worklist {
     analysis: Analysis<K, V>,
     key: K,
     value: V,
-    context: Context = ROOT_CONTEXT,
+    context: Context,
   ): boolean {
     return this.writeAndDispatch(analysis, key, value, context);
   }
-  evict<K, V>(analysis: Analysis<K, V>, key: K, context: Context = ROOT_CONTEXT): void {
-    analysis.store.evict(key, context);
+  evict<K, V>(analysis: Analysis<K, V>, key: K, context: Context): void {
+    storeEvict(analysis.store, key, context);
   }
 
-  observe<K, V>(analysis: Analysis<K, V>, key: K, value: V, context: Context = ROOT_CONTEXT): void {
-    // Analyses that want to run observe-time logic (e.g. extend the unit's
-    // speculation context) declare `onObserve`. Fires BEFORE the monotone
-    // fact-store write so count-based strategies see every call, including
-    // repeats the store would collapse. The worklist has no analysis-
-    // identity branches here — participation is a property each analysis
-    // declares on itself.
-    analysis.onObserve?.(this.observationHost, key, value, context);
-    this.writeAndDispatch(analysis, key, value, context);
+  /** Record a runtime observation. Observations originate at ROOT by
+   *  architecture — they come from the running program, which has no
+   *  outstanding assumption chain of its own. The observation→context
+   *  translator (`handleObservationForSpec`) is the sole path from an
+   *  observation to a non-ROOT context, and it derives the target context
+   *  from the observation payload rather than from the caller. So `observe`
+   *  takes no `context` parameter: there is no other position to place it.
+   *
+   *  Analyses that want to run observe-time logic (e.g. extend the unit's
+   *  speculation context) declare `onObserve`. It fires BEFORE the
+   *  monotone per-analysis-store write so count-based strategies see every
+   *  call, including repeats the store would collapse. The worklist has no
+   *  analysis-identity branches here — participation is a property each
+   *  analysis declares on itself. */
+  observe<K, V>(analysis: Analysis<K, V>, key: K, value: V): void {
+    analysis.onObserve?.(this.observationHost, key, value, ROOT_CONTEXT);
+    this.writeAndDispatch(analysis, key, value, ROOT_CONTEXT);
     if (this.batchDepth === 0) this.processQueue();
   }
 
@@ -466,8 +475,8 @@ export class Worklist {
     }
   }
 
-  /** Write via `analysis.store.write` and publish a `FactChange` to every
-   *  listener registered on `factSubs`. This is the single site that
+  /** Write via the framework-owned store helper and publish a `FactChange`
+   *  to every listener registered on `factSubs`. This is the single site that
    *  funnels transfer results into the cell + fans them out to subscribers. */
   private writeAndDispatch<K, V>(
     analysis: Analysis<K, V>,
@@ -475,7 +484,7 @@ export class Worklist {
     value: V,
     context: Context,
   ): boolean {
-    const result = analysis.store.write(key, value, context);
+    const result = storeWrite(analysis.store, key, value, context);
     if (result === null) return false;
     this.handleFactChange({
       analysis: analysis as Analysis<unknown, unknown>,
@@ -533,7 +542,7 @@ export class Worklist {
         return worklist.writeAndDispatch(analysis, key, value, context);
       },
       evict<K, V>(analysis: Analysis<K, V>, key: K): void {
-        analysis.store.evict(key, context);
+        storeEvict(analysis.store, key, context);
       },
     };
   }
@@ -607,9 +616,9 @@ export class Worklist {
    *  returns — and `n.resolveUnit` (default `topology.unitOfNode`) maps it to the
    *  owning unit.
    *
-   *  Invoked directly from `observe` (not via factStore.onChange) so count-
-   *  based strategies see every observed call, including repeats the
-   *  monotone fact-store would collapse.
+   *  Invoked directly from `observe` (not via store change dispatch) so
+   *  count-based strategies see every observed call, including repeats the
+   *  monotone store algebra would collapse.
    *
    *  Behavior:
    *  - No applicable narrowings for `source` → no-op.
@@ -681,7 +690,7 @@ export class Worklist {
 
   /** Active speculation context for a unit. Readers of `typeAnalysis`
    *  looking for speculatively-narrowed facts should pass this context to
-   *  `readExprFact` / `factStore.tryRead`. */
+   *  `readExprFact` / `analysis.store.tryRead`. */
   specContextFor(unit: Unit): Context {
     return this.currentSpecContext.get(unit) ?? ROOT_CONTEXT;
   }
@@ -722,7 +731,7 @@ export class Worklist {
    *  `widenGuard` on deopt to compute the load-bearing assumption set. Keyed
    *  by `guardNodeId` — the AST node id the backend baked into the guard
    *  opcode; that's the id `SpeculationViolation` carries. */
-  private readonly guardProvenance: Map<Unit, Map<NodeId, SpecFactRef>> = new Map();
+  private readonly guardProvenance: Map<Unit, Map<NodeId, SpecFactRef[]>> = new Map();
 
   /** Backend-facing hook, called once per emitted guard. Identifies the
    *  speculative fact whose narrowing the guard is protecting. No-op if
@@ -735,7 +744,9 @@ export class Worklist {
       perUnit = new Map();
       this.guardProvenance.set(unit, perUnit);
     }
-    perUnit.set(guardNodeId, ref);
+    const refs = perUnit.get(guardNodeId);
+    if (refs === undefined) perUnit.set(guardNodeId, [ref]);
+    else if (!refs.some(r => specRefKey(r) === specRefKey(ref))) refs.push(ref);
   }
 
   /** Lineage-precise deopt handle. Given a guard that fired at
@@ -757,8 +768,8 @@ export class Worklist {
   widenGuard(guardNodeId: NodeId): Unit | undefined {
     const unit = this._topology.unitOfNode(guardNodeId);
     if (unit === undefined) return undefined;
-    const ref = this.guardProvenance.get(unit)?.get(guardNodeId);
-    if (ref === undefined) {
+    const refs = this.guardProvenance.get(unit)?.get(guardNodeId);
+    if (refs === undefined || refs.length === 0) {
       throw new Error(
         `[widenGuard] no provenance for guard at node ${guardNodeId}. The backend that emitted this guard must call Worklist.registerGuard at emission — see svml-compiler.ts for the reference wiring.`,
       );
@@ -767,8 +778,14 @@ export class Worklist {
     const ctx = this.currentSpecContext.get(unit);
     if (ctx === undefined || ctx === ROOT_CONTEXT) return undefined;
 
-    const loadBearing = this.lineageOf(ref, ctx, unit);
-    if (loadBearing.length === 0) return this.widenFullChain(unit);
+    const loadBearingMap = new Map<string, Assumption>();
+    for (const ref of refs) {
+      for (const a of this.lineageOf(ref, ctx, unit)) {
+        loadBearingMap.set(assumptionKey(a), a);
+      }
+    }
+    if (loadBearingMap.size === 0) return this.widenFullChain(unit);
+    const loadBearing = [...loadBearingMap.values()];
 
     // `lineageOf` only pushes assumptions whose exclusion from `ctx` changes
     // the chain, so the first iteration below is guaranteed to advance
@@ -788,8 +805,10 @@ export class Worklist {
     const perUnit = this.guardProvenance.get(unit);
     if (perUnit !== undefined) {
       const prunedSet = new Set(loadBearing.map(a => assumptionKey(a)));
-      for (const [gid, r] of perUnit) {
-        if (prunedSet.has(specRefKey(r))) perUnit.delete(gid);
+      for (const [gid, refsAtGuard] of perUnit) {
+        const kept = refsAtGuard.filter(r => !prunedSet.has(specRefKey(r)));
+        if (kept.length === 0) perUnit.delete(gid);
+        else perUnit.set(gid, kept);
       }
     }
     this.enqueueNarrowingEntry(unit, pruned);
@@ -802,8 +821,8 @@ export class Worklist {
    *  chain without it, re-seed Kildall for every registered narrowing
    *  under the synthesized chain (no transforms, no CFG rebuild), and diff
    *  the fact at `ref`. Cells under the synthetic chain are written to the
-   *  fact store and linger — contexts are identity-keyed so no collision,
-   *  but a fact-store eviction pass is a later step (C5b follow-up).
+   *  owning analyses' stores and linger — contexts are identity-keyed so no
+   *  collision, but an eviction pass is a later step (C5b follow-up).
    *
    *  Cost: O(chainDepth × Kildall-at-pruned-ctx). Chain depth is bounded by
    *  the speculation strategy (`countBasedStrategy`, etc.) which throttles
@@ -818,7 +837,7 @@ export class Worklist {
     const lineageValue = narrowing.lineageValue
       ?? ((_owner: Unit, nodeId: NodeId, context: Context) =>
         readExprFact(topology, narrowing.blockAnalysis(), nodeId, context));
-    const current = lineageValue(unit, key, ctx);
+    const current = lineageValue(unit, key as never, ctx);
     // No readable fact under `ctx` ⇒ narrowing has no lineage surface here;
     // `widenGuard` will fall back to `widenFullChain`. Distinct from the
     // per-iteration `widened === undefined` case below, which means "link
@@ -834,7 +853,7 @@ export class Worklist {
       if (without === ctx) continue;
       this.enqueueNarrowingEntry(unit, without);
       this.processQueue();
-      const widened = lineageValue(unit, key, without);
+      const widened = lineageValue(unit, key as never, without);
       // A link is load-bearing iff removing it widens the fact at `ref`.
       // Both reads can miss (returning undefined) if the pruned context has
       // no cell yet; treat `undefined === undefined` as unchanged, any
@@ -871,7 +890,7 @@ export class Worklist {
    *   1. `processQueue` — analyses / observations converge.
    *   2. `sweepTransforms` — imperative AST rewrites on dirty units.
    *   3. `processQueue` — pick up any writes made by transforms (rare, but
-   *      transforms may read fact-store state that needs to be settled
+   *      transforms may read analysis state that needs to be settled
    *      before rebuild for the next iteration's analyses).
    *   4. `flushPendingRebuilds` — rewire CFGs for units that fired; fires
    *      `onUnitRebuilt`, which re-enqueues analyses and re-marks transforms
@@ -923,6 +942,7 @@ export const DEFAULT_PASSES: ReadonlyArray<Analysis<any, any>> = [
   purityBlockAnalysis.env, purityBlockAnalysis.facts,
   purityScopeAnalysis,
   livenessAnalysis.env, livenessAnalysis.facts,
+  definitelyBoundAnalysis.env, definitelyBoundAnalysis.facts,
 ];
 
 export const DEFAULT_TRANSFORMS: ReadonlyArray<TransformRule> = [

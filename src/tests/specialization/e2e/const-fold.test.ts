@@ -4,6 +4,7 @@ import { analyzeWithEnvironments } from "../../../resolver";
 import OpCodes from "../../../engines/svml/opcodes";
 import { constAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
+import { ROOT_CONTEXT } from "../../../specialization/framework/context";
 import { buildTestWorklist } from "../../utils";
 import { runSpecCase } from "../../harness/spec-e2e";
 
@@ -57,7 +58,7 @@ else:
 // Hint-store population is a precondition for downstream transforms and for
 // the CSE stepper to surface constants. Assertions live at the fact level
 // rather than bytecode because the hint is what transforms consume.
-describe("const fold: factStore carries constVal", () => {
+describe("const fold: facts carry constVal", () => {
   function analyse(code: string) {
     const script = code + "\n";
     const ast = parse(script) as StmtNS.FileInput;
@@ -74,6 +75,7 @@ describe("const fold: factStore carries constVal", () => {
       reactive.topology,
       constAnalysis,
       assign.value.id,
+      ROOT_CONTEXT,
     );
     expect(cv?.tag).toBe("const");
     expect((cv as { value: unknown }).value).toBe(7);
@@ -86,6 +88,7 @@ describe("const fold: factStore carries constVal", () => {
       reactive.topology,
       constAnalysis,
       assign.value.id,
+      ROOT_CONTEXT,
     );
     expect(cv?.tag).toBe("const");
     expect((cv as { value: unknown }).value).toBe(7);
@@ -104,6 +107,7 @@ describe("const fold: factStore carries constVal", () => {
       reactive.topology,
       constAnalysis,
         rhs.id,
+        ROOT_CONTEXT,
       );
       expect(cv?.tag).toBe("const");
       expect((cv as { value: unknown }).value).toBe(6);

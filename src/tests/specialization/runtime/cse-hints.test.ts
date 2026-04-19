@@ -6,6 +6,7 @@ import { analyzeWithEnvironments } from "../../../resolver";
 import type { Worklist } from "../../../specialization/framework/worklist";
 import { constAnalysis, typeAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
+import { ROOT_CONTEXT } from "../../../specialization/framework/context";
 import { INT_BIT } from "../../../specialization/type-analysis/lattice";
 import { buildTestWorklist } from "../../utils";
 
@@ -25,12 +26,12 @@ function optimise(code: string) {
   return { ast, engine, context: new Context(ast) };
 }
 
-describe("factStore contents after optimization", () => {
+describe("facts contents after optimization", () => {
   test("integer literal has INT_BIT type and const(42)", () => {
     const { ast, engine } = optimise("x = 42");
     const rhs = (ast.statements[0] as StmtNS.Assign).value;
-    const type = readExprFact(engine.topology, typeAnalysis, rhs.id);
-    const cv = readExprFact(engine.topology, constAnalysis, rhs.id);
+    const type = readExprFact(engine.topology, typeAnalysis, rhs.id, ROOT_CONTEXT);
+    const cv = readExprFact(engine.topology, constAnalysis, rhs.id, ROOT_CONTEXT);
     expect(type).toBeDefined();
     expect(type!.kinds & INT_BIT).toBeTruthy();
     expect(cv?.tag).toBe("const");
@@ -44,6 +45,7 @@ describe("factStore contents after optimization", () => {
       engine.topology,
       constAnalysis,
       rhs.id,
+      ROOT_CONTEXT,
     );
     expect(cv?.tag).toBe("const");
     expect((cv as { value: unknown }).value).toBe(3);
@@ -56,6 +58,7 @@ describe("factStore contents after optimization", () => {
       engine.topology,
       typeAnalysis,
       ret.value!.id,
+      ROOT_CONTEXT,
     );
     expect(type).toBeDefined();
   });
@@ -68,11 +71,13 @@ describe("factStore contents after optimization", () => {
       engine.topology,
       constAnalysis,
       rootRhs.id,
+      ROOT_CONTEXT,
     );
     const retType = readExprFact(
       engine.topology,
       typeAnalysis,
       fnRet.value!.id,
+      ROOT_CONTEXT,
     );
     expect(rootCv?.tag).toBe("const");
     expect(retType).toBeDefined();
@@ -80,8 +85,8 @@ describe("factStore contents after optimization", () => {
 });
 
 // Stepper integration: walking the stream should surface at least one node
-// whose id matches an entry in the fact store, so visualizer joins land.
-describe("stepper ↔ factStore join", () => {
+// whose id matches an entry in the analysis facts, so visualizer joins land.
+describe("stepper ↔ facts join", () => {
   async function stepAndCollect(
     context: Context,
     engine: Worklist,
@@ -104,6 +109,7 @@ describe("stepper ↔ factStore join", () => {
       engine.topology,
       constAnalysis,
           node.id,
+          ROOT_CONTEXT,
         );
         if (cv !== undefined) hits.push({ id: node.id, cv });
       }
@@ -123,7 +129,7 @@ describe("stepper ↔ factStore join", () => {
   });
 });
 
-describe("stepper without fact store", () => {
+describe("stepper without fact reads", () => {
   test("runs to completion without throwing", async () => {
     const script = "x = 1\n";
     const ast = parse(script) as StmtNS.FileInput;

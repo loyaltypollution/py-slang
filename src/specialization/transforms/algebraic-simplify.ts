@@ -20,7 +20,6 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { BasicBlock } from "../framework/cfg";
 import { typeAnalysis, constAnalysis } from "../framework/dfa-analyses";
-import { readExprFact } from "../framework/dfa-factory";
 import type { Unit } from "../framework/function-unit";
 import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
 import type { ConstLattice } from "../const-analysis/lattice";
@@ -63,7 +62,7 @@ function zeroLiteralLike(e: ExprNS.Expr): ExprNS.Literal {
 class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
   constructor(
-    private readonly factStore: TransformFactView,
+    private readonly facts: TransformFactView,
   ) {}
 
   rewrite(expr: ExprNS.Expr): ExprNS.Expr {
@@ -76,10 +75,10 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   }
 
   private typeOf(node: ExprNS.Expr): TypeLattice | undefined {
-    return readExprFact(this.factStore.topology, typeAnalysis, node.id);
+    return this.facts.readExprFact(typeAnalysis, node.id);
   }
   private constOf(node: ExprNS.Expr): ConstLattice | undefined {
-    return readExprFact(this.factStore.topology, constAnalysis, node.id);
+    return this.facts.readExprFact(constAnalysis, node.id);
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
@@ -236,8 +235,8 @@ class AlgebraicSimplifyStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: AlgebraicSimplifyVisitor;
 
-  constructor(factStore: TransformFactView) {
-    this.exprVisitor = new AlgebraicSimplifyVisitor(factStore);
+  constructor(facts: TransformFactView) {
+    this.exprVisitor = new AlgebraicSimplifyVisitor(facts);
   }
 
   private rewriteExpr(expr: ExprNS.Expr): ExprNS.Expr {
@@ -295,8 +294,8 @@ class AlgebraicSimplifyStmtVisitor implements StmtNS.Visitor<void> {
 
 export const algebraicSimplifyRule = unitSweepRule(
   "algebraicSimplifyRule",
-  (unit: Unit, factStore: TransformFactView) => {
-    const v = new AlgebraicSimplifyStmtVisitor(factStore);
+  (unit: Unit, facts: TransformFactView) => {
+    const v = new AlgebraicSimplifyStmtVisitor(facts);
     v.sweep(unit.body);
     return v.changed;
   },

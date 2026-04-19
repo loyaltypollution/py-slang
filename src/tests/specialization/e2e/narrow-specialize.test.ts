@@ -7,6 +7,7 @@ import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import { typeAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
+import { ROOT_CONTEXT } from "../../../specialization/framework/context";
 import { BOOL_BIT, FLOAT_BIT, INT_BIT, IntRef } from "../../../specialization/type-analysis/lattice";
 import { compileOptimized } from "../../harness/compile-pipelines";
 import { hasOpcode } from "../../harness/opcode-assert";
@@ -21,7 +22,7 @@ function analyse(code: string) {
   return { ast, reactive };
 }
 
-describe("narrow → specialize: fact store", () => {
+describe("narrow → specialize: analysis stores", () => {
   test("`x > 0` narrows `x` inside true branch to INT_POS", () => {
     const code = `
 def f(x):
@@ -42,6 +43,7 @@ def f(x):
       reactive.topology,
       typeAnalysis,
       xNode.id,
+      ROOT_CONTEXT,
     );
     // Narrowing produces the mixed numeric kind INT|FLOAT|BOOL with Pos in
     // both sign fields — `x > 0` does not distinguish int/float/bool, only

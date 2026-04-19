@@ -5,6 +5,7 @@ import {
   typeAnalysis,
 } from "../../../specialization/framework/dfa-analyses";
 import { livenessAnalysis } from "../../../specialization/liveness-analysis/analysis";
+import { definitelyBoundAnalysis } from "../../../specialization/definitely-bound-analysis/analysis";
 import {
   purityBlockAnalysis,
   purityScopeAnalysis,
@@ -21,7 +22,7 @@ import {
 // backend hooks). A missed declaration is a compile-time error; this
 // suite pins the *expected* value so re-classifying an analysis is visible.
 //
-// `AssumptionHandle`s are NOT included — they don't write to FactStore,
+// `AssumptionHandle`s are NOT included — they don't write to AnalysisStore,
 // have no transfer, and no polarity (that's the whole point of the citizen
 // split). Adding a handle here would be a category error.
 describe("Analysis.polarity", () => {
@@ -45,6 +46,8 @@ describe("Analysis.polarity", () => {
     { name: "purityBlockAnalysis.facts",     analysis: purityBlockAnalysis.facts,     expected: "may"    },
     { name: "typeRequirementAnalysis.env",   analysis: typeRequirementAnalysis.env,   expected: "must"   },
     { name: "typeRequirementAnalysis.facts", analysis: typeRequirementAnalysis.facts, expected: "must"   },
+    { name: "definitelyBoundAnalysis.env",   analysis: definitelyBoundAnalysis.env,   expected: "must"   },
+    { name: "definitelyBoundAnalysis.facts", analysis: definitelyBoundAnalysis.facts, expected: "must"   },
     { name: "runtimeWriteAnalysis",    analysis: runtimeWriteAnalysis,     expected: "opaque" },
     { name: "runtimeReturnAnalysis",   analysis: runtimeReturnAnalysis,    expected: "opaque" },
     { name: "runtimeCallAnalysis",     analysis: runtimeCallAnalysis,      expected: "opaque" },
@@ -60,11 +63,13 @@ describe("Analysis.polarity", () => {
     }
   });
 
-  test("typeRequirementAnalysis is the only must-polarity consumer today", () => {
+  test("must-polarity consumers cover both in-tree must analyses", () => {
     const mustAnalyses = cases.filter(c => c.analysis.polarity === "must");
     expect(mustAnalyses.map(c => c.name)).toEqual([
       "typeRequirementAnalysis.env",
       "typeRequirementAnalysis.facts",
+      "definitelyBoundAnalysis.env",
+      "definitelyBoundAnalysis.facts",
     ]);
   });
 });

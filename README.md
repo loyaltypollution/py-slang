@@ -36,6 +36,19 @@ Ensure that all tests pass before committing.
 npm run test
 ```
 
+## Specialization architecture docs
+
+`docs/` is the canonical home for specialization architecture notes.
+Root-level notes are redirects only.
+
+If you are working on the specialization framework, start here:
+
+- `docs/specialization-author-guides.md` — index by author role
+- `docs/dfa-framework-tutorial.md` — DFA framework and store mechanics
+- `docs/transform-authoring-tutorial.md` — transform contracts and ROOT-only reads
+- `docs/fact-surfaces-and-speculation.md` — soundness boundaries
+- `docs/must-analysis-review.md` — must-analysis mechanics and current limits
+
 ### Regenerating the AST types
 
 The AST types need to be regenerated after changing

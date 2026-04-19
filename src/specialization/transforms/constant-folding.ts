@@ -3,7 +3,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import { constAnalysis } from "../framework/dfa-analyses";
-import { readExprFact } from "../framework/dfa-factory";
 import type { Unit } from "../framework/function-unit";
 import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
 
@@ -11,12 +10,12 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
 
   constructor(
-    private readonly factStore: TransformFactView,
+    private readonly facts: TransformFactView,
   ) {}
 
   private tryRewrite(expr: ExprNS.Expr): ExprNS.Expr {
     if (!(expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare)) return expr;
-    const cv = readExprFact(this.factStore.topology, constAnalysis, expr.id);
+    const cv = this.facts.readExprFact(constAnalysis, expr.id);
     if (cv?.tag !== "const") return expr;
     this.changed = true;
     return new ExprNS.Literal(
@@ -109,8 +108,8 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: ConstFoldExprVisitor;
 
-  constructor(factStore: TransformFactView) {
-    this.exprVisitor = new ConstFoldExprVisitor(factStore);
+  constructor(facts: TransformFactView) {
+    this.exprVisitor = new ConstFoldExprVisitor(facts);
   }
 
   private rewriteExpr(expr: ExprNS.Expr): ExprNS.Expr {
@@ -169,8 +168,8 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
 
 export const constantFoldingRule = unitSweepRule(
   "constantFoldingRule",
-  (unit: Unit, factStore: TransformFactView) => {
-    const v = new ConstFoldStmtVisitor(factStore);
+  (unit: Unit, facts: TransformFactView) => {
+    const v = new ConstFoldStmtVisitor(facts);
     v.sweep(unit.body);
     return v.changed;
   },

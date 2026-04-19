@@ -2,8 +2,20 @@
 
 import { StmtNS } from "../../ast-types";
 import { ROOT_CONTEXT } from "./context";
-import { defineAnalysis, type Lattice, type Analysis, type AnalysisCtx } from "./analysis";
-import type { FunctionId, NodeId } from "./key-spaces";
+import {
+  defineAnalysis,
+  type JoinSemiLattice,
+  type Analysis,
+  type AnalysisCtx,
+  type OpaqueAnalysis,
+} from "./analysis";
+import { storeEvict } from "./analysis-store";
+import {
+  paramKey,
+  type FunctionId,
+  type NodeId,
+  type ParamKey,
+} from "./key-spaces";
 import { classifyRawValue, type RawKind } from "./raw-value";
 import type { Worklist } from "./worklist";
 
@@ -32,7 +44,7 @@ function rawKindEquals(a: RawKind, b: RawKind): boolean {
   }
 }
 
-const rawValueLattice: Lattice<RawKind> = {
+const rawValueLattice: JoinSemiLattice<RawKind> = {
   bottom: RAW_TOP,
   leq: (a, b) => b.kind === "unknown" || rawKindEquals(a, b),
   join: (a, b) =>
@@ -46,9 +58,10 @@ const rawValueLattice: Lattice<RawKind> = {
  *
  *  Declares `onObserve` so the worklist routes each observe call through
  *  the observation→context translator without naming this analysis by
- *  identity. Only ROOT-context observations feed speculation — a non-ROOT
- *  observe would be a test fixture exercising the fact store directly. */
-export const runtimeWriteAnalysis: Analysis<NodeId, RawKind> = defineAnalysis({
+ *  identity. Only ROOT-context observations feed speculation; `Worklist.observe`
+ *  hardcodes ROOT, and the guard here documents that rule at the analysis
+ *  boundary. */
+export const runtimeWriteAnalysis: OpaqueAnalysis<NodeId, RawKind> = defineAnalysis({
   id: Symbol("runtimeWriteAnalysis"),
   debugName: "runtimeWriteAnalysis",
   keySpace: "nodeId",
@@ -58,7 +71,7 @@ export const runtimeWriteAnalysis: Analysis<NodeId, RawKind> = defineAnalysis({
       on: "retire",
       effect: (ctx, unit) => {
         for (const nodeId of ctx.topology.nodesOfUnit(unit)) {
-          runtimeWriteAnalysis.store.evict(nodeId, ROOT_CONTEXT);
+          storeEvict(runtimeWriteAnalysis.store, nodeId, ROOT_CONTEXT);
         }
       },
     },
@@ -112,8 +125,51 @@ export function widenWriteObservation(
  *  function with two Returns carries one assumption, not two. `onObserve`
  *  forwards to `handleObservationForSpec` with `runtimeReturnAnalysis` as
  *  the source, so the observation→context translator routes only to
- *  narrowings declaring this same source. */
-export const runtimeReturnAnalysis: Analysis<FunctionId, RawKind> = defineAnalysis({
+ *  narrowings declaring this same source. Only ROOT-context observations
+ *  feed speculation, matching `Worklist.observe`'s hardcoded ROOT entry. */
+export const runtimeParamAnalysis: OpaqueAnalysis<ParamKey, RawKind> = defineAnalysis({
+  id: Symbol("runtimeParamAnalysis"),
+  debugName: "runtimeParamAnalysis",
+  keySpace: "paramKey",
+  storeAlgebra: rawValueLattice,
+  edges: [
+    {
+      on: "retire",
+      effect: (_ctx, unit) => {
+        const fd = unit.funcAst;
+        if (!(fd instanceof StmtNS.FunctionDef)) return;
+        for (let i = 0; i < fd.parameters.length; i++) {
+          storeEvict(runtimeParamAnalysis.store, paramKey(fd.id, i), ROOT_CONTEXT);
+        }
+      },
+    },
+  ],
+  tier: "runtime",
+  polarity: "opaque",
+  onObserve(host, key, value, context) {
+    if (context !== ROOT_CONTEXT) return;
+    host.handleObservationForSpec(runtimeParamAnalysis, key, value);
+  },
+  transfer(_ctx: AnalysisCtx, _key: ParamKey): RawKind | undefined {
+    return undefined;
+  },
+});
+
+/** Emit a function-entry parameter observation. Called once per argument at
+ *  callee entry by JIT-capable evaluators. */
+export function observeRuntimeParam(
+  observer: { observe: (p: Analysis<ParamKey, RawKind>, k: ParamKey, v: RawKind) => void },
+  functionId: FunctionId,
+  paramIndex: number,
+  raw: unknown,
+): void {
+  const key = paramKey(functionId, paramIndex);
+  const prev = runtimeParamAnalysis.store.tryRead(key, ROOT_CONTEXT);
+  if (prev !== undefined && prev.kind === "unknown") return;
+  observer.observe(runtimeParamAnalysis, key, classifyRawValue(raw));
+}
+
+export const runtimeReturnAnalysis: OpaqueAnalysis<FunctionId, RawKind> = defineAnalysis({
   id: Symbol("runtimeReturnAnalysis"),
   debugName: "runtimeReturnAnalysis",
   keySpace: "functionId",
@@ -124,7 +180,7 @@ export const runtimeReturnAnalysis: Analysis<FunctionId, RawKind> = defineAnalys
       effect: (_ctx, unit) => {
         const fd = unit.funcAst;
         if (fd instanceof StmtNS.FunctionDef) {
-          runtimeReturnAnalysis.store.evict(fd.id, ROOT_CONTEXT);
+          storeEvict(runtimeReturnAnalysis.store, fd.id, ROOT_CONTEXT);
         }
       },
     },
@@ -165,7 +221,7 @@ export function observeRuntimeReturn(
  *  short-circuit, so the lattice itself must saturate in both `leq` and
  *  `join`. Used by `runtimeCallAnalysis` for raw observations; consumers
  *  read the saturated value directly. */
-export const saturatingCountLattice: Lattice<number> = {
+export const saturatingCountLattice: JoinSemiLattice<number> = {
   bottom: 0,
   leq: (a, b) =>
     Math.min(RUNTIME_CALL_COUNT_SAT, a) <= Math.min(RUNTIME_CALL_COUNT_SAT, b),
@@ -175,7 +231,7 @@ export const saturatingCountLattice: Lattice<number> = {
 };
 
 /** Runtime observation of function-entry counts. Key = FunctionDef.id. */
-export const runtimeCallAnalysis: Analysis<FunctionId, number> = defineAnalysis({
+export const runtimeCallAnalysis: OpaqueAnalysis<FunctionId, number> = defineAnalysis({
   id: Symbol("runtimeCallAnalysis"),
   debugName: "runtimeCallAnalysis",
   keySpace: "functionId",
@@ -186,7 +242,7 @@ export const runtimeCallAnalysis: Analysis<FunctionId, number> = defineAnalysis(
       effect: (_ctx, unit) => {
         const fd = unit.funcAst;
         if (fd instanceof StmtNS.FunctionDef) {
-          runtimeCallAnalysis.store.evict(fd.id, ROOT_CONTEXT);
+          storeEvict(runtimeCallAnalysis.store, fd.id, ROOT_CONTEXT);
         }
       },
     },
@@ -198,9 +254,10 @@ export const runtimeCallAnalysis: Analysis<FunctionId, number> = defineAnalysis(
   },
 });
 
-/** Builds the pair of runtime-observation callbacks used by every JIT evaluator.
- *  The fact-store itself is the call counter: each call reads the current
- *  cell, increments, writes back. Saturation at `RUNTIME_CALL_COUNT_SAT` is
+/** Builds the runtime-observation callbacks used by every JIT evaluator.
+ *  The `runtimeCallAnalysis` store itself is the call counter: each call reads
+ *  the current cell, increments, writes back. Saturation at
+ *  `RUNTIME_CALL_COUNT_SAT` is
  *  enforced by the store algebra's join; the early-return skips the write once
  *  saturated to avoid the worklist roundtrip. The scope-call boundary drains
  *  buffered writes so memoization / tier-up transforms fire before the next
@@ -216,6 +273,7 @@ export function makeJitObservers(
   observeNodeWrite: (nodeId: NodeId, value: unknown) => void;
   observeScopeCall: (scopeId: FunctionId) => void;
   observeScopeReturn: (scopeId: FunctionId, value: unknown) => void;
+  observeParamEntry: (scopeId: FunctionId, paramIndex: number, value: unknown) => void;
 } {
   return {
     observeNodeWrite: (nodeId, value) => {
@@ -232,6 +290,11 @@ export function makeJitObservers(
     observeScopeReturn: (scopeId, value) => {
       beforeObserve?.();
       observeRuntimeReturn(worklist, scopeId, value);
+      if (worklist.hasPendingWork()) worklist.drain();
+    },
+    observeParamEntry: (scopeId, paramIndex, value) => {
+      beforeObserve?.();
+      observeRuntimeParam(worklist, scopeId, paramIndex, value);
       if (worklist.hasPendingWork()) worklist.drain();
     },
   };

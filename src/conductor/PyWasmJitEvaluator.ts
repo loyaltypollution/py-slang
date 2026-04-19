@@ -113,7 +113,7 @@
 //   - `GuardRegistrar` (worklist.ts:64): the WASM compiler just calls
 //     `registerGuard(nodeId, { narrowing, key })` the same way
 //     `SVMLCompiler` does at `svml-compiler.ts:367`. No framework change.
-//   - `FactStore` read/write/evict: backend-agnostic.
+//   - Per-analysis `AnalysisStore` read/write/evict: backend-agnostic.
 //   - `specContextFor(unit)` / `Context` / `ROOT_CONTEXT`: backend-
 //     agnostic speculation-context axis.
 //

@@ -24,16 +24,74 @@ function hasMemoPrelude(fd: StmtNS.FunctionDef): boolean {
   return callee instanceof ExprNS.Variable && callee.name.lexeme === MEMO_HAS;
 }
 
-function applyMemoizationWrap(unit: Unit): boolean {
-  const fd = unit.funcAst;
-  if (!(fd instanceof StmtNS.FunctionDef)) return false;
+function shadowStmt<T extends StmtNS.Stmt>(orig: T, patch: Partial<T>): T {
+  const shadow = Object.create(Object.getPrototypeOf(orig)) as T;
+  Object.assign(shadow, orig, patch);
+  return shadow;
+}
 
-  const id = `${fd.name.lexeme}@L${fd.name.line}`;
+export function memoIdFor(fd: StmtNS.FunctionDef, variant?: string): string {
+  const base = `${fd.name.lexeme}@L${fd.name.line}`;
+  return variant === undefined ? base : `${base}#${variant}`;
+}
+
+function rewriteReturnsCloned(
+  stmts: readonly StmtNS.Stmt[],
+  fd: StmtNS.FunctionDef,
+  id: string,
+  params: readonly ExprNS.Variable[],
+): readonly StmtNS.Stmt[] {
+  let changed = false;
+  const out: StmtNS.Stmt[] = [];
+  for (const s of stmts) {
+    if (s instanceof StmtNS.Return) {
+      if (s.value !== null) {
+        changed = true;
+        const args: ExprNS.Expr[] = [
+          mkStr(fd, id),
+          ...params.map(p => new ExprNS.Variable(p.startToken, p.endToken, p.name)),
+          s.value,
+        ];
+        out.push(shadowStmt(s, { value: mkCall(fd, MEMO_PUT, args) }));
+      } else {
+        out.push(s);
+      }
+    } else if (s instanceof StmtNS.If) {
+      const body = rewriteReturnsCloned(s.body, fd, id, params);
+      const elseBlock = s.elseBlock ? rewriteReturnsCloned(s.elseBlock, fd, id, params) : s.elseBlock;
+      if (body !== s.body || elseBlock !== s.elseBlock) {
+        changed = true;
+        out.push(shadowStmt(s, {
+          body: body as StmtNS.Stmt[],
+          elseBlock: elseBlock as StmtNS.Stmt[] | null,
+        }));
+      } else {
+        out.push(s);
+      }
+    } else if (s instanceof StmtNS.While || s instanceof StmtNS.For) {
+      const body = rewriteReturnsCloned(s.body, fd, id, params);
+      if (body !== s.body) {
+        changed = true;
+        out.push(shadowStmt(s, { body: body as StmtNS.Stmt[] }));
+      } else {
+        out.push(s);
+      }
+    } else {
+      out.push(s);
+    }
+  }
+  return changed ? out : stmts;
+}
+
+export function memoWrappedBody(
+  fd: StmtNS.FunctionDef,
+  body: readonly StmtNS.Stmt[],
+  variant?: string,
+): readonly StmtNS.Stmt[] {
+  const id = memoIdFor(fd, variant);
   const params = fd.parameters.map(p => mkVar(fd, p.lexeme));
 
   const hasCall = mkCall(fd, MEMO_HAS, [mkStr(fd, id), ...params]);
-  // Fresh Variable nodes (new ids) reusing name Tokens — AST hint lookups
-  // key on node identity, so the args cannot alias the `params` array above.
   const getCall = mkCall(fd, MEMO_GET, [mkStr(fd, id), ...params.map(p => new ExprNS.Variable(p.startToken, p.endToken, p.name))]);
   const prelude = new StmtNS.If(
     fd.startToken,
@@ -43,8 +101,13 @@ function applyMemoizationWrap(unit: Unit): boolean {
     null,
   );
 
-  rewriteReturns(fd.body, fd, id, params);
-  fd.body.unshift(prelude);
+  return [prelude, ...rewriteReturnsCloned(body, fd, id, params)];
+}
+
+function applyMemoizationWrap(unit: Unit): boolean {
+  const fd = unit.funcAst;
+  if (!(fd instanceof StmtNS.FunctionDef)) return false;
+  fd.body = memoWrappedBody(fd, fd.body) as StmtNS.Stmt[];
   return true;
 }
 
@@ -67,28 +130,6 @@ function mkCall(fd: StmtNS.FunctionDef, fn: string, args: ExprNS.Expr[]): ExprNS
 }
 
 
-function rewriteReturns(
-  stmts: StmtNS.Stmt[],
-  fd: StmtNS.FunctionDef,
-  id: string,
-  params: readonly ExprNS.Variable[],
-): void {
-  for (const s of stmts) {
-    if (s instanceof StmtNS.Return) {
-      if (s.value !== null) {
-        const args: ExprNS.Expr[] = [mkStr(fd, id), ...params.map(p => new ExprNS.Variable(p.startToken, p.endToken, p.name)), s.value];
-        s.value = mkCall(fd, MEMO_PUT, args);
-      }
-    } else if (s instanceof StmtNS.If) {
-      rewriteReturns(s.body, fd, id, params);
-      if (s.elseBlock) rewriteReturns(s.elseBlock, fd, id, params);
-    } else if (s instanceof StmtNS.While || s instanceof StmtNS.For) {
-      rewriteReturns(s.body, fd, id, params);
-    }
-    // Nested FunctionDef / Assign / Analysis / etc. — do not descend.
-  }
-}
-
 // Shape-idempotent: once the body opens with the memo prelude, the
 // precondition fails and the sweep returns false. Matches the idempotency
 // model used by dead-branch and const-fold — no external wrapped-set needed.
@@ -110,8 +151,8 @@ export const memoizationRule: TransformRule = {
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
     if (hasMemoPrelude(fd)) return false;
     // runtimeCallAnalysis already saturates at RUNTIME_CALL_COUNT_SAT via its
-    // lattice join, so facts.read returns the capped count directly.
-    if (facts.read(runtimeCallAnalysis, fd.id) < MEMOIZATION_THRESHOLD) return false;
+    // lattice join, so readProfitability returns the capped count directly.
+    if (facts.readProfitability(runtimeCallAnalysis, fd.id) < MEMOIZATION_THRESHOLD) return false;
     if (facts.read(purityScopeAnalysis, fd.id) !== true) return false;
     return applyMemoizationWrap(unit);
   },

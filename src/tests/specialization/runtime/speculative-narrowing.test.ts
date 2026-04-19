@@ -26,11 +26,14 @@ import {
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import {
   observeRuntimeReturn,
+  runtimeParamAnalysis,
   runtimeWriteAnalysis,
   widenWriteObservation,
 } from "../../../specialization/framework/runtime-analyses";
 import { INT_BIT } from "../../../specialization/type-analysis/lattice";
-import { makeDfaQuery } from "../../../specialization";
+import { makeDfaQuery, makeJitObservers } from "../../../specialization";
+import { paramKey } from "../../../specialization/framework/key-spaces";
+import { entryGuardsFor } from "../../../specialization/entry-guards";
 import { hasOpcode } from "../../harness/opcode-assert";
 import { buildTestWorklist } from "../../utils";
 
@@ -74,11 +77,11 @@ def hot(x):
     worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
     worklist.drain();
 
-    expect(worklist.tryRead(runtimeWriteAnalysis, xRead.id)).toEqual({ kind: "number", value: 5 });
+    expect(worklist.tryRead(runtimeWriteAnalysis, xRead.id, ROOT_CONTEXT)).toEqual({ kind: "number", value: 5 });
 
     const widened = readExprFact(
       worklist.topology,
-      typeAnalysis, xRead.id);
+      typeAnalysis, xRead.id, ROOT_CONTEXT);
     // Speculative read: same typeAnalysis, per-unit speculation context that
     // the observation→context translator extended on the observe above.
     const narrowed = readExprFact(
@@ -581,6 +584,66 @@ def hot(mode):
   });
 });
 
+describe("svml-jit-analysis: entry-guarded specialized clone", () => {
+  test("a Python function with a param-conditioned branch benefits only after param profiling", () => {
+    const { ast, environments, worklist } = build(`
+def hot(x):
+    if x:
+        return 1
+    else:
+        return 999
+
+hot(True)
+hot(True)
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const unit = worklist.topology.unitOfFunctionId(fn.id)!;
+    const compiler = SVMLCompiler.fromProgramUnit(
+      ast,
+      environments,
+      makeDfaQuery(
+        worklist.topology,
+        nodeId => worklist.specContextForNode(nodeId),
+        unit => worklist.specContextFor(unit),
+      ),
+      worklist.registry,
+      worklist,
+    );
+    const program = compiler.compileProgram(ast);
+
+    const baselineArg1s = program.functions.flatMap(ir => Array.from(ir.arg1s));
+    expect(hasOpcode(program, OpCodes.GUARD_TRUTHY)).toBe(false);
+    expect(baselineArg1s).toContain(999);
+
+    const interpreter = new SVMLInterpreter(program, { sendOutput: () => {}, ...makeJitObservers(worklist) });
+    const jitAnalysis = makeJitAnalysis({
+      compiler,
+      interpreter,
+      specContextFor: unit => worklist.specContextFor(unit),
+    });
+    worklist.register(jitAnalysis);
+
+    interpreter.execute();
+    worklist.drain();
+
+    expect(worklist.tryRead(runtimeParamAnalysis, paramKey(fn.id, 0), ROOT_CONTEXT)).toEqual({
+      kind: "bool",
+      value: true,
+    });
+    expect(entryGuardsFor(unit, worklist.specContextFor(unit))).toContainEqual({
+      kind: "param-const",
+      paramIndex: 0,
+      value: true,
+    });
+
+    const currentProgram = (interpreter as unknown as { program: typeof program }).program;
+    expect(hasOpcode(currentProgram, OpCodes.GUARD_TRUTHY)).toBe(true);
+    const allArg1s = currentProgram.functions.flatMap(ir => Array.from(ir.arg1s));
+    expect(allArg1s).toContain(1);
+    expect(allArg1s).not.toContain(999);
+  });
+});
+
 describe("widenGuard contract", () => {
   test("throws when a guard fires with no registered provenance", () => {
     // Contract: every guard-emitting backend must call `registerGuard` at
@@ -622,8 +685,8 @@ describe("SVMLKindBits sanity", () => {
 describe("canonical context interning (observation-pipeline level)", () => {
   // Proves the payoff of context interning + canonical chain order at the
   // worklist observation-translator level: observations arriving in swapped
-  // orders converge on the same canonical Context, and the fact-store holds
-  // a single cell per (analysis, canonical-context, key).
+  // orders converge on the same canonical Context, and the analysis stores
+  // hold a single cell per (analysis, canonical-context, key).
 
   test("observations in swapped arrival order produce ref-equal spec contexts", () => {
     const code = `
@@ -669,7 +732,7 @@ def hot(x, y):
     expect(ctxA).toBe(ctxB);
   });
 
-  test("fact-store dedup: a single canonical context holds one cell, not two", () => {
+  test("analysis-store dedup: a single canonical context holds one cell, not two", () => {
     const code = `
 def hot(x, y):
     return x + y
@@ -688,7 +751,7 @@ def hot(x, y):
 
     // Re-observe the same values. Under canonical interning the context does
     // not shift (the translator's valueEqual check skips the extend) and no
-    // new fact-store cell is allocated.
+    // new analysis-store cell is allocated.
     const xBlock = worklist.topology.blockOfNode(xRead.id)!;
     const cellsBefore = worklist.readAll(typeAnalysis.env, ctxForward).size;
     worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });

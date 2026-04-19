@@ -18,6 +18,7 @@ import { TOP as TYPE_TOP } from "../../../specialization/type-analysis/lattice";
 import { MutableEnv } from "../../../specialization/framework/mutable-env";
 import type { Unit } from "../../../specialization/framework/function-unit";
 import { defineAnalysis, type Analysis, type AnalysisCtx } from "../../../specialization/framework/analysis";
+import { ROOT_CONTEXT } from "../../../specialization/framework/context";
 import { makeDfaQuery } from "../../../specialization";
 import { buildTestWorklist } from "../../utils";
 
@@ -66,7 +67,7 @@ f()
       polarity: "may",
       transfer(_ctx, key) {
         transferRuns++;
-        return runtimeCallAnalysis.store.read(key) ?? 0;
+        return runtimeCallAnalysis.store.read(key, ROOT_CONTEXT) ?? 0;
       },
     });
     worklist.register(observer);
@@ -95,9 +96,9 @@ f()
       tier: "analysis",
       polarity: "opaque",
       transfer(_ctx, u) {
-        const c = runtimeCallAnalysis.store.read(fDef.id) ?? 0;
+        const c = runtimeCallAnalysis.store.read(fDef.id, ROOT_CONTEXT) ?? 0;
         if (c <= MEMOIZATION_THRESHOLD) return undefined;
-        const prev = jitAnalysis.store.read(u);
+        const prev = jitAnalysis.store.read(u, ROOT_CONTEXT);
         if (prev === 1) return undefined;
         patchCalls++;
         return 1;
@@ -360,7 +361,7 @@ f(1)
     expect(baseline).toBeGreaterThanOrEqual(1);
 
     const block = unit.cfg.entry;
-    const currentConst = worklist.tryRead(constAnalysis.env, block);
+    const currentConst = worklist.tryRead(constAnalysis.env, block, ROOT_CONTEXT);
     expect(currentConst).toBeDefined();
 
     // Re-observe the exact same fact value. AnalysisStore.write joins with

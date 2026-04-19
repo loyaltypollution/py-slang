@@ -32,7 +32,14 @@ import type { Context } from "./context";
 import type { RawKind } from "./raw-value";
 import type { BlockFixpointAnalysis } from "./dfa-factory";
 import type { ProgramTopology } from "./topology";
-import { AnalysisStore } from "./analysis-store";
+import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
+
+export type SemanticAnalysis<K, V> = Analysis<K, V> & { polarity: "may" | "must" };
+export type OpaqueAnalysis<K, V> = Analysis<K, V> & { polarity: "opaque" };
+export type SemanticBlockFixpointAnalysis<L> = BlockFixpointAnalysis<L> & {
+  readonly env: SemanticAnalysis<any, any>;
+  readonly facts: SemanticAnalysis<any, ReadonlyMap<number, L>>;
+};
 
 /** Algebra over one stored value space `V`. `AnalysisStore` uses this
  *  surface for three store-level jobs: default value for unwritten
@@ -51,20 +58,20 @@ import { AnalysisStore } from "./analysis-store";
  *  an unwritten cell. `eq` is structural equality — typically the
  *  antisymmetric closure of `leq`, though callers may provide a faster
  *  equivalent implementation. */
-export interface Lattice<V> {
+export interface JoinSemiLattice<V> {
   readonly bottom: V;
   leq(a: V, b: V): boolean;
   join(a: V, b: V): V;
   eq(a: V, b: V): boolean;
 }
 
-/** Bounded lattice: adds `top` and `meet` to `Lattice<V>`. Required by DFA
+/** Bounded lattice: adds `top` and `meet` to `JoinSemiLattice<V>`. Required by DFA
  *  value-lattices — `meet` is the dual merge for "must" analyses, and `top`
  *  seeds MutableEnv slots when the generic block transfer widens (e.g. For
  *  loop targets). Cell-level base algebras over stored domains rarely need
  *  these; counters, sticky flags, and observation lattices often have no
  *  natural `top`/`meet`, so we keep the base interface permissive. */
-export interface BoundedLattice<V> extends Lattice<V> {
+export interface Lattice<V> extends JoinSemiLattice<V> {
   readonly top: V;
   meet(a: V, b: V): V;
 }
@@ -75,8 +82,8 @@ export interface BoundedLattice<V> extends Lattice<V> {
  *  often the same object as the semantic lattice; for lifted analyses it
  *  is the outer/store algebra over the stored summary domain. Keeping a
  *  separate name makes that role explicit even when the runtime shape is
- *  still `Lattice<V>`. */
-export interface StoreAlgebra<V> extends Lattice<V> {}
+ *  still `JoinSemiLattice<V>`. */
+export interface StoreAlgebra<V> extends JoinSemiLattice<V> {}
 
 /** An edge into an analysis. Two shapes, discriminated by the mandatory `on` tag:
  *
@@ -110,8 +117,9 @@ export interface FactEdge<K> {
    *  through loops (a back-edge carrying a stale widened fact absorbs the
    *  narrowing from the entry block), so we restart from a clean slate.
    *
-   *  Writes/evicts go directly through `someAnalysis.store.evict(key, ctx.currentContext)`
-   *  or similar. Reads use `ctx.read(analysis, key)` etc. */
+   *  Writes/evicts go through framework-owned store helpers at
+   *  `ctx.currentContext` or similar. Reads use `ctx.read(analysis, key)`
+   *  etc. */
   effect?(ctx: AnalysisCtx, key: unknown): void;
   /** Which context the woken keys should be enqueued under.
    *   - `"same-context"` (default): enqueue at `ctx.currentContext`, i.e. the
@@ -197,15 +205,19 @@ export interface Analysis<K, V> {
    *  lifted/synthetic store domains state their default directly instead of
    *  relying on readers to infer it from `polarity` or semantic meaning. */
   readonly emptyValue?: V;
-  /** This analysis's cells. Context-partitioned, algebra-gated. See
-   *  `./analysis-store.ts`. Storage is owned by the Analysis, not by an
-   *  external registry — `factStore.read(analysis, ...)` is a thin facade
-   *  over `analysis.store.read(...)` and is slated for removal once every
-   *  caller consumes the store directly.
+  /** This analysis's cells. Publicly exposed as a read-only surface:
+   *  callers can inspect `read` / `tryRead` / `readAll`, but cannot mutate
+   *  or enumerate context partitions through the typed API. Framework-owned
+   *  mutation/cleanup paths go through helpers in `analysis-store.ts` so
+   *  listener fan-out remains centralized in the worklist.
+   *
+   *  Storage is owned by the Analysis itself; there is no shared external
+   *  registry. Consumers reach cells via `analysis.store.read(key, context)`,
+   *  or — for transforms — through the ROOT-bound `TransformFactView`.
    *
    *  Construction is handled by `defineAnalysis({...})` so declarations
    *  stay literal-shaped without boilerplate. */
-  readonly store: AnalysisStore<K, V>;
+  readonly store: ReadonlyAnalysisStore<K, V>;
   readonly edges: ReadonlyArray<EdgeSpec<K>>;
   /** Priority tier. Runtime observations settle before analyses within a
    *  `processQueue` drain. Transforms are no longer analyses — see
@@ -232,8 +244,8 @@ export interface Analysis<K, V> {
    *  `"opaque"` case for non-DFA analyses. */
   readonly polarity: "may" | "must" | "opaque";
   /** Optional hook invoked at every `Worklist.observe` for this analysis,
-   *  BEFORE the fact-store write. Fires once per observe call, including
-   *  repeats the fact store may collapse — appropriate for
+   *  BEFORE the store write. Fires once per observe call, including
+   *  repeats the store algebra may collapse — appropriate for
    *  policies that count observation calls (count-based speculation) and
    *  for driving the observation→context translator. The worklist has no
    *  analysis-identity branches in `observe`; whether an observation
@@ -241,9 +253,9 @@ export interface Analysis<K, V> {
    *  analysis declares here. */
   onObserve?(
     host: {
-      handleObservationForSpec(
-        source: Analysis<number, RawKind>,
-        key: number,
+      handleObservationForSpec<K>(
+        source: Analysis<K, RawKind>,
+        key: K,
         observed: RawKind,
       ): void;
     },
@@ -366,7 +378,7 @@ export interface AnalysisCtx {
   /** Write at `currentContext` AND publish a `FactChange` through the
    *  worklist's dispatch list. Use this for paired-cell side-effect writes
    *  (e.g. the DFA factory writing `.facts` from inside `.env`'s transfer):
-   *  calling `analysis.store.write` directly would skip listener fan-out,
+   *  bypassing the worklist's write path would skip listener fan-out,
    *  leaving subscribers unwoken. Transfer return values flow through the
    *  same dispatch automatically — `ctx.write` is for cases that can't
    *  express themselves through return. Returns `true` iff the cell
@@ -379,21 +391,27 @@ export interface AnalysisCtx {
 /** Root-only fact surface exposed to transforms. Unconditional AST rewrites
  *  must not consult speculative/non-ROOT cells, so the transform contract is
  *  intentionally narrower than `AnalysisCtx` — no `write`, no per-context
- *  reads. Every read delegates to `analysis.store.*` at ROOT_CONTEXT.
+ *  reads. Semantic reads (`read` / `tryRead` / `readAll` / `readExprFact`)
+ *  only accept may/must analyses. Opaque analyses (runtime observations,
+ *  profitability counters) must go through the explicitly named
+ *  `readProfitability` surface so policy evidence cannot masquerade as
+ *  semantic proof by sharing the same method name.
  *
- *  Also carries `topology` so transforms that need node→block resolution
- *  (e.g. `readExprFact`, per-node fact lookups inside an expression visitor)
- *  go through the same surface every other consumer uses. */
+ *  Node→block bridging is exposed only through the root-bound helper below.
+ *  That keeps expression-fact reads on the same root-only surface instead of
+ *  handing transforms the raw `topology` object they could pair with ad hoc
+ *  helper calls. */
 export interface TransformFactView {
-  read<K, V>(analysis: Analysis<K, V>, key: K): V;
-  tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined;
-  readAll<K, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V>;
-  readonly topology: ProgramTopology;
+  read<K, V>(analysis: SemanticAnalysis<K, V>, key: K): V;
+  tryRead<K, V>(analysis: SemanticAnalysis<K, V>, key: K): V | undefined;
+  readAll<K, V>(analysis: SemanticAnalysis<K, V>): ReadonlyMap<K, V>;
+  readExprFact<L>(analysis: SemanticBlockFixpointAnalysis<L>, nodeId: number): L | undefined;
+  readProfitability<K, V>(analysis: OpaqueAnalysis<K, V>, key: K): V;
 }
 
 /** One-shot or cascading imperative AST sweep gated on analyses. Transforms
  *  are not `Analysis<_, _>` — they have no lattice, no transfer, and do not
- *  participate in the fact-store fixpoint. Worklist dirties a rule on unit
+ *  participate in the analysis fixpoint. Worklist dirties a rule on unit
  *  mint / rebuild and on writes to any analysis declared in `edges`; the rule's
  *  `sweep` runs once per dirty unit after `processQueue` drains, and units
  *  that rewrote are scheduled for CFG rebuild. Idempotency across rebuilds
@@ -429,9 +447,13 @@ export interface TransformRule {
  *  Every plain-Analysis declaration site (runtimeWriteAnalysis,
  *  purityScopeAnalysis, the block-DFA factory's env/facts pair, …) goes
  *  through this helper so storage ownership is uniform. */
-export function defineAnalysis<K, V>(
-  spec: Omit<Analysis<K, V>, "store">,
-): Analysis<K, V> {
+export function defineAnalysis<
+  K,
+  V,
+  P extends Analysis<K, V>["polarity"],
+>(
+  spec: Omit<Analysis<K, V>, "store" | "polarity"> & { polarity: P },
+): Analysis<K, V> & { polarity: P } {
   return {
     ...spec,
     store: new AnalysisStore<K, V>(spec.storeAlgebra, spec.emptyValue),

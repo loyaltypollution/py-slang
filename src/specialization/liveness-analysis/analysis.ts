@@ -216,7 +216,7 @@ export function liveOutOf(block: BasicBlock): MutableEnv<LiveVal> {
  *  dead-store transform to decide per-assignment.
  *
  *  Returned live-outs are fresh sets safe for the caller to inspect; they
- *  do not alias any fact-store state. */
+ *  do not alias any analysis-store state. */
 export function perStatementLiveOut(
   block: BasicBlock,
   slotLookup: SlotLookup,

@@ -26,8 +26,9 @@ function build(code: string) {
   return { ast, environments, reactive };
 }
 
-// Runtime string assignment must reach the fact store through the observe sink
-// in both engines. Parameterized so each engine's wire-up is a single row.
+// Runtime string assignment must reach runtimeWriteAnalysis through the
+// observe sink in both engines. Parameterized so each engine's wire-up is
+// a single row.
 describe.each([
   {
     engine: "CSE",
@@ -114,11 +115,11 @@ describe("observation: idempotence", () => {
     const assign = ast.statements[0] as StmtNS.Assign;
     const before = readExprFact(
       reactive.topology,
-      typeAnalysis, assign.value.id);
+      typeAnalysis, assign.value.id, ROOT_CONTEXT);
     observeRuntimeWrite(reactive, assign.value.id, 42);
     const after = readExprFact(
       reactive.topology,
-      typeAnalysis, assign.value.id);
+      typeAnalysis, assign.value.id, ROOT_CONTEXT);
     const specCtx = reactive.specContextForNode(assign.value.id);
     const spec = readExprFact(
       reactive.topology,
@@ -191,7 +192,7 @@ f(41)
     reactive.drain();
 
     expect(returns).toContainEqual({ scopeId: fDef.id, value: 42 });
-    const observed = reactive.tryRead(runtimeReturnAnalysis, fDef.id);
+    const observed = reactive.tryRead(runtimeReturnAnalysis, fDef.id, ROOT_CONTEXT);
     expect(observed).toBeDefined();
     expect(observed!.kind).toBe("number");
 

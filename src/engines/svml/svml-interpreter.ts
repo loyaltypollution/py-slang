@@ -60,14 +60,18 @@ export class SVMLInterpreter {
   private maxInstructionLimit: number = 1000000;
 
   /**
-   * Fact-store observers invoked at STORE / CALL sites. `observeNodeWrite`
-   * feeds `runtimeWriteAnalysis`; `observeScopeCall` feeds `runtimeCallAnalysis`.
-   * Defaults are no-ops for standalone bytecode execution;
-   * `PySvmlJitEvaluator` wires them to `worklist.observe(...)` calls.
+   * Runtime-observation hooks invoked at STORE / CALL / function-entry sites.
+   * `observeNodeWrite` feeds `runtimeWriteAnalysis`; `observeScopeCall`
+   * feeds `runtimeCallAnalysis`; `observeScopeReturn` feeds
+   * `runtimeReturnAnalysis`; `observeParamEntry` feeds the param-scoped
+   * entry-specialization lane. Defaults are no-ops for standalone bytecode
+   * execution; `PySvmlJitEvaluator` wires them to `worklist.observe(...)`
+   * calls.
    */
   private observeNodeWrite: (nodeId: number, value: unknown) => void = () => {};
   private observeScopeCall: (scopeId: number) => void = () => {};
   private observeScopeReturn: (scopeId: number, value: unknown) => void = () => {};
+  private observeParamEntry: (scopeId: number, paramIndex: number, value: unknown) => void = () => {};
 
   constructor(
     program: SVMLProgram,
@@ -79,6 +83,7 @@ export class SVMLInterpreter {
       observeNodeWrite?: (nodeId: number, value: unknown) => void;
       observeScopeCall?: (scopeId: number) => void;
       observeScopeReturn?: (scopeId: number, value: unknown) => void;
+      observeParamEntry?: (scopeId: number, paramIndex: number, value: unknown) => void;
     },
   ) {
     this.program = program;
@@ -94,6 +99,7 @@ export class SVMLInterpreter {
       if (options.observeNodeWrite) this.observeNodeWrite = options.observeNodeWrite;
       if (options.observeScopeCall) this.observeScopeCall = options.observeScopeCall;
       if (options.observeScopeReturn) this.observeScopeReturn = options.observeScopeReturn;
+      if (options.observeParamEntry) this.observeParamEntry = options.observeParamEntry;
     }
   }
 
@@ -944,6 +950,11 @@ export class SVMLInterpreter {
 
     // Observation: fire observeCall (caller still current) before the transfer.
     this.dispatchCallSite(pc, funcDef);
+    if (funcDef.scopeKey instanceof StmtNS.FunctionDef) {
+      for (let i = 0; i < args.length; i++) {
+        this.observeParamEntry(funcDef.scopeKey.id, i, args[i]);
+      }
+    }
 
     if (isTailCall) {
       this.currentFrame.closure = closure;

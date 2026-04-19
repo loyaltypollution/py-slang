@@ -19,3 +19,12 @@ export {
   makeJitObservers,
   widenWriteObservation,
 } from "./framework/runtime-analyses";
+export {
+  type EntryGuard,
+  entryGuardsFor,
+  guardKeyFor,
+} from "./entry-guards";
+export {
+  hasSpecializedBody,
+  specializedBodyFor,
+} from "./speculative-clone";

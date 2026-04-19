@@ -102,7 +102,7 @@ export function absJoin(a: AbsVal, b: AbsVal): AbsVal {
   if (a.kind === "unknown" || b.kind === "unknown") return UNKNOWN;
   // Closure sub-lattice: monotonically refine `undefined` → `defined`, so
   // the `pending → pure` transition from `purityScopeAnalysis` survives the
-  // fact-store's monotone join. `true` vs `false` at the same functionId is a
+  // store's monotone join. `true` vs `false` at the same functionId is a
   // genuine contestation → Unknown. Different functionIds → Unknown.
   if (a.kind === "closure" && b.kind === "closure" && a.functionId === b.functionId) {
     if (a.pure === b.pure) return a;

@@ -7,7 +7,7 @@
 // analysis set is chosen, not inside the generic scheduler. The framework
 // exposes `readExprFact` + `ProgramTopology`; this module assembles a
 // typed-accessor object on top. Reads go directly through
-// `someAnalysis.store.tryRead(...)` — no FactStore middleman.
+// `someAnalysis.store.tryRead(...)` — no shared store middleman.
 
 import type { Unit } from "./framework/function-unit";
 import type { FunctionId, NodeId } from "./framework/key-spaces";
@@ -23,7 +23,7 @@ import {
   type EntryRequirement,
 } from "./type-requirement-analysis/analysis";
 
-/** Transform-safe projection of the DFA fact-store: only reads that are
+/** Transform-safe projection of the current DFA facts: only reads that are
  *  sound to consume during AST mutation. Excludes speculative readers —
  *  a narrowed fact at a node can become ⊤ on the next observation (deopt),
  *  and a transform that rewrote the AST based on the narrowed fact cannot
@@ -75,8 +75,8 @@ export function makeDfaQuery(
   specContextForUnit: (unit: Unit) => Context = () => ROOT_CONTEXT,
 ): DfaQuery {
   return {
-    typeOf: id => readExprFact(topology, typeAnalysis, id),
-    constOf: id => readExprFact(topology, constAnalysis, id),
+    typeOf: id => readExprFact(topology, typeAnalysis, id, ROOT_CONTEXT),
+    constOf: id => readExprFact(topology, constAnalysis, id, ROOT_CONTEXT),
     speculativeTypeOf: id =>
       readExprFact(topology, typeAnalysis, id, specContextForNode(id)),
     speculativeConstOf: id =>

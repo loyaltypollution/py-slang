@@ -12,7 +12,13 @@ export interface SlotInfo {
   isModuleGlobal: boolean;
 }
 
-export type SlotLookup = (token: Token) => SlotInfo;
+/** Callable: token → SlotInfo. Also carries `slotCount` — the number of
+ *  local slots the table was built with (parameters + other locals). Analyses
+ *  that need to enumerate every slot at a program point (e.g. forward-must
+ *  analyses whose entry seed must initialize every slot to avoid
+ *  absent-treated-as-top collisions at CFG merges) read this directly instead
+ *  of trying to recover the count from env traversal. */
+export type SlotLookup = ((token: Token) => SlotInfo) & { readonly slotCount: number };
 
 /** A slot is "local" iff it's a real variable (not a primitive binding) at the
  *  current function's envLevel. Shared across const/type/purity analyses and
@@ -53,7 +59,7 @@ export function buildSlotTable(env: Environment, paramNames: string[]): SlotLook
     }
   }
 
-  return (token: Token): SlotInfo => {
+  const lookup = (token: Token): SlotInfo => {
     const name = token.lexeme;
 
     const local = slots.get(name);
@@ -78,4 +84,6 @@ export function buildSlotTable(env: Environment, paramNames: string[]): SlotLook
     const envLevel = env.lookupNameByString(name);
     return { slot: 0, envLevel, isPrimitive: false, isModuleGlobal };
   };
+
+  return Object.assign(lookup, { slotCount: nextSlot });
 }

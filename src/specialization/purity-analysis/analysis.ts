@@ -21,8 +21,15 @@ import {
 } from "../framework/dfa-factory";
 import type { Unit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
-import type { EdgeSpec, Lattice, Analysis, AnalysisCtx } from "../framework/analysis";
+import type {
+  EdgeSpec,
+  JoinSemiLattice,
+  Analysis,
+  AnalysisCtx,
+  SemanticAnalysis,
+} from "../framework/analysis";
 import { addEdge, defineAnalysis } from "../framework/analysis";
+import { storeEvict } from "../framework/analysis-store";
 import { ROOT_CONTEXT } from "../framework/context";
 import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
 import {
@@ -196,7 +203,7 @@ function transferCall(expr: ExprNS.Call, state: BlockState): AbsVal {
     isClosureCall && (calleeAbs as { pure: boolean | undefined }).pure === false;
   // Pending closure: inner purity not yet determined. Defer judgment —
   // marking impure here would lock this block's summary under the
-  // monotone-join fact-store, blocking a later refinement to "pure."
+  // monotone-join store algebra, blocking a later refinement to "pure."
   const isPendingClosureCall =
     isClosureCall && (calleeAbs as { pure: boolean | undefined }).pure === undefined;
 
@@ -353,14 +360,14 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
 }
 
 // AbsVal has no natural ⊥ (slot absence in MutableEnv represents "not yet
-// assigned") and no natural meet. Typed as plain `Lattice` — the DfaConfig
+// assigned") and no natural meet. Typed as plain `JoinSemiLattice` — the DfaConfig
 // discriminated union refuses to pair this with `mergeKind: "must"`, so
 // `meet`/`top` can be honestly absent rather than fabricated-and-thrown.
 // `bottom` is the structural `{kind:"bottom"}` variant — the true lattice
 // minimum. MutableEnv represents ⊥ as slot absence and never surfaces this
 // value today, but keeping the field honest avoids a latent miscompilation
 // if any consumer ever reads a missing cell through this lattice.
-const absValLattice: Lattice<AbsVal> = {
+const absValLattice: JoinSemiLattice<AbsVal> = {
   bottom: BOTTOM,
   leq: absLeq,
   join: absJoin,
@@ -407,7 +414,7 @@ const EMPTY_EXPR_FACTS: ReadonlyMap<number, AbsVal> = new Map();
 // Outer projection: FunctionDef.id → boolean | undefined.
 // `undefined` means "not yet analyzed" (no exit fact written). Memoization
 // only fires on strict `=== true`, so both `false` and `undefined` gate it off.
-const outerLattice: Lattice<boolean | undefined> = {
+const outerLattice: JoinSemiLattice<boolean | undefined> = {
   bottom: undefined,
   // Total order: undefined ⊏ true ⊏ false. `false` (seen-and-impure) is ⊤;
   // `true` is the pure verdict; `undefined` is "unseen". Join = `a && b`
@@ -423,7 +430,7 @@ const outerLattice: Lattice<boolean | undefined> = {
   eq: (a, b) => a === b,
 };
 
-export const purityScopeAnalysis: Analysis<number, boolean | undefined> = defineAnalysis({
+export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> = defineAnalysis({
   id: Symbol("purityScopeAnalysis"),
   debugName: "purityScopeAnalysis",
   keySpace: "functionId",
@@ -460,7 +467,7 @@ export const purityScopeAnalysis: Analysis<number, boolean | undefined> = define
       effect: (_ctx, unit) => {
         const fd = unit.funcAst;
         if (fd instanceof StmtNS.FunctionDef) {
-          purityScopeAnalysis.store.evict(fd.id, ROOT_CONTEXT);
+          storeEvict(purityScopeAnalysis.store, fd.id, ROOT_CONTEXT);
         }
       },
     },

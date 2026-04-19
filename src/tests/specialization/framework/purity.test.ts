@@ -14,6 +14,7 @@ import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import { Worklist } from "../../../specialization/framework/worklist";
 import { purityScopeAnalysis } from "../../../specialization/purity-analysis/analysis";
+import { ROOT_CONTEXT } from "../../../specialization/framework/context";
 
 function purityOf(code: string, fnName: string): boolean | undefined {
   const script = code + "\n";
@@ -24,7 +25,7 @@ function purityOf(code: string, fnName: string): boolean | undefined {
 
   for (const stmt of ast.statements) {
     if (stmt instanceof StmtNS.FunctionDef && stmt.name.lexeme === fnName) {
-      return worklist.tryRead(purityScopeAnalysis, stmt.id);
+      return worklist.tryRead(purityScopeAnalysis, stmt.id, ROOT_CONTEXT);
     }
   }
   throw new Error(`FunctionDef ${fnName} not found`);

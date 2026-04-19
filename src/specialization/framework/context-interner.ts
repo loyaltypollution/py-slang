@@ -3,7 +3,7 @@
 // `extendContext` used to allocate a fresh `Object.freeze({...})` per call; two
 // observations producing the same assumption chain produced two distinct Context
 // objects, fragmenting every Context-keyed data structure downstream
-// (fact-store cells, JIT IR cache, worklist pending-set). This interner
+// (analysis-store cells, JIT IR cache, worklist pending-set). This interner
 // canonicalizes:
 //
 //   1. Structural equality ⇒ reference equality. Repeating an observation

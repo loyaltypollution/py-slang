@@ -3,9 +3,15 @@ import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { ConstLattice } from "../../specialization/const-analysis/lattice";
 import type { TypeLattice } from "../../specialization/type-analysis/lattice";
 import type { Unit } from "../../specialization/framework/function-unit";
+import type { EntryGuard } from "../../specialization/entry-guards";
 import type { DfaQuery } from "../../specialization/dfa-query";
 import type { GuardRegistrar } from "../../specialization/framework/worklist";
-import { constNarrowing, returnKindNarrowing } from "../../specialization/framework/dfa-analyses";
+import {
+  constNarrowing,
+  paramConstNarrowing,
+  paramTypeNarrowing,
+  returnKindNarrowing,
+} from "../../specialization/framework/dfa-analyses";
 import { ScopeIndexMap } from "./scope-index-map";
 import {
   BOOL_BIT,
@@ -347,6 +353,67 @@ export class SVMLCompiler
     return unsupported === 0 && mask !== 0 ? mask : undefined;
   }
 
+  private emitLiteralGuardValue(value: unknown): boolean {
+    if (value === null) {
+      this.builder.emitNullary(OpCodes.LGCN);
+      return true;
+    }
+    switch (typeof value) {
+      case "boolean":
+        this.builder.emitNullary(value ? OpCodes.LGCB1 : OpCodes.LGCB0);
+        return true;
+      case "number":
+        if (Number.isInteger(value) && I32_MIN <= value && value <= I32_MAX) {
+          this.builder.emitUnary(OpCodes.LGCI, value);
+        } else {
+          this.builder.emitUnary(OpCodes.LGCF64, value);
+        }
+        return true;
+      case "string":
+        this.builder.emitUnary(OpCodes.LGCS, value);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private emitDirectEntryGuards(funcAst: StmtNS.FunctionDef, guards: ReadonlyArray<EntryGuard>): void {
+    if (funcAst.body.length === 0 || guards.length === 0) return;
+    for (const guard of guards) {
+      if (guard.kind === "param-type") {
+        if (SVMLCompiler.typeToGuardMask(guard.ty) === undefined) return;
+      } else if (
+        guard.value !== null &&
+        typeof guard.value !== "boolean" &&
+        typeof guard.value !== "number" &&
+        typeof guard.value !== "string"
+      ) {
+        return;
+      }
+    }
+    const guardNodeId = funcAst.body[0].id;
+    for (const guard of guards) {
+      this.builder.emitUnary(OpCodes.LDLG, guard.paramIndex);
+      if (guard.kind === "param-type") {
+        const mask = SVMLCompiler.typeToGuardMask(guard.ty)!;
+        this.builder.emitBinary(OpCodes.GUARD_KIND, guardNodeId, mask);
+        this.guardRegistrar?.registerGuard(guardNodeId, {
+          narrowing: paramTypeNarrowing,
+          key: `${funcAst.id}:${guard.paramIndex}`,
+        });
+        this.builder.emitNullary(OpCodes.POPG);
+        continue;
+      }
+      this.emitLiteralGuardValue(guard.value);
+      this.builder.emitNullary(OpCodes.EQG);
+      this.builder.emitBinary(OpCodes.GUARD_TRUTHY, guardNodeId, 1);
+      this.guardRegistrar?.registerGuard(guardNodeId, {
+        narrowing: paramConstNarrowing,
+        key: `${funcAst.id}:${guard.paramIndex}`,
+      });
+    }
+  }
+
   private emitEntryRequirementGuards(funcAst: StmtNS.FunctionDef): void {
     if (funcAst.body.length === 0 || this.entryRequirementBySlot.size === 0) return;
     // All-or-nothing: if any provable requirement is unrepresentable as a
@@ -372,7 +439,15 @@ export class SVMLCompiler
     }
   }
 
-  compileFunction(unit: Unit): SVMLIR {
+  /** Compile a single FunctionDef unit.
+   *  `specializedBody` — when provided, compiled in place of `funcAst.body`.
+   *  The caller is responsible for ensuring the body is a valid speculative
+   *  clone (NodeId-shadow policy, no topology insertion). */
+  compileFunction(
+    unit: Unit,
+    specializedBody?: ReadonlyArray<StmtNS.Stmt>,
+    directEntryGuards?: ReadonlyArray<EntryGuard>,
+  ): SVMLIR {
     const funcAst = unit.funcAst;
     if (!(funcAst instanceof StmtNS.FunctionDef)) {
       throw new Error(
@@ -417,8 +492,9 @@ export class SVMLCompiler
       subCompiler.entryRequirementBySlot = new Map(entryReqs.provable);
     }
 
+    subCompiler.emitDirectEntryGuards(funcAst, directEntryGuards ?? []);
     subCompiler.emitEntryRequirementGuards(funcAst);
-    subCompiler.compileStatements(funcAst.body);
+    subCompiler.compileStatements((specializedBody ?? funcAst.body) as StmtNS.Stmt[]);
     builder.emitNullary(OpCodes.RETG);
 
     return builder.build();

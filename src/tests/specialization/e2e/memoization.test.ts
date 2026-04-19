@@ -10,6 +10,7 @@ import {
   memoPut,
 } from "../../../runtime/memo";
 import { runtimeCallAnalysis } from "../../../specialization/framework/runtime-analyses";
+import { ROOT_CONTEXT } from "../../../specialization/framework/context";
 import type { Unit } from "../../../specialization/framework/function-unit";
 import type { Worklist } from "../../../specialization/framework/worklist";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
@@ -54,9 +55,9 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
     const { ast, reactive } = setup("def f(x):\n    return x + 1");
     reactive.drain();
     const fd = findFunctionDef(ast, "f");
-    expect(reactive.tryRead(runtimeCallAnalysis, fd.id)).toBeUndefined();
+    expect(reactive.tryRead(runtimeCallAnalysis, fd.id, ROOT_CONTEXT)).toBeUndefined();
     observeCallsTo(reactive, fd, 3);
-    expect(reactive.tryRead(runtimeCallAnalysis, fd.id)).toBe(3);
+    expect(reactive.tryRead(runtimeCallAnalysis, fd.id, ROOT_CONTEXT)).toBe(3);
   });
 
   test("below threshold: body unchanged", () => {

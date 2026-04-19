@@ -7,17 +7,17 @@
  * and the FactStore delete, they are anchored on `AnalysisStore` directly.
  */
 import { AnalysisStore } from "../../../specialization/framework/analysis-store";
-import type { Lattice, AssumptionHandle } from "../../../specialization/framework/analysis";
+import type { JoinSemiLattice, AssumptionHandle } from "../../../specialization/framework/analysis";
 import { ROOT_CONTEXT, extendContext } from "../../../specialization/framework/context";
 
-const intMaxLattice: Lattice<number> = {
+const intMaxLattice: JoinSemiLattice<number> = {
   bottom: 0,
   leq: (a, b) => a <= b,
   join: (a, b) => Math.max(a, b),
   eq: (a, b) => a === b,
 };
 
-const firedLattice: Lattice<"fired"> = {
+const firedLattice: JoinSemiLattice<"fired"> = {
   bottom: "fired",
   leq: () => true,
   join: () => "fired",
@@ -27,7 +27,7 @@ const firedLattice: Lattice<"fired"> = {
 // Must-style combine regression fixture: the incoming value may be `<= prev`
 // under the exposed order and still need to advance the stored cell because
 // the declared combine is `min`.
-const intMinCombine: Lattice<number> = {
+const intMinCombine: JoinSemiLattice<number> = {
   bottom: Number.POSITIVE_INFINITY,
   leq: (a, b) => a <= b,
   join: (a, b) => Math.min(a, b),

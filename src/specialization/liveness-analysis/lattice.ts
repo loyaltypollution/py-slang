@@ -1,4 +1,4 @@
-import type { BoundedLattice } from "../framework/analysis";
+import type { Lattice } from "../framework/analysis";
 
 /** Trivial two-point liveness lattice.
  *
@@ -14,8 +14,8 @@ export type LiveVal = true;
 
 export const LIVE: LiveVal = true;
 
-export const livenessLattice: BoundedLattice<LiveVal> = {
-  // Nominal bottom for the BoundedLattice contract. Absence in an env is the
+export const livenessLattice: Lattice<LiveVal> = {
+  // Nominal bottom for the Lattice contract. Absence in an env is the
   // real operational bottom; this value is never written into an env.
   bottom: LIVE,
   top: LIVE,

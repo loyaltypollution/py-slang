@@ -76,7 +76,7 @@
 //
 // ===== end AUDIT =====
 //
-// Reads compile-relevant fact-store signals (structural + DFA block
+// Reads compile-relevant per-analysis-store signals (structural + DFA block
 // facts) and, on lattice-change, recompiles the affected FunctionDef and
 // patches its entry in the interpreter's function table. Side-effect
 // idempotence: patchFunction only fires when the produced IR differs
@@ -92,23 +92,29 @@
 // next transfer hits the cache. Forward navigation (new observation → new
 // child context) always misses and compiles.
 //
-// callCount / purity are deliberately NOT tuple inputs: compileFunction does
-// not read them. Their effect on the emitted IR is indirect — memoizationRule
-// reads them and, on fire, wraps the body. That wrap is a structural edit
-// which propagates to jitAnalysis via the worklist's `onUnitRebuilt` hook.
-// Including them directly would force a recompile on every observed call (up
-// to RUNTIME_CALL_COUNT_SAT) for a function whose IR does not change, which
-// dominated runtime on tight hot loops.
+// Historically callCount / purity were deliberately NOT tuple inputs: the
+// shared-AST memoization transform read them indirectly and a call-count edge
+// here would have forced pointless recompiles. With speculative cloned-body
+// memoization, hotness can now shape the emitted IR for entry-specialized
+// contexts, so `runtimeCallAnalysis` is allowed to wake the JIT. The transfer
+// still suppresses patching on structurally-equal IR.
 
 import { StmtNS } from "../ast-types";
 import type { BasicBlock } from "../specialization/framework/cfg";
 import { ROOT_CONTEXT, type Context } from "../specialization/framework/context";
 import type { Unit } from "../specialization/framework/function-unit";
 import { defineAnalysis, type Analysis, type AnalysisCtx, type EdgeSpec, type Narrowing } from "../specialization/framework/analysis";
+import { storeEvict } from "../specialization/framework/analysis-store";
 import { JIT_RELEVANT_NARROWINGS } from "../specialization/framework/dfa-analyses";
+import { runtimeCallAnalysis } from "../specialization/framework/runtime-analyses";
 import type { SVMLCompiler } from "../engines/svml/svml-compiler";
 import type { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { SVMLIR } from "../engines/svml/types";
+import {
+  contextIsEntrySpecializable,
+  directParamEntryGuardsFor,
+} from "../specialization/entry-guards";
+import { specializedBodyFor } from "../specialization/speculative-clone";
 
 /** Snapshot of the inputs that determined a unit's compiled IR at some
  *  past compile under a specific context. Block-fact entries are
@@ -202,11 +208,18 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
   // against the cache entry for the unit's active context.
   //
   // `contextPolicy: "root"` on every fact edge: jit cells are Unit-
-  // keyed and the fact-store cell exists only at ROOT (holding the
+  // keyed and the JIT analysis cell exists only at ROOT (holding the
   // currently-dispatched IR). A non-ROOT wake would enqueue jit at that
   // non-ROOT context, creating an orphan cell no one reads. The "root"
-  // crossing lands the recompile request on the single fact-store cell per
-  // unit; the per-context cache lives outside the fact store.
+  // crossing lands the recompile request on the single ROOT JIT cell per
+  // unit; the per-context cache lives outside the analysis store.
+  //
+  // Two edges per narrowing: one on `.env`, one on `.facts`. Each block DFA
+  // is a paired-cell analysis since the DfaBlockFact split; either cell can
+  // advance independently (e.g. an observation narrows an expr fact without
+  // shifting the block's OUT env). The worklist's `pendingKeysByAnalysis`
+  // dedup keeps a single JIT transfer per unit per drain, so the edge-count
+  // doubling is idempotent at dispatch time.
   const edges: EdgeSpec<Unit>[] = narrowings.flatMap(n =>
     cellsOfNarrowing(n).map(cell => ({
       on: "fact" as const,
@@ -216,6 +229,15 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
     })),
   );
   edges.push(
+    {
+      on: "fact",
+      analysis: runtimeCallAnalysis,
+      wake: (ctx, functionId) => {
+        const u = ctx.topology.unitOfFunctionId(functionId as number);
+        return u !== undefined && u.funcAst instanceof StmtNS.FunctionDef ? [u] : [];
+      },
+      contextPolicy: "root",
+    },
     {
       on: "mint",
       wake: (_ctx, unit) =>
@@ -255,7 +277,7 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
     edges,
     tier: "analysis",
     polarity: "opaque",
-    transfer(_ctx: AnalysisCtx, unit: Unit): SVMLIR | undefined {
+    transfer(ctx: AnalysisCtx, unit: Unit): SVMLIR | undefined {
       const scope = unit.funcAst;
       if (!(scope instanceof StmtNS.FunctionDef)) return undefined;
       const index = compiler.indexOf(scope);
@@ -288,7 +310,14 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
         return reusable.ir;
       }
 
-      const newCode = compiler.compileFunction(unit);
+      const directEntryGuards =
+        contextIsEntrySpecializable(unit, specContext)
+          ? directParamEntryGuardsFor(unit, specContext)
+          : undefined;
+      const specBody = directEntryGuards !== undefined
+        ? specializedBodyFor(unit, specContext, ctx.topology)
+        : undefined;
+      const newCode = compiler.compileFunction(unit, specBody, directEntryGuards);
       perContext.set(specContext, {
         snapshot: captureSnapshot(unit, specContext, narrowings),
         ir: newCode,
@@ -305,7 +334,7 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
   (jitAnalysis.edges as EdgeSpec<Unit>[]).push({
     on: "retire",
     effect: (_ctx, unit) => {
-      jitAnalysis.store.evict(unit, ROOT_CONTEXT);
+      storeEvict(jitAnalysis.store, unit, ROOT_CONTEXT);
       cache.delete(unit);
     },
   });
@@ -353,7 +382,7 @@ function snapshotMatches(
  *  unit's current relevant facts under `specContext`, even if that artifact
  *  was originally cached under a different speculation context. Cross-context
  *  reuse compares semantically rather than by reference: identical fixpoints
- *  in two contexts are stored as distinct fact-store cells, so the exact-hit
+ *  in two contexts are stored as distinct analysis-store cells, so the exact-hit
  *  identity check in `snapshotMatches` is too strong here. */
 function findReusableEntry(
   unit: Unit,

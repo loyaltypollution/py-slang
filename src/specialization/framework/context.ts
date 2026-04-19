@@ -16,9 +16,10 @@
 // Chains are canonicalized and interned: `extendContext` / `excludeAssumption`
 // return a canonical Context keyed by the assumption *set*. Two call paths
 // that converge on the same set produce `===` references, so every Context-
-// keyed structure downstream (fact store, JIT cache, worklist pending set)
-// de-fragments automatically. Canonical order is `(analysis.debugName, key)`
-// ascending; the interner lives in `./context-interner.ts`.
+// keyed structure downstream (per-analysis stores, JIT cache, worklist
+// pending set) de-fragments automatically. Canonical order is
+// `(analysis.debugName, key)` ascending; the interner lives in
+// `./context-interner.ts`.
 
 import type { AssumptionHandle } from "./analysis";
 import { defaultInterner } from "./context-interner";

@@ -1,7 +1,8 @@
-// Must-backward type-requirement analysis. Fourth classical DFA quadrant:
-// backward direction, must-merge. Under a return-kind speculation context,
-// propagates the required return type backward through the unit's body,
-// producing per-slot type requirements at every program point.
+// Must-backward type-requirement analysis. This is the codebase's concrete
+// exercised example of the fourth classical DFA quadrant: backward direction,
+// must-merge. Under a return-kind speculation context, it propagates the
+// required return type backward through the unit's body, producing per-slot
+// type requirements at every program point.
 //
 // Polarity: in the underlying `TypeLattice`, TOP = any type (no constraint),
 // BOTTOM = empty (contradiction), meet = intersection, join = union. A slot
@@ -24,7 +25,7 @@
 // link for this functionId), the transfer is sound-no-op: all requirements stay
 // at TOP. Consumers (entry-guard hoisting, redundant-check elimination,
 // unboxing) observe the analysis result via `requirementAtEntry` or direct
-// fact-store reads.
+// analysis-store reads.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
@@ -65,7 +66,7 @@ import {
 /** Narrowing-chain identity for per-function return-kind assumptions. Keyed
  *  by FunctionDef.id (functionId). Parallel to `typeExprHandle` /
  *  `constExprHandle` — a namespace token for Context bindings, never
- *  scheduled, never writes to the fact store. `eq` matches the TypeLattice
+ *  scheduled, owns no analysis store. `eq` matches the TypeLattice
  *  semantics so Context's canonical dedup at `extendContext` behaves
  *  correctly. */
 export const returnKindHandle: AssumptionHandle<FunctionId, TypeLattice> = {

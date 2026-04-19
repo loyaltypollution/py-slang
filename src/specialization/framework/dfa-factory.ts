@@ -1,9 +1,17 @@
 import type { BasicBlock, CFGEdge } from "./cfg";
-import { ROOT_CONTEXT, type Context } from "./context";
+import type { Context } from "./context";
 import type { Unit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
-import type { BoundedLattice, EdgeSpec, Lattice, Analysis, AnalysisCtx } from "./analysis";
+import type {
+  Lattice,
+  EdgeSpec,
+  JoinSemiLattice,
+  Analysis,
+  AnalysisCtx,
+  SemanticAnalysis,
+} from "./analysis";
 import { defineAnalysis } from "./analysis";
+import { storeContexts, storeEvict } from "./analysis-store";
 import type { ProgramTopology } from "./topology";
 
 /** Packages a Kildall block DFA as a PAIR of `Analysis` objects over the
@@ -48,8 +56,8 @@ export const nodeIdToBlock = (
  *  outer analyses). `seed(unit)` returns the block at which the fixpoint
  *  is seeded for `unit`: entry for forward, exit for backward. */
 export interface BlockFixpointAnalysis<L> {
-  readonly env: Analysis<BasicBlock, MutableEnv<L>>;
-  readonly facts: Analysis<BasicBlock, ReadonlyMap<number, L>>;
+  readonly env: SemanticAnalysis<BasicBlock, MutableEnv<L>>;
+  readonly facts: SemanticAnalysis<BasicBlock, ReadonlyMap<number, L>>;
   seed(unit: Unit): BasicBlock;
 }
 
@@ -84,14 +92,14 @@ interface DfaConfigBase<L> {
   readonly refineOnEdge: (env: MutableEnv<L>, edge: CFGEdge) => MutableEnv<L>;
 }
 
-/** May-merge analyses only need `Lattice<L>` (join + leq). Must-merge needs
- *  `BoundedLattice<L>` so the factory can call `meetWith(..., top)`. The
+/** May-merge analyses only need `JoinSemiLattice<L>` (join + leq). Must-merge needs
+ *  `Lattice<L>` so the factory can call `meetWith(..., top)`. The
  *  discriminated union lets `purityBlockAnalysis` (may-merge) supply a plain
  *  `Lattice` without fabricating unused `top`/`meet` — the type system
  *  refuses a must-merge config paired with a non-bounded lattice. */
 type DfaConfig<L> = DfaConfigBase<L> & (
-  | { readonly mergeKind: "may"; readonly valueLattice: Lattice<L> }
-  | { readonly mergeKind: "must"; readonly valueLattice: BoundedLattice<L> }
+  | { readonly mergeKind: "may"; readonly valueLattice: JoinSemiLattice<L> }
+  | { readonly mergeKind: "must"; readonly valueLattice: Lattice<L> }
 );
 
 export function makeBlockFixpointAnalysis<L>(
@@ -102,9 +110,16 @@ export function makeBlockFixpointAnalysis<L>(
   // snapshots used to silently corrupt every unwritten read through the
   // shared bottom; now they throw at the first offending write.
   const bottomEnv = new MutableEnv<L>().freeze();
+  // EMPTY_FACTS is defended only by its `ReadonlyMap` type annotation — there
+  // is no runtime freeze, because `Object.freeze` does not block
+  // `Map.prototype.set`. Callers must not cast away the readonly and mutate;
+  // doing so would corrupt every unwritten `.facts` cell that defaults to
+  // this shared instance. All current readers either call `.get(nodeId)` or
+  // route writes through `ctx.write`, which allocates a new Map via
+  // `factsLattice.join` rather than mutating in place.
   const EMPTY_FACTS: ReadonlyMap<number, L> = new Map();
 
-  const envLattice: Lattice<MutableEnv<L>> = {
+  const envLattice: JoinSemiLattice<MutableEnv<L>> = {
     bottom: bottomEnv,
     leq: (a, b) => a.leq(b, config.valueLattice),
     // Mutating `a` would corrupt the stored env other readers hold a
@@ -154,7 +169,7 @@ export function makeBlockFixpointAnalysis<L>(
     return true;
   };
 
-  const factsLattice: Lattice<ReadonlyMap<number, L>> = {
+  const factsLattice: JoinSemiLattice<ReadonlyMap<number, L>> = {
     bottom: EMPTY_FACTS,
     leq: factsLeq,
     join: factsJoin,
@@ -205,7 +220,7 @@ export function makeBlockFixpointAnalysis<L>(
     return env ?? config.seedEnv(unit);
   }
 
-  const envAnalysis: Analysis<BasicBlock, MutableEnv<L>> = defineAnalysis({
+  const envAnalysis: SemanticAnalysis<BasicBlock, MutableEnv<L>> = defineAnalysis({
     id: Symbol(`${config.debugName}:env`),
     debugName: `${config.debugName}:env`,
     keySpace: "BasicBlock",
@@ -220,8 +235,8 @@ export function makeBlockFixpointAnalysis<L>(
       const result = config.transferBlock(ctx, block, inEnv, unit);
       // Paired-cell write. `.facts` has no transfer of its own — its cell is
       // populated exclusively from here so the two cells always advance
-      // together under a single block pass. Route through `ctx.write` (not
-      // `factsAnalysis.store.write`) so the eq-gated advance publishes a
+      // together under a single block pass. Route through `ctx.write` (not a
+      // direct store write) so the eq-gated advance publishes a
       // FactChange to every subscriber of `factsAnalysis` — analyses like
       // purityScopeAnalysis that wake on `.facts` writes would otherwise
       // never see the update.
@@ -230,7 +245,7 @@ export function makeBlockFixpointAnalysis<L>(
     },
   });
 
-  const factsAnalysis: Analysis<BasicBlock, ReadonlyMap<number, L>> = defineAnalysis({
+  const factsAnalysis: SemanticAnalysis<BasicBlock, ReadonlyMap<number, L>> = defineAnalysis({
     id: Symbol(`${config.debugName}:facts`),
     debugName: `${config.debugName}:facts`,
     keySpace: "BasicBlock",
@@ -247,17 +262,17 @@ export function makeBlockFixpointAnalysis<L>(
   });
 
   const evictStaleEnvCells = (_ctx: AnalysisCtx, unit: Unit): void => {
-    for (const context of envAnalysis.store.contexts()) {
+    for (const context of storeContexts(envAnalysis.store)) {
       for (const b of envAnalysis.store.readAll(context).keys()) {
-        if (b.unit === unit) envAnalysis.store.evict(b, context);
+        if (b.unit === unit) storeEvict(envAnalysis.store, b, context);
       }
     }
   };
 
   const evictStaleFactsCells = (_ctx: AnalysisCtx, unit: Unit): void => {
-    for (const context of factsAnalysis.store.contexts()) {
+    for (const context of storeContexts(factsAnalysis.store)) {
       for (const b of factsAnalysis.store.readAll(context).keys()) {
-        if (b.unit === unit) factsAnalysis.store.evict(b, context);
+        if (b.unit === unit) storeEvict(factsAnalysis.store, b, context);
       }
     }
   };
@@ -307,10 +322,12 @@ export function makeBlockFixpointAnalysis<L>(
 /** Resolve a per-expression fact from a paired block-DFA analysis.
  *
  *  The topology bridge — node → block — is centralized here so callers
- *  never recompute `unit.blockOfNode.get(nodeId)` or similar. `context`
- *  defaults to ROOT_CONTEXT; passing a non-ROOT context reads the
- *  per-context cell produced by running the analysis under that
- *  speculation's assumptions.
+ *  never recompute `unit.blockOfNode.get(nodeId)` or similar. `context` is
+ *  mandatory: `Context` is the primitive, ROOT is one tree-root position
+ *  inside it, and a per-node fact read has no default position. Transform
+ *  code does not call this directly — it reads through
+ *  `TransformFactView.readExprFact`, which binds ROOT once at view
+ *  construction.
  *
  *  Returns `undefined` if the node is unknown to `topology` (e.g. freshly
  *  minted outside any indexed unit) or if the block's facts cell has no
@@ -319,7 +336,7 @@ export function readExprFact<L>(
   topology: ProgramTopology,
   analysis: BlockFixpointAnalysis<L>,
   nodeId: number,
-  context: Context = ROOT_CONTEXT,
+  context: Context,
 ): L | undefined {
   const block = topology.blockOfNode(nodeId);
   if (block === undefined) return undefined;

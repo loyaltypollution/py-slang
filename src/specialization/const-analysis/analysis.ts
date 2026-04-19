@@ -1,12 +1,13 @@
-import { ExprNS } from "../../ast-types";
+import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { AssumptionHandle } from "../framework/analysis";
 import { findAssumption, ROOT_CONTEXT, type Context } from "../framework/context";
+import { paramConstHandle } from "../entry-guards";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { MutableEnv } from "../framework/mutable-env";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
-import type { NodeId } from "../framework/key-spaces";
+import { paramKey, type FunctionId, type NodeId } from "../framework/key-spaces";
 import {
   type ConstLattice,
   CONST_BOTTOM,
@@ -44,7 +45,7 @@ export const constMeet = (a: ConstLattice, b: ConstLattice): ConstLattice => {
  *  `typeExprHandle`. Observations that lift to a concrete `ConstLattice`
  *  extend the unit's context with `(constExprHandle, nodeId, lifted)`; the
  *  visitor's annotate meets the computed static fact with the bound value
- *  under non-ROOT contexts. No fact-store traffic at this analysis;
+ *  under non-ROOT contexts. This handle owns no analysis-store cells;
  *  transfer is a no-op.
  *
  *  The pairing with `constAnalysis` (block DFA) and `constValueEqual` used
@@ -61,6 +62,8 @@ export const constExprHandle: AssumptionHandle<NodeId, ConstLattice> = {
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
     private readonly constEnv: MutableEnv<ConstLattice>,
+    private readonly functionId: FunctionId,
+    private readonly paramCount: number,
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: NodeId, val: ConstLattice) => void,
     private readonly context: Context,
@@ -75,6 +78,17 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     const combined = assumption !== undefined ? constMeet(val, assumption) : val;
     this.recordExprFact(node.id, combined);
     return combined;
+  }
+
+  private paramAssumption(slot: number): ConstLattice | undefined {
+    if (this.context === ROOT_CONTEXT || slot < 0 || slot >= this.paramCount) return undefined;
+    return findAssumption(this.context, paramConstHandle, paramKey(this.functionId, slot));
+  }
+
+  private annotateWithParamAssumption(node: ExprNS.Expr, val: ConstLattice, slot: number): ConstLattice {
+    const param = this.paramAssumption(slot);
+    const combined = param !== undefined ? constMeet(val, param) : val;
+    return this.annotate(node, combined);
   }
 
   visitLiteralExpr(expr: ExprNS.Literal): ConstLattice {
@@ -92,7 +106,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   visitVariableExpr(expr: ExprNS.Variable): ConstLattice {
     const info = this.slotLookup(expr.name);
     if (!isLocal(info)) return this.annotate(expr, CONST_TOP);
-    return this.annotate(expr, this.constEnv.get(info.slot) ?? CONST_TOP);
+    return this.annotateWithParamAssumption(expr, this.constEnv.get(info.slot) ?? CONST_TOP, info.slot);
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ConstLattice {
@@ -261,11 +275,19 @@ export function makeConstAnalysisModule(): BlockDfaSpec<ConstLattice> {
     eq: constEq,
     makeExprVisitor(
       env: MutableEnv<ConstLattice>,
+      unit,
       slotLookup: SlotLookup,
       recordExprFact: (nodeId: NodeId, val: ConstLattice) => void,
       context: Context,
     ): ExprNS.Visitor<ConstLattice> {
-      return new ConstAnalysisVisitor(env, slotLookup, recordExprFact, context);
+      return new ConstAnalysisVisitor(
+        env,
+        unit.funcAst.id,
+        unit.funcAst instanceof StmtNS.FunctionDef ? unit.funcAst.parameters.length : 0,
+        slotLookup,
+        recordExprFact,
+        context,
+      );
     },
     refineOnEdge(env, _edge) {
       return env;
