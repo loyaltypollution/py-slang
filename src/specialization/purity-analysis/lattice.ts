@@ -2,18 +2,27 @@
 // value held in each slot so that a subscript-store is pure iff it targets a
 // freshly-allocated object that has not escaped this frame.
 //
-// Top-level lattice (flat above ⊥ with Unknown at top):
+// Lattice shape (flat above ⊥, Unknown mid-level, Impure at top):
 //
-//             Unknown
-//           /  /  \  \
-//       Fresh Param Global Closure   (peers above Bottom)
-//           \  \  /  /
-//             Bottom
+//                Impure
+//                  |
+//                Unknown
+//             /  /  \  \
+//         Fresh Param Global Closure   (peers above Bottom)
+//             \  \  /  /
+//                Bottom
 //
 // `Fresh(origin)` carries the node id of the allocation site so joining two
 // Fresh values from the *same* site stays Fresh; different sites widen to
 // Unknown. `Param(slot)` likewise tags the param identity. Global needs no
 // discriminant. Any cross-kind join widens to Unknown.
+//
+// Impure is the lattice top. It lives only at `IMPURE_SENTINEL_NODE_ID` in the
+// block fact's `exprFacts` map (never in a slot), so its interaction with the
+// slot-valued Fresh/Param/etc. is purely hypothetical — but making it top
+// keeps the lattice identities (`leq ⇔ join=b`) honest, so any future write
+// of Impure at any key preserves its meaning across joins instead of being
+// silently downgraded to Unknown.
 //
 // Closure carries a sub-lattice on its `pure` field so that refinement from
 // "inner not yet analyzed" to a definite verdict propagates monotonically:
@@ -71,12 +80,10 @@ function absEquals(a: AbsVal, b: AbsVal): boolean {
 
 export function absLeq(a: AbsVal, b: AbsVal): boolean {
   if (a.kind === "bottom") return true;
-  // Impure marker lives only at the exprFacts sentinel key; incomparable
-  // with every other kind. Guard before the `unknown` arm so a spurious
-  // leq(IMPURE, UNKNOWN) === true can't suppress a change event.
-  if (a.kind === "impure" || b.kind === "impure") {
-    return a.kind === "impure" && b.kind === "impure";
-  }
+  // Impure is the lattice top: every element is ⊑ Impure, and Impure is ⊑
+  // only itself. Ordered so `leq ⇔ join=b` holds unconditionally.
+  if (b.kind === "impure") return true;
+  if (a.kind === "impure") return false;
   if (b.kind === "unknown") return true;
   // Closure sub-lattice: same-fdId `undefined` is below `defined`; defined
   // peers (true vs false) are incomparable. Different fdIds fall through.
@@ -90,8 +97,8 @@ export function absLeq(a: AbsVal, b: AbsVal): boolean {
 export function absJoin(a: AbsVal, b: AbsVal): AbsVal {
   if (a.kind === "bottom") return b;
   if (b.kind === "bottom") return a;
-  if (a.kind === "impure" && b.kind === "impure") return a;
-  if (a.kind === "impure" || b.kind === "impure") return UNKNOWN;
+  // Impure is top: joining with it stays Impure.
+  if (a.kind === "impure" || b.kind === "impure") return IMPURE_MARKER;
   if (a.kind === "unknown" || b.kind === "unknown") return UNKNOWN;
   // Closure sub-lattice: monotonically refine `undefined` → `defined`, so
   // the `pending → pure` transition from `purityScopeAnalysis` survives the
