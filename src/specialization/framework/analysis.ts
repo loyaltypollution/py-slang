@@ -210,12 +210,23 @@ export interface Analysis<K, V> {
  *  this key mutate?" Defaults to `ctx.unitForNode(key)` — correct for
  *  node-keyed observations. Return-kind-style narrowings whose key is an
  *  fdId set `ctx.unitForFdId` so the extension lands on the called
- *  function's unit rather than the enclosing caller's. */
+ *  function's unit rather than the enclosing caller's.
+ *
+ *  `lineageValue` names the fact surface `Worklist.lineageOf` should diff
+ *  when deciding whether an assumption is load-bearing for a guard. The
+ *  default is the node-keyed expr fact at `(blockOfNode[key], key)`, which is
+ *  correct for write-driven per-expression narrowings. Narrowings keyed in a
+ *  different space (e.g. return-kind keyed by fdId) override it to point at
+ *  the relevant block fact under that key-space. `lineageEq` supplies the
+ *  equality relation for that chosen surface; the default reuses
+ *  `handle.lattice.eq` for expr facts. */
 export interface Narrowing<V> {
   readonly handle: Analysis<number, V>;
   readonly blockAnalysis: () => BlockFixpointAnalysis<any>;
   readonly observationSource: Analysis<number, RawKind>;
   resolveUnit?(ctx: AnalysisCtx, key: number): FunctionUnit | undefined;
+  lineageValue?(factStore: FactStore, unit: FunctionUnit, key: number, context: Context): unknown;
+  lineageEq?(a: unknown, b: unknown): boolean;
   lift(observed: RawKind): V | undefined;
 }
 

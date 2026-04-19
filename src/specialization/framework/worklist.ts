@@ -67,7 +67,7 @@ export interface GuardRegistrar {
  *  (Analyses are module singletons); `key` is compared by the JS `===`
  *  encoding used across the fact store. */
 function assumptionKey(a: Assumption): string {
-  return `${(a.analysis as Analysis<unknown, unknown>).debugName}:${String(a.key)}`;
+  return `${a.analysis.debugName}:${String(a.key)}`;
 }
 
 /** Identity-key for a speculative fact ref — same encoding as
@@ -613,11 +613,9 @@ export class Worklist {
    *
    *    1. Genuinely joint/redundant narrowing — no single assumption is
    *       load-bearing alone, so the minimum-sound prune is the whole chain.
-   *    2. `lineageOf` uses `unit.blockOfNode.get(ref.key)` for its Kildall
-   *       re-seed, which fails for narrowings keyed outside the node-id
-   *       space (return-kind's key is an fdId). A `resolveBlock`-style hook
-   *       on `Narrowing` would fix this and let lineage localize return-kind
-   *       deopts — tracked as orthogonal follow-up in `next-steps.md`.
+   *    2. The narrowing did not provide a readable lineage surface under the
+   *       current context, so the engine cannot localize the deopt to a
+   *       smaller subset of assumptions.
    *
    *  Collapsing the chain to ROOT: Kildall re-runs under ROOT produce the
    *  non-narrowed facts, the `specContextChange` lifecycle fires, and jit-
@@ -666,9 +664,8 @@ export class Worklist {
    *
    *  Delegates to `widenFullChain` when the computed lineage is empty —
    *  that happens for genuinely joint/redundant narrowings (no single
-   *  assumption is load-bearing alone) and, today, for return-kind refs
-   *  because `lineageOf` can't resolve a seed block from an fdId (see
-   *  `widenFullChain` docstring for the follow-up).
+   *  assumption is load-bearing alone) or when the narrowing offers no
+   *  readable lineage surface for the current ref/context pair.
    *
    *  Returns the widened unit, or `undefined` if no unit owns `guardNodeId`. */
   widenGuard(guardNodeId: number): FunctionUnit | undefined {
@@ -730,11 +727,18 @@ export class Worklist {
     ctx: Context,
     unit: FunctionUnit,
   ): Assumption[] {
-    const { narrowing, key: nodeId } = ref;
-    const blockAnalysis = narrowing.blockAnalysis();
-    const block = unit.blockOfNode.get(nodeId);
-    if (block === undefined) return [];
-    const current = readExprFact(this.factStore, blockAnalysis, block, nodeId, ctx);
+    const { narrowing, key } = ref;
+    const lineageValue = narrowing.lineageValue
+      ?? ((factStore: FactStore, owner: FunctionUnit, nodeId: number, context: Context) => {
+        const block = owner.blockOfNode.get(nodeId);
+        return block === undefined
+          ? undefined
+          : readExprFact(factStore, narrowing.blockAnalysis(), block, nodeId, context);
+      });
+    const current = lineageValue(this.factStore, unit, key, ctx);
+    if (current === undefined) return [];
+    const lineageEq = narrowing.lineageEq
+      ?? ((a: unknown, b: unknown) => narrowing.handle.lattice.eq(a, b));
     const loadBearing: Assumption[] = [];
     for (let cur: Context | undefined = ctx; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
@@ -743,15 +747,15 @@ export class Worklist {
       if (without === ctx) continue;
       this.enqueueNarrowingEntry(unit, without);
       this.processQueue();
-      const widened = readExprFact(this.factStore, blockAnalysis, block, nodeId, without);
+      const widened = lineageValue(this.factStore, unit, key, without);
       // A link is load-bearing iff removing it widens the fact at `ref`.
       // Both reads can miss (returning undefined) if the pruned context has
       // no cell yet; treat `undefined === undefined` as unchanged, any
       // single-sided undefined as a change. Otherwise compare via the
-      // narrowing lattice's `eq`.
+      // block-fact lattice for the chosen lineage surface.
       const unchanged = current === widened
         || (current !== undefined && widened !== undefined
-            && narrowing.handle.lattice.eq(current, widened));
+            && lineageEq(current, widened));
       if (!unchanged) loadBearing.push(a);
     }
     return loadBearing;

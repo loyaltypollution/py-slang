@@ -286,6 +286,12 @@ export const returnKindNarrowing: Narrowing<TypeLattice> = {
   blockAnalysis: () => typeRequirementAnalysis,
   observationSource: runtimeReturnAnalysis,
   resolveUnit: (ctx, key) => ctx.unitForFdId(key),
+  lineageValue: (factStore, unit, _fdId, context) =>
+    factStore.tryRead(typeRequirementAnalysis, unit.cfg.entry, context),
+  lineageEq: (a, b) => typeRequirementAnalysis.lattice.eq(
+    a as DfaBlockFact<TypeLattice>,
+    b as DfaBlockFact<TypeLattice>,
+  ),
   lift: liftType,
 };
 
