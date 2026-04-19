@@ -1,201 +1,174 @@
-# DFA Framework: Status & Open Work
+# Next Steps After the Soundness Review
 
-This file started as a pre-implementation thesis. The thesis held up; most of
-it has landed. This revision keeps only what a future reader still needs:
-the goal to measure against, what's shipped, what's still open, and the
-constraints that remain binding.
-
----
-
-## The goal (reference bar)
-
-**Speculation and recovery should live in the specialization engine, not be
-scattered across analyses.**
-
-Any analysis X should be able to run under a set of *assumptions* — "x at
-node 17 is int", "branch B always takes the true arm" — and produce facts
-consistent with those assumptions. When an assumption is later invalidated
-at runtime, the specialization engine recovers: it swaps to a compiled
-version that didn't depend on the violated assumption, while transforms
-derived from *unrelated* assumptions stay intact.
-
-The old model tangled speculation into individual analyses (parallel
-`speculativeX`/`X` pairs, special accumulation modes, ad-hoc eviction). The
-refactor pulls it out: analyses compute facts under a context; the engine
-owns context creation, composition, and recovery.
-
-Use this as the bar. If a surface reads fine but its production path
-collapses to a whole-unit reset (ROOT), unrelated assumptions are being
-thrown away and the goal isn't being met — regardless of what the API
-looks like in isolation.
+This note records what is next, what is most urgent, and why. It stays at the
+level of architectural priorities rather than prescribing implementation steps,
+but each item names code or tests that capture the invariant in question so a
+future agent can check the claim without reconstructing the argument.
 
 ---
 
-## Where we are
+## What is urgent
 
-The speculation refactor is substantially complete. Speculation is now a
-context under which an analysis runs, not a property of the fact:
+### 1. Keep semantic facts and profiler-driven speculation visibly separate
 
-- **`Context`** is a tree of assumptions with navigational operations only.
-  `src/specialization/framework/context.ts`.
-- **Fact cells** are keyed by `(analysis, key, context)`; each cell runs
-  independent monotone Kildall. `src/specialization/framework/fact-store.ts`.
-- **Transforms** accept only `StaticDfaQuery` — the type-level gate that
-  makes a transform reading a speculative fact unrepresentable.
-  `src/specialization/dfa-query.ts`, enforced in
-  `src/tests/specialization/framework/dfa-query-gate.test.ts`.
-- **Speculation policy** is pluggable via `SpeculationStrategy`; the built-in
-  `countBasedStrategy(N)` ships as one concrete policy.
-  `src/specialization/framework/speculation-strategy.ts`.
-- **Narrowing dimensions** are data-driven through the `Narrowing<V>`
-  interface. The worklist iterates `DEFAULT_NARROWINGS` in the observation
-  translator, `widenGuard`, `widenFullChain`, and `lineageOf`. Adding
-  a third dimension is a one-line registration in
-  `src/specialization/framework/dfa-analyses.ts`.
-- **Deopt** is lineage-precise *for node-keyed narrowings* (type, const).
-  Backends publish guard provenance via `Worklist.registerGuard`; on
-  `SpeculationViolation`, `widenGuard(nodeId)` prunes only the load-
-  bearing assumptions. Missing provenance now throws (used to silently
-  collapse to ROOT — see (4) in "What's still open"). The
-  `specContextChange` lifecycle event wakes jit-keyed analyses; evaluators
-  use the shared `runWithDeopt` helper (`src/conductor/jit-deopt.ts`).
-- **Must-backward quadrant** ships as `typeRequirementAnalysis`
-  (`src/specialization/type-requirement-analysis/analysis.ts`). Runs
-  backward under a return-kind assumption bound via
-  `returnKindNarrowing`; seeds at each `Return` statement and produces a
-  per-slot entry requirement. `requirementAtEntry` returns a split
-  `{ provable, unprovable }` — provable slots are guard candidates,
-  unprovable slots signal "speculation can't hold for any input."
+The most urgent task is to preserve a boundary that reviewers can inspect
+quickly: baseline analysis results must remain semantic, while profiler-driven
+narrowing must remain revocable and guarded.
 
-Tests: `npx tsc --noEmit && npx jest` — 2695 green.
+Why this is urgent:
+- it is the core soundness boundary of the whole stack;
+- once semantic and speculative facts blur together, every consumer becomes
+  harder to trust;
+- later optimizations are only as sound as this separation is clear.
 
----
+Checkable by:
+- `src/specialization/framework/worklist.ts` — `handleObservationForSpec`
+  places narrowed facts in a non-ROOT context, not in the ROOT cell;
+- `src/specialization/transforms/*.ts` — every `readExprFact` call omits the
+  context argument (defaults to ROOT); any future context argument here
+  breaks the boundary and should require explicit justification.
 
-## What's still open
+### 2. Make the framework's real support for may/must analysis explicit
 
-The thesis pieces (1), (3), (4) remain; (2) — the must-backward DFA
-itself — has shipped. The backlog now splits into: one thesis-level item
-(artifact tree), one orthogonal fix (`resolveBlock`), and a consumer
-cluster that turns must-backward facts into emitted guards and IR.
+The framework should be described in terms that match what it reliably supports
+now, especially around must-style reasoning and the four classical quadrants.
 
-### (1) Artifact tree per `(unit, context)`
+Why this is urgent:
+- the current architecture is stronger in some quadrants than others;
+- over-claiming genericity invites future misuse;
+- reviewability improves when the supported contracts are named honestly.
 
-Currently the JIT stores one IR per unit (`jit-analysis.ts`). A context
-shift invalidates the snapshot and triggers a recompile; there is no
-pre-built sibling version ready to swap to.
+Checkable by:
+- `src/specialization/framework/analysis.ts` — `Analysis.polarity` is
+  declared per analysis and tested in
+  `src/tests/specialization/framework/analysis-polarity.test.ts`;
+- `src/specialization/type-requirement-analysis/analysis.ts` is the single
+  `polarity:"must"` consumer today; a new must-forward analysis would be the
+  first to exercise the meet-merge branch end-to-end.
 
-The thesis target: per `FunctionUnit`, a tree of compiled IRs each tagged
-with its context; runtime picks the deepest live version; deopt swaps to
-the parent instead of recompiling.
+### 3. Keep unconditional transforms on a non-speculative fact surface
 
-**Engine surface (backend-agnostic):**
-- `Map<(unit, context), IR>` fact store, or equivalent.
-- Hook: `onActiveContextChange(unit, context)` that a backend subscribes to
-  when it owns the dispatch mechanism.
+Transforms that rewrite the AST must continue to depend only on unconditional
+facts. This boundary is already important and should remain easy to audit.
 
-**Backend-specific:** how a running program routes a call to the currently-
-active version, and how a guard failure transfers control upward. SVML does
-this via the function table + guard opcodes; a future WASM backend would do
-it via multiple exports + a trampoline. The engine stays uniform.
+Why this is urgent:
+- unconditional rewrites cannot rely on facts that may later retract;
+- this is the main guard against speculative facts leaking into permanent code
+  changes;
+- a clear boundary reduces future soundness regressions.
 
-**Prerequisite for true sibling coexistence:** canonical sibling contexts.
-Today `handleObservationForSpec` stacks observations linearly
-(`Root → A → B`, not `{Root→A, Root→B}`). Lineage-precise widen is already
-precise either way, so this only matters when we want multiple compiled
-versions per unit to live side-by-side.
-
-### (2) Must-backward consumers
-
-The DFA ships; nothing yet reads its facts at codegen time. Consumers
-below are independent — pick by value. All are backend-touching except
-where noted.
-
-- **Entry-guard emission.** The primary consumer. At compile-unit start,
-  call `requirementAtEntry(factStore, unit, specContextFor(unit))`; for
-  each slot in `provable`, emit a parameter kind-check and
-  `registerGuard(entryNodeId, { narrowing: returnKindNarrowing, key: fdId })`.
-  Slots in `unprovable` mean the speculation is statically impossible —
-  skip emission. Blocked on (4): until `resolveBlock` lands, deopt
-  through an entry guard collapses to `widenFullChain` instead of
-  pruning just the return-kind assumption.
-- **Guard coalescing.** Multiple forward-emitted guards on the same
-  `(slot, requiredType)` collapse to one at a dominating merge point if
-  the backward fact at that block already says "required." Needs a CFG
-  dominator pass (not yet present — confirm before picking up). Backend
-  IR-pass territory, not a `TransformRule`.
-- **Redundant-guard elimination.** Co-located with guard emission:
-  before emitting, query forward `typeAnalysis` and backward
-  `typeRequirementAnalysis` at the site's block; skip when
-  `forward ⊑ requirement`. Lives in the backend path — the
-  `StaticDfaQuery` gate forbids speculative reads from `TransformRule`s.
-- **Dead-branch under backward facts.** `dead-branch.ts` today reads
-  forward only. Backward adds cases like `if x == "foo"` under
-  `x: INT_BIT required`. Design gate first: widen `StaticDfaQuery` to
-  allow invariant-preserving reads, or move this logic into the backend.
-- **Transfer coverage, sign axis.** Current propagator is kind-axis only
-  (`int ⊗ int = int` for `+`, `-`, `*`, `//`, `%`; ternary). Sign-axis
-  inverses (e.g. `pos * pos = pos`) are deferred. Worth it once a guard
-  consumer can exploit tighter-than-kind refinements.
-- **Strategy access to must-backward facts.** An earlier iteration
-  added `ObservationEvent.requirementsAt()` as a stability hint for
-  strategies, then removed it as premature — no concrete strategy used
-  it. When a strategy genuinely wants to read backward facts before
-  deciding to extend, land the accessor and the consuming strategy in
-  the same PR so the surface earns its keep.
-- **Runtime integration test.** Mirror `speculative-narrowing.test.ts`'s
-  "lineage-precise widen" through `observeRuntimeReturn`: observe int
-  return ×N → entry guard emitted → observe str once → widenGuard →
-  guard retracted, body re-runs unspeculated. Blocked on entry-guard
-  emission.
-
-### (3) Canonical sibling contexts
-
-See (1). Not a blocker on its own — present here for the backlog.
-
-### (4) `resolveBlock` hook on `Narrowing` (lineage-precise return-kind deopt)
-
-`lineageOf` seeds its per-link Kildall re-run by calling
-`unit.blockOfNode.get(ref.key)`. That works for node-keyed narrowings
-(`typeExprHandle`, `constExprHandle`) but not for `returnKindHandle`, whose
-`key` is an fdId. `blockOfNode.get(fdId)` returns `undefined`, `lineageOf`
-bails with `[]`, and `widenGuard` falls through to `widenFullChain` — sound,
-but every return-kind deopt collapses the whole chain instead of pruning
-just the return-kind assumption.
-
-Fix: generalize `Narrowing<V>` with a `resolveBlock(unit, key): BasicBlock |
-undefined` hook. Node-keyed narrowings implement it as
-`unit.blockOfNode.get(key)`; return-kind resolves to the function's exit
-block (or whatever block the narrowing's `blockAnalysis()` seeds). Small
-interface change, unblocks the "sibling survives" guarantee for the
-return-kind dimension the rest of the doc claims. No other piece of the
-framework depends on this — orthogonal PR.
+Checkable by:
+- `src/specialization/framework/transform-rule.ts` — `TransformFactView` is
+  the only surface transforms see, and it does not carry a context parameter;
+- any transform that starts routing through `specContextFor` or reading a
+  non-ROOT cell should be treated as a speculative IR selector, not an AST
+  rewrite.
 
 ---
 
-## Non-negotiable constraints
+## What is important next
 
-Still binding:
+### 4. Keep lattice meaning checkable at a glance
 
-1. **No new `speculativeX` analyses.** Same-analysis-under-context is the
-   pattern.
-2. **No overwrite-mode fact cells.** The knob was deleted; reintroducing it
-   is a regression.
-3. **Any PR that grows `Context` surface must route a non-`∅` context
-   through at least one caller.**
-4. **Backends emitting guards must call `registerGuard` at emission.**
-   `widenGuard` throws on missing provenance; there is no silent fallback.
-   A new backend that emits guards without registering them will surface
-   the bug on the first deopt, not by mysteriously collapsing unrelated
-   assumptions.
+The next phase should make it easy to verify that each lattice says what the
+analysis thinks it says, especially where representation conventions differ
+between domains.
+
+Why this matters:
+- lattice coherence is foundational;
+- subtle contract drift is hard to detect once more analyses accumulate;
+- review should not require reconstructing hidden conventions.
+
+Checkable by:
+- `src/tests/harness/lattice-laws.ts` + `lattice-laws.test.ts` enumerate
+  `leq ⇔ join=b`, absorption, identity, and idempotence over representative
+  slices of `TypeLattice`, `ConstLattice`, `AbsVal`, and the runtime
+  observation lattices. Any new lattice should register a slice here.
+
+### 5. Preserve precise speculation retraction
+
+Speculation is most valuable when the system can retract only the assumptions
+that actually mattered, rather than collapsing broadly.
+
+Why this matters:
+- precision affects both performance and comprehensibility;
+- broad widening is safe but expensive;
+- guard provenance is part of the architecture's promise, not just an
+  optimization detail.
+
+Checkable by:
+- `src/specialization/framework/worklist.ts` — `widenGuard` takes a
+  lineage-precise path; `widenFullChain` is the coarse fallback. Every
+  guard-registration site should supply provenance so `widenGuard` never
+  has to fall back silently;
+- `src/tests/specialization/runtime/speculative-narrowing.test.ts` covers
+  the lineage-recovery path for both node-keyed and fdId-keyed narrowings;
+  return-kind uses the `Narrowing.lineageValue` / `lineageEq` hooks in
+  `src/specialization/type-requirement-analysis/analysis.ts` to read the
+  entry-block requirement fact under each synthetic context.
+
+### 6. Clarify the role of runtime observation and profiling
+
+Runtime signals should remain easy to classify: some are speculative evidence,
+some are profitability signals, and they should not read as one undifferentiated
+kind of enrichment.
+
+Why this matters:
+- different runtime inputs justify different downstream uses;
+- reviewers need to know whether a fact changes semantics, enables guarded
+  specialization, or merely prioritizes work;
+- architecture descriptions should match those distinctions.
+
+Checkable by:
+- `src/specialization/framework/runtime-analyses.ts` — each runtime analysis
+  declares `polarity: "opaque"`, marking it as neither semantic nor a
+  lattice-refining speculative dimension;
+- `src/specialization/framework/speculation-strategy.ts` — observation →
+  narrowing translation lives in one place; `countBasedStrategy` is the only
+  path that turns evidence into an assumption today.
+
+---
+
+## What can wait
+
+### 7. Throughput and scaling work
+
+Performance work remains important, but it should follow the soundness and
+contract-clarity questions rather than lead them.
+
+### 8. Additional speculative dimensions
+
+New speculative enrichments can wait until the current semantic/speculative
+split and the quadrant story remain stable under review. `returnKindNarrowing`
+is the most recent addition (paired with `typeRequirementAnalysis`); the next
+dimension should land only after its consumer path is fully exercised.
+
+---
+
+## Guiding themes
+
+As work continues, the architecture should keep the following true:
+
+- semantic facts stay semantic;
+- profiler-driven narrowing stays guarded and retractable;
+- must and may reasoning are not described as more interchangeable than they
+  really are;
+- unconditional transforms remain non-speculative;
+- lattice and framework contracts remain audit-friendly.
 
 ---
 
 ## Cold-start reading
 
-`src/specialization/framework/worklist.ts` front-to-back. Every cross-cutting
-concern (context, strategy, provenance, observation translation, guard
-widening) lives there; the rest of the framework is smaller and becomes
-obvious after. `src/tests/specialization/runtime/speculative-narrowing.test.ts`
-is the integration test that exercises the full pipeline; the
-`lineage-precise widen` case is the best single test for understanding the
-current contract.
+For an implementing agent arriving fresh:
+
+- `src/specialization/framework/worklist.ts`
+- `src/specialization/framework/fact-store.ts`
+- `src/specialization/framework/dfa-factory.ts`
+- `src/specialization/framework/interfaces.ts`
+- `src/specialization/type-analysis/lattice.ts`
+- `src/specialization/type-requirement-analysis/analysis.ts`
+- `src/tests/specialization/framework/lattice-laws.test.ts`
+- `src/tests/specialization/runtime/speculative-narrowing.test.ts`
+
+That set is enough to verify most claims above before making changes.
