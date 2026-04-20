@@ -629,6 +629,10 @@ export class Worklist {
         if (effect !== undefined) effect(this.passCtx, unit);
       }
     }
+    // PR-C migration hook: analyses opting into the typed-method API declare
+    // `bind`; called AFTER legacy `edges` lowering so an analysis can keep
+    // `edges`, use `bind`, or both during the migration window.
+    analysis.bind?.(this);
   }
 
   /** Register a transform rule. Idempotent. Lowers onto the typed `on*`
@@ -667,6 +671,63 @@ export class Worklist {
         });
       }
     }
+    // PR-C migration hook: rules opting into the typed-method API declare
+    // `bind`; called AFTER legacy `edges` / `autoDirtyOn` lowering so a rule
+    // can keep them, use `bind`, or both during migration.
+    rule.bind?.(this);
+  }
+
+  /** Public mutator for a transform's dirty set. The transform is identified
+   *  by reference (the same `TransformRule` value passed to `registerTransform`).
+   *  Used by `bind`-driven subscribers that need to mark a unit dirty without
+   *  reaching into the worklist's private `transformDirty` map. The legacy
+   *  `edges` / `autoDirtyOn` lowering above appends directly to the same set;
+   *  this exposes that capability to authors of `bind`. */
+  dirtyTransform(rule: TransformRule, unit: Unit): void {
+    this.dirtyFor(rule).add(unit);
+  }
+
+  /** Subscribe `rule` to writes against `from`. Mirror of `onFactDirty` for
+   *  transforms — `dirtied(ctx, key)` yields units to add to the rule's
+   *  dirty set. Lowers onto the same `factSubs` index as the legacy
+   *  `registerTransform` `edges` adapter, preserving registration ordering
+   *  per upstream (`factSubs[from]` order is observable via
+   *  `handleFactChange` iteration). */
+  onTransformFactDirty(
+    rule: TransformRule,
+    from: Analysis<any, any>,
+    dirtied: (ctx: AnalysisCtx, key: unknown) => Iterable<Unit>,
+  ): void {
+    const dirty = this.dirtyFor(rule);
+    this.subscribeFact(from, (ctx, key) => {
+      for (const u of dirtied(ctx, key)) dirty.add(u);
+    });
+  }
+
+  /** Subscribe `rule` to mint of any unit. Mirror of `onMint` for
+   *  transforms — `dirtied(ctx, unit)` yields units to add to the rule's
+   *  dirty set. Initial-unit seeding is already handled by
+   *  `registerTransform` (it pre-populates the dirty set with every existing
+   *  unit), so no replay loop here. */
+  onTransformMint(
+    rule: TransformRule,
+    dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<Unit>,
+  ): void {
+    const dirty = this.dirtyFor(rule);
+    this.lifecycleSubs.mint.push((_ctx, unit) => {
+      for (const u of dirtied(this.passCtx, unit)) dirty.add(u);
+    });
+  }
+
+  /** Subscribe `rule` to rebuild of any unit. */
+  onTransformRebuildDirty(
+    rule: TransformRule,
+    dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<Unit>,
+  ): void {
+    const dirty = this.dirtyFor(rule);
+    this.lifecycleSubs.rebuild.push((_ctx, unit) => {
+      for (const u of dirtied(this.passCtx, unit)) dirty.add(u);
+    });
   }
 
   /** Public read surface for tests and backends that hold a Worklist but

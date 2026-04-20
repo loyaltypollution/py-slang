@@ -46,6 +46,11 @@ import type { RawKind } from "./raw-value";
 import type { BlockFixpointAnalysis } from "./dfa-factory";
 import type { ProgramTopology } from "./topology";
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
+// `Worklist` is referenced in the `bind?` method signature on `Analysis` and
+// `TransformRule`. Imported as a type-only reference (`import type`) so this
+// module stays in the leaf position of the framework dependency graph — there
+// is no value-level dependency on `worklist.ts`, only the interface shape.
+import type { Worklist } from "./worklist";
 
 export type SemanticAnalysis<K, V> = Analysis<K, V> & { polarity: "may" | "must" };
 export type OpaqueAnalysis<K, V> = Analysis<K, V> & { polarity: "opaque" };
@@ -275,6 +280,13 @@ export interface Analysis<K, V> {
    *  `undefined` for "no write"; the worklist writes the returned value
    *  into `this.store` at `ctx.currentContext` on its behalf. */
   transfer(ctx: AnalysisCtx, key: K): V | undefined;
+  /** Optional registration hook. Called by `Worklist.register` AFTER the
+   *  analysis's legacy `edges` array has been lowered onto the dispatch
+   *  index, so analyses may use `edges`, `bind`, or both during the PR-C/D
+   *  migration window. Implementations subscribe via the typed `wl.on*`
+   *  methods directly; the interface intentionally does not export an
+   *  `Event` enum or `Subscription` wrapper at the author surface. */
+  bind?(worklist: Worklist): void;
 }
 
 /** Minimal identity-token shape for `AssumptionChain` links.
@@ -441,6 +453,11 @@ export interface TransformRule {
     chain: AssumptionChain,
     topology: ProgramTopology,
   ): boolean;
+  /** Optional registration hook. Called by `Worklist.registerTransform` AFTER
+   *  the rule's legacy `edges` / `autoDirtyOn` have been lowered. Use the
+   *  worklist's transform-typed `on*` methods (or the public
+   *  `dirtyTransform(rule, unit)` shortcut) to add subscribers. */
+  bind?(worklist: Worklist): void;
 }
 
 /** Construct an Analysis, auto-attaching its `store` from `storeAlgebra`
