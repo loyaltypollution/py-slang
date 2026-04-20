@@ -10,11 +10,13 @@ import {
 } from "./function-registry";
 import {
   storeClearContext,
+  storeContexts,
   storeEvict,
   storeReadAt,
   storeReadMinimal,
   storeWrite,
   type FactChange,
+  type ReadonlyAnalysisStore,
 } from "./analysis-store";
 import {
   buildUnits,
@@ -78,6 +80,37 @@ export interface SpecFactRef {
   readonly narrowing: Narrowing<NodeId | FunctionId | ParamKey, unknown>;
   readonly key: NodeId | FunctionId | ParamKey;
 }
+
+/** Capability surface handed to evict subscribers (`onFactEvict`,
+ *  `onRebuildEvict`, `onRetireEvict`). Replaces the recurring
+ *  `for (const c of storeContexts(store)) storeEvict(store, key, c)` shape
+ *  that every retire-edge `effect` had to spell out by hand.
+ *
+ *  - `evictAt` evicts a single (key, context) pair — the same operation as
+ *    `ctx.evict(analysis, key)` but reachable from evict callbacks that
+ *    receive an `EvictHandle` instead of an `AnalysisCtx`.
+ *  - `evictAcrossContexts` enumerates every context partition the store has
+ *    a cell for and evicts the key in each. Use when a unit's retirement
+ *    invalidates a key irrespective of speculation chain (the common case
+ *    for unit-scoped facts like purity verdicts and runtime observations). */
+export interface EvictHandle {
+  evictAt<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K, context: AssumptionChain): void;
+  evictAcrossContexts<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K): void;
+}
+
+/** Singleton `EvictHandle` instance. The handle has no per-fire state — its
+ *  methods are pure delegations to the framework store helpers — so there is
+ *  no behavioral difference between a fresh allocation per dispatch and a
+ *  shared frozen object. The dispatcher passes this same reference to every
+ *  evict callback. */
+const EVICT_HANDLE: EvictHandle = Object.freeze({
+  evictAt<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K, context: AssumptionChain): void {
+    storeEvict(store, key, context);
+  },
+  evictAcrossContexts<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K): void {
+    for (const context of storeContexts(store)) storeEvict(store, key, context);
+  },
+});
 
 /** Narrow backend-facing interface for publishing guard provenance. Exposed
  *  as a separate type so backends can hold a capability-restricted reference
@@ -369,48 +402,242 @@ export class Worklist {
     this.factSubs.set(upstream, list);
   }
 
-  /** Register an analysis. Idempotent. Compiles each edge in `analysis.edges` into a
-   *  callback on the unified dispatch indices (`factSubs` / `lifecycleSubs`).
-   *  Lifecycle edges with `on: "mint"` fire immediately against every
-   *  existing unit so late-registered analyses pick up the initial mint burst. */
+  // ─────────────────────────────────────────────────────────────────────────
+  // Typed `on*` subscribe methods (PR-B). Author surface: each (event, kind)
+  // is its own method with mandatory parameters. No `Subscription` wrapper,
+  // no exported `Event` enum, no optional-pair fields. Each method appends to
+  // `factSubs` / `lifecycleSubs` directly — dispatch is O(1) and unified with
+  // the legacy `register` / `registerTransform` path (which now lowers onto
+  // these same indices).
+  //
+  // Matrix (see plan-subscriptions.md §4.1):
+  //   factWrite  → onFactDirty    + onFactEvict
+  //   mint       → onMint
+  //   rebuild    → onRebuildDirty + onRebuildEvict
+  //   retire     → onRetireEvict
+  //   specRev    → onSpecRev
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /** Subscribe `reader` to dirtied keys yielded when `from` advances at any
+   *  key. `dirtied(ctx, key)` projects the upstream key-change into this
+   *  reader's key space; each yielded key is enqueued for `reader`'s
+   *  transfer.
+   *
+   *  `opts.enqueueAt` projects the source context into the enqueue context.
+   *  Default: enqueue at the same context the upstream write happened in
+   *  (`ctx.currentContext`). Use `enqueueAt: () => ROOT_CONTEXT` for
+   *  context-blind consumers whose cells exist only at ROOT — waking them
+   *  in a non-ROOT context would write into an orphan cell no reader ever
+   *  consults. */
+  onFactDirty<K>(
+    from: Analysis<any, any>,
+    reader: Analysis<K, any>,
+    dirtied: (ctx: AnalysisCtx, key: unknown) => Iterable<K>,
+    opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
+  ): void {
+    const project = opts?.enqueueAt;
+    this.subscribeFact(from, (ctx, key) => {
+      const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
+      for (const k of dirtied(ctx, key)) this.enqueue(reader, k, enqueueCtx);
+    });
+  }
+
+  /** Subscribe an evict callback to writes against `from`. Used by analyses
+   *  whose stored cells must be invalidated (not merely re-dirtied) when an
+   *  upstream fact advances — e.g. block-DFA cells under a stale narrowing
+   *  whose monotone join would absorb the new fact. The handle exposes
+   *  `evictAt` and `evictAcrossContexts` so callers don't reimplement the
+   *  `storeContexts` loop. */
+  onFactEvict(
+    from: Analysis<any, any>,
+    evict: (h: EvictHandle, key: unknown) => void,
+  ): void {
+    this.subscribeFact(from, (_ctx, key) => evict(EVICT_HANDLE, key));
+  }
+
+  /** Subscribe `reader` to mint of any unit. `dirtied(ctx, unit)` yields
+   *  keys for `reader` to enqueue. Fires immediately against every
+   *  existing unit at registration so late subscribers pick up the initial
+   *  burst — matches the legacy `LifecycleEdge<"mint">` replay semantics. */
+  onMint<K>(
+    reader: Analysis<K, any>,
+    dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<K>,
+  ): void {
+    this.lifecycleSubs.mint.push((_ctx, unit) => {
+      this._enqueueReason = `lifecycle:mint:${unitDesc(unit)}`;
+      for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+    });
+    // Replay against existing units so registration order does not determine
+    // seeding (matches the legacy `register`'s mint-replay loop).
+    for (const unit of this._topology.units.values()) {
+      this._enqueueReason = `lifecycle:mint:${unitDesc(unit)}`;
+      for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+    }
+  }
+
+  /** Subscribe `reader` to rebuild of any unit. Distinct method (rather than
+   *  shared with mint) because rebuild-time invalidation often needs a paired
+   *  `onRebuildEvict` to drop stale block-keyed cells before the fresh CFG
+   *  is wired — the matrix calls these out as two independent concerns. */
+  onRebuildDirty<K>(
+    reader: Analysis<K, any>,
+    dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<K>,
+  ): void {
+    this.lifecycleSubs.rebuild.push((_ctx, unit) => {
+      this._enqueueReason = `lifecycle:rebuild:${unitDesc(unit)}`;
+      for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+    });
+  }
+
+  /** Subscribe an evict callback to rebuild. Typically used to drop block-
+   *  keyed cells whose `BasicBlock` identities belong to the pre-rebuild
+   *  CFG generation. */
+  onRebuildEvict(evict: (h: EvictHandle, unit: Unit) => void): void {
+    this.lifecycleSubs.rebuild.push((_ctx, unit) => evict(EVICT_HANDLE, unit));
+  }
+
+  /** Subscribe an evict callback to retire. The matrix is evict-only here:
+   *  dirtying keys against a retiring unit is meaningless (no transfer will
+   *  ever consume them), and cross-unit invalidation triggered by retirement
+   *  is the job of fact-edges, not the retire hook. */
+  onRetireEvict(evict: (h: EvictHandle, unit: Unit) => void): void {
+    this.lifecycleSubs.retire.push((_ctx, unit) => evict(EVICT_HANDLE, unit));
+  }
+
+  /** Subscribe `reader` to spec-context bumps on any unit. Fires on
+   *  observation-driven extend, on lineage-precise widen
+   *  (`Worklist.widenGuard`), and on whole-unit widen (`widenFullChain`).
+   *  No paired evict — a context bump advances no facts, so subscribers
+   *  whose output is gated on `specAssumptionChainFor(unit)` simply
+   *  re-enqueue their key. */
+  onSpecRev<K>(
+    reader: Analysis<K, any>,
+    dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<K>,
+  ): void {
+    this.lifecycleSubs.specContextChange.push((_ctx, unit) => {
+      this._enqueueReason = `lifecycle:specContextChange:${unitDesc(unit)}`;
+      for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+    });
+  }
+
+  /** Register an analysis. Idempotent. Lowers each edge in `analysis.edges`
+   *  onto the typed `on*` methods (or, for legacy combinations the typed
+   *  matrix doesn't expose — e.g. `retire` with a `wake`, which §3.1 of the
+   *  plan confirms has zero production occurrences — directly onto the
+   *  underlying `lifecycleSubs` index). The legacy edge API and the typed
+   *  surface share one dispatch path. */
   register<K, V>(analysis: Analysis<K, V>): void {
     if (this.registeredAnalyses.indexOf(analysis as Analysis<any, any>) !== -1) return;
     this.registeredAnalyses.push(analysis as Analysis<any, any>);
     REGISTERED_ANALYSES.add(analysis as Analysis<any, any>);
     const reader = analysis as Analysis<any, any>;
-    const fireLifecycleEdge = (lc: LifecycleEdge<any>, unit: Unit): void => {
-      if (lc.wake !== undefined) {
-        this._enqueueReason = `lifecycle:${lc.on}:${unitDesc(unit)}`;
-        for (const k of lc.wake(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
-      }
-      if (lc.effect !== undefined) lc.effect(this.passCtx, unit);
-    };
     for (const spec of analysis.edges) {
-      if (spec.on !== "fact") {
-        this.lifecycleSubs[spec.on].push((_ctx, unit) => fireLifecycleEdge(spec, unit));
+      if (spec.on === "fact") {
+        // Legacy FactEdge bundles an optional `effect` (cell invalidation)
+        // and a mandatory `wake` (dirtied-keys projection) under one
+        // subscriber that runs `effect` BEFORE `wake`'s enqueues. The typed
+        // surface splits these into `onFactEvict` + `onFactDirty`, but each
+        // typed call appends a separate subscriber to `factSubs` — and
+        // `handleFactChange` iterates that list in registration order. So
+        // splitting yields the same observable behavior: evict first, then
+        // dirty. The legacy `effect` callback receives an `AnalysisCtx`
+        // (carrying the source context), not an `EvictHandle`, so we adapt
+        // it via a closure that ignores the handle and uses `ctx`.
+        const wake = spec.wake;
+        const effect = spec.effect;
+        const toRoot = spec.contextPolicy === "root";
+        if (effect !== undefined) {
+          // Direct subscribe rather than `onFactEvict` because legacy
+          // `effect` consumes the live AnalysisCtx with the source context;
+          // `onFactEvict` is for the typed surface that uses EvictHandle.
+          // Both append to the same `factSubs` index — single dispatch path.
+          this.subscribeFact(spec.analysis, (ctx, key) => effect(ctx, key));
+        }
+        const enqueueAt = toRoot ? () => ROOT_CONTEXT : undefined;
+        this.onFactDirty(spec.analysis, reader, wake, { enqueueAt });
         continue;
       }
+      // Lifecycle edge: lower to typed methods where the matrix matches; for
+      // out-of-matrix combinations (e.g. retire + wake) fall through to a
+      // direct lifecycleSubs append so dispatch stays uniform.
       const wake = spec.wake;
       const effect = spec.effect;
-      const toRoot = spec.contextPolicy === "root";
-      this.subscribeFact(spec.analysis, (ctx, key) => {
-        if (effect !== undefined) effect(ctx, key);
-        const enqueueCtx = toRoot ? ROOT_CONTEXT : ctx.currentContext;
-        for (const k of wake(ctx, key)) this.enqueue(reader, k, enqueueCtx);
-      });
+      switch (spec.on) {
+        case "mint":
+          if (wake !== undefined) {
+            // Use a per-edge wrapper instead of `onMint` because the legacy
+            // edge can carry both wake and effect, and we want to preserve
+            // the order: wake-then-effect, exactly as the original
+            // `fireLifecycleEdge` did.
+            this.lifecycleSubs.mint.push((_ctx, unit) => {
+              this._enqueueReason = `lifecycle:mint:${unitDesc(unit)}`;
+              for (const k of wake(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+              if (effect !== undefined) effect(this.passCtx, unit);
+            });
+          } else if (effect !== undefined) {
+            this.lifecycleSubs.mint.push((_ctx, unit) => effect(this.passCtx, unit));
+          }
+          break;
+        case "rebuild":
+          if (wake !== undefined) {
+            this.lifecycleSubs.rebuild.push((_ctx, unit) => {
+              this._enqueueReason = `lifecycle:rebuild:${unitDesc(unit)}`;
+              for (const k of wake(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+              if (effect !== undefined) effect(this.passCtx, unit);
+            });
+          } else if (effect !== undefined) {
+            this.lifecycleSubs.rebuild.push((_ctx, unit) => effect(this.passCtx, unit));
+          }
+          break;
+        case "retire":
+          // Matrix has no retire+wake. §3.1 confirms zero production cases.
+          // Support it anyway for legacy fidelity by direct append; the
+          // typed `onRetireEvict` covers the only production shape.
+          if (wake !== undefined) {
+            this.lifecycleSubs.retire.push((_ctx, unit) => {
+              this._enqueueReason = `lifecycle:retire:${unitDesc(unit)}`;
+              for (const k of wake(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+              if (effect !== undefined) effect(this.passCtx, unit);
+            });
+          } else if (effect !== undefined) {
+            this.lifecycleSubs.retire.push((_ctx, unit) => effect(this.passCtx, unit));
+          }
+          break;
+        case "specContextChange":
+          if (wake !== undefined) {
+            this.lifecycleSubs.specContextChange.push((_ctx, unit) => {
+              this._enqueueReason = `lifecycle:specContextChange:${unitDesc(unit)}`;
+              for (const k of wake(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+              if (effect !== undefined) effect(this.passCtx, unit);
+            });
+          } else if (effect !== undefined) {
+            this.lifecycleSubs.specContextChange.push((_ctx, unit) => effect(this.passCtx, unit));
+          }
+          break;
+      }
     }
     // Replay existing-unit mints so registration order doesn't determine seeding.
     for (const spec of analysis.edges) {
       if (spec.on !== "mint") continue;
-      for (const unit of this._topology.units.values()) fireLifecycleEdge(spec, unit);
+      const wake = spec.wake;
+      const effect = spec.effect;
+      for (const unit of this._topology.units.values()) {
+        if (wake !== undefined) {
+          this._enqueueReason = `lifecycle:mint:${unitDesc(unit)}`;
+          for (const k of wake(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+        }
+        if (effect !== undefined) effect(this.passCtx, unit);
+      }
     }
   }
 
-  /** Register a transform rule. Idempotent. Existing units seed its dirty
-   *  set; mint/rebuild auto-dirty the unit via lifecycle subscriptions; and
-   *  each `edge` compiles into a fact subscription that dirties yielded
-   *  units. All three paths funnel into the unified dispatch indices —
-   *  transforms are not a special subscriber kind. */
+  /** Register a transform rule. Idempotent. Lowers onto the typed `on*`
+   *  surface so transforms share the dispatch path with analyses:
+   *    - `autoDirtyOn` defaults to `["mint","rebuild"]`; mint lowers to
+   *      `onMint(...)` and rebuild to `onRebuildDirty(...)`. Both adapters
+   *      yield the unit itself into the rule-owned dirty set.
+   *    - Each `edge` (FactEdge<Unit>) lowers to `onFactDirty(...)` with a
+   *      reader that simply adds yielded units to the dirty set. */
   registerTransform(rule: TransformRule): void {
     if (this.transforms.indexOf(rule) !== -1) return;
     this.transforms.push(rule);
@@ -418,6 +645,12 @@ export class Worklist {
     for (const u of this._topology.units.values()) dirty.add(u);
     this.transformDirty.set(rule, dirty);
 
+    // Transforms are not Analyses — they have no `enqueue` target. The
+    // typed `onMint` / `onRebuildDirty` shape requires a `reader: Analysis`
+    // and enqueues yielded keys; transforms instead want to add yielded
+    // units to a private dirty set. Lower directly onto `lifecycleSubs` —
+    // same dispatch index the typed methods write to — with an adapter
+    // closure that adds to `dirty`.
     const addUnit = (_ctx: AnalysisCtx, unit: Unit): void => { dirty.add(unit); };
     const auto = rule.autoDirtyOn ?? ["mint", "rebuild"];
     for (const kind of auto) this.lifecycleSubs[kind].push(addUnit);
@@ -425,6 +658,10 @@ export class Worklist {
     if (rule.edges !== undefined) {
       for (const edge of rule.edges) {
         const wake = edge.wake;
+        // FactEdge<Unit> for transforms has no `effect` (the type has it
+        // optional, but production transforms never set it — the dirty-set
+        // mutation IS the effect). Lower as a fact-dirty subscription whose
+        // "enqueue" is `dirty.add`.
         this.subscribeFact(edge.analysis, (ctx, key) => {
           for (const u of wake(ctx, key)) dirty.add(u);
         });
