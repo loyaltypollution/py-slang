@@ -308,7 +308,10 @@ function sweepStmts(
 
 export const deadStoreRule: TransformRule = {
   debugName: "deadStoreRule",
-  edges: [{ on: "fact", analysis: livenessAnalysis.env, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  bind(wl) {
+    wl.onTransformFactDirty(deadStoreRule, livenessAnalysis.env,
+      (_ctx, block) => [(block as BasicBlock).unit]);
+  },
   sweep(unit: Unit, chain: AssumptionChain, _topology: ProgramTopology): boolean {
     // Skip the module (FileInput) scope. Module-top-level names are part of
     // the program's observable namespace — other modules can import them,
