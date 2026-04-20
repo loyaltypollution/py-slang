@@ -30,7 +30,6 @@ import type {
   SemanticAnalysis,
 } from "../framework/analysis";
 import { addEdge, defineAnalysis } from "../framework/analysis";
-import { storeContexts, storeEvict } from "../framework/analysis-store";
 import { ROOT_CONTEXT, type AssumptionChain } from "../framework/context";
 import { constAnalysis } from "../const-analysis/analysis";
 import { typeAnalysis } from "../type-analysis/analysis";
@@ -441,50 +440,7 @@ export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> 
   keySpace: "functionId",
   storeAlgebra: outerLattice,
   polarity: "may",
-  edges: [
-    {
-      // Subscribe to `.facts` changes — that's where `IMPURE_SENTINEL_NODE_ID`
-      // lives. `.env` changes don't affect the sentinel, so waking on them
-      // would fire this scope transfer for no reason.
-      on: "fact",
-      analysis: purityBlockAnalysis.facts,
-      wake: (_ctx, key) => {
-        const fd = (key as BasicBlock).unit.funcAst;
-        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
-      },
-    },
-    {
-      on: "mint",
-      wake: (_ctx, unit) => {
-        const fd = unit.funcAst;
-        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
-      },
-    },
-    {
-      on: "rebuild",
-      wake: (_ctx, unit) => {
-        const fd = unit.funcAst;
-        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
-      },
-    },
-    {
-      on: "specContextChange",
-      wake: (_ctx, unit) => {
-        const fd = unit.funcAst;
-        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
-      },
-    },
-    {
-      on: "retire",
-      effect: (_ctx, unit) => {
-        const fd = unit.funcAst;
-        if (!(fd instanceof StmtNS.FunctionDef)) return;
-        for (const context of storeContexts(purityScopeAnalysis.store)) {
-          storeEvict(purityScopeAnalysis.store, fd.id, context);
-        }
-      },
-    },
-  ],
+  edges: [],
   tier: "analysis",
   transfer(ctx: AnalysisCtx, functionId: number): boolean | undefined {
     const unit = ctx.topology.unitOfFunctionId(functionId);
@@ -512,6 +468,29 @@ export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> 
       if (facts.has(IMPURE_SENTINEL_NODE_ID)) return false;
     }
     return anyVisited ? true : undefined;
+  },
+  bind(wl) {
+    const fdIdOf = (unit: Unit): number[] => {
+      const fd = unit.funcAst;
+      return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
+    };
+    // Subscribe to `.facts` changes — that's where IMPURE_SENTINEL_NODE_ID
+    // lives. `.env` changes don't affect the sentinel, so waking on them
+    // would fire this scope transfer for no reason.
+    wl.onFactDirty(purityBlockAnalysis.facts, purityScopeAnalysis, (_ctx, key) => {
+      const fd = (key as BasicBlock).unit.funcAst;
+      return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
+    });
+    wl.onMint(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
+    wl.onRebuildDirty(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
+    wl.onSpecRev(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
+    // Retire: original effect looped storeContexts and called storeEvict per
+    // partition — exactly h.evictAcrossContexts in the typed surface.
+    wl.onRetireEvict((h, unit) => {
+      const fd = unit.funcAst;
+      if (!(fd instanceof StmtNS.FunctionDef)) return;
+      h.evictAcrossContexts(purityScopeAnalysis.store, fd.id);
+    });
   },
 });
 
