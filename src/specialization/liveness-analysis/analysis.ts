@@ -1,6 +1,5 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
-import { addEdge } from "../framework/analysis";
 import type { AssumptionChain } from "../framework/context";
 import {
   makeBlockFixpointAnalysis,
@@ -190,12 +189,14 @@ export const livenessAnalysis: BlockFixpointAnalysis<LiveVal> =
 // with the forward passes — any observation that drives a transform cascade
 // downstream still rebuilds the CFG and re-seeds us via lifecycle.
 // Wake the env-side transfer on runtime writes — `.env` owns the block
-// transfer; `.facts` is populated as a paired side effect.
-addEdge(livenessAnalysis.env, {
-  on: "fact",
-  analysis: runtimeWriteAnalysis,
-  wake: nodeIdToBlock,
-});
+// transfer; `.facts` is populated as a paired side effect. Composed with
+// the dfa-factory bind (lifecycle seeds + evicts + self-wake) so both fire
+// at register time.
+const factoryBind = livenessAnalysis.env.bind!;
+livenessAnalysis.env.bind = (wl) => {
+  factoryBind(wl);
+  wl.onFactDirty(runtimeWriteAnalysis, livenessAnalysis.env, nodeIdToBlock);
+};
 
 /** Reconstruct live-OUT of `block` under `chain`: join of live-INs (stored
  *  outEnvs) of CFG-successors read at that chain. Terminal blocks have no

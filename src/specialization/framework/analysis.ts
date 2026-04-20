@@ -229,7 +229,7 @@ export interface Analysis<K, V> {
    *  Construction is handled by `defineAnalysis({...})` so declarations
    *  stay literal-shaped without boilerplate. */
   readonly store: ReadonlyAnalysisStore<K, V>;
-  readonly edges: ReadonlyArray<EdgeSpec<K>>;
+  readonly edges?: ReadonlyArray<EdgeSpec<K>>;
   /** Priority tier. Runtime observations settle before analyses within a
    *  `processQueue` drain. Transforms are no longer analyses — see
    *  `TransformRule`. Mandatory: a forgotten tier used to silently default

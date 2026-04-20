@@ -531,7 +531,8 @@ export class Worklist {
     this.registeredAnalyses.push(analysis as Analysis<any, any>);
     REGISTERED_ANALYSES.add(analysis as Analysis<any, any>);
     const reader = analysis as Analysis<any, any>;
-    for (const spec of analysis.edges) {
+    const edges = analysis.edges ?? [];
+    for (const spec of edges) {
       if (spec.on === "fact") {
         // Legacy FactEdge bundles an optional `effect` (cell invalidation)
         // and a mandatory `wake` (dirtied-keys projection) under one
@@ -617,7 +618,7 @@ export class Worklist {
       }
     }
     // Replay existing-unit mints so registration order doesn't determine seeding.
-    for (const spec of analysis.edges) {
+    for (const spec of edges) {
       if (spec.on !== "mint") continue;
       const wake = spec.wake;
       const effect = spec.effect;

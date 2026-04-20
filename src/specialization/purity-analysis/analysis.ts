@@ -23,13 +23,12 @@ import {
 import type { Unit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
 import type {
-  EdgeSpec,
   JoinSemiLattice,
   Analysis,
   AnalysisCtx,
   SemanticAnalysis,
 } from "../framework/analysis";
-import { addEdge, defineAnalysis } from "../framework/analysis";
+import { defineAnalysis } from "../framework/analysis";
 import { ROOT_CONTEXT, type AssumptionChain } from "../framework/context";
 import { constAnalysis } from "../const-analysis/analysis";
 import { typeAnalysis } from "../type-analysis/analysis";
@@ -563,34 +562,36 @@ function conditionTruth(
   return undefined;
 }
 
-// Cross-analysis edge: the block analysis consults `purityScopeAnalysis`
-// when it hits a nested `FunctionDef` stmt (to learn the nested function's
-// purity verdict). Declared post-hoc because both analyses reference each
-// other. The factory returns `edges` as a plain (unfrozen) array so late
-// amendments are safe. Wake-up path: when the nested fd's scope-analysis
-// writes for `functionId`, project to the outer block containing that `def` stmt
-// via `topology.blockOfNode(functionId)` — the FunctionDef's own node id lives in
-// the enclosing unit's indexing walk, so a direct topology lookup hits the
-// caller's block.
-const scopeToBlock: EdgeSpec<BasicBlock> = {
-  on: "fact",
-  analysis: purityScopeAnalysis,
-  wake: (ctx, key) => {
+// Cross-analysis subscriptions on `purityBlockAnalysis.env`:
+//
+//   1. Scope → block: the block analysis consults `purityScopeAnalysis` when
+//      it hits a nested `FunctionDef` stmt (to learn the nested function's
+//      purity verdict). Mutual reference — installed at bind time so both
+//      analyses are constructed by the time the closure captures them. When
+//      the nested fd's scope-analysis writes for `functionId`, project to the
+//      outer block containing that `def` stmt via `topology.blockOfNode` —
+//      the FunctionDef's own node id lives in the enclosing unit's indexing
+//      walk, so a direct topology lookup hits the caller's block. The
+//      scope→block wake re-runs the block transfer (which is on the `.env`
+//      side); `.facts` is populated as a paired-cell side effect.
+//
+//   2. SpecRev re-seed: when the active speculation context for a unit
+//      changes, re-seed `purityBlockAnalysis.env` at the new context. This
+//      populates block facts under the speculative context so
+//      `purityScopeAnalysis.transfer` can read them there rather than always
+//      falling back to ROOT. Block transfer is context-independent today,
+//      but this wiring is load-bearing once speculative-clone bodies can
+//      differ from the canonical body.
+//
+// Composed with the dfa-factory bind already on `purityBlockAnalysis.env`
+// (lifecycle seeds + evicts + self-wake) so all subscriptions register together.
+const purityBlockEnvFactoryBind = purityBlockAnalysis.env.bind!;
+purityBlockAnalysis.env.bind = (wl) => {
+  purityBlockEnvFactoryBind(wl);
+  wl.onFactDirty(purityScopeAnalysis, purityBlockAnalysis.env, (ctx, key) => {
     if (typeof key !== "number") return [];
     const block = ctx.topology.blockOfNode(key);
     return block === undefined ? [] : [block];
-  },
+  });
+  wl.onSpecRev(purityBlockAnalysis.env, (_ctx, unit) => [purityBlockAnalysis.seed(unit)]);
 };
-// The scope→block wake re-runs the block transfer (which is on the `.env`
-// side); `.facts` is populated as a paired-cell side effect of that pass.
-addEdge(purityBlockAnalysis.env, scopeToBlock);
-
-// When the active speculation context for a unit changes, re-seed purityBlockAnalysis
-// at the new context. This populates block facts under the speculative context so
-// purityScopeAnalysis.transfer can read them there (rather than always falling back
-// to ROOT). The block transfer itself is context-independent today, but this wiring
-// is load-bearing once speculative-clone bodies can differ from the canonical body.
-addEdge(purityBlockAnalysis.env, {
-  on: "specContextChange",
-  wake: (_ctx, unit) => [purityBlockAnalysis.seed(unit)],
-});

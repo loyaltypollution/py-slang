@@ -4,7 +4,6 @@ import type { Unit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
 import type {
   Lattice,
-  EdgeSpec,
   JoinSemiLattice,
   Analysis,
   AnalysisCtx,
@@ -191,11 +190,6 @@ export function makeBlockFixpointAnalysis<L>(
     eq: (a, b) => a === b || (factsLeq(a, b) && factsLeq(b, a)),
   };
 
-  // `edges` arrays stay unfrozen so callers with mutually-recursive edges
-  // (e.g. purity block ↔ scope) can append via `addEdge` after construction.
-  const envEdges: EdgeSpec<BasicBlock>[] = [];
-  const factsEdges: EdgeSpec<BasicBlock>[] = [];
-
   const seedKey = (unit: Unit): BasicBlock =>
     config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
 
@@ -241,7 +235,6 @@ export function makeBlockFixpointAnalysis<L>(
     keySpace: "BasicBlock",
     storeAlgebra: envLattice,
     emptyValue: bottomEnv,
-    edges: envEdges,
     tier: "analysis",
     polarity: config.mergeKind,
     transfer(ctx, block): MutableEnv<L> | undefined {
@@ -266,7 +259,6 @@ export function makeBlockFixpointAnalysis<L>(
     keySpace: "BasicBlock",
     storeAlgebra: factsLattice,
     emptyValue: EMPTY_FACTS,
-    edges: factsEdges,
     tier: "analysis",
     polarity: config.mergeKind,
     // Facts cell is populated as a side effect of envAnalysis.transfer;
@@ -276,49 +268,29 @@ export function makeBlockFixpointAnalysis<L>(
     transfer: () => undefined,
   });
 
-  const evictStaleEnvCells = (_ctx: AnalysisCtx, unit: Unit): void =>
-    evictStaleBlockCells(envAnalysis.store, unit);
-  const evictStaleFactsCells = (_ctx: AnalysisCtx, unit: Unit): void =>
-    evictStaleBlockCells(factsAnalysis.store, unit);
-
   // envAnalysis: lifecycle seeds and evictions, plus CFG-successor self-wake.
-  // Mint/retire stay on the legacy `edges` array; the rebuild edge migrated
-  // to typed `onRebuildDirty` + `onRebuildEvict` via `bind` below — the typed
-  // matrix splits dirty/evict so the original `wake + effect` lowers to two
-  // independent subscribers, matching the pre-migration order (wake-then-
-  // effect was guaranteed by the legacy edge dispatcher; the typed methods
-  // append in registration order to lifecycleSubs.rebuild and dispatch in
-  // that same order).
-  envEdges.push(
-    { on: "mint", wake: (_ctx, unit) => [seedKey(unit)] },
-    { on: "retire", effect: evictStaleEnvCells },
-  );
   envAnalysis.bind = (wl) => {
+    wl.onMint(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
     wl.onRebuildDirty(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
     wl.onRebuildEvict((_h, unit) => evictStaleBlockCells(envAnalysis.store, unit));
-  };
-
-  // Self-wake: block OUT env change → CFG successors recompute IN. Appended
-  // after construction so we can reference `envAnalysis` directly, no getter.
-  envEdges.push({
-    on: "fact",
-    analysis: envAnalysis as Analysis<any, any>,
-    wake: (_ctx, key) => {
+    wl.onRetireEvict((_h, unit) => evictStaleBlockCells(envAnalysis.store, unit));
+    // Self-wake: block OUT env change → CFG successors recompute IN.
+    wl.onFactDirty(envAnalysis as Analysis<any, any>, envAnalysis, (_ctx, key) => {
       const b = key as BasicBlock;
       const edges = config.direction === "forward" ? b.successorEdges : b.predecessorEdges;
       return edges.map(e => (config.direction === "forward" ? e.to : e.from));
-    },
-  });
+    });
+  };
 
   // factsAnalysis: eviction only. No mint seed (envAnalysis drives the seed
   // and paired-writes produce facts as a side effect); no self-wake (expr
   // facts do not propagate through CFG successors — the old compound analysis
   // conflated the two cases and produced spurious ripples per observation,
   // now eliminated by the split).
-  factsEdges.push(
-    { on: "rebuild", effect: evictStaleFactsCells },
-    { on: "retire", effect: evictStaleFactsCells },
-  );
+  factsAnalysis.bind = (wl) => {
+    wl.onRebuildEvict((_h, unit) => evictStaleBlockCells(factsAnalysis.store, unit));
+    wl.onRetireEvict((_h, unit) => evictStaleBlockCells(factsAnalysis.store, unit));
+  };
 
   return {
     env: envAnalysis,
