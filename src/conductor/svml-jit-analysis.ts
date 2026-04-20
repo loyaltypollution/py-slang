@@ -11,8 +11,7 @@ import { StmtNS } from "../ast-types";
 import type { BasicBlock } from "../specialization/framework/cfg";
 import { ROOT_CONTEXT, type AssumptionChain } from "../specialization/framework/context";
 import type { Unit } from "../specialization/framework/function-unit";
-import { defineAnalysis, type Analysis, type AnalysisCtx, type EdgeSpec, type Narrowing } from "../specialization/framework/analysis";
-import { storeEvict } from "../specialization/framework/analysis-store";
+import { defineAnalysis, type Analysis, type AnalysisCtx, type Narrowing } from "../specialization/framework/analysis";
 import { JIT_RELEVANT_NARROWINGS } from "../specialization/framework/dfa-analyses";
 import { runtimeCallAnalysis } from "../specialization/framework/runtime-analyses";
 import { purityScopeAnalysis } from "../specialization/purity-analysis/analysis";
@@ -104,58 +103,6 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
   const specAssumptionChainFor = deps.specAssumptionChainFor ?? ((_: Unit) => ROOT_CONTEXT);
   const narrowings = deps.narrowings ?? JIT_RELEVANT_NARROWINGS;
 
-  const edges: EdgeSpec<Unit>[] = narrowings.flatMap(n =>
-    cellsOfNarrowing(n).map(cell => ({
-      on: "fact" as const,
-      analysis: cell,
-      wake: blockToOwningUnit,
-      contextPolicy: "root" as const,
-    })),
-  );
-  edges.push(
-    {
-      on: "fact",
-      analysis: runtimeCallAnalysis,
-      wake: (ctx, functionId) => {
-        const count = ROOT_CONTEXT.tryRead(runtimeCallAnalysis, functionId as number) ?? 0;
-        if (count !== MEMOIZATION_THRESHOLD) return [];
-        const u = ctx.topology.unitOfFunctionId(functionId as number);
-        return u !== undefined && u.funcAst instanceof StmtNS.FunctionDef ? [u] : [];
-      },
-      contextPolicy: "root",
-    },
-    {
-      // Purity verdict landing at any ancestor of the unit's active spec
-      // context may unlock memoization in the clone lane. The body the JIT
-      // emits is gated on a minimal-witness read of purityScopeAnalysis, so
-      // a write to any context is a candidate trigger — the transfer
-      // re-derives the witness and suppresses via structural-equals if the
-      // emitted IR is unchanged.
-      on: "fact",
-      analysis: purityScopeAnalysis,
-      wake: (ctx, functionId) => {
-        const u = ctx.topology.unitOfFunctionId(functionId as number);
-        return u !== undefined && u.funcAst instanceof StmtNS.FunctionDef ? [u] : [];
-      },
-      contextPolicy: "root",
-    },
-    {
-      on: "mint",
-      wake: (_ctx, unit) =>
-        unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [],
-    },
-    {
-      on: "rebuild",
-      wake: (_ctx, unit) =>
-        unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [],
-    },
-    {
-      on: "specContextChange",
-      wake: (_ctx, unit) =>
-        unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [],
-    },
-  );
-
   const jitStoreAlgebra = {
     bottom: UNCOMPILED,
     leq: structuralEquals,
@@ -163,11 +110,21 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
     eq: structuralEquals,
   };
 
+  const unitOfFn = (
+    ctx: AnalysisCtx,
+    functionId: unknown,
+  ): Iterable<Unit> => {
+    const u = ctx.topology.unitOfFunctionId(functionId as number);
+    return u !== undefined && u.funcAst instanceof StmtNS.FunctionDef ? [u] : [];
+  };
+  const unitIfFunctionDef = (unit: Unit): Iterable<Unit> =>
+    unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
+
   const jitAnalysis: Analysis<Unit, SVMLIR> = defineAnalysis({
     id: Symbol("jitAnalysis"),
     debugName: "jitAnalysis",
     storeAlgebra: jitStoreAlgebra,
-    edges,
+    edges: [],
     tier: "analysis",
     polarity: "opaque",
     transfer(ctx: AnalysisCtx, unit: Unit): SVMLIR | undefined {
@@ -183,12 +140,37 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
       interpreter.patchFunction(index, newCode);
       return newCode;
     },
-  });
-
-  (jitAnalysis.edges as EdgeSpec<Unit>[]).push({
-    on: "retire",
-    effect: (_ctx, unit) => {
-      storeEvict(jitAnalysis.store, unit, ROOT_CONTEXT);
+    bind(wl) {
+      // ROOT-projection preserved verbatim via `enqueueAt: () => ROOT_CONTEXT`.
+      // The jitAnalysis cells are unit-keyed and only ever live at ROOT
+      // (this analysis emits backend artifacts for the unspeculated entry
+      // path); a non-ROOT enqueue would write into an orphan partition no
+      // one reads. Same semantics as the legacy `contextPolicy: "root"`
+      // (§3.3 of plan-subscriptions.md). Provenance redesign is PR-E.
+      const rootEnqueue = { enqueueAt: () => ROOT_CONTEXT };
+      for (const n of narrowings) {
+        for (const cell of cellsOfNarrowing(n)) {
+          wl.onFactDirty(cell, jitAnalysis, blockToOwningUnit, rootEnqueue);
+        }
+      }
+      wl.onFactDirty(runtimeCallAnalysis, jitAnalysis, (ctx, functionId) => {
+        const count = ROOT_CONTEXT.tryRead(runtimeCallAnalysis, functionId as number) ?? 0;
+        if (count !== MEMOIZATION_THRESHOLD) return [];
+        return unitOfFn(ctx, functionId);
+      }, rootEnqueue);
+      // Purity verdict landing at any ancestor of the unit's active spec
+      // context may unlock memoization in the clone lane. The body the JIT
+      // emits is gated on a minimal-witness read of purityScopeAnalysis, so
+      // a write to any context is a candidate trigger — the transfer
+      // re-derives the witness and suppresses via structural-equals if the
+      // emitted IR is unchanged.
+      wl.onFactDirty(purityScopeAnalysis, jitAnalysis, unitOfFn, rootEnqueue);
+      wl.onMint(jitAnalysis, (_ctx, unit) => unitIfFunctionDef(unit));
+      wl.onRebuildDirty(jitAnalysis, (_ctx, unit) => unitIfFunctionDef(unit));
+      wl.onSpecRev(jitAnalysis, (_ctx, unit) => unitIfFunctionDef(unit));
+      wl.onRetireEvict((h, unit) => {
+        h.evictAt(jitAnalysis.store, unit, ROOT_CONTEXT);
+      });
     },
   });
   return jitAnalysis;
