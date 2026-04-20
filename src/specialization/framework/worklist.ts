@@ -25,7 +25,6 @@ import {
   type Unit,
 } from "./function-unit";
 import {
-  REGISTERED_ANALYSES,
   type Analysis,
   type AnalysisCtx,
   type Narrowing,
@@ -529,7 +528,6 @@ export class Worklist {
   register<K, V>(analysis: Analysis<K, V>): void {
     if (this.registeredAnalyses.indexOf(analysis as Analysis<any, any>) !== -1) return;
     this.registeredAnalyses.push(analysis as Analysis<any, any>);
-    REGISTERED_ANALYSES.add(analysis as Analysis<any, any>);
     const reader = analysis as Analysis<any, any>;
     const edges = analysis.edges ?? [];
     for (const spec of edges) {
@@ -546,7 +544,6 @@ export class Worklist {
         // it via a closure that ignores the handle and uses `ctx`.
         const wake = spec.wake;
         const effect = spec.effect;
-        const toRoot = spec.contextPolicy === "root";
         if (effect !== undefined) {
           // Direct subscribe rather than `onFactEvict` because legacy
           // `effect` consumes the live AnalysisCtx with the source context;
@@ -554,8 +551,7 @@ export class Worklist {
           // Both append to the same `factSubs` index — single dispatch path.
           this.subscribeFact(spec.analysis, (ctx, key) => effect(ctx, key));
         }
-        const enqueueAt = toRoot ? () => ROOT_CONTEXT : undefined;
-        this.onFactDirty(spec.analysis, reader, wake, { enqueueAt });
+        this.onFactDirty(spec.analysis, reader, wake);
         continue;
       }
       // Lifecycle edge: lower to typed methods where the matrix matches; for
@@ -636,13 +632,11 @@ export class Worklist {
     analysis.bind?.(this);
   }
 
-  /** Register a transform rule. Idempotent. Lowers onto the typed `on*`
-   *  surface so transforms share the dispatch path with analyses:
-   *    - `autoDirtyOn` defaults to `["mint","rebuild"]`; mint lowers to
-   *      `onMint(...)` and rebuild to `onRebuildDirty(...)`. Both adapters
-   *      yield the unit itself into the rule-owned dirty set.
-   *    - Each `edge` (FactEdge<Unit>) lowers to `onFactDirty(...)` with a
-   *      reader that simply adds yielded units to the dirty set. */
+  /** Register a transform rule. Idempotent. Auto-installs mint/rebuild dirtying
+   *  for the rule's own unit (every transform wants this; no production rule
+   *  has ever opted out, so it's hardcoded rather than configurable). Legacy
+   *  `edges: FactEdge<Unit>[]` are lowered onto `factSubs` directly; new
+   *  rules subscribe via `bind` + `onTransformFactDirty`. */
   registerTransform(rule: TransformRule): void {
     if (this.transforms.indexOf(rule) !== -1) return;
     this.transforms.push(rule);
@@ -650,40 +644,28 @@ export class Worklist {
     for (const u of this._topology.units.values()) dirty.add(u);
     this.transformDirty.set(rule, dirty);
 
-    // Transforms are not Analyses — they have no `enqueue` target. The
-    // typed `onMint` / `onRebuildDirty` shape requires a `reader: Analysis`
-    // and enqueues yielded keys; transforms instead want to add yielded
-    // units to a private dirty set. Lower directly onto `lifecycleSubs` —
-    // same dispatch index the typed methods write to — with an adapter
-    // closure that adds to `dirty`.
+    // Auto-dirty on mint/rebuild — every production transform wants this.
+    // Hardcoded constant rather than per-rule field; if a future rule needs
+    // to opt out, reintroduce a flag.
     const addUnit = (_ctx: AnalysisCtx, unit: Unit): void => { dirty.add(unit); };
-    const auto = rule.autoDirtyOn ?? ["mint", "rebuild"];
-    for (const kind of auto) this.lifecycleSubs[kind].push(addUnit);
+    this.lifecycleSubs.mint.push(addUnit);
+    this.lifecycleSubs.rebuild.push(addUnit);
 
     if (rule.edges !== undefined) {
       for (const edge of rule.edges) {
         const wake = edge.wake;
-        // FactEdge<Unit> for transforms has no `effect` (the type has it
-        // optional, but production transforms never set it — the dirty-set
-        // mutation IS the effect). Lower as a fact-dirty subscription whose
-        // "enqueue" is `dirty.add`.
         this.subscribeFact(edge.analysis, (ctx, key) => {
           for (const u of wake(ctx, key)) dirty.add(u);
         });
       }
     }
-    // PR-C migration hook: rules opting into the typed-method API declare
-    // `bind`; called AFTER legacy `edges` / `autoDirtyOn` lowering so a rule
-    // can keep them, use `bind`, or both during migration.
     rule.bind?.(this);
   }
 
   /** Public mutator for a transform's dirty set. The transform is identified
    *  by reference (the same `TransformRule` value passed to `registerTransform`).
    *  Used by `bind`-driven subscribers that need to mark a unit dirty without
-   *  reaching into the worklist's private `transformDirty` map. The legacy
-   *  `edges` / `autoDirtyOn` lowering above appends directly to the same set;
-   *  this exposes that capability to authors of `bind`. */
+   *  reaching into the worklist's private `transformDirty` map. */
   dirtyTransform(rule: TransformRule, unit: Unit): void {
     this.dirtyFor(rule).add(unit);
   }
@@ -702,32 +684,6 @@ export class Worklist {
     const dirty = this.dirtyFor(rule);
     this.subscribeFact(from, (ctx, key) => {
       for (const u of dirtied(ctx, key)) dirty.add(u);
-    });
-  }
-
-  /** Subscribe `rule` to mint of any unit. Mirror of `onMint` for
-   *  transforms — `dirtied(ctx, unit)` yields units to add to the rule's
-   *  dirty set. Initial-unit seeding is already handled by
-   *  `registerTransform` (it pre-populates the dirty set with every existing
-   *  unit), so no replay loop here. */
-  onTransformMint(
-    rule: TransformRule,
-    dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<Unit>,
-  ): void {
-    const dirty = this.dirtyFor(rule);
-    this.lifecycleSubs.mint.push((_ctx, unit) => {
-      for (const u of dirtied(this.passCtx, unit)) dirty.add(u);
-    });
-  }
-
-  /** Subscribe `rule` to rebuild of any unit. */
-  onTransformRebuildDirty(
-    rule: TransformRule,
-    dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<Unit>,
-  ): void {
-    const dirty = this.dirtyFor(rule);
-    this.lifecycleSubs.rebuild.push((_ctx, unit) => {
-      for (const u of dirtied(this.passCtx, unit)) dirty.add(u);
     });
   }
 

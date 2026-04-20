@@ -50,7 +50,8 @@ function evictStaleBlockCells(
 
 /** Edge projector: map a node-keyed upstream key to its containing block.
  *  Exported so callers of `makeBlockFixpointAnalysis` declare node-fact
- *  upstreams via `addEdge(bfa.env, {on:"fact", analysis: upstream, wake: nodeIdToBlock})`
+ *  upstreams in their own `bind` by composing with `bfa.env.bind` and calling
+ *  `wl.onFactDirty(upstream, bfa.env, nodeIdToBlock)`
  *  rather than a dedicated factory-level `reads` channel. Returns an empty
  *  iterable when the key isn't a number or the node isn't indexed in the
  *  program topology. */

@@ -130,14 +130,6 @@ export interface FactEdge<K> {
    *  `ctx.currentContext` or similar. Reads use `ctx.read(analysis, key)`
    *  etc. */
   effect?(ctx: AnalysisCtx, key: unknown): void;
-  /** Which context the woken keys should be enqueued under.
-   *   - `"same-context"` (default): enqueue at `ctx.currentContext`, i.e. the
-   *     context the upstream write happened in. Ripple stays in-context.
-   *   - `"root"`: enqueue at ROOT regardless of the source context. Used by
-   *     context-blind consumers (e.g. the SVML JIT recompile analysis) whose
-   *     fact cells exist only at ROOT — waking them in a non-ROOT context
-   *     would write into an orphan cell no one ever reads. */
-  readonly contextPolicy?: "same-context" | "root";
 }
 
 export interface LifecycleEdge<K> {
@@ -154,29 +146,6 @@ export interface LifecycleEdge<K> {
   readonly on: "mint" | "rebuild" | "retire" | "specContextChange";
   wake?(ctx: AnalysisCtx, unit: Unit): Iterable<K>;
   effect?(ctx: AnalysisCtx, unit: Unit): void;
-}
-
-/** Module-level set of analyses the Worklist has registered. Populated by
- *  `Worklist.register`; consulted by `addEdge` to reject amendments that
- *  would be silently dropped by the worklist's edge-snapshot. Using a
- *  `WeakSet` means the bookkeeping lives off-object (no structural stamp
- *  on `Analysis`) and retired-but-unreferenced analyses are collectible. */
-export const REGISTERED_ANALYSES: WeakSet<Analysis<any, any>> = new WeakSet();
-
-/** Append an `EdgeSpec` to an analysis's `edges` after construction. Encapsulates
- *  the readonly-cast that would otherwise leak at every call site. Intended
- *  for analyses with mutually-recursive edges that can't be declared at
- *  literal-construction time (e.g. purity block ↔ scope). Throws if `analysis`
- *  is already registered with a worklist — the worklist snapshots `edges`
- *  during `register`, so post-registration additions would silently never
- *  dispatch. */
-export function addEdge<K>(analysis: Analysis<K, any>, spec: EdgeSpec<K>): void {
-  if (REGISTERED_ANALYSES.has(analysis as Analysis<any, any>)) {
-    throw new Error(
-      `[addEdge] analysis "${analysis.debugName}" is already registered with a worklist; edges added now will never dispatch. Declare edges at construction or via addEdge before register().`,
-    );
-  }
-  (analysis.edges as EdgeSpec<K>[]).push(spec);
 }
 
 /** A computation over per-analysis fact cells.
@@ -432,12 +401,6 @@ export interface TransformRule {
    *  edge's `analysis` calls `wake(ctx, key)`, which yields the units to add to
    *  this rule's dirty set. Omit for a rule that only fires on mint/rebuild. */
   readonly edges?: ReadonlyArray<FactEdge<Unit>>;
-  /** Lifecycle events that auto-dirty every unit. Defaults to both `"mint"`
-   *  and `"rebuild"` — the historical behavior. Rules that drive dirtying
-   *  purely from fact edges can opt out with `[]`. Explicit so the
-   *  mint/rebuild auto-dirty is visible in the type rather than hidden
-   *  inside `Worklist.registerTransform`. */
-  readonly autoDirtyOn?: ReadonlyArray<"mint" | "rebuild">;
   /** Returns `true` iff the body at `chain` was mutated — the worklist
    *  then schedules a CFG rebuild for `unit`. The worklist always passes
    *  `chain = specAssumptionChainFor(unit)`; under ROOT that resolves to
@@ -454,9 +417,9 @@ export interface TransformRule {
     topology: ProgramTopology,
   ): boolean;
   /** Optional registration hook. Called by `Worklist.registerTransform` AFTER
-   *  the rule's legacy `edges` / `autoDirtyOn` have been lowered. Use the
-   *  worklist's transform-typed `on*` methods (or the public
-   *  `dirtyTransform(rule, unit)` shortcut) to add subscribers. */
+   *  the rule's legacy `edges` have been lowered. Use the worklist's
+   *  transform-typed `on*` methods (or the public `dirtyTransform(rule, unit)`
+   *  shortcut) to add subscribers. */
   bind?(worklist: Worklist): void;
 }
 
