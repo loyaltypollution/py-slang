@@ -38,6 +38,7 @@
 //                       transfer, no store write. `sweep(unit, facts)`
 //                       returns `true` to trigger CFG rebuild.
 
+import type { StmtNS } from "../../ast-types";
 import type { Unit } from "./function-unit";
 import type { AssumptionChain } from "./context";
 import type { RawKind } from "./raw-value";
@@ -407,25 +408,52 @@ export interface Reading<V> {
 }
 
 export interface TransformFactView {
-  read<K, V>(analysis: SemanticAnalysis<K, V>, key: K): V;
-  tryRead<K, V>(analysis: SemanticAnalysis<K, V>, key: K): V | undefined;
-  readAll<K, V>(analysis: SemanticAnalysis<K, V>): ReadonlyMap<K, V>;
-  /** Exact positional read: no ancestor search, no witness minimization.
-   *  Returns the semantic value at the view's bound context and labels the
-   *  reading with that exact witness. */
+  /** Exact positional read at the view's bound context. Returns a
+   *  `Reading<V>` labeled with that context; the value is the store's
+   *  `read()` result (uses `emptyValue` / `storeAlgebra.bottom` for
+   *  unwritten cells — no silent ROOT fallback). Use this when the rule
+   *  knows it cares about facts at exactly this context. */
   readAt<K, V>(analysis: SemanticAnalysis<K, V>, key: K): Reading<V>;
-  /** Return the shallowest ancestor context of the view's bound context whose
-   *  exact cell value satisfies `accept`. Unwritten ancestor cells are skipped
-   *  rather than treated as implicit ROOT fallbacks. */
+  /** Walk `bound context → ROOT`, returning the shallowest ancestor whose
+   *  written cell value satisfies `accept`. Unwritten ancestor cells are
+   *  skipped; no ROOT fallback. Use this when the rule's rewrite should
+   *  pick the most reusable witness of a predicate. */
   readMinimal<K, V>(analysis: SemanticAnalysis<K, V>, key: K, accept: (value: V) => boolean): Reading<V> | undefined;
-  readExprFact<L>(analysis: SemanticBlockFixpointAnalysis<L>, nodeId: number): L | undefined;
+  /** Block-DFA equivalent of `readAt`, keyed by AST nodeId (framework
+   *  locates the owning block). Returns `undefined` when no fact was
+   *  written at this node under the view's bound context. */
   readExprFactAt<L>(analysis: SemanticBlockFixpointAnalysis<L>, nodeId: number): Reading<L> | undefined;
+  /** Block-DFA equivalent of `readMinimal`: walks `bound context → ROOT`,
+   *  returning the shallowest ancestor whose per-node fact satisfies
+   *  `accept`. */
   readExprFactMinimal<L>(
     analysis: SemanticBlockFixpointAnalysis<L>,
     nodeId: number,
     accept: (value: L) => boolean,
   ): Reading<L> | undefined;
+  /** Opaque-analysis read (runtime observations, profitability counters).
+   *  Keyed at a fixed "profitability context" — typically ROOT because
+   *  runtime observations are architecturally ROOT-scoped (they come from
+   *  the running program, not from speculation). Not a witness read: the
+   *  return is a raw `V`, since opaque facts do not participate in the
+   *  witness-justification contract. */
   readProfitability<K, V>(analysis: OpaqueAnalysis<K, V>, key: K): V;
+  /** Mutable body handle, authorized by a `Reading<V>` obtained from one
+   *  of the witness-producing reads above. The typed parameter IS the
+   *  contract: a transform that has not read any fact has no Reading to
+   *  pass, and therefore cannot rewrite.
+   *
+   *  Fork location is the view's bound context — `reading.witness` plays
+   *  the role of *proof of authorization*, not *publication site*. This
+   *  keeps rule composition clean: when several rules fire at one
+   *  context, they all see and mutate the same forked body. Rules that
+   *  want to influence downstream identity by witness (memoization's memo
+   *  variant key) consult `reading.witness` directly; they don't need
+   *  the fork itself to live there.
+   *
+   *  When the view is ROOT-bound the returned array IS `unit.funcAst.body`
+   *  — no special path, just the ROOT case of the single model. */
+  bodyAtWitness<V>(unit: Unit, reading: Reading<V>): StmtNS.Stmt[];
 }
 
 /** One-shot or cascading imperative AST sweep gated on analyses. Transforms
@@ -451,9 +479,11 @@ export interface TransformRule {
    *  mint/rebuild auto-dirty is visible in the type rather than hidden
    *  inside `Worklist.registerTransform`. */
   readonly autoDirtyOn?: ReadonlyArray<"mint" | "rebuild">;
-  /** Returns `true` iff `unit.body` was mutated — the worklist then schedules
-   *  a CFG rebuild for `unit`. The worklist binds the fact surface at ROOT;
-   *  clone-oriented consumers may bind it at a different context explicitly. */
+  /** Returns `true` iff the body at the view's bound context was mutated —
+   *  the worklist then schedules a CFG rebuild for `unit`. The worklist
+   *  always binds `facts` at `specAssumptionChainFor(unit)`; under ROOT
+   *  that resolves to `unit.funcAst.body` via `bodyAtWitness`, under a
+   *  non-ROOT active context it returns the forked body there. */
   sweep(unit: Unit, facts: TransformFactView): boolean;
 }
 

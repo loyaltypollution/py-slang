@@ -26,88 +26,11 @@ function build(code: string) {
   return { ast, environments, reactive };
 }
 
-// Runtime string assignment must reach runtimeWriteAnalysis through the
-// observe sink in both engines. Parameterized so each engine's wire-up is
-// a single row.
-describe.each([
-  {
-    engine: "CSE",
-    async observe(code: string) {
-      const { ast, reactive } = build(code);
-      reactive.drain();
-      const context = new Context();
-      context.jitHooks = {
-        rootScope: ast,
-        observeNodeWrite: (nodeId, value) => observeRuntimeWrite(reactive, nodeId, value),
-        observeScopeCall: () => {},
-        observeParamEntry: () => {},
-        specializedFunctionBodyFor: () => undefined,
-      } satisfies JitHooks;
-      await evaluate("", ast, context, { variant: 4, groups: [] });
-      reactive.drain();
-      return { ast, reactive };
-    },
-  },
-  {
-    engine: "SVML",
-    async observe(code: string) {
-      const { ast, environments, reactive } = build(code);
-      reactive.drain();
-      const compiler = SVMLCompiler.fromProgramUnit(
-        ast,
-        environments,
-        makeDfaQuery(reactive.topology),
-        reactive.registry,
-      );
-      const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
-        observeNodeWrite: (nodeId, value) => observeRuntimeWrite(reactive, nodeId, value),
-      });
-      await interpreter.execute();
-      reactive.drain();
-      return { ast, reactive };
-    },
-  },
-])("$engine observation sink", ({ observe }) => {
-  test("string store keeps ROOT fact baseline-only and narrows only under spec context", async () => {
-    const code = `
-def f(x):
-    y = x
-    return y
-f("hello")
-`;
-    const baseline = build(code);
-    baseline.reactive.drain();
-    const baselineFn = baseline.ast.statements[0] as StmtNS.FunctionDef;
-    const baselineRead = (baselineFn.body[0] as StmtNS.Assign).value;
-    const baselineType = readExprFact(
-      baseline.reactive.topology,
-      typeAnalysis,
-      baselineRead.id,
-      ROOT_CONTEXT,
-    );
-
-    const { ast, reactive } = await observe(code);
-    const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const xRead = (fn.body[0] as StmtNS.Assign).value;
-    const rootType = readExprFact(
-      reactive.topology,
-      typeAnalysis,
-      xRead.id,
-      ROOT_CONTEXT,
-    );
-    const specCtx = reactive.specAssumptionChainForNode(xRead.id);
-    const specType = readExprFact(
-      reactive.topology,
-      typeAnalysis,
-      xRead.id,
-      specCtx,
-    );
-    expect(rootType).toEqual(baselineType);
-    expect(specCtx).not.toBe(ROOT_CONTEXT);
-    expect(specType).toBeDefined();
-    expect(specType!.kinds & STR_BIT).toBeTruthy();
-  });
-});
+// Per-node write-driven speculation is out of policy under the param-only
+// narrowing registry. The engine-parameterized describe that exercised
+// `observeRuntimeWrite` → speculative typeNarrowing fact was removed with
+// the architectural switch; param-driven observation is covered in
+// speculative-narrowing.test.ts.
 
 // Idempotence: re-observing a value the static analysis already knows about
 // must not perturb ROOT facts. The observation may still allocate a

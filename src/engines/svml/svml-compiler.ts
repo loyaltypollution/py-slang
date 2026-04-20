@@ -8,7 +8,6 @@ import type { DfaQuery } from "../../specialization/dfa-query";
 import type { GuardRegistrar } from "../../specialization/framework/worklist";
 import {
   constNarrowing,
-  paramConstNarrowing,
   paramTypeNarrowing,
   returnKindNarrowing,
 } from "../../specialization/framework/dfa-analyses";
@@ -382,37 +381,18 @@ export class SVMLCompiler
   private emitDirectEntryGuards(funcAst: StmtNS.FunctionDef, guards: ReadonlyArray<EntryGuard>): void {
     if (funcAst.body.length === 0 || guards.length === 0) return;
     for (const guard of guards) {
-      if (guard.kind === "param-type") {
-        if (SVMLCompiler.typeToGuardMask(guard.ty) === undefined) return;
-      } else if (
-        guard.value !== null &&
-        typeof guard.value !== "boolean" &&
-        typeof guard.value !== "number" &&
-        typeof guard.value !== "string"
-      ) {
-        return;
-      }
+      if (SVMLCompiler.typeToGuardMask(guard.ty) === undefined) return;
     }
     const guardNodeId = funcAst.body[0].id;
     for (const guard of guards) {
       this.builder.emitUnary(OpCodes.LDLG, guard.paramIndex);
-      if (guard.kind === "param-type") {
-        const mask = SVMLCompiler.typeToGuardMask(guard.ty)!;
-        this.builder.emitBinary(OpCodes.GUARD_KIND, guardNodeId, mask);
-        this.guardRegistrar?.registerGuard(guardNodeId, {
-          narrowing: paramTypeNarrowing,
-          key: `${funcAst.id}:${guard.paramIndex}`,
-        });
-        this.builder.emitNullary(OpCodes.POPG);
-        continue;
-      }
-      this.emitLiteralGuardValue(guard.value);
-      this.builder.emitNullary(OpCodes.EQG);
-      this.builder.emitBinary(OpCodes.GUARD_TRUTHY, guardNodeId, 1);
+      const mask = SVMLCompiler.typeToGuardMask(guard.ty)!;
+      this.builder.emitBinary(OpCodes.GUARD_KIND, guardNodeId, mask);
       this.guardRegistrar?.registerGuard(guardNodeId, {
-        narrowing: paramConstNarrowing,
+        narrowing: paramTypeNarrowing,
         key: `${funcAst.id}:${guard.paramIndex}`,
       });
+      this.builder.emitNullary(OpCodes.POPG);
     }
   }
 

@@ -33,8 +33,9 @@ import {
 } from "./analysis";
 import type { FunctionId, NodeId, ParamKey } from "./key-spaces";
 import { ProgramTopology } from "./topology";
-import { rootTransformFacts } from "./transform-rule";
-import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Assumption, type AssumptionChain } from "./context";
+import { transformFacts } from "./transform-rule";
+import { clearUnitBodies } from "./chain-body-store";
+import { excludeAssumption, extendContext, findAssumption, hasAncestor, ROOT_CONTEXT, type Assumption, type AssumptionChain } from "./context";
 import { immediateStrategy, type SpeculationStrategy } from "./speculation-strategy";
 import { runtimeCallAnalysis, runtimeWriteAnalysis } from "./runtime-analyses";
 import { purityBlockAnalysis, purityScopeAnalysis } from "../purity-analysis/analysis";
@@ -334,6 +335,7 @@ export class Worklist {
     this.guardProvenance.delete(unit);
     this.specStrategy.onUnitRetired?.(unit);
     for (const s of this.transformDirty.values()) s.delete(unit);
+    clearUnitBodies(unit);
     // Each analysis declares its own eviction via `{on:"retire", effect}`.
     // Fire lifecycle BEFORE dropping topology indices so retire effects that
     // walk `topology.nodesOfUnit(unit)` still see the unit's nodes.
@@ -623,8 +625,13 @@ export class Worklist {
       if (dirty.size === 0) continue;
       const units = Array.from(dirty);
       dirty.clear();
-      const facts = rootTransformFacts(this._topology);
       for (const unit of units) {
+        // Facts are always bound at the unit's active speculation context.
+        // Rules read witnesses via `readMinimal` / `readAt` and publish
+        // through `bodyAtWitness`, which forks at the view's bound context
+        // — ROOT is simply the case where that context is `ROOT_CONTEXT`
+        // and the fork resolves to `unit.funcAst.body` without a copy.
+        const facts = transformFacts(this._topology, this.specAssumptionChainFor(unit));
         const fired = r.sweep(unit, facts);
         this.tracer?.onEvent({
           phase: "transform-sweep",
@@ -714,11 +721,15 @@ export class Worklist {
     };
   }
 
-  /** Re-seed Kildall for every registered narrowing's block analysis at
-   *  `unit`'s entry block under `context`. Used whenever the unit's active
-   *  speculation context shifts (observation-extend, widen-guard,
-   *  widen-unit, lineageOf synthesis). Callers set `_enqueueReason`
-   *  before calling so the enqueue events carry the right causal label. */
+  /** Re-seed Kildall for every context-sensitive block analysis at `unit`'s
+   *  entry block under `context`. Today that means every registered
+   *  narrowing's block analysis plus `purityBlockAnalysis`: purity is not a
+   *  narrowing dimension of its own, but witness discovery and memoization do
+   *  need its per-context verdicts to exist at intermediate ancestor
+   *  contexts. Used for exact-context probes (e.g. lineageOf) and as the
+   *  primitive beneath full-path materialization. Callers set
+   *  `_enqueueReason` before calling so the enqueue events carry the right
+   *  causal label. */
   private enqueueNarrowingEntry(unit: Unit, context: AssumptionChain): void {
     for (const n of this.narrowings) {
       const bfa = n.blockAnalysis();
@@ -726,6 +737,7 @@ export class Worklist {
       // re-runs Kildall and produces paired `.facts` writes as a side effect.
       this.enqueue(bfa.env, bfa.seed(unit), context);
     }
+    this.enqueue(purityBlockAnalysis.env, purityBlockAnalysis.seed(unit), context);
   }
 
   /** Translator: converts runtime observations from `source` into Context

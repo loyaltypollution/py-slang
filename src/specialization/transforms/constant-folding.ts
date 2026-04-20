@@ -1,10 +1,75 @@
 // Constant folding. Idempotent: rewriting Binary/Compare to Literal removes the "const" fact match.
+//
+// Context-aware: reads const facts via `readExprFactMinimal` from the
+// view's bound context. A non-ROOT view sees facts specialized under the
+// active speculation; mutation lands on the forked body at that context
+// via `bodyAtWitness`.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import { constAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
 import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
+import type { Reading } from "../framework/analysis";
+import type { ConstLattice } from "../const-analysis/lattice";
+
+type ConstReading = Reading<ConstLattice>;
+
+function constReading(facts: TransformFactView, nodeId: number): ConstReading | undefined {
+  return facts.readExprFactMinimal(constAnalysis, nodeId, cv => cv.tag === "const");
+}
+
+/** Scan for the first foldable (Binary/Compare) expression with a const
+ *  fact. Used to seed `bodyAtWitness` before any mutation. */
+function findSeedReading(facts: TransformFactView, stmts: readonly StmtNS.Stmt[]): ConstReading | undefined {
+  for (const s of stmts) {
+    const r = scanStmt(facts, s);
+    if (r !== undefined) return r;
+  }
+  return undefined;
+}
+
+function scanStmt(facts: TransformFactView, s: StmtNS.Stmt): ConstReading | undefined {
+  if (s instanceof StmtNS.Assign || s instanceof StmtNS.AnnAssign) return scanExpr(facts, s.value);
+  if (s instanceof StmtNS.Return) return s.value ? scanExpr(facts, s.value) : undefined;
+  if (s instanceof StmtNS.If) {
+    return scanExpr(facts, s.condition)
+      ?? findSeedReading(facts, s.body)
+      ?? (s.elseBlock ? findSeedReading(facts, s.elseBlock) : undefined);
+  }
+  if (s instanceof StmtNS.While) return scanExpr(facts, s.condition) ?? findSeedReading(facts, s.body);
+  if (s instanceof StmtNS.For) return scanExpr(facts, s.iter) ?? findSeedReading(facts, s.body);
+  if (s instanceof StmtNS.SimpleExpr) return scanExpr(facts, s.expression);
+  if (s instanceof StmtNS.Assert) return scanExpr(facts, s.value);
+  if (s instanceof StmtNS.FileInput) return findSeedReading(facts, s.statements);
+  return undefined;
+}
+
+function scanExpr(facts: TransformFactView, e: ExprNS.Expr): ConstReading | undefined {
+  if (e instanceof ExprNS.Binary || e instanceof ExprNS.Compare) {
+    const r = constReading(facts, e.id);
+    if (r !== undefined) return r;
+  }
+  if (e instanceof ExprNS.Binary || e instanceof ExprNS.Compare || e instanceof ExprNS.BoolOp) {
+    return scanExpr(facts, e.left) ?? scanExpr(facts, e.right);
+  }
+  if (e instanceof ExprNS.Unary) return scanExpr(facts, e.right);
+  if (e instanceof ExprNS.Ternary) {
+    return scanExpr(facts, e.predicate) ?? scanExpr(facts, e.consequent) ?? scanExpr(facts, e.alternative);
+  }
+  if (e instanceof ExprNS.Call) {
+    const sc = scanExpr(facts, e.callee);
+    if (sc !== undefined) return sc;
+    for (const a of e.args) { const r = scanExpr(facts, a); if (r !== undefined) return r; }
+  }
+  if (e instanceof ExprNS.List) {
+    for (const el of e.elements) { const r = scanExpr(facts, el); if (r !== undefined) return r; }
+  }
+  if (e instanceof ExprNS.Subscript) return scanExpr(facts, e.value) ?? scanExpr(facts, e.index);
+  if (e instanceof ExprNS.Grouping) return scanExpr(facts, e.expression);
+  if (e instanceof ExprNS.Starred) return scanExpr(facts, e.value);
+  return undefined;
+}
 
 class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
@@ -15,8 +80,10 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
 
   private tryRewrite(expr: ExprNS.Expr): ExprNS.Expr {
     if (!(expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare)) return expr;
-    const cv = this.facts.readExprFact(constAnalysis, expr.id);
-    if (cv?.tag !== "const") return expr;
+    const r = constReading(this.facts, expr.id);
+    if (r === undefined) return expr;
+    const cv = r.value;
+    if (cv.tag !== "const") return expr;
     this.changed = true;
     return new ExprNS.Literal(
       expr.startToken,
@@ -169,8 +236,11 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
 export const constantFoldingRule = unitSweepRule(
   "constantFoldingRule",
   (unit: Unit, facts: TransformFactView) => {
+    const seed = findSeedReading(facts, unit.body);
+    if (seed === undefined) return false;
+    const body = facts.bodyAtWitness(unit, seed);
     const v = new ConstFoldStmtVisitor(facts);
-    v.sweep(unit.body);
+    v.sweep(body);
     return v.changed;
   },
   [{ on: "fact", analysis: constAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],

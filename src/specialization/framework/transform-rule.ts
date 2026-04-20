@@ -6,11 +6,12 @@
 // its own prelude). Rules that cannot become precondition-false on their own
 // should not be expressed as sweep-transforms.
 
-import { ROOT_CONTEXT, type AssumptionChain } from "./context";
+import { ROOT_CONTEXT, hasAncestor, type AssumptionChain } from "./context";
 import type { FactEdge, Reading, TransformRule, TransformFactView } from "./analysis";
 import { readExprFact } from "./dfa-factory";
 import type { Unit } from "./function-unit";
 import type { ProgramTopology } from "./topology";
+import { forkBodyAt } from "./chain-body-store";
 
 export type { Reading, TransformFactView };
 
@@ -38,14 +39,9 @@ export function transformFacts(
   profitabilityContext: AssumptionChain = ROOT_CONTEXT,
 ): TransformFactView {
   return {
-    read: (analysis, key) => analysis.store.tryRead(key, context) ?? analysis.store.read(key, ROOT_CONTEXT),
-    tryRead: (analysis, key) => analysis.store.tryRead(key, context) ?? analysis.store.tryRead(key, ROOT_CONTEXT),
-    readAll: analysis => analysis.store.readAll(context).size > 0 ? analysis.store.readAll(context) : analysis.store.readAll(ROOT_CONTEXT),
     readAt: (analysis, key) => ({ value: analysis.store.read(key, context), witness: context }),
     readMinimal: (analysis, key, accept) =>
       readMinimalExact(context, ctx => analysis.store.tryRead(key, ctx), accept),
-    readExprFact: (analysis, nodeId) => readExprFact(topology, analysis, nodeId, context)
-      ?? readExprFact(topology, analysis, nodeId, ROOT_CONTEXT),
     readExprFactAt: (analysis, nodeId) => {
       const value = readExprFact(topology, analysis, nodeId, context);
       return value === undefined ? undefined : { value, witness: context };
@@ -53,17 +49,37 @@ export function transformFacts(
     readExprFactMinimal: (analysis, nodeId, accept) =>
       readMinimalExact(context, ctx => readExprFact(topology, analysis, nodeId, ctx), accept),
     readProfitability: (analysis, key) => analysis.store.read(key, profitabilityContext),
+    bodyAtWitness: (unit, reading) => {
+      // Fork always happens at the view's bound context — that is where the
+      // rule is authorized to publish. `reading.witness` is retained as a
+      // justification channel (memoization reads it to derive the memo
+      // variant key for sibling cache-convergence) but does NOT relocate
+      // the fork. Forking at per-read witnesses would make rules at the
+      // same view-context stomp different locations of the chain;
+      // composing multiple rules at one context would fragment the AST.
+      //
+      // The witness must still be an ancestor (or equal) of the view's
+      // bound context — a Reading<V> produced by readMinimal / readAt can
+      // only name a witness on the walk from bound context toward ROOT.
+      // This check rejects hand-forged Readings (synthetic tests that
+      // construct one directly); normal paths can't trip it.
+      if (!hasAncestor(context, reading.witness)) {
+        throw new Error(
+          `[bodyAtWitness] witness is not an ancestor of the view's bound context — ` +
+            `a Reading from a different view cannot be used to rewrite here`,
+        );
+      }
+      return forkBodyAt(unit, context);
+    },
   };
 }
 
-export function rootTransformFacts(topology: ProgramTopology): TransformFactView {
-  return transformFacts(topology, ROOT_CONTEXT, ROOT_CONTEXT);
-}
-
 /** Build a unit-keyed transform rule from a sweep function that reads
- *  fact state and mutates `unit.body`. Returns `true` iff the AST was
- *  rewritten. `edges` declares upstream analyses whose writes should
- *  dirty this rule; omitted, the rule only fires on mint / rebuild. */
+ *  fact state and publishes via `facts.bodyAtWitness(...)`. Returns `true`
+ *  iff the body was rewritten. `edges` declares upstream analyses whose
+ *  writes should dirty this rule; omitted, the rule only fires on
+ *  mint/rebuild. The view is always bound at the unit's active
+ *  speculation context — there is no ROOT-privileged sweep mode. */
 export function unitSweepRule(
   name: string,
   sweep: (unit: Unit, facts: TransformFactView) => boolean,

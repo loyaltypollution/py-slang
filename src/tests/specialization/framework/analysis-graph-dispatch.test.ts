@@ -10,8 +10,10 @@ import { parse } from "../../../parser/parser-adapter";
 import { Resolver } from "../../../resolver";
 import { Worklist } from "../../../specialization/framework/worklist";
 import { defineAnalysis, type EdgeSpec, type JoinSemiLattice, type Analysis, type TransformRule } from "../../../specialization/framework/analysis";
+import type { BasicBlock } from "../../../specialization/framework/cfg";
 import type { Unit } from "../../../specialization/framework/function-unit";
 import { ROOT_CONTEXT, extendContext } from "../../../specialization/framework/context";
+import { transformFacts } from "../../../specialization/framework/transform-rule";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -454,6 +456,65 @@ describe("Worklist analysis-graph dispatch", () => {
       const newCalls = afterCtx.slice(afterRoot.length);
       expect(newCalls.every(c => c === ctx)).toBe(true);
       expect(newCalls.length).toBeGreaterThan(0);
+    });
+
+    test("readMinimal returns the shallowest matching witness", () => {
+      const wl = buildWorklist();
+      const analysis = makeAnalysis<string, number>({
+        name: "witnessed",
+        storeAlgebra: intMax,
+      });
+      wl.register(analysis);
+
+      const handle = {
+        id: Symbol("witness-handle"),
+        debugName: "witness-handle",
+        eq: (a: number, b: number) => a === b,
+      };
+      const c1 = extendContext(ROOT_CONTEXT, handle, 1, 10);
+      const c2 = extendContext(c1, handle, 2, 20);
+
+      wl.write(analysis, "k", 1, ROOT_CONTEXT);
+      wl.write(analysis, "k", 3, c1);
+      wl.write(analysis, "k", 5, c2);
+
+      expect(wl.readAt(analysis, "k", c2)).toEqual({ value: 5, witness: c2 });
+      expect(wl.readMinimal(analysis, "k", value => value >= 3, c2)).toEqual({ value: 3, witness: c1 });
+      expect(wl.readMinimal(analysis, "k", value => value >= 1, c2)).toEqual({ value: 1, witness: ROOT_CONTEXT });
+      expect(wl.readMinimal(analysis, "k", value => value >= 9, c2)).toBeUndefined();
+    });
+
+    test("transformFacts.readExprFactMinimal returns the shallowest matching witness", () => {
+      const wl = buildWorklist("x = 1\n");
+      const factsAnalysis = makeAnalysis<BasicBlock, Map<number, number>>({
+        name: "exprFacts",
+        storeAlgebra: {
+          bottom: new Map<number, number>(),
+          leq: () => true,
+          join: (_a, b) => b,
+          eq: (a, b) => a === b,
+        },
+      });
+      const block = [...wl.topology.units.values()][0].cfg.entry;
+      const nodeId = block.stmts[0].id;
+      const handle = {
+        id: Symbol("expr-handle"),
+        debugName: "expr-handle",
+        eq: (a: number, b: number) => a === b,
+      };
+      const c1 = extendContext(ROOT_CONTEXT, handle, 1, 10);
+      const c2 = extendContext(c1, handle, 2, 20);
+
+      wl.write(factsAnalysis, block, new Map([[nodeId, 1]]), ROOT_CONTEXT);
+      wl.write(factsAnalysis, block, new Map([[nodeId, 3]]), c1);
+      wl.write(factsAnalysis, block, new Map([[nodeId, 5]]), c2);
+
+      const fauxBfa = { facts: factsAnalysis } as any;
+      const facts = transformFacts(wl.topology, c2);
+      expect(facts.readExprFactAt(fauxBfa, nodeId)).toEqual({ value: 5, witness: c2 });
+      expect(facts.readExprFactMinimal(fauxBfa, nodeId, (value: number) => value >= 3)).toEqual({ value: 3, witness: c1 });
+      expect(facts.readExprFactMinimal(fauxBfa, nodeId, (value: number) => value >= 1)).toEqual({ value: 1, witness: ROOT_CONTEXT });
+      expect(facts.readExprFactMinimal(fauxBfa, nodeId, (value: number) => value >= 9)).toBeUndefined();
     });
   });
 });

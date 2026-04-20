@@ -305,7 +305,7 @@ function sweepStmts(
 
 export const deadStoreRule = unitSweepRule(
   "deadStoreRule",
-  (unit: Unit, _facts: TransformFactView) => {
+  (unit: Unit, facts: TransformFactView) => {
     // Skip the module (FileInput) scope. Module-top-level names are part of
     // the program's observable namespace — other modules can import them,
     // REPL/tool consumers can inspect them after execution, and the
@@ -314,9 +314,13 @@ export const deadStoreRule = unitSweepRule(
     // module would change observable state. Function-scope locals, by
     // contrast, are dead at return; DSE on them is always sound.
     if (unit.funcAst instanceof StmtNS.FileInput) return false;
+    // Seed the Reading from the entry block's liveness env — this is the
+    // anchor fact the rule gates on. readAt always yields a Reading at
+    // the view's bound context.
+    const seed = facts.readAt(livenessAnalysis.env, unit.cfg.entry);
     const liveOutMap = buildLiveOutMap(unit);
     const escaped = escapedLocalSlots(unit);
-    return sweepStmts(unit.body, liveOutMap, unit.slotLookup, escaped);
+    return sweepStmts(facts.bodyAtWitness(unit, seed), liveOutMap, unit.slotLookup, escaped);
   },
   [{ on: "fact", analysis: livenessAnalysis.env, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
 );

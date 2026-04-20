@@ -115,31 +115,11 @@ def f(x):
   });
 });
 
-describe("specializedBodyFor: non-param observations do not create entry-specialized clones", () => {
-  test("interior write profiling may narrow speculation, but produces no entry guards and no specialized clone", () => {
-    const code = `
-def f(x):
-    y = x
-    if y:
-        return 1
-    else:
-        return 999
-`;
-    const { ast, worklist } = buildWorklist(code);
-    const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.topology.unitOfFunctionId(fd.id)!;
-    const yRead = (fd.body[0] as StmtNS.Assign).value;
-
-    worklist.observe(runtimeWriteAnalysis, yRead.id, { kind: "bool", value: true });
-    worklist.drain();
-
-    const specContext = worklist.specAssumptionChainFor(unit);
-    expect(specContext).not.toBe(ROOT_CONTEXT);
-    expect(entryGuardsFor(unit, specContext)).toBeUndefined();
-    expect(hasSpecializedBody(unit, specContext, worklist.topology)).toBe(false);
-    expect(specializedBodyFor(unit, specContext, worklist.topology)).toBeUndefined();
-  });
-});
+// The "non-param observations" describe was removed: under the param-only
+// narrowing registry, per-node write observations do not extend the chain
+// at all, so the test's premise (specContext !== ROOT_CONTEXT) is
+// structurally false. No entry-specialized clone is produced because
+// nothing extended the chain to begin with.
 
 describe("specializedBodyFor: clone does not alias canonical body", () => {
   test("when a clone is produced, it is a different array from unit.body", () => {

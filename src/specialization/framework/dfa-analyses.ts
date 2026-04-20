@@ -31,25 +31,22 @@ export {
 /** Default narrowing set. Worklist callers that omit the constructor's
  *  `narrowings` parameter get this list.
  *
- *  The return-kind dimension is keyed in a different space (functionId, sourced
- *  from `runtimeReturnAnalysis`) than the node-keyed type/const dimensions
- *  (sourced from `runtimeWriteAnalysis`). The observation translator
- *  filters on `observationSource` so they never cross-trigger. */
+ *  **Policy: param-only runtime speculation.** Runtime observations extend
+ *  AssumptionChains along the parameter axis (paramTypeNarrowing, sourced
+ *  from runtimeParamAnalysis) and the callee-return-kind axis
+ *  (returnKindNarrowing, which reduces back to param-type guards at entry
+ *  via requirementAtEntry). Node-keyed dimensions (typeNarrowing /
+ *  constNarrowing) exist as fact/static surfaces but are NOT registered
+ *  for chain extension: they would blow up chain width by one node per
+ *  observed write with no matching dispatch surface (entry guards are
+ *  param-keyed). A future backend that wants mid-body speculation can opt
+ *  in by passing a richer narrowings list to `new Worklist(...)`. */
 export const DEFAULT_NARROWINGS: ReadonlyArray<Narrowing<NodeId | FunctionId | ParamKey, unknown>> = [
   paramTypeNarrowing,
-  paramConstNarrowing,
-  typeNarrowing,
-  constNarrowing,
   returnKindNarrowing,
 ];
 
-/** Narrowings that currently affect SVML code generation. Write-driven type
- *  narrowings remain available in speculation contexts and lineage pruning,
- *  but the backend does not consume speculative type facts directly, so the
- *  JIT should not treat them as artifact-shaping inputs. */
-export const JIT_RELEVANT_NARROWINGS: ReadonlyArray<Narrowing<NodeId | FunctionId | ParamKey, unknown>> = [
-  paramTypeNarrowing,
-  paramConstNarrowing,
-  constNarrowing,
-  returnKindNarrowing,
-];
+/** Historically distinct from DEFAULT_NARROWINGS; under param-only policy
+ *  the two collapse. Retained as an alias so evaluators that imported the
+ *  JIT-specific name don't need to change. */
+export const JIT_RELEVANT_NARROWINGS = DEFAULT_NARROWINGS;

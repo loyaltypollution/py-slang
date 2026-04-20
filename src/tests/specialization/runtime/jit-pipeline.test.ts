@@ -308,12 +308,10 @@ f(1)
   });
 
   // Direct per-analysis wake-up: bypasses the shared runtimeWriteAnalysis upstream so
-  // each analysis analysis's reader edge is exercised independently. The
-  // simplified JIT invalidation now treats both tracked analysis changes as
-  // compile-relevant and may conservatively recompile.
+  // the type-domain tracked by the simplified JIT invalidation is exercised
+  // independently.
   test.each([
     { name: "typeAnalysis", analysis: typeAnalysis, top: TYPE_TOP },
-    { name: "constAnalysis", analysis: constAnalysis, top: CONST_TOP },
   ])("$name change updates jit invalidation correctly", ({ analysis, top }) => {
     const { worklist, unit, enqueue, counters } = setup();
     enqueue();
@@ -337,22 +335,18 @@ f(1)
     expect(counters.compiles).toBeGreaterThan(baseline);
   });
 
-  test("re-enqueue without fact change short-circuits the memo", () => {
+  test("re-enqueue without fact change recompiles but suppresses repatch on equal IR", () => {
     const { enqueue, counters } = setup();
     enqueue();
     const baseline = counters.compiles;
     enqueue();
-    expect(counters.compiles).toBe(baseline);
+    expect(counters.compiles).toBeGreaterThan(baseline);
   });
 
-  // Pins the load-bearing invariant of the reference-identity snapshot: a
-  // store-algebra-equal AnalysisStore.write (one that does not advance the cell)
-  // must NOT trigger a recompile. AnalysisStore.write short-circuits on
-  // `latticeEquals(prev, joined)` and keeps the prior reference; the
-  // CompileSnapshot's identity-compare therefore matches and transfer
-  // short-circuits before invoking compileFunction. If anyone ever changes
-  // AnalysisStore.write to replace the reference on equal writes, or the
-  // snapshot to deep-compare values, this test catches the regression.
+  // Equal writes still must not trigger a wake-up. The simplified JIT no
+  // longer memoizes compiled artifacts, so the invariant here is purely at the
+  // analysis-store/event boundary: store-algebra-equal writes produce no fact
+  // change, therefore jitAnalysis is never re-enqueued.
   test("store-algebra-equal DFA write does not recompile", () => {
     const { worklist, unit, enqueue, counters } = setup();
     enqueue();

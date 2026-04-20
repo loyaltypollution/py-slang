@@ -15,7 +15,7 @@
 // policy and lives in the evaluator layer (e.g. svml-jit-analysis.ts).
 // Shared AST is never mutated.
 
-import { ExprNS, StmtNS } from "../ast-types";
+import { StmtNS } from "../ast-types";
 import {
   contextIsEntrySpecializable,
   directParamEntryGuardsFor,
@@ -23,21 +23,12 @@ import {
 import type { AssumptionChain } from "./framework/context";
 import type { Unit } from "./framework/function-unit";
 import type { ReadonlyProgramTopology } from "./framework/topology";
-import { constAnalysis, typeAnalysis } from "./framework/dfa-analyses";
+import { typeAnalysis } from "./framework/dfa-analyses";
 import { readExprFact } from "./framework/dfa-factory";
+import { bodyFor } from "./framework/chain-body-store";
 import { BOOL_BIT, BoolRef } from "./type-analysis/lattice";
 
-function constTruth(
-  condId: number,
-  topology: ReadonlyProgramTopology,
-  context: AssumptionChain,
-): boolean | undefined {
-  const fact = readExprFact(topology, constAnalysis, condId, context);
-  if (fact === undefined || fact.tag !== "const") return undefined;
-  return Boolean(fact.value);
-}
-
-function typeTruth(
+function conditionTruth(
   condId: number,
   topology: ReadonlyProgramTopology,
   context: AssumptionChain,
@@ -47,17 +38,6 @@ function typeTruth(
   if (fact.boolRef === BoolRef.True) return true;
   if (fact.boolRef === BoolRef.False) return false;
   return undefined;
-}
-
-function conditionTruth(
-  condId: number,
-  topology: ReadonlyProgramTopology,
-  context: AssumptionChain,
-  allowConst: boolean,
-): boolean | undefined {
-  const byType = typeTruth(condId, topology, context);
-  if (byType !== undefined) return byType;
-  return allowConst ? constTruth(condId, topology, context) : undefined;
 }
 
 /** Shadow-copy an If node with new body/elseBlock, preserving the original id.
@@ -78,29 +58,28 @@ function pruneStmts(
   stmts: readonly StmtNS.Stmt[],
   topology: ReadonlyProgramTopology,
   context: AssumptionChain,
-  allowConst: boolean,
 ): readonly StmtNS.Stmt[] {
   let changed = false;
   const out: StmtNS.Stmt[] = [];
 
   for (const stmt of stmts) {
     if (stmt instanceof StmtNS.If) {
-      const truth = conditionTruth(stmt.condition.id, topology, context, allowConst);
+      const truth = conditionTruth(stmt.condition.id, topology, context);
       if (truth === true) {
         changed = true;
-        out.push(...pruneStmts(stmt.body, topology, context, allowConst));
+        out.push(...pruneStmts(stmt.body, topology, context));
         continue;
       }
       if (truth === false) {
         changed = true;
         if (stmt.elseBlock) {
-          out.push(...pruneStmts(stmt.elseBlock, topology, context, allowConst));
+          out.push(...pruneStmts(stmt.elseBlock, topology, context));
         }
         continue;
       }
-      const newBody = pruneStmts(stmt.body, topology, context, allowConst);
+      const newBody = pruneStmts(stmt.body, topology, context);
       const newElse = stmt.elseBlock
-        ? pruneStmts(stmt.elseBlock, topology, context, allowConst)
+        ? pruneStmts(stmt.elseBlock, topology, context)
         : stmt.elseBlock;
       if (newBody !== stmt.body || newElse !== stmt.elseBlock) {
         changed = true;
@@ -116,105 +95,33 @@ function pruneStmts(
   return changed ? out : stmts;
 }
 
-/** True if every statement in `stmts` is pure under clone semantics: no
- *  arbitrary side effects, only arithmetic, comparisons, local assignment,
- *  returns, and calls to a safe whitelist (builtins + memo intrinsics).
- *  Used by evaluators to decide whether a pruned clone is eligible for
- *  memoization. */
-export function stmtsAreClonePure(stmts: readonly StmtNS.Stmt[], selfName: string): boolean {
-  for (const stmt of stmts) {
-    if (stmt instanceof StmtNS.Return) {
-      if (stmt.value !== null && !exprIsClonePure(stmt.value, selfName)) return false;
-      continue;
-    }
-    if (stmt instanceof StmtNS.Assign) {
-      if (!(stmt.target instanceof ExprNS.Variable)) return false;
-      if (!exprIsClonePure(stmt.value, selfName)) return false;
-      continue;
-    }
-    if (stmt instanceof StmtNS.If) {
-      if (!exprIsClonePure(stmt.condition, selfName)) return false;
-      if (!stmtsAreClonePure(stmt.body, selfName)) return false;
-      if (stmt.elseBlock && !stmtsAreClonePure(stmt.elseBlock, selfName)) return false;
-      continue;
-    }
-    if (stmt instanceof StmtNS.While) {
-      if (!exprIsClonePure(stmt.condition, selfName)) return false;
-      if (!stmtsAreClonePure(stmt.body, selfName)) return false;
-      continue;
-    }
-    if (stmt instanceof StmtNS.For) return false;
-    if (stmt instanceof StmtNS.SimpleExpr) {
-      if (!exprIsClonePure(stmt.expression, selfName)) return false;
-      continue;
-    }
-    return false;
-  }
-  return true;
-}
-
-function exprIsClonePure(expr: ExprNS.Expr, selfName: string): boolean {
-  if (
-    expr instanceof ExprNS.Literal
-    || expr instanceof ExprNS.BigIntLiteral
-    || expr instanceof ExprNS.Complex
-    || expr instanceof ExprNS.None
-    || expr instanceof ExprNS.Variable
-  ) return true;
-  if (expr instanceof ExprNS.Grouping) return exprIsClonePure(expr.expression, selfName);
-  if (expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare || expr instanceof ExprNS.BoolOp) {
-    return exprIsClonePure(expr.left, selfName) && exprIsClonePure(expr.right, selfName);
-  }
-  if (expr instanceof ExprNS.Unary) return exprIsClonePure(expr.right, selfName);
-  if (expr instanceof ExprNS.Ternary) {
-    return exprIsClonePure(expr.predicate, selfName)
-      && exprIsClonePure(expr.consequent, selfName)
-      && exprIsClonePure(expr.alternative, selfName);
-  }
-  if (expr instanceof ExprNS.List) return expr.elements.every(el => exprIsClonePure(el, selfName));
-  if (expr instanceof ExprNS.Subscript) {
-    return exprIsClonePure(expr.value, selfName) && exprIsClonePure(expr.index, selfName);
-  }
-  if (expr instanceof ExprNS.Call) {
-    if (!(expr.callee instanceof ExprNS.Variable)) return false;
-    const callee = expr.callee.name.lexeme;
-    if (callee !== selfName && callee !== "range" && callee !== "len" && callee !== "abs"
-      && callee !== "min" && callee !== "max" && callee !== "int" && callee !== "float"
-      && callee !== "str" && callee !== "bool" && callee !== "round"
-      && callee !== "__memo_has" && callee !== "__memo_get" && callee !== "__memo_put") {
-      return false;
-    }
-    return expr.args.every(arg => exprIsClonePure(arg, selfName));
-  }
-  return false;
-}
-
 /** Cheap predicate for whether the current speculative lane could produce a
  *  specialized cloned body for `(unit, context)`. */
 export function hasSpecializedBody(
   unit: Unit,
   context: AssumptionChain,
   topology: ReadonlyProgramTopology,
-  allowConst: boolean = true,
 ): boolean {
-  return specializedBodyFor(unit, context, topology, allowConst) !== undefined;
+  return specializedBodyFor(unit, context, topology) !== undefined;
 }
 
 /** Return a cloned, dead-branch-pruned body for speculative compilation, or
  *  undefined when no pruning applies.
  *
- *  `allowConst` controls whether const-valued conditions are eligible for
- *  pruning. Pass `false` when the evaluator uses a type-coarsened cache key
- *  (e.g. memoized clones shared across sibling const contexts). Defaults to
- *  `true`.
+ *  Speculative pruning is type-driven only — runtime speculation is policy-
+ *  limited to the type domain (see JIT_RELEVANT_NARROWINGS), so this lane
+ *  ignores const facts even when they happen to exist. Static const reasoning
+ *  remains available through the regular transform pipeline (deadBranch,
+ *  constFold) at ROOT.
  *
  *  Callers MUST NOT insert the returned nodes into topology / CFG / analysis
  *  stores. Returned nodes preserve original NodeIds and are compilation
  *  artifacts only.
  *
- *  Memoization is evaluator policy: call `stmtsAreClonePure` and
- *  `memoWrappedBody` from `transforms/memoization.ts` in the evaluator after
- *  receiving a pruned body.
+ *  Memoization is owned by `memoizationRule` (transforms/memoization.ts),
+ *  which publishes into the chain-body-store at its purity witness;
+ *  this function reads via `bodyFor`, so a memo-wrapped body at an
+ *  ancestor witness is already visible in the returned clone.
  *
  *  Returns undefined when:
  *  - the unit is not a FunctionDef, or
@@ -224,12 +131,16 @@ export function specializedBodyFor(
   unit: Unit,
   context: AssumptionChain,
   topology: ReadonlyProgramTopology,
-  allowConst: boolean = true,
 ): ReadonlyArray<StmtNS.Stmt> | undefined {
   if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return undefined;
   if (!contextIsEntrySpecializable(unit, context)) return undefined;
   const guards = directParamEntryGuardsFor(unit, context);
   if (guards === undefined) return undefined;
-  const pruned = pruneStmts(unit.body, topology, context, allowConst);
-  return pruned !== unit.body ? pruned : undefined;
+  // Start from the body visible at `context` in the chain-body-store: if a
+  // context-aware transform (e.g. memoization) already rewrote at an
+  // ancestor, we pick that rewrite up for free. Pruning is then a
+  // backend-local clone — it does not mutate the stored body.
+  const source = bodyFor(unit, context);
+  const pruned = pruneStmts(source, topology, context);
+  return pruned !== source ? pruned : undefined;
 }

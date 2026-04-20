@@ -22,6 +22,7 @@ import type { BasicBlock } from "../framework/cfg";
 import { typeAnalysis, constAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
 import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
+import type { Reading } from "../framework/analysis";
 import type { ConstLattice } from "../const-analysis/lattice";
 import {
   INT_BIT,
@@ -31,6 +32,61 @@ import {
   type TypeLattice,
 } from "../type-analysis/lattice";
 import { truthiness } from "../type-analysis/transfer";
+
+/** Find the first expression in `stmts` with a type fact. Used as the seed
+ *  Reading for `bodyAtWitness` — the rule only forks a body when there is
+ *  at least one type-fact-bearing expression to potentially simplify. */
+function firstTypeReading(facts: TransformFactView, stmts: readonly StmtNS.Stmt[]): Reading<TypeLattice> | undefined {
+  for (const s of stmts) {
+    const r = scanStmtTypes(facts, s);
+    if (r !== undefined) return r;
+  }
+  return undefined;
+}
+
+function scanStmtTypes(facts: TransformFactView, s: StmtNS.Stmt): Reading<TypeLattice> | undefined {
+  if (s instanceof StmtNS.Assign || s instanceof StmtNS.AnnAssign) return scanExprType(facts, s.value);
+  if (s instanceof StmtNS.Return) return s.value ? scanExprType(facts, s.value) : undefined;
+  if (s instanceof StmtNS.If) {
+    return scanExprType(facts, s.condition)
+      ?? firstTypeReading(facts, s.body)
+      ?? (s.elseBlock ? firstTypeReading(facts, s.elseBlock) : undefined);
+  }
+  if (s instanceof StmtNS.While) return scanExprType(facts, s.condition) ?? firstTypeReading(facts, s.body);
+  if (s instanceof StmtNS.For) return scanExprType(facts, s.iter) ?? firstTypeReading(facts, s.body);
+  if (s instanceof StmtNS.SimpleExpr) return scanExprType(facts, s.expression);
+  if (s instanceof StmtNS.Assert) return scanExprType(facts, s.value);
+  if (s instanceof StmtNS.FileInput) return firstTypeReading(facts, s.statements);
+  return undefined;
+}
+
+function scanExprType(facts: TransformFactView, e: ExprNS.Expr): Reading<TypeLattice> | undefined {
+  if (e instanceof ExprNS.Binary || e instanceof ExprNS.BoolOp || e instanceof ExprNS.Unary) {
+    const r = facts.readExprFactAt(typeAnalysis, e.id);
+    if (r !== undefined) return r;
+  }
+  // Descend; nested binary/boolop/unary may have facts even if the outer
+  // shape (e.g. Call) doesn't.
+  if (e instanceof ExprNS.Binary || e instanceof ExprNS.Compare || e instanceof ExprNS.BoolOp) {
+    return scanExprType(facts, e.left) ?? scanExprType(facts, e.right);
+  }
+  if (e instanceof ExprNS.Unary) return scanExprType(facts, e.right);
+  if (e instanceof ExprNS.Ternary) {
+    return scanExprType(facts, e.predicate) ?? scanExprType(facts, e.consequent) ?? scanExprType(facts, e.alternative);
+  }
+  if (e instanceof ExprNS.Call) {
+    const sc = scanExprType(facts, e.callee);
+    if (sc !== undefined) return sc;
+    for (const a of e.args) { const r = scanExprType(facts, a); if (r !== undefined) return r; }
+  }
+  if (e instanceof ExprNS.List) {
+    for (const el of e.elements) { const r = scanExprType(facts, el); if (r !== undefined) return r; }
+  }
+  if (e instanceof ExprNS.Subscript) return scanExprType(facts, e.value) ?? scanExprType(facts, e.index);
+  if (e instanceof ExprNS.Grouping) return scanExprType(facts, e.expression);
+  if (e instanceof ExprNS.Starred) return scanExprType(facts, e.value);
+  return undefined;
+}
 
 function unwrapGrouping(e: ExprNS.Expr): ExprNS.Expr {
   while (e instanceof ExprNS.Grouping) e = e.expression;
@@ -75,10 +131,10 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   }
 
   private typeOf(node: ExprNS.Expr): TypeLattice | undefined {
-    return this.facts.readExprFact(typeAnalysis, node.id);
+    return this.facts.readExprFactAt(typeAnalysis, node.id)?.value;
   }
   private constOf(node: ExprNS.Expr): ConstLattice | undefined {
-    return this.facts.readExprFact(constAnalysis, node.id);
+    return this.facts.readExprFactAt(constAnalysis, node.id)?.value;
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
@@ -295,8 +351,11 @@ class AlgebraicSimplifyStmtVisitor implements StmtNS.Visitor<void> {
 export const algebraicSimplifyRule = unitSweepRule(
   "algebraicSimplifyRule",
   (unit: Unit, facts: TransformFactView) => {
+    const seed = firstTypeReading(facts, unit.body);
+    if (seed === undefined) return false;
+    const body = facts.bodyAtWitness(unit, seed);
     const v = new AlgebraicSimplifyStmtVisitor(facts);
-    v.sweep(unit.body);
+    v.sweep(body);
     return v.changed;
   },
   // Subscribe to `.facts` — this transform reads per-node type lattice values

@@ -14,9 +14,10 @@
 // `Lambda` / `MultiLambda` stay sticky-impure — out of scope for this phase.
 
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { BasicBlock } from "../framework/cfg";
+import type { BasicBlock, CFGEdge } from "../framework/cfg";
 import {
   makeBlockFixpointAnalysis,
+  readExprFact,
   type BlockFixpointAnalysis,
 } from "../framework/dfa-factory";
 import type { Unit } from "../framework/function-unit";
@@ -30,7 +31,11 @@ import type {
 } from "../framework/analysis";
 import { addEdge, defineAnalysis } from "../framework/analysis";
 import { storeContexts, storeEvict } from "../framework/analysis-store";
-import { ROOT_CONTEXT } from "../framework/context";
+import { ROOT_CONTEXT, type AssumptionChain } from "../framework/context";
+import { constAnalysis } from "../const-analysis/analysis";
+import { typeAnalysis } from "../type-analysis/analysis";
+import { BOOL_BIT, BoolRef } from "../type-analysis/lattice";
+import type { ProgramTopology } from "../framework/topology";
 import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
 import {
   absJoin,
@@ -486,13 +491,20 @@ export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> 
     if (unit === undefined) return undefined;
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
-    // Purity is a whole-function property: "does any reachable block have a
-    // local impure effect?" Read block facts at the active speculation context
-    // first (which reflects pruning done on the speculative clone body), then
-    // fall back to ROOT so the static verdict is preserved when no speculative
-    // data has been written yet.
+    // Purity is a whole-function property: "does any **reachable** block have
+    // a local impure effect?" Reachability is per-context: a block whose only
+    // entry edge is a branch condition proven const-false under
+    // `ctx.currentContext` is dead under that context, and its impure
+    // sentinel must not poison the scope verdict.
+    //
+    // Without this, Collatz's `print("no collatz")` block joins IMPURE into
+    // the scope verdict even under `x : pos-int` where the negative branch
+    // is structurally unreachable — and memoization's minimal-witness read
+    // never sees a `true` verdict on any ancestor chain node.
+    const reachable = reachableBlocks(unit, ctx.topology, ctx.currentContext);
     let anyVisited = false;
     for (const block of unit.cfg.blocks) {
+      if (!reachable.has(block)) continue;
       const facts = purityBlockAnalysis.facts.store.tryRead(block, ctx.currentContext)
         ?? purityBlockAnalysis.facts.store.tryRead(block, ROOT_CONTEXT);
       if (facts === undefined) continue;
@@ -502,6 +514,75 @@ export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> 
     return anyVisited ? true : undefined;
   },
 });
+
+/** BFS from CFG entry, skipping edges known-dead under `context`. An edge
+ *  is dead when its condition is const-folded to the opposite value:
+ *  `branch-true` with const-false condition is dead, and vice versa.
+ *  Non-const conditions leave both edges live (conservative).
+ *
+ *  Reads const facts at `context` with fallback to ROOT — mirrors the
+ *  block-fact read strategy in `purityScopeAnalysis.transfer` so
+ *  reachability and sentinel reads are keyed in the same domain. */
+function reachableBlocks(
+  unit: Unit,
+  topology: ProgramTopology,
+  context: AssumptionChain,
+): Set<BasicBlock> {
+  const reached = new Set<BasicBlock>();
+  const queue: BasicBlock[] = [unit.cfg.entry];
+  reached.add(unit.cfg.entry);
+  while (queue.length > 0) {
+    const block = queue.shift()!;
+    for (const edge of block.successorEdges) {
+      if (edgeIsDead(edge, topology, context)) continue;
+      if (!reached.has(edge.to)) {
+        reached.add(edge.to);
+        queue.push(edge.to);
+      }
+    }
+  }
+  return reached;
+}
+
+function edgeIsDead(
+  edge: CFGEdge,
+  topology: ProgramTopology,
+  context: AssumptionChain,
+): boolean {
+  if (edge.kind === "unconditional") return false;
+  const truth = conditionTruth(edge.condition.id, topology, context);
+  if (truth === undefined) return false;
+  return edge.kind === "branch-true" ? truth === false : truth === true;
+}
+
+/** Ask two fact surfaces whether a predicate expression is known boolean
+ *  under `context` (with ROOT fallback for static reasoning):
+ *   - constAnalysis: exact const literal (e.g. `if True:`)
+ *   - typeAnalysis: bool-kind with `BoolRef.True` / `BoolRef.False`, which
+ *     covers the Collatz pattern where `x <= 0` folds to BOOL_FALSE via
+ *     the sign lattice under `x : INT_POS`, but no const literal exists.
+ *
+ *  Returns `true` / `false` when statically known, `undefined` otherwise.
+ *  Both surfaces must agree or be absent; a disagreement (shouldn't
+ *  happen under sound lattices) returns `undefined` to stay conservative. */
+function conditionTruth(
+  nodeId: number,
+  topology: ProgramTopology,
+  context: AssumptionChain,
+): boolean | undefined {
+  const cv = readExprFact(topology, constAnalysis, nodeId, context)
+    ?? readExprFact(topology, constAnalysis, nodeId, ROOT_CONTEXT);
+  if (cv !== undefined && cv.tag === "const" && typeof cv.value === "boolean") {
+    return cv.value;
+  }
+  const tv = readExprFact(topology, typeAnalysis, nodeId, context)
+    ?? readExprFact(topology, typeAnalysis, nodeId, ROOT_CONTEXT);
+  if (tv !== undefined && tv.kinds === BOOL_BIT) {
+    if (tv.boolRef === BoolRef.True) return true;
+    if (tv.boolRef === BoolRef.False) return false;
+  }
+  return undefined;
+}
 
 // Cross-analysis edge: the block analysis consults `purityScopeAnalysis`
 // when it hits a nested `FunctionDef` stmt (to learn the nested function's

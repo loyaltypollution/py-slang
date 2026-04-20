@@ -6,8 +6,7 @@
 // select or reject a specialized version without executing the body.
 //
 // v1 projection sources:
-//   - direct function-entry parameter observations → param-const / param-type
-//     guards, keyed by `ParamKey`
+//   - direct function-entry parameter type observations, keyed by `ParamKey`
 //   - returnKindNarrowing → requirementAtEntry → param-type guards.
 
 import { StmtNS } from "../ast-types";
@@ -22,15 +21,14 @@ import {
   paramKeyIndex,
   type ParamKey,
 } from "./framework/key-spaces";
-import { paramConstNarrowing, paramTypeNarrowing } from "./framework/param-handles";
+import { paramTypeNarrowing } from "./framework/param-handles";
 import type { TypeLattice } from "./type-analysis/lattice";
 import { requirementAtEntry } from "./type-requirement-analysis/analysis";
 
 export type EntryGuard =
-  | { kind: "param-const"; paramIndex: number; value: unknown }
   | { kind: "param-type"; paramIndex: number; ty: TypeLattice };
 
-export { paramConstNarrowing, paramTypeNarrowing };
+export { paramTypeNarrowing };
 
 export function directParamEntryGuardsFor(
   unit: Unit,
@@ -40,11 +38,6 @@ export function directParamEntryGuardsFor(
   const guards: EntryGuard[] = [];
   for (let i = 0; i < unit.funcAst.parameters.length; i++) {
     const key = paramKey(unit.funcAst.id, i);
-    const constVal = findAssumption(context, paramConstNarrowing, key);
-    if (constVal?.tag === "const") {
-      guards.push({ kind: "param-const", paramIndex: i, value: constVal.value });
-      continue;
-    }
     const ty = findAssumption(context, paramTypeNarrowing, key);
     if (ty !== undefined) guards.push({ kind: "param-type", paramIndex: i, ty });
   }
@@ -56,7 +49,7 @@ export function contextIsEntrySpecializable(unit: Unit, context: AssumptionChain
   for (let cur: AssumptionChain | undefined = context; cur !== undefined && cur !== ROOT_CONTEXT; cur = cur.parent) {
     const a = cur.assumption;
     if (a === undefined) continue;
-    if (a.narrowing === paramConstNarrowing || a.narrowing === paramTypeNarrowing) {
+    if (a.narrowing === paramTypeNarrowing) {
       const index = paramKeyIndex(a.key as ParamKey);
       if (index >= 0 && index < unit.funcAst.parameters.length) continue;
     }
@@ -99,9 +92,6 @@ export function entryGuardsFor(
 }
 
 function encodeGuard(g: EntryGuard): string {
-  if (g.kind === "param-const") {
-    return `c:${g.paramIndex}:${JSON.stringify(g.value)}`;
-  }
   return `t:${g.paramIndex}:${g.ty.kinds}:${g.ty.intRef}:${g.ty.boolRef}:${g.ty.floatRef}`;
 }
 
