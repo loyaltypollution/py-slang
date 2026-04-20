@@ -253,7 +253,6 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
 
 export const constantFoldingRule: TransformRule = {
   debugName: "constantFoldingRule",
-  edges: [{ on: "fact", analysis: constAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
   sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
     const seed = findSeedReading(chain, topology, unit.body);
     if (seed === undefined) return false;
@@ -261,5 +260,9 @@ export const constantFoldingRule: TransformRule = {
     const v = new ConstFoldStmtVisitor(chain, topology);
     v.sweep(body);
     return v.changed;
+  },
+  bind(wl) {
+    wl.onTransformFactDirty(constantFoldingRule, constAnalysis.facts,
+      (_ctx, block) => [(block as BasicBlock).unit]);
   },
 };
