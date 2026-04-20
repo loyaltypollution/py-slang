@@ -121,7 +121,6 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
 
 export const deadBranchRule: TransformRule = {
   debugName: "deadBranchRule",
-  edges: [{ on: "fact", analysis: constAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
   sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
     const seed = findSeedReading(chain, topology, unit.body);
     if (seed === undefined) return false;
@@ -129,5 +128,9 @@ export const deadBranchRule: TransformRule = {
     const v = new DeadBranchVisitor(chain, topology);
     v.sweep(body);
     return v.changed;
+  },
+  bind(wl) {
+    wl.onTransformFactDirty(deadBranchRule, constAnalysis.facts,
+      (_ctx, block) => [(block as BasicBlock).unit]);
   },
 };
