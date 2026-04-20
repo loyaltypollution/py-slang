@@ -10,7 +10,6 @@ import {
   type AnalysisCtx,
   type OpaqueAnalysis,
 } from "./analysis";
-import { storeEvict } from "./analysis-store";
 import {
   paramKey,
   type FunctionId,
@@ -67,16 +66,7 @@ export const runtimeWriteAnalysis: OpaqueAnalysis<NodeId, RawKind> = defineAnaly
   debugName: "runtimeWriteAnalysis",
   keySpace: "nodeId",
   storeAlgebra: rawValueLattice,
-  edges: [
-    {
-      on: "retire",
-      effect: (ctx, unit) => {
-        for (const nodeId of ctx.topology.nodesOfUnit(unit)) {
-          storeEvict(runtimeWriteAnalysis.store, nodeId, ROOT_CONTEXT);
-        }
-      },
-    },
-  ],
+  edges: [],
   tier: "runtime",
   polarity: "opaque",
   onObserve(host, key, value, context) {
@@ -85,6 +75,20 @@ export const runtimeWriteAnalysis: OpaqueAnalysis<NodeId, RawKind> = defineAnaly
   },
   transfer(_ctx: AnalysisCtx, _key: NodeId): RawKind | undefined {
     return undefined;
+  },
+  bind(wl) {
+    // Pre-migration shape: retire edge with `effect` that loops
+    // `nodesOfUnit(unit)` and `storeEvict(..., ROOT_CONTEXT)`. Hard-coded
+    // ROOT preserved verbatim via `h.evictAt(..., ROOT_CONTEXT)` —
+    // §2.4/§3.2 of the plan keeps ROOT-context observations as the only
+    // surface this analysis writes to, so `evictAcrossContexts` would be
+    // a behavioral change (would evict non-ROOT partitions a future
+    // backend may legitimately write). Migration is mechanical only.
+    wl.onRetireEvict((h, unit) => {
+      for (const nodeId of wl.topology.nodesOfUnit(unit)) {
+        h.evictAt(runtimeWriteAnalysis.store, nodeId, ROOT_CONTEXT);
+      }
+    });
   },
 });
 
@@ -143,18 +147,7 @@ export const runtimeParamAnalysis: OpaqueAnalysis<ParamKey, RawKind> = defineAna
   debugName: "runtimeParamAnalysis",
   keySpace: "paramKey",
   storeAlgebra: rawValueLattice,
-  edges: [
-    {
-      on: "retire",
-      effect: (_ctx, unit) => {
-        const fd = unit.funcAst;
-        if (!(fd instanceof StmtNS.FunctionDef)) return;
-        for (let i = 0; i < fd.parameters.length; i++) {
-          storeEvict(runtimeParamAnalysis.store, paramKey(fd.id, i), ROOT_CONTEXT);
-        }
-      },
-    },
-  ],
+  edges: [],
   tier: "runtime",
   polarity: "opaque",
   onObserve(host, key, value, context) {
@@ -163,6 +156,15 @@ export const runtimeParamAnalysis: OpaqueAnalysis<ParamKey, RawKind> = defineAna
   },
   transfer(_ctx: AnalysisCtx, _key: ParamKey): RawKind | undefined {
     return undefined;
+  },
+  bind(wl) {
+    wl.onRetireEvict((h, unit) => {
+      const fd = unit.funcAst;
+      if (!(fd instanceof StmtNS.FunctionDef)) return;
+      for (let i = 0; i < fd.parameters.length; i++) {
+        h.evictAt(runtimeParamAnalysis.store, paramKey(fd.id, i), ROOT_CONTEXT);
+      }
+    });
   },
 });
 
@@ -189,17 +191,7 @@ export const runtimeReturnAnalysis: OpaqueAnalysis<FunctionId, RawKind> = define
   debugName: "runtimeReturnAnalysis",
   keySpace: "functionId",
   storeAlgebra: rawValueLattice,
-  edges: [
-    {
-      on: "retire",
-      effect: (_ctx, unit) => {
-        const fd = unit.funcAst;
-        if (fd instanceof StmtNS.FunctionDef) {
-          storeEvict(runtimeReturnAnalysis.store, fd.id, ROOT_CONTEXT);
-        }
-      },
-    },
-  ],
+  edges: [],
   tier: "runtime",
   polarity: "opaque",
   onObserve(host, key, value, context) {
@@ -208,6 +200,14 @@ export const runtimeReturnAnalysis: OpaqueAnalysis<FunctionId, RawKind> = define
   },
   transfer(_ctx: AnalysisCtx, _key: FunctionId): RawKind | undefined {
     return undefined;
+  },
+  bind(wl) {
+    wl.onRetireEvict((h, unit) => {
+      const fd = unit.funcAst;
+      if (fd instanceof StmtNS.FunctionDef) {
+        h.evictAt(runtimeReturnAnalysis.store, fd.id, ROOT_CONTEXT);
+      }
+    });
   },
 });
 
@@ -253,21 +253,19 @@ export const runtimeCallAnalysis: OpaqueAnalysis<FunctionId, number> = defineAna
   debugName: "runtimeCallAnalysis",
   keySpace: "functionId",
   storeAlgebra: saturatingCountLattice,
-  edges: [
-    {
-      on: "retire",
-      effect: (_ctx, unit) => {
-        const fd = unit.funcAst;
-        if (fd instanceof StmtNS.FunctionDef) {
-          storeEvict(runtimeCallAnalysis.store, fd.id, ROOT_CONTEXT);
-        }
-      },
-    },
-  ],
+  edges: [],
   tier: "runtime",
   polarity: "opaque",
   transfer(_ctx: AnalysisCtx, _key: FunctionId): number | undefined {
     return undefined;
+  },
+  bind(wl) {
+    wl.onRetireEvict((h, unit) => {
+      const fd = unit.funcAst;
+      if (fd instanceof StmtNS.FunctionDef) {
+        h.evictAt(runtimeCallAnalysis.store, fd.id, ROOT_CONTEXT);
+      }
+    });
   },
 });
 
