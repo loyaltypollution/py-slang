@@ -367,7 +367,10 @@ export const algebraicSimplifyRule: TransformRule = {
   // Subscribe to `.facts` — this transform reads per-node type lattice values
   // via `readExprFact`. `.env` changes that don't advance `.facts` wouldn't
   // produce new rewrites; watching `.facts` avoids spurious sweeps.
-  edges: [{ on: "fact", analysis: typeAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  bind(wl) {
+    wl.onTransformFactDirty(algebraicSimplifyRule, typeAnalysis.facts,
+      (_ctx, block) => [(block as BasicBlock).unit]);
+  },
   sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
     const seed = firstTypeReading(chain, topology, unit.body);
     if (seed === undefined) return false;
