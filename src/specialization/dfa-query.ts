@@ -12,7 +12,7 @@
 import type { Unit } from "./framework/function-unit";
 import type { FunctionId, NodeId } from "./framework/key-spaces";
 import type { ProgramTopology } from "./framework/topology";
-import { ROOT_CONTEXT, type Context } from "./framework/context";
+import { ROOT_CONTEXT, type AssumptionChain } from "./framework/context";
 import { readExprFact } from "./framework/dfa-factory";
 import { constAnalysis, typeAnalysis } from "./framework/dfa-analyses";
 import { purityScopeAnalysis } from "./purity-analysis/analysis";
@@ -67,25 +67,30 @@ export function makeDfaQuery(
    *  `speculativeTypeOf` and `speculativeConstOf` read the respective
    *  analysis under the returned context — same analyses, same storage
    *  dimension, no parallel twins. */
-  specContextForNode: (nodeId: NodeId) => Context = () => ROOT_CONTEXT,
+  specAssumptionChainForNode: (nodeId: NodeId) => AssumptionChain = () => ROOT_CONTEXT,
   /** Resolve the active speculation context for a unit. Used by guarded
    *  backend consumers such as entry-guard hoisting for return-kind
    *  specialization. Defaults to ROOT for callers that do not participate in
    *  speculative compilation. */
-  specContextForUnit: (unit: Unit) => Context = () => ROOT_CONTEXT,
+  specAssumptionChainForUnit: (unit: Unit) => AssumptionChain = () => ROOT_CONTEXT,
 ): DfaQuery {
   return {
     typeOf: id => readExprFact(topology, typeAnalysis, id, ROOT_CONTEXT),
     constOf: id => readExprFact(topology, constAnalysis, id, ROOT_CONTEXT),
     speculativeTypeOf: id =>
-      readExprFact(topology, typeAnalysis, id, specContextForNode(id)),
+      readExprFact(topology, typeAnalysis, id, specAssumptionChainForNode(id)),
     speculativeConstOf: id =>
-      readExprFact(topology, constAnalysis, id, specContextForNode(id)),
+      readExprFact(topology, constAnalysis, id, specAssumptionChainForNode(id)),
     entryRequirementsOf: scopeId => {
       const unit = topology.unitOfFunctionId(scopeId);
       if (unit === undefined) return undefined;
-      return requirementAtEntry(unit, specContextForUnit(unit));
+      return requirementAtEntry(unit, specAssumptionChainForUnit(unit));
     },
-    isPureScope: scopeId => purityScopeAnalysis.store.tryRead(scopeId, ROOT_CONTEXT),
+    isPureScope: scopeId => {
+      const unit = topology.unitOfFunctionId(scopeId);
+      const context = unit !== undefined ? specAssumptionChainForUnit(unit) : ROOT_CONTEXT;
+      return purityScopeAnalysis.store.tryRead(scopeId, context)
+        ?? purityScopeAnalysis.store.tryRead(scopeId, ROOT_CONTEXT);
+    },
   };
 }

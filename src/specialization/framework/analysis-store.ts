@@ -2,7 +2,7 @@
 //
 // The three storage concerns live in one explicit owner:
 //
-//   1. Context-partitioned cells (`Map<Context, Map<K, V>>`).
+//   1. Context-partitioned cells (`Map<AssumptionChain, Map<K, V>>`).
 //   2. Algebra-gated writes (`join(prev, value)` + `eq(joined, prev)`
 //      advance-check).
 //   3. Unwritten-cell default (`emptyValue` or `algebra.bottom`).
@@ -14,13 +14,13 @@
 // framework-owned writes go through `storeWrite(...)` so external holders
 // cannot silently bypass listener fan-out.
 
-import type { Analysis, StoreAlgebra } from "./analysis";
-import type { Context } from "./context";
+import type { Analysis, JoinSemiLattice, Reading } from "./analysis";
+import type { AssumptionChain } from "./context";
 
 export interface ReadonlyAnalysisStore<K, V> {
-  read(key: K, context: Context): V;
-  tryRead(key: K, context: Context): V | undefined;
-  readAll(context: Context): ReadonlyMap<K, V>;
+  read(key: K, context: AssumptionChain): V;
+  tryRead(key: K, context: AssumptionChain): V | undefined;
+  readAll(context: AssumptionChain): ReadonlyMap<K, V>;
 }
 
 /** Result of an advancing write. `null` from `AnalysisStore.write` means
@@ -38,7 +38,7 @@ export interface StoreWriteResult<V> {
 export interface FactChange<K, V> {
   readonly analysis: Analysis<K, V>;
   readonly key: K;
-  readonly context: Context;
+  readonly context: AssumptionChain;
   readonly oldValue: V | undefined;
   readonly newValue: V;
 }
@@ -46,10 +46,10 @@ export interface FactChange<K, V> {
 const EMPTY_MAP: ReadonlyMap<unknown, unknown> = new Map();
 
 export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
-  private readonly cellsByContext = new Map<Context, Map<K, V>>();
+  private readonly cellsByContext = new Map<AssumptionChain, Map<K, V>>();
 
   constructor(
-    private readonly algebra: StoreAlgebra<V>,
+    private readonly algebra: JoinSemiLattice<V>,
     private readonly emptyValue: V | undefined,
   ) {}
 
@@ -60,7 +60,7 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
    *  that position. Making it implicit historically turned "forgot to
    *  thread the speculative context" into a silent ROOT read — exactly the
    *  review-by-folklore seam the transform-boundary audit flagged. */
-  read(key: K, context: Context): V {
+  read(key: K, context: AssumptionChain): V {
     const cells = this.cellsByContext.get(context);
     if (cells === undefined || !cells.has(key)) {
       return this.emptyValue ?? this.algebra.bottom;
@@ -71,14 +71,14 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
   /** Cell value under `context`, or `undefined` if the cell is unwritten.
    *  Distinguishes "unwritten" from "written to bottom". `context` is
    *  mandatory — see `read`. */
-  tryRead(key: K, context: Context): V | undefined {
+  tryRead(key: K, context: AssumptionChain): V | undefined {
     return this.cellsByContext.get(context)?.get(key);
   }
 
   /** Every written cell under `context`. Returns the backing Map as a
    *  readonly view — mutation via the cast is a bug. Empty Map when no
    *  writes have landed under `context`. `context` is mandatory — see `read`. */
-  readAll(context: Context): ReadonlyMap<K, V> {
+  readAll(context: AssumptionChain): ReadonlyMap<K, V> {
     return (this.cellsByContext.get(context) ?? EMPTY_MAP) as ReadonlyMap<K, V>;
   }
 
@@ -92,7 +92,7 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
    *  change-dispatch stays centralized. `context` is mandatory: the store
    *  never invents a default position on behalf of a writer that forgot
    *  which context-tree node it meant to land in. */
-  write(key: K, value: V, context: Context): StoreWriteResult<V> | null {
+  write(key: K, value: V, context: AssumptionChain): StoreWriteResult<V> | null {
     let cells = this.cellsByContext.get(context);
     if (cells === undefined) {
       cells = new Map();
@@ -108,8 +108,16 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
 
   /** Delete a single cell. Silent if absent. `context` is mandatory —
    *  see `read`. */
-  evict(key: K, context: Context): void {
+  evict(key: K, context: AssumptionChain): void {
     this.cellsByContext.get(context)?.delete(key);
+  }
+
+  /** Drop every cell under `context` in one operation. Silent if the partition
+   *  is empty or absent. Used to reclaim memory from synthetic probe contexts
+   *  whose cells were written by speculative Kildall drains and are no longer
+   *  needed. */
+  clearContext(context: AssumptionChain): void {
+    this.cellsByContext.delete(context);
   }
 
   /** Every context that currently owns at least one backing cell map.
@@ -117,7 +125,7 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
    *  ROOT partitions alike (e.g. evicting stale block cells on CFG rebuild or
    *  unit retire). Returned iterable is a snapshot: callers may evict while
    *  iterating without mutating the traversal. */
-  contexts(): ReadonlyArray<Context> {
+  contexts(): ReadonlyArray<AssumptionChain> {
     return Array.from(this.cellsByContext.keys());
   }
 }
@@ -130,7 +138,7 @@ export function storeWrite<K, V>(
   store: ReadonlyAnalysisStore<K, V>,
   key: K,
   value: V,
-  context: Context,
+  context: AssumptionChain,
 ): StoreWriteResult<V> | null {
   return (store as AnalysisStore<K, V>).write(key, value, context);
 }
@@ -139,7 +147,7 @@ export function storeWrite<K, V>(
 export function storeEvict<K, V>(
   store: ReadonlyAnalysisStore<K, V>,
   key: K,
-  context: Context,
+  context: AssumptionChain,
 ): void {
   (store as AnalysisStore<K, V>).evict(key, context);
 }
@@ -147,6 +155,50 @@ export function storeEvict<K, V>(
 /** Framework-internal enumeration of context partitions. */
 export function storeContexts<K, V>(
   store: ReadonlyAnalysisStore<K, V>,
-): ReadonlyArray<Context> {
+): ReadonlyArray<AssumptionChain> {
   return (store as AnalysisStore<K, V>).contexts();
+}
+
+/** Exact positional read labeled with its witness. `store.read` supplies the
+ *  semantic default for unwritten cells at that exact context. */
+export function storeReadAt<K, V>(
+  store: ReadonlyAnalysisStore<K, V>,
+  key: K,
+  context: AssumptionChain,
+): Reading<V> {
+  return {
+    value: store.read(key, context),
+    witness: context,
+  };
+}
+
+/** Walk `from → ROOT`, keeping the shallowest ancestor whose exact written
+ *  cell satisfies `accept`. Unwritten cells are skipped entirely so callers do
+ *  not accidentally treat a missing speculative partition as proof borrowed
+ *  from ROOT. */
+export function storeReadMinimal<K, V>(
+  store: ReadonlyAnalysisStore<K, V>,
+  key: K,
+  accept: (value: V) => boolean,
+  from: AssumptionChain,
+): Reading<V> | undefined {
+  let match: Reading<V> | undefined;
+  for (let cur: AssumptionChain | undefined = from; cur !== undefined; cur = cur.parent) {
+    const value = store.tryRead(key, cur);
+    if (value === undefined || !accept(value)) continue;
+    match = { value, witness: cur };
+  }
+  return match;
+}
+
+/** Framework-internal bulk-eviction hook: drops the entire cell partition
+ *  under `context`. Used by `Worklist.lineageOf` to release the synthetic
+ *  pruned-context cells that `rebuildWith`-free Kildall probes write — those
+ *  probes are throwaway and no caller retains references. Silent if no
+ *  partition exists. */
+export function storeClearContext<K, V>(
+  store: ReadonlyAnalysisStore<K, V>,
+  context: AssumptionChain,
+): void {
+  (store as AnalysisStore<K, V>).clearContext(context);
 }

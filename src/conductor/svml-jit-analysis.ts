@@ -23,7 +23,7 @@
 //     - `Analysis<K, V>`       — the registered citizen shape.
 //     - `AnalysisCtx`          — handed to `transfer`. Carries `topology`
 //                                (node/block/unit/fd lookups) and
-//                                `currentContext`.
+//                                `currentAssumptionChain`.
 //     - `EdgeSpec<K>`          — both fact and lifecycle edges.
 //     - `Narrowing<K, V>`      — for enumerating the relevant speculation
 //                                dimensions (cache partitioning).
@@ -34,7 +34,7 @@
 //                                not need this.
 //
 //   context.ts
-//     - `Context`, `ROOT_CONTEXT` — the speculation-context axis. Any
+//     - `AssumptionChain`, `ROOT_CONTEXT` — the speculation-context axis. Any
 //                                   backend that partitions artifacts by
 //                                   speculation will consume these.
 //
@@ -84,7 +84,7 @@
 // stored cell value, so equal writes suppress onChange.
 //
 // Per-context artifact cache. The unit's active speculation context
-// (`specContextFor(unit)`) drives which IR the backend dispatches to. Each
+// (`specAssumptionChainFor(unit)`) drives which IR the backend dispatches to. Each
 // compile caches `(unit, context) → {snapshot, IR}`; subsequent transfers
 // for a context we've compiled before reuse the cached IR and only patch.
 // This is the deopt-without-recompile path: lineage-precise widen prunes
@@ -99,13 +99,14 @@
 // contexts, so `runtimeCallAnalysis` is allowed to wake the JIT. The transfer
 // still suppresses patching on structurally-equal IR.
 
-import { StmtNS } from "../ast-types";
+import { ExprNS, StmtNS } from "../ast-types";
 import type { BasicBlock } from "../specialization/framework/cfg";
-import { ROOT_CONTEXT, type Context } from "../specialization/framework/context";
+import { findAssumption, ROOT_CONTEXT, type AssumptionChain } from "../specialization/framework/context";
 import type { Unit } from "../specialization/framework/function-unit";
 import { defineAnalysis, type Analysis, type AnalysisCtx, type EdgeSpec, type Narrowing } from "../specialization/framework/analysis";
 import { storeEvict } from "../specialization/framework/analysis-store";
 import { JIT_RELEVANT_NARROWINGS } from "../specialization/framework/dfa-analyses";
+import { paramKey } from "../specialization/framework/key-spaces";
 import { runtimeCallAnalysis } from "../specialization/framework/runtime-analyses";
 import type { SVMLCompiler } from "../engines/svml/svml-compiler";
 import type { SVMLInterpreter } from "../engines/svml/svml-interpreter";
@@ -113,8 +114,15 @@ import { SVMLIR } from "../engines/svml/types";
 import {
   contextIsEntrySpecializable,
   directParamEntryGuardsFor,
+  guardKeyFromGuards,
+  paramTypeNarrowing,
+  type EntryGuard,
 } from "../specialization/entry-guards";
-import { specializedBodyFor } from "../specialization/speculative-clone";
+import { specializedBodyFor, stmtsAreClonePure } from "../specialization/speculative-clone";
+import {
+  MEMOIZATION_THRESHOLD,
+  memoWrappedBody,
+} from "../specialization/transforms/memoization";
 
 /** Snapshot of the inputs that determined a unit's compiled IR at some
  *  past compile under a specific context. Block-fact entries are
@@ -129,8 +137,17 @@ import { specializedBodyFor } from "../specialization/speculative-clone";
  *  without touching this module. */
 interface CompileSnapshot {
   structuralGen: number;
+  memoHot: boolean;
+  entryGuardKey: string | undefined;
   rootFacts: Map<Analysis<BasicBlock, unknown>, Map<BasicBlock, unknown>>;
   speculativeFacts: Map<Analysis<BasicBlock, unknown>, Map<BasicBlock, unknown>>;
+}
+
+interface CompiledArtifactDescriptor {
+  readonly memoHot: boolean;
+  readonly specBody: ReadonlyArray<StmtNS.Stmt> | undefined;
+  readonly entryGuards: ReadonlyArray<EntryGuard> | undefined;
+  readonly entryGuardKey: string | undefined;
 }
 
 /** Expand a narrowing into its cell analyses (both `.env` and `.facts`).
@@ -147,11 +164,20 @@ function cellsOfNarrowing(n: Narrowing<any>): Array<Analysis<BasicBlock, unknown
 }
 
 /** Per-context cache entry: the compiled IR and the snapshot of inputs it
- *  was compiled under. The cache key (outer `Map<Context, ...>`) carries
+ *  was compiled under. The cache key (outer `Map<AssumptionChain, ...>`) carries
  *  the context, so it's not repeated here. */
 interface CacheEntry {
   readonly snapshot: CompileSnapshot;
   readonly ir: SVMLIR;
+}
+
+function isMemoizedClone(body: ReadonlyArray<StmtNS.Stmt> | undefined): boolean {
+  const first = body?.[0];
+  if (!(first instanceof StmtNS.If)) return false;
+  const cond = first.condition;
+  return cond instanceof ExprNS.Call
+    && cond.callee instanceof ExprNS.Variable
+    && cond.callee.name.lexeme === "__memo_has";
 }
 
 export interface JitPassDeps {
@@ -162,7 +188,7 @@ export interface JitPassDeps {
    *  when a new narrowing observation has landed and a recompile is due.
    *  Defaults to ROOT (no speculation visible) when omitted — appropriate
    *  only for fixtures that explicitly disable speculation. */
-  readonly specContextFor?: (unit: Unit) => Context;
+  readonly specAssumptionChainFor?: (unit: Unit) => AssumptionChain;
   /** Narrowings whose block-level facts drive recompile. Defaults to the
    *  subset the SVML backend actually consumes (`JIT_RELEVANT_NARROWINGS`).
    *  A backend that starts reading additional speculative facts should pass
@@ -190,7 +216,7 @@ const UNCOMPILED: SVMLIR = new SVMLIR(
 
 export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
   const { compiler, interpreter } = deps;
-  const specContextFor = deps.specContextFor ?? ((_: Unit) => ROOT_CONTEXT);
+  const specAssumptionChainFor = deps.specAssumptionChainFor ?? ((_: Unit) => ROOT_CONTEXT);
   const narrowings = deps.narrowings ?? JIT_RELEVANT_NARROWINGS;
 
   /** Per-unit, per-context compiled-artifact cache. Outer key is the unit;
@@ -200,7 +226,7 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
    *  and just re-patches the cached IR. On unit rebuild (structural edit),
    *  the per-unit Map is cleared; stale contexts would never validate
    *  anyway, but dropping them also keeps the Map bounded. */
-  const cache = new WeakMap<Unit, Map<Context, CacheEntry>>();
+  const cache = new WeakMap<Unit, Map<AssumptionChain, CacheEntry>>();
 
   // Block-keyed DFA analysis: a fact-advancing change on a block invalidates
   // the memo of the owning unit. `transfer` decides whether the change
@@ -233,6 +259,8 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
       on: "fact",
       analysis: runtimeCallAnalysis,
       wake: (ctx, functionId) => {
+        const count = runtimeCallAnalysis.store.tryRead(functionId as number, ROOT_CONTEXT) ?? 0;
+        if (count !== MEMOIZATION_THRESHOLD) return [];
         const u = ctx.topology.unitOfFunctionId(functionId as number);
         return u !== undefined && u.funcAst instanceof StmtNS.FunctionDef ? [u] : [];
       },
@@ -254,7 +282,7 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
     // what makes deopt declarative: backends throw `SpeculationViolation`
     // and call `worklist.widenGuard(nodeId)`; the worklist fires this
     // signal, which enqueues `jitAnalysis.transfer`, which re-reads
-    // `specContextFor(unit)` (now the pruned context) and patches the
+    // `specAssumptionChainFor(unit)` (now the pruned context) and patches the
     // function table.
     {
       on: "specContextChange",
@@ -283,43 +311,37 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
       const index = compiler.indexOf(scope);
       if (index === undefined) return undefined;
 
-      const specContext = specContextFor(unit);
-      let perContext = cache.get(unit);
-      if (perContext === undefined) {
-        perContext = new Map();
-        cache.set(unit, perContext);
+      const specAssumptionChain = specAssumptionChainFor(unit);
+      let perAssumptionChain = cache.get(unit);
+      if (perAssumptionChain === undefined) {
+        perAssumptionChain = new Map();
+        cache.set(unit, perAssumptionChain);
       }
 
-      const cached = perContext.get(specContext);
+      const artifact = describeCompiledArtifact(unit, specAssumptionChain, ctx.topology);
+      const cached = perAssumptionChain.get(specAssumptionChain);
       const reusable =
         cached !== undefined &&
         cached.snapshot.structuralGen === unit.generation &&
-        snapshotMatches(unit, cached.snapshot, specContext, narrowings)
+        snapshotMatches(unit, cached.snapshot, artifact, specAssumptionChain, narrowings, "reference")
           ? cached
-          : findReusableEntry(unit, specContext, perContext, narrowings);
+          : findReusableEntry(unit, artifact, specAssumptionChain, perAssumptionChain, narrowings);
       if (reusable !== undefined) {
         // A sibling context may compile to the same artifact when the only
         // changed assumptions are in speculation dimensions the backend does
         // not consume directly (for example type-only write narrowings).
         // Memoize that reusable artifact under the current context too so the
         // next lookup hits directly.
-        perContext.set(specContext, reusable);
+        perAssumptionChain.set(specAssumptionChain, reusable);
         const currentIR = jitAnalysis.store.read(unit, ROOT_CONTEXT);
         if (structuralEquals(reusable.ir, currentIR)) return undefined;
         interpreter.patchFunction(index, reusable.ir);
         return reusable.ir;
       }
 
-      const directEntryGuards =
-        contextIsEntrySpecializable(unit, specContext)
-          ? directParamEntryGuardsFor(unit, specContext)
-          : undefined;
-      const specBody = directEntryGuards !== undefined
-        ? specializedBodyFor(unit, specContext, ctx.topology)
-        : undefined;
-      const newCode = compiler.compileFunction(unit, specBody, directEntryGuards);
-      perContext.set(specContext, {
-        snapshot: captureSnapshot(unit, specContext, narrowings),
+      const newCode = compiler.compileFunction(unit, artifact.specBody, artifact.entryGuards);
+      perAssumptionChain.set(specAssumptionChain, {
+        snapshot: captureSnapshot(unit, specAssumptionChain, narrowings, artifact),
         ir: newCode,
       });
       const prevIR = jitAnalysis.store.read(unit, ROOT_CONTEXT);
@@ -355,56 +377,107 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
  *  `prev.structuralGen === unit.generation` is already checked by the
  *  caller, so we only reach here when block identities match the snapshot.
  *
- *  `specContext` is both the cache lookup key and the context we read
+ *  `specAssumptionChain` is both the cache lookup key and the context we read
  *  speculative facts under. Cache partitioning by context means `prev`
- *  was always captured under this `specContext`. */
+ *  was always captured under this `specAssumptionChain`. */
+/** Widen param-const entry guards to param-type for memoized clones.
+ *  Recursive calls with different (but same-typed) concrete values must pass
+ *  the entry guard — GUARD_VAL(8) would reject x=4 from `hot(8)`→`hot(4)`,
+ *  so we emit GUARD_KIND (type-level) instead. The type assumption is read
+ *  from the same context that produced the const assumption. */
+function widenForMemoization(
+  unit: Unit,
+  context: AssumptionChain,
+): readonly EntryGuard[] | undefined {
+  if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return undefined;
+  const guards: EntryGuard[] = [];
+  for (let i = 0; i < unit.funcAst.parameters.length; i++) {
+    const key = paramKey(unit.funcAst.id, i);
+    const ty = findAssumption(context, paramTypeNarrowing, key);
+    if (ty !== undefined) {
+      guards.push({ kind: "param-type", paramIndex: i, ty });
+    }
+  }
+  return guards.length > 0 ? guards : undefined;
+}
+
+/** Apply memoization to a pruned clone body if the function is hot and the
+ *  body is pure. Uses type-widened guards as the memo partition key so that
+ *  recursive calls with different same-typed arguments hit the same cache. */
+function applyMemoPolicy(
+  unit: Unit,
+  context: AssumptionChain,
+  fd: StmtNS.FunctionDef,
+  body: ReadonlyArray<StmtNS.Stmt>,
+  memoHot: boolean,
+): ReadonlyArray<StmtNS.Stmt> {
+  if (!memoHot) return body;
+  if (isMemoizedClone(body)) return body;
+  if (!stmtsAreClonePure(body, fd.name.lexeme)) return body;
+  const widenedGuards = widenForMemoization(unit, context);
+  return memoWrappedBody(fd, body, guardKeyFromGuards(widenedGuards));
+}
+
+function compiledEntryGuardsFor(
+  unit: Unit,
+  specAssumptionChain: AssumptionChain,
+  specBody?: ReadonlyArray<StmtNS.Stmt>,
+): ReadonlyArray<EntryGuard> | undefined {
+  if (!contextIsEntrySpecializable(unit, specAssumptionChain)) return undefined;
+  // Memoized clones need type-level guards so recursive calls with different
+  // same-typed arguments pass the entry check (GUARD_KIND not GUARD_VAL).
+  if (isMemoizedClone(specBody)) return widenForMemoization(unit, specAssumptionChain);
+  return directParamEntryGuardsFor(unit, specAssumptionChain);
+}
+
+function describeCompiledArtifact(
+  unit: Unit,
+  specAssumptionChain: AssumptionChain,
+  topology: AnalysisCtx["topology"],
+): CompiledArtifactDescriptor {
+  const fd = unit.funcAst;
+  const memoHot = fd instanceof StmtNS.FunctionDef
+    ? (runtimeCallAnalysis.store.tryRead(fd.id, ROOT_CONTEXT) ?? 0) >= MEMOIZATION_THRESHOLD
+    : false;
+
+  // Const-based pruning only when below the memoization threshold. Above
+  // the threshold we switch to type-level guards (GUARD_KIND) and widen
+  // the memo partition, so const-specific pruning is unsafe: it would
+  // collapse termination conditions (e.g. x==1 in collatz) that are not
+  // derivable from type alone, producing bodies that loop for other inputs
+  // of the same type. Type-based pruning (e.g. INT_POS ≤ 0 = false) still
+  // fires regardless of this flag.
+  const pruned = specializedBodyFor(unit, specAssumptionChain, topology, !memoHot);
+  const specBody = pruned !== undefined && fd instanceof StmtNS.FunctionDef
+    ? applyMemoPolicy(unit, specAssumptionChain, fd, pruned, memoHot)
+    : pruned;
+  const entryGuards = compiledEntryGuardsFor(unit, specAssumptionChain, specBody);
+  return {
+    memoHot,
+    specBody,
+    entryGuards,
+    entryGuardKey: guardKeyFromGuards(entryGuards),
+  };
+}
+
+/** Compare current DFA facts against a prior compile snapshot.
+ *
+ *  `mode === "reference"` uses identity compare on fact cells — fast path
+ *  for the exact-context cache hit, where the analysis store's eq-gated
+ *  writes preserve reference when the value has not advanced.
+ *  `mode === "semantic"` falls back to `storeAlgebra.eq` when references
+ *  differ — used for cross-context reuse where two contexts can reach the
+ *  same fixpoint via distinct cells. */
 function snapshotMatches(
   unit: Unit,
   prev: CompileSnapshot,
-  specContext: Context,
+  artifact: CompiledArtifactDescriptor,
+  specAssumptionChain: AssumptionChain,
   narrowings: ReadonlyArray<Narrowing<any>>,
+  mode: "reference" | "semantic",
 ): boolean {
-  for (const n of narrowings) {
-    for (const cell of cellsOfNarrowing(n)) {
-      const rootMap = prev.rootFacts.get(cell);
-      const specMap = prev.speculativeFacts.get(cell);
-      if (rootMap === undefined || specMap === undefined) return false;
-      for (const block of unit.blockMap.values()) {
-        if (cell.store.tryRead(block, ROOT_CONTEXT) !== rootMap.get(block)) return false;
-        if (cell.store.tryRead(block, specContext) !== specMap.get(block)) return false;
-      }
-    }
-  }
-  return true;
-}
-
-/** Find an already-compiled artifact whose tracked inputs still match the
- *  unit's current relevant facts under `specContext`, even if that artifact
- *  was originally cached under a different speculation context. Cross-context
- *  reuse compares semantically rather than by reference: identical fixpoints
- *  in two contexts are stored as distinct analysis-store cells, so the exact-hit
- *  identity check in `snapshotMatches` is too strong here. */
-function findReusableEntry(
-  unit: Unit,
-  specContext: Context,
-  perContext: ReadonlyMap<Context, CacheEntry>,
-  narrowings: ReadonlyArray<Narrowing<any>>,
-): CacheEntry | undefined {
-  for (const [, entry] of perContext) {
-    if (entry.snapshot.structuralGen !== unit.generation) continue;
-    if (snapshotSemanticallyMatches(unit, entry.snapshot, specContext, narrowings)) {
-      return entry;
-    }
-  }
-  return undefined;
-}
-
-function snapshotSemanticallyMatches(
-  unit: Unit,
-  prev: CompileSnapshot,
-  specContext: Context,
-  narrowings: ReadonlyArray<Narrowing<any>>,
-): boolean {
+  if (artifact.memoHot !== prev.memoHot) return false;
+  if (artifact.entryGuardKey !== prev.entryGuardKey) return false;
   for (const n of narrowings) {
     for (const cell of cellsOfNarrowing(n)) {
       const rootMap = prev.rootFacts.get(cell);
@@ -414,13 +487,16 @@ function snapshotSemanticallyMatches(
         const rootNow = cell.store.tryRead(block, ROOT_CONTEXT);
         const rootPrev = rootMap.get(block);
         if (rootNow !== rootPrev) {
+          if (mode === "reference") return false;
           if (rootNow === undefined || rootPrev === undefined) return false;
           if (!cell.storeAlgebra.eq(rootNow as never, rootPrev as never)) return false;
         }
-        const specNow = cell.store.tryRead(block, specContext)
-          ?? cell.store.tryRead(block, ROOT_CONTEXT);
+        const specNow = mode === "semantic"
+          ? (cell.store.tryRead(block, specAssumptionChain) ?? cell.store.tryRead(block, ROOT_CONTEXT))
+          : cell.store.tryRead(block, specAssumptionChain);
         const specPrev = specMap.get(block);
         if (specNow !== specPrev) {
+          if (mode === "reference") return false;
           if (specNow === undefined || specPrev === undefined) return false;
           if (!cell.storeAlgebra.eq(specNow as never, specPrev as never)) return false;
         }
@@ -430,10 +506,35 @@ function snapshotSemanticallyMatches(
   return true;
 }
 
+/** Find an already-compiled artifact whose tracked inputs still match the
+ *  unit's current relevant facts under `specAssumptionChain`, even if that artifact
+ *  was originally cached under a different speculation context. Cross-context
+ *  reuse compares semantically rather than by reference: identical fixpoints
+ *  in two contexts are stored as distinct analysis-store cells, so the exact-hit
+ *  identity check in `snapshotMatches` is too strong here. */
+function findReusableEntry(
+  unit: Unit,
+  artifact: CompiledArtifactDescriptor,
+  specAssumptionChain: AssumptionChain,
+  perAssumptionChain: ReadonlyMap<AssumptionChain, CacheEntry>,
+  narrowings: ReadonlyArray<Narrowing<any>>,
+): CacheEntry | undefined {
+  for (const [, entry] of perAssumptionChain) {
+    if (entry.snapshot.structuralGen !== unit.generation) continue;
+    if (entry.snapshot.memoHot !== artifact.memoHot) continue;
+    if (entry.snapshot.entryGuardKey !== artifact.entryGuardKey) continue;
+    if (snapshotMatches(unit, entry.snapshot, artifact, specAssumptionChain, narrowings, "semantic")) {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
 function captureSnapshot(
   unit: Unit,
-  specContext: Context,
+  specAssumptionChain: AssumptionChain,
   narrowings: ReadonlyArray<Narrowing<any>>,
+  artifact: CompiledArtifactDescriptor,
 ): CompileSnapshot {
   const rootFacts = new Map<Analysis<BasicBlock, unknown>, Map<BasicBlock, unknown>>();
   const speculativeFacts = new Map<Analysis<BasicBlock, unknown>, Map<BasicBlock, unknown>>();
@@ -443,7 +544,7 @@ function captureSnapshot(
       const specMap = new Map<BasicBlock, unknown>();
       for (const block of unit.blockMap.values()) {
         rootMap.set(block, cell.store.tryRead(block, ROOT_CONTEXT));
-        specMap.set(block, cell.store.tryRead(block, specContext));
+        specMap.set(block, cell.store.tryRead(block, specAssumptionChain));
       }
       rootFacts.set(cell, rootMap);
       speculativeFacts.set(cell, specMap);
@@ -451,6 +552,8 @@ function captureSnapshot(
   }
   return {
     structuralGen: unit.generation,
+    memoHot: artifact.memoHot,
+    entryGuardKey: artifact.entryGuardKey,
     rootFacts,
     speculativeFacts,
   };

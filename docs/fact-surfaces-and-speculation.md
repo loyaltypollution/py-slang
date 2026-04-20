@@ -120,9 +120,10 @@ Allowed surface:
 
 - `TransformFactView`
 
-What that means:
+What that means for **canonical transforms** (those that mutate `unit.body`
+permanently):
 
-- all reads are bound to `ROOT_CONTEXT`;
+- the worklist binds the view at `ROOT_CONTEXT` via `rootTransformFacts(topology)`;
 - no writes;
 - no arbitrary per-context reads;
 - expression facts are accessed only through the root-bound
@@ -138,10 +139,19 @@ What that means:
   justify the rewrite. A grep for `readProfitability` enumerates every
   profitability-gated transform in the tree.
 
+**Scope expansion:** `TransformFactView` can also be bound to a non-ROOT
+context via `transformFacts(topology, context)`. That constructor is used by
+`speculative-clone.ts` to rewrite ephemeral clone bodies under speculative
+facts. Clone bodies are compilation artifacts — never inserted into the shared
+program topology — so reading non-ROOT is sound there. Canonical transform
+authors (`TransformRule.sweep`) do not call `transformFacts(...)` directly; the
+worklist calls `rootTransformFacts(topology)` for them.
+
 Files:
 
 - `src/specialization/framework/analysis.ts`
 - `src/specialization/framework/transform-rule.ts`
+- `src/specialization/speculative-clone.ts`
 - `src/tests/specialization/framework/transform-fact-view-types.ts`
 - `src/tests/specialization/framework/transform-boundary-gate.test.ts`
 - `docs/transform-authoring-tutorial.md`
@@ -151,6 +161,8 @@ Contract:
 > Permanent AST rewrites may read only ROOT facts from semantic analyses.
 > Profitability signals may gate a rewrite through `readProfitability`,
 > but never justify one.
+> Ephemeral clone bodies may read non-ROOT facts because they are
+> retractable compilation artifacts, not shared program structure.
 
 ### B. Guarded compilation / speculative code generation
 
@@ -308,7 +320,7 @@ Contract:
 When reviewing a change, ask:
 
 1. Does this make runtime evidence look like semantic truth?
-2. Does this let a transform read anything other than ROOT facts?
+2. Does this let a **canonical transform** (`TransformRule.sweep` / `unit.body` mutation) read anything other than ROOT facts? (Clone-body rewrites in `speculative-clone.ts` are intentionally non-ROOT; the distinction matters.)
 3. Does this let profitability metadata justify semantic claims?
 4. Does this make must-style support sound broader than the code actually
    exercises?

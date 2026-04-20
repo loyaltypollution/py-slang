@@ -15,8 +15,8 @@ import { runtimeParamAnalysis } from "../../../specialization/framework/runtime-
 import {
   entryGuardsFor,
   guardKeyFor,
-  paramConstHandle,
-  paramTypeHandle,
+  paramConstNarrowing,
+  paramTypeNarrowing,
 } from "../../../specialization/entry-guards";
 import { buildTestWorklist } from "../../utils";
 
@@ -67,7 +67,7 @@ describe("entryGuardsFor: direct parameter assumptions", () => {
     const unit = worklist.topology.unitOfFunctionId(fd.id)!;
     worklist.observe(runtimeParamAnalysis, paramKey(fd.id, 0), { kind: "bool", value: true });
     worklist.drain();
-    expect(entryGuardsFor(unit, worklist.specContextFor(unit))).toContainEqual({
+    expect(entryGuardsFor(unit, worklist.specAssumptionChainFor(unit))).toContainEqual({
       kind: "param-const",
       paramIndex: 0,
       value: true,
@@ -79,8 +79,8 @@ describe("entryGuardsFor: direct parameter assumptions", () => {
     const fd = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.topology.unitOfFunctionId(fd.id)!;
     const { extendContext } = require("../../../specialization/framework/context");
-    const first = extendContext(ROOT_CONTEXT, paramConstHandle, paramKey(fd.id, 0), require("../../../specialization/const-analysis/lattice").constOf(false));
-    const second = extendContext(first, paramConstHandle, paramKey(fd.id, 0), require("../../../specialization/const-analysis/lattice").constOf(true));
+    const first = extendContext(ROOT_CONTEXT, paramConstNarrowing, paramKey(fd.id, 0), require("../../../specialization/const-analysis/lattice").constOf(false));
+    const second = extendContext(first, paramConstNarrowing, paramKey(fd.id, 0), require("../../../specialization/const-analysis/lattice").constOf(true));
     expect(entryGuardsFor(unit, second)).toEqual([{ kind: "param-const", paramIndex: 0, value: true }]);
   });
 });
@@ -103,14 +103,14 @@ describe("guardKeyFor", () => {
     const unit = worklist.topology.unitOfFunctionId(fd.id)!;
 
     const xy = extendContext(
-      extendContext(ROOT_CONTEXT, paramConstHandle, paramKey(fd.id, 0), constOf(true)),
-      paramTypeHandle,
+      extendContext(ROOT_CONTEXT, paramConstNarrowing, paramKey(fd.id, 0), constOf(true)),
+      paramTypeNarrowing,
       paramKey(fd.id, 1),
       BOOL_TRUE,
     );
     const yx = extendContext(
-      extendContext(ROOT_CONTEXT, paramTypeHandle, paramKey(fd.id, 1), BOOL_TRUE),
-      paramConstHandle,
+      extendContext(ROOT_CONTEXT, paramTypeNarrowing, paramKey(fd.id, 1), BOOL_TRUE),
+      paramConstNarrowing,
       paramKey(fd.id, 0),
       constOf(true),
     );
@@ -126,7 +126,7 @@ describe("entryGuardsFor: non-entry-guardable narrowings produce no guards", () 
     // requirementAtEntry (returnKindNarrowing path), so an unrelated const
     // assumption on an interior expression must not leak through.
     const { extendContext } = require("../../../specialization/framework/context");
-    const { constExprHandle } = require("../../../specialization/const-analysis/analysis");
+    const { constNarrowing } = require("../../../specialization/const-analysis/analysis");
     const { constOf } = require("../../../specialization/const-analysis/lattice");
 
     const code = `
@@ -140,7 +140,7 @@ def f(x):
     // y's assignment value (x + 1) — pick any interior nodeId
     const assign = fd.body[0] as StmtNS.Assign;
     const rhsId = assign.value.id;
-    const ctx = extendContext(ROOT_CONTEXT, constExprHandle, rhsId, constOf(5));
+    const ctx = extendContext(ROOT_CONTEXT, constNarrowing, rhsId, constOf(5));
     // No returnKindNarrowing → requirementAtEntry returns empty provable → undefined
     expect(entryGuardsFor(unit, ctx)).toBeUndefined();
   });

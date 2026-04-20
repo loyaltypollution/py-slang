@@ -34,8 +34,8 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         environments,
         makeDfaQuery(
           worklist.topology,
-          nodeId => worklist.specContextForNode(nodeId),
-          unit => worklist.specContextFor(unit),
+          nodeId => worklist.specAssumptionChainForNode(nodeId),
+          unit => worklist.specAssumptionChainFor(unit),
         ),
         worklist.registry,
         worklist,
@@ -50,17 +50,12 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const jitAnalysis = makeJitAnalysis({
         compiler,
         interpreter,
-        specContextFor: unit => worklist.specContextFor(unit),
+        specAssumptionChainFor: unit => worklist.specAssumptionChainFor(unit),
       });
       worklist.register(jitAnalysis);
 
-      worklist.beginBatch();
-      try {
-        const returnValue = await runWithDeopt(() => interpreter.execute(), worklist);
-        this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
-      } finally {
-        worklist.endBatch();
-      }
+      const returnValue = await runWithDeopt(() => interpreter.execute(), worklist);
+      this.conductor.sendResult(SVMLInterpreter.toJSValue(returnValue));
     } catch (e) {
       this.conductor.sendError(new EvaluatorError(e));
     }

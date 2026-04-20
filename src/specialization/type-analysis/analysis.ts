@@ -1,13 +1,16 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import type { AssumptionHandle } from "../framework/analysis";
-import { findAssumption, ROOT_CONTEXT, type Context } from "../framework/context";
-import type { MutableEnv } from "../framework/mutable-env";
-import { paramTypeHandle } from "../entry-guards";
+import type { Narrowing } from "../framework/analysis";
+import { findAssumption, ROOT_CONTEXT, type AssumptionChain } from "../framework/context";
+import { MutableEnv } from "../framework/mutable-env";
+import { paramTypeNarrowing } from "../framework/param-handles";
 import type { BlockDfaSpec } from "../framework/interfaces";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import { paramKey, type FunctionId, type NodeId } from "../framework/key-spaces";
+import { transferBlock } from "../framework/block-transfer";
+import { makeBlockFixpointAnalysis, type BlockFixpointAnalysis } from "../framework/dfa-factory";
+import { runtimeWriteAnalysis } from "../framework/runtime-analyses";
 import {
   type TypeLattice,
   ALL_KINDS_MASK,
@@ -70,23 +73,25 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
  *  are derived from program semantics only; runtime/profile input participates
  *  through non-ROOT Context assumptions instead. */
 
-/** Assumption-binding identity used by Context. Callers build a Context by
- *  extending a parent with `(typeExprHandle, nodeId, narrowedValue)`; the
+/** Assumption-binding identity used by AssumptionChain, merged with its
+ *  narrowing-dimension metadata. Callers build a chain by extending a
+ *  parent with `(typeNarrowing, nodeId, narrowedValue)`; the
  *  `TypeAnalysisVisitor` consults `findAssumption` at each node visit and
- *  meets the computed static fact with the bound value. The handle itself
- *  is never scheduled — its `transfer` is a no-op and no analysis store
- *  carries cells under this Analysis — it exists purely as a per-node
- *  assumption namespace keyed into the Context chain.
- *
- *  The pairing with `typeAnalysis` and `typeValueEqual` used by
- *  `Worklist.widenGuard`'s lineage walk is assembled as a `Narrowing` in
- *  `dfa-analyses.ts` — kept out of this file to avoid a top-level circular
- *  import. */
-export const typeExprHandle: AssumptionHandle<NodeId, TypeLattice> = {
-  id: Symbol("typeExprHandle"),
-  debugName: "typeExprHandle",
+ *  meets the computed static fact with the bound value. The narrowing
+ *  itself is never scheduled — it exists purely as a per-node assumption
+ *  namespace keyed into the AssumptionChain, plus the metadata
+ *  (`blockAnalysis`, `observationSource`, `lift`) the worklist needs to
+ *  translate runtime observations into chain extensions. */
+export const typeNarrowing: Narrowing<NodeId, TypeLattice> = {
+  id: Symbol("typeNarrowing"),
+  debugName: "typeNarrowing",
   keySpace: "nodeId",
   eq,
+  // typeAnalysis is defined below; thunk defers access until first call,
+  // post-module-init, so the self-reference is safe.
+  blockAnalysis: () => typeAnalysis,
+  observationSource: runtimeWriteAnalysis,
+  lift: liftType,
 };
 
 class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
@@ -96,7 +101,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     private readonly paramCount: number,
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: NodeId, val: TypeLattice) => void,
-    private readonly context: Context,
+    private readonly context: AssumptionChain,
   ) {}
 
   /** ROOT facts are purely semantic. Non-ROOT contexts may narrow them via
@@ -104,7 +109,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
     const assumption = this.context === ROOT_CONTEXT
       ? undefined
-      : findAssumption(this.context, typeExprHandle, node.id);
+      : findAssumption(this.context, typeNarrowing, node.id);
     const combined = assumption !== undefined ? meet(val, assumption) : val;
     this.recordExprFact(node.id, combined);
     return combined;
@@ -136,7 +141,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 
   private paramAssumption(slot: number): TypeLattice | undefined {
     if (this.context === ROOT_CONTEXT || slot < 0 || slot >= this.paramCount) return undefined;
-    return findAssumption(this.context, paramTypeHandle, paramKey(this.functionId, slot));
+    return findAssumption(this.context, paramTypeNarrowing, paramKey(this.functionId, slot));
   }
 
   visitVariableExpr(expr: ExprNS.Variable): TypeLattice {
@@ -297,7 +302,7 @@ export function makeTypeAnalysisModule(): BlockDfaSpec<TypeLattice> {
     unit,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: TypeLattice) => void,
-    context: Context,
+    context: AssumptionChain,
   ): ExprNS.Visitor<TypeLattice> {
     return new TypeAnalysisVisitor(
       env,
@@ -329,6 +334,21 @@ export function makeTypeAnalysisModule(): BlockDfaSpec<TypeLattice> {
 
 // Forward may-analysis: env join = union; specialize only when numeric on all paths.
 export const typeAnalysisModule: BlockDfaSpec<TypeLattice> = makeTypeAnalysisModule();
+
+/** Block-level fixpoint analysis for type narrowing. Paired `.env` /
+ *  `.facts` cells are owned here (at the dimension's source) so the
+ *  narrowing's `blockAnalysis` thunk has a stable local binding. */
+export const typeAnalysis: BlockFixpointAnalysis<TypeLattice> =
+  makeBlockFixpointAnalysis<TypeLattice>({
+    debugName: "typeAnalysis",
+    direction: typeAnalysisModule.direction,
+    valueLattice: typeAnalysisModule,
+    mergeKind: typeAnalysisModule.mergeKind,
+    seedEnv: () => new MutableEnv<TypeLattice>(),
+    transferBlock: (ctx, block, inEnv, unit) =>
+      transferBlock(block, inEnv, typeAnalysisModule, unit, ctx.currentContext),
+    refineOnEdge: (env, edge) => typeAnalysisModule.refineOnEdge(env, edge),
+  });
 
 // ---- Predicate narrowing helpers ----
 

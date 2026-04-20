@@ -1,13 +1,16 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
-import type { AssumptionHandle } from "../framework/analysis";
-import { findAssumption, ROOT_CONTEXT, type Context } from "../framework/context";
-import { paramConstHandle } from "../entry-guards";
+import type { Narrowing } from "../framework/analysis";
+import { findAssumption, ROOT_CONTEXT, type AssumptionChain } from "../framework/context";
+import { paramConstNarrowing } from "../framework/param-handles";
 import type { BlockDfaSpec } from "../framework/interfaces";
-import type { MutableEnv } from "../framework/mutable-env";
+import { MutableEnv } from "../framework/mutable-env";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import { paramKey, type FunctionId, type NodeId } from "../framework/key-spaces";
+import { transferBlock } from "../framework/block-transfer";
+import { makeBlockFixpointAnalysis, type BlockFixpointAnalysis } from "../framework/dfa-factory";
+import { runtimeWriteAnalysis } from "../framework/runtime-analyses";
 import {
   type ConstLattice,
   CONST_BOTTOM,
@@ -41,22 +44,19 @@ export const constMeet = (a: ConstLattice, b: ConstLattice): ConstLattice => {
   return a.value === b.value ? a : CONST_BOTTOM;
 };
 
-/** Assumption-binding identity used by Context, paired with
- *  `typeExprHandle`. Observations that lift to a concrete `ConstLattice`
- *  extend the unit's context with `(constExprHandle, nodeId, lifted)`; the
- *  visitor's annotate meets the computed static fact with the bound value
- *  under non-ROOT contexts. This handle owns no analysis-store cells;
- *  transfer is a no-op.
- *
- *  The pairing with `constAnalysis` (block DFA) and `constValueEqual` used
- *  by `Worklist.widenGuard`'s lineage walk is assembled as a `Narrowing` in
- *  `dfa-analyses.ts` — kept out of this file to avoid a top-level circular
- *  import. */
-export const constExprHandle: AssumptionHandle<NodeId, ConstLattice> = {
-  id: Symbol("constExprHandle"),
-  debugName: "constExprHandle",
+/** Const-narrowing dimension. Identity token used by AssumptionChain
+ *  (`findAssumption(context, constNarrowing, nodeId)`) AND the narrowing
+ *  record the worklist's observation→context translator consumes. The
+ *  `blockAnalysis` thunk is evaluated at call time, so the self-reference
+ *  to `constAnalysis` below is safe despite declaration order. */
+export const constNarrowing: Narrowing<NodeId, ConstLattice> = {
+  id: Symbol("constNarrowing"),
+  debugName: "constNarrowing",
   keySpace: "nodeId",
   eq: constEq,
+  blockAnalysis: () => constAnalysis,
+  observationSource: runtimeWriteAnalysis,
+  lift: liftConst,
 };
 
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
@@ -66,7 +66,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     private readonly paramCount: number,
     private readonly slotLookup: SlotLookup,
     private readonly recordExprFact: (nodeId: NodeId, val: ConstLattice) => void,
-    private readonly context: Context,
+    private readonly context: AssumptionChain,
   ) {}
 
   /** ROOT facts are purely semantic. Non-ROOT contexts may narrow them via
@@ -74,7 +74,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
     const assumption = this.context === ROOT_CONTEXT
       ? undefined
-      : findAssumption(this.context, constExprHandle, node.id);
+      : findAssumption(this.context, constNarrowing, node.id);
     const combined = assumption !== undefined ? constMeet(val, assumption) : val;
     this.recordExprFact(node.id, combined);
     return combined;
@@ -82,7 +82,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
 
   private paramAssumption(slot: number): ConstLattice | undefined {
     if (this.context === ROOT_CONTEXT || slot < 0 || slot >= this.paramCount) return undefined;
-    return findAssumption(this.context, paramConstHandle, paramKey(this.functionId, slot));
+    return findAssumption(this.context, paramConstNarrowing, paramKey(this.functionId, slot));
   }
 
   private annotateWithParamAssumption(node: ExprNS.Expr, val: ConstLattice, slot: number): ConstLattice {
@@ -278,7 +278,7 @@ export function makeConstAnalysisModule(): BlockDfaSpec<ConstLattice> {
       unit,
       slotLookup: SlotLookup,
       recordExprFact: (nodeId: NodeId, val: ConstLattice) => void,
-      context: Context,
+      context: AssumptionChain,
     ): ExprNS.Visitor<ConstLattice> {
       return new ConstAnalysisVisitor(
         env,
@@ -296,3 +296,18 @@ export function makeConstAnalysisModule(): BlockDfaSpec<ConstLattice> {
 }
 
 export const constAnalysisModule: BlockDfaSpec<ConstLattice> = makeConstAnalysisModule();
+
+/** Block-level fixpoint analysis for const narrowing. Owned here (at the
+ *  dimension's source) so the narrowing's `blockAnalysis` thunk has a
+ *  stable local binding. */
+export const constAnalysis: BlockFixpointAnalysis<ConstLattice> =
+  makeBlockFixpointAnalysis<ConstLattice>({
+    debugName: "constAnalysis",
+    direction: constAnalysisModule.direction,
+    valueLattice: constAnalysisModule,
+    mergeKind: constAnalysisModule.mergeKind,
+    seedEnv: () => new MutableEnv<ConstLattice>(),
+    transferBlock: (ctx, block, inEnv, unit) =>
+      transferBlock(block, inEnv, constAnalysisModule, unit, ctx.currentContext),
+    refineOnEdge: (env, edge) => constAnalysisModule.refineOnEdge(env, edge),
+  });

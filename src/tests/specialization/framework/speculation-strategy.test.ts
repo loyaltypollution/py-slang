@@ -8,7 +8,10 @@ import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import { typeAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
-import { runtimeWriteAnalysis } from "../../../specialization/framework/runtime-analyses";
+import {
+  observeRuntimeWrite,
+  runtimeWriteAnalysis,
+} from "../../../specialization/framework/runtime-analyses";
 import {
   countBasedStrategy,
   immediateStrategy,
@@ -47,8 +50,8 @@ describe("SpeculationStrategy", () => {
     const block = worklist.topology.blockOfNode(xRead.id)!;
     const unit = block.unit;
 
-    expect(worklist.specContextFor(unit)).toBe(
-      worklist.specContextForNode(xRead.id),
+    expect(worklist.specAssumptionChainFor(unit)).toBe(
+      worklist.specAssumptionChainForNode(xRead.id),
     );
 
     worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
@@ -58,7 +61,7 @@ describe("SpeculationStrategy", () => {
       worklist.topology,
       typeAnalysis,
       xRead.id,
-      worklist.specContextForNode(xRead.id),
+      worklist.specAssumptionChainForNode(xRead.id),
     );
     expect(narrowed?.kinds).toBe(INT_BIT);
   });
@@ -73,24 +76,43 @@ describe("SpeculationStrategy", () => {
     // First two identical observations: counter advances but no extension.
     worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
     worklist.drain();
-    expect(worklist.specContextFor(unit).depth).toBe(0);
+    expect(worklist.specAssumptionChainFor(unit).depth).toBe(0);
 
     worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
     worklist.drain();
-    expect(worklist.specContextFor(unit).depth).toBe(0);
+    expect(worklist.specAssumptionChainFor(unit).depth).toBe(0);
 
     // Third identical observation crosses the threshold — context extends.
     worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
     worklist.drain();
-    expect(worklist.specContextFor(unit).depth).toBeGreaterThan(0);
+    expect(worklist.specAssumptionChainFor(unit).depth).toBeGreaterThan(0);
 
     const narrowed = readExprFact(
       worklist.topology,
       typeAnalysis,
       xRead.id,
-      worklist.specContextForNode(xRead.id),
+      worklist.specAssumptionChainForNode(xRead.id),
     );
     expect(narrowed?.kinds).toBe(INT_BIT);
+  });
+
+  test("observer helpers still deliver duplicate events needed by count-based strategy", () => {
+    const { ast, worklist } = buildWith(countBasedStrategy(3), SOURCE);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
+    const unit = worklist.topology.blockOfNode(xRead.id)!.unit;
+
+    observeRuntimeWrite(worklist, xRead.id, 5);
+    worklist.drain();
+    expect(worklist.specAssumptionChainFor(unit).depth).toBe(0);
+
+    observeRuntimeWrite(worklist, xRead.id, 5);
+    worklist.drain();
+    expect(worklist.specAssumptionChainFor(unit).depth).toBe(0);
+
+    observeRuntimeWrite(worklist, xRead.id, 5);
+    worklist.drain();
+    expect(worklist.specAssumptionChainFor(unit).depth).toBeGreaterThan(0);
   });
 
   test("countBasedStrategy: differing values at the same site count separately", () => {
@@ -110,6 +132,6 @@ describe("SpeculationStrategy", () => {
     // Each observation widens the runtimeWriteAnalysis lattice to ⊤ long
     // before the counter could act, but even if it hadn't, no single
     // discriminant hit 3 — spec context should remain at ROOT.
-    expect(worklist.specContextFor(unit).depth).toBe(0);
+    expect(worklist.specAssumptionChainFor(unit).depth).toBe(0);
   });
 });

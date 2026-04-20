@@ -252,7 +252,7 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
 
     observeRuntimeWrite(worklist, literal.id, 7);
 
-    const specCtx = worklist.specContextFor(gUnit);
+    const specCtx = worklist.specAssumptionChainFor(gUnit);
     expect(typeAnalysis.env.store.tryRead(oldEntry, specCtx)).toBeDefined();
     expect(typeAnalysis.facts.store.tryRead(oldEntry, specCtx)).toBeDefined();
 
@@ -288,7 +288,7 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
 
     observeRuntimeWrite(worklist, literal.id, 7);
 
-    const specCtx = worklist.specContextFor(gUnit);
+    const specCtx = worklist.specAssumptionChainFor(gUnit);
     expect(typeAnalysis.env.store.tryRead(oldEntry, specCtx)).toBeDefined();
     expect(typeAnalysis.facts.store.tryRead(oldEntry, specCtx)).toBeDefined();
 

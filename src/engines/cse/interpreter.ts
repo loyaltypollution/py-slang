@@ -23,6 +23,7 @@ import {
   currentEnvironment,
   popEnvironment,
   pushEnvironment,
+  uniqueId,
 } from "./environment";
 import { handleRuntimeError } from "./error";
 import * as instrCreator from "./instrCreator";
@@ -332,7 +333,7 @@ export async function* generateCSEMachineStateStream(
 /**
  * Derive the nearest enclosing scope key for observation emission.
  * Walks the environment chain to find a closure; falls back to the root
- * program scope (`context.runtime.rootScope`) for top-level statements.
+ * program scope (`context.jitHooks.rootScope`) for top-level statements.
  */
 function currentScopeKey(context: Context): StmtNS.FileInput | StmtNS.FunctionDef | undefined {
   for (let env: any = currentEnvironment(context); env; env = env.tail) {
@@ -340,7 +341,7 @@ function currentScopeKey(context: Context): StmtNS.FileInput | StmtNS.FunctionDe
       return env.closure.node as StmtNS.FileInput | StmtNS.FunctionDef;
     }
   }
-  return context.runtime.rootScope;
+  return context.jitHooks?.rootScope;
 }
 
 const cmdEvaluators: { [type: string]: CmdEvaluator } = {
@@ -606,7 +607,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     const closure = Closure.makeFromFunctionDef(
       functionDefNode,
       currentEnvironment(context),
-      context,
+      uniqueId(context),
       localVariables,
     );
     pyDefineVariable(context, functionDefNode.name.lexeme, { type: "closure", closure });
@@ -625,7 +626,7 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     const closure = Closure.makeFromLambda(
       lambdaNode,
       currentEnvironment(context),
-      context,
+      uniqueId(context),
       localVariables,
     );
     stash.push({ type: "closure", closure });
@@ -837,11 +838,8 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       }
       pyDefineVariable(context, instr.symbol, value);
 
-      if (instr.srcNode instanceof StmtNS.Assign) {
-        const scopeKey = currentScopeKey(context);
-        if (scopeKey) {
-          context.runtime.observeNodeWrite?.(instr.srcNode.value.id, value);
-        }
+      if (instr.srcNode instanceof StmtNS.Assign && context.jitHooks?.observeNodeWrite) {
+        context.jitHooks.observeNodeWrite(instr.srcNode.value.id, value);
       }
     }
   },
@@ -1059,37 +1057,39 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
     const instr = command as AppInstr;
     const numOfArgs = instr.numOfArgs;
 
-    const rawArgs: Value[] = [];
+    // stash.pop() yields args in reverse, so reverse-fill a pre-sized array.
+    const rawArgs: Value[] = new Array(numOfArgs);
     for (let i = 0; i < numOfArgs; i++) {
       const arg = stash.pop();
       if (arg) {
-        rawArgs.unshift(arg);
+        rawArgs[numOfArgs - 1 - i] = arg;
       }
     }
 
-    // Flatten spread args: starred indices contain list values that
-    // need to be expanded inline.
-    const spreadSet = new Set(instr.spreadIndices);
-    const args: Value[] =
-      spreadSet.size === 0
-        ? rawArgs
-        : rawArgs.flatMap((val, i) => {
-            if (!spreadSet.has(i)) return val;
-            if (val?.type === "list") {
-              return (val as { type: "list"; value: Value[] }).value;
-            }
-            handleRuntimeError(
-              context,
-              new error.TypeError(
-                code,
-                instr.srcNode as ExprNS.Call,
-                context,
-                val ? val.type : "NoneType",
-                "iterable",
-              ),
-            );
-            return []; // unreachable, satisfies TypeScript
-          });
+    const spreadIndices = instr.spreadIndices;
+    let args: Value[];
+    if (spreadIndices.length === 0) {
+      args = rawArgs;
+    } else {
+      const spreadSet = new Set(spreadIndices);
+      args = rawArgs.flatMap((val, i) => {
+        if (!spreadSet.has(i)) return val;
+        if (val?.type === "list") {
+          return (val as { type: "list"; value: Value[] }).value;
+        }
+        handleRuntimeError(
+          context,
+          new error.TypeError(
+            code,
+            instr.srcNode as ExprNS.Call,
+            context,
+            val ? val.type : "NoneType",
+            "iterable",
+          ),
+        );
+        return []; // unreachable, satisfies TypeScript
+      });
+    }
 
     const callable = stash.pop();
 
@@ -1097,26 +1097,36 @@ const cmdEvaluators: { [type: string]: CmdEvaluator } = {
       const closure = callable.closure;
       control.push(instrCreator.resetInstr(instr.srcNode));
 
-      if (closure.node.constructor.name === "FunctionDef") {
+      const closureNode = closure.node;
+      const fd = closureNode instanceof StmtNS.FunctionDef ? closureNode : undefined;
+
+      if (fd !== undefined) {
         control.push(instrCreator.endOfFunctionBodyInstr(instr.srcNode));
       }
 
       // LBD contract: the sink may install non-monotone transforms mid-run;
       // safe because interpreters re-resolve function bodies at call-entry.
       // See observation-sink.ts header.
-      const calleeKey = closure.node as StmtNS.FileInput | StmtNS.FunctionDef;
-      const callerKey = currentScopeKey(context);
-      if (callerKey) {
-        context.runtime.observeScopeCall?.(calleeKey.id);
+      if (context.jitHooks) {
+        const hooks = context.jitHooks;
+        hooks.observeScopeCall(closureNode.id);
+        if (fd !== undefined) {
+          for (let i = 0; i < args.length; i++) {
+            hooks.observeParamEntry(fd.id, i, args[i]);
+          }
+        }
       }
 
       const newEnv = createEnvironment(code, context, closure, args, instr.srcNode as ExprNS.Call);
       pushEnvironment(context, newEnv);
 
-      const closureNode = closure.node;
-      if (closureNode.constructor.name === "FunctionDef") {
-        const bodyStmts = (closureNode as StmtNS.FunctionDef).body.slice().reverse();
-        control.push(...bodyStmts);
+      if (fd !== undefined) {
+        const specialized = context.jitHooks?.specializedFunctionBodyFor(fd.id);
+        const bodyStmts = specialized ?? fd.body;
+        // slice() + reverse() keeps a single variadic push — `Control.push`
+        // iterates `items` once; pushing one statement at a time would
+        // allocate a rest-args array per iteration.
+        control.push(...bodyStmts.slice().reverse());
       } else {
         const bodyExpr = (closureNode as ExprNS.Lambda).body;
         control.push(bodyExpr);

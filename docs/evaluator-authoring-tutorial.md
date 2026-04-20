@@ -221,6 +221,33 @@ That makes recompilation declarative:
 fact/context change -> JIT analysis wakes -> transfer recompiles/reuses -> backend patched
 ```
 
+### 6a. Speculative clone bodies
+
+A later scope addition is `src/specialization/speculative-clone.ts`.
+
+When compiling a unit under a speculative context, the SVML path can request a
+**clone**: an ephemeral, dead-branch-pruned and optionally memoized copy of the
+function body specialized to the active `(Unit, Context)` pair.
+
+```ts
+import { specializedBodyFor } from "../specialization/speculative-clone";
+
+const cloneBody = specializedBodyFor(topology, unit, context, runtimeCallAnalysis);
+if (cloneBody) {
+  // compile cloneBody instead of unit.body
+} else {
+  // fall back to compiling unit.body with the regular DFA query
+}
+```
+
+The clone reads non-ROOT analysis facts bound to `context`. It is never
+inserted into the program topology. On deopt it is simply discarded.
+
+This is distinct from the canonical transforms that permanently rewrite
+`unit.body`. Clone bodies are a JIT-only artifact path that emerged after the
+transform framework stabilized. An evaluator that does not need
+per-context clone bodies can skip this entirely.
+
 ---
 
 ## 7. Per-context caching
@@ -351,6 +378,11 @@ Subscribe it to:
 - `mint` / `rebuild`;
 - `specContextChange` if context changes alter artifact choice.
 
+On transfer, optionally call `specializedBodyFor(topology, unit, context,
+runtimeCallAnalysis)` from `src/specialization/speculative-clone.ts` to obtain
+a dead-branch-pruned clone body for the current speculative context. Compile
+the clone if available; fall back to `unit.body` otherwise.
+
 ### Step 5: implement guard provenance
 
 Every speculative codegen choice that survives in emitted code must register a guard.
@@ -404,9 +436,11 @@ same abstraction.
 
 Start here:
 
-- `src/conductor/PySvmlJitEvaluator.ts`
-- `src/conductor/svml-jit-analysis.ts`
-- `src/conductor/PyWasmJitEvaluator.ts`
+- `src/conductor/PyCseJitEvaluator.ts` — current reference JIT evaluator
+- `src/conductor/svml-jit-analysis.ts` — JIT analysis: artifact selection, per-context cache
+- `src/conductor/PyWasmJitEvaluator.ts` — WASM evaluator, documents alternate deopt model
+- `src/specialization/speculative-clone.ts` — clone lane: per-(Unit, Context) specialized bodies
+- `src/specialization/entry-guards.ts` — entry-specializable context checks, memoization widening
 - `src/specialization/dfa-query.ts`
 - `src/specialization/framework/runtime-analyses.ts`
 - `src/specialization/framework/worklist.ts`

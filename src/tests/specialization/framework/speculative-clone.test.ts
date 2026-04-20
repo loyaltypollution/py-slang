@@ -10,13 +10,15 @@
 import { StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import { ROOT_CONTEXT } from "../../../specialization/framework/context";
+import { ROOT_CONTEXT, extendContext } from "../../../specialization/framework/context";
 import { paramKey } from "../../../specialization/framework/key-spaces";
 import {
   runtimeParamAnalysis,
   runtimeWriteAnalysis,
 } from "../../../specialization/framework/runtime-analyses";
-import { entryGuardsFor } from "../../../specialization/entry-guards";
+import {
+  entryGuardsFor,
+} from "../../../specialization/entry-guards";
 import {
   hasSpecializedBody,
   specializedBodyFor,
@@ -102,7 +104,7 @@ def f(x):
     worklist.observe(runtimeParamAnalysis, paramKey(fd.id, 0), { kind: "bool", value: true });
     worklist.drain();
 
-    const specContext = worklist.specContextFor(unit);
+    const specContext = worklist.specAssumptionChainFor(unit);
     expect(hasSpecializedBody(unit, specContext, worklist.topology)).toBe(true);
     const clone = specializedBodyFor(unit, specContext, worklist.topology);
     expect(clone).toBeDefined();
@@ -131,7 +133,7 @@ def f(x):
     worklist.observe(runtimeWriteAnalysis, yRead.id, { kind: "bool", value: true });
     worklist.drain();
 
-    const specContext = worklist.specContextFor(unit);
+    const specContext = worklist.specAssumptionChainFor(unit);
     expect(specContext).not.toBe(ROOT_CONTEXT);
     expect(entryGuardsFor(unit, specContext)).toBeUndefined();
     expect(hasSpecializedBody(unit, specContext, worklist.topology)).toBe(false);
@@ -143,8 +145,7 @@ describe("specializedBodyFor: clone does not alias canonical body", () => {
   test("when a clone is produced, it is a different array from unit.body", () => {
     // Build a scenario where a non-ROOT context carries a const assumption that
     // makes a condition evaluable. We inject it manually via extendContext.
-    const { extendContext } = require("../../../specialization/framework/context");
-    const { constExprHandle } = require("../../../specialization/const-analysis/analysis");
+    const { constNarrowing } = require("../../../specialization/const-analysis/analysis");
     const { constOf } = require("../../../specialization/const-analysis/lattice");
 
     const code = `
@@ -160,7 +161,7 @@ def f(x):
     const condId = ifStmt.condition.id;
 
     // Inject a const-false assumption for the condition's nodeId.
-    const ctx = extendContext(ROOT_CONTEXT, constExprHandle, condId, constOf(false));
+    const ctx = extendContext(ROOT_CONTEXT, constNarrowing, condId, constOf(false));
 
     // The worklist's constAnalysis must have a fact for condId under ctx.
     // Since we injected a context assumption, the annotate path in constAnalysis

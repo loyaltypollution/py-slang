@@ -1,5 +1,5 @@
 import type { BasicBlock, CFGEdge } from "./cfg";
-import type { Context } from "./context";
+import type { AssumptionChain } from "./context";
 import type { Unit } from "./function-unit";
 import { MutableEnv } from "./mutable-env";
 import type {
@@ -11,8 +11,23 @@ import type {
   SemanticAnalysis,
 } from "./analysis";
 import { defineAnalysis } from "./analysis";
+import type { ReadonlyAnalysisStore } from "./analysis-store";
 import { storeContexts, storeEvict } from "./analysis-store";
-import type { ProgramTopology } from "./topology";
+import type { ProgramTopology, ReadonlyProgramTopology } from "./topology";
+
+/** Evict every BasicBlock cell belonging to `unit` across all contexts.
+ *  Block cells are keyed by `BasicBlock` (not `Unit`), so the worklist's
+ *  universal unit-keyed eviction doesn't reach them. */
+function evictStaleBlockCells(
+  store: ReadonlyAnalysisStore<BasicBlock, any>,
+  unit: Unit,
+): void {
+  for (const context of storeContexts(store)) {
+    for (const b of store.readAll(context).keys()) {
+      if (b.unit === unit) storeEvict(store, b, context);
+    }
+  }
+}
 
 /** Packages a Kildall block DFA as a PAIR of `Analysis` objects over the
  *  same BasicBlock keyspace:
@@ -187,7 +202,7 @@ export function makeBlockFixpointAnalysis<L>(
   function inEnvFor(
     block: BasicBlock,
     unit: Unit,
-    context: Context,
+    context: AssumptionChain,
   ): MutableEnv<L> {
     // Iterate predecessor *edges* so `refineOnEdge` sees the labeled edge
     // (branch-true/false + condition). Backward analyses treat CFG successors
@@ -261,25 +276,12 @@ export function makeBlockFixpointAnalysis<L>(
     transfer: () => undefined,
   });
 
-  const evictStaleEnvCells = (_ctx: AnalysisCtx, unit: Unit): void => {
-    for (const context of storeContexts(envAnalysis.store)) {
-      for (const b of envAnalysis.store.readAll(context).keys()) {
-        if (b.unit === unit) storeEvict(envAnalysis.store, b, context);
-      }
-    }
-  };
-
-  const evictStaleFactsCells = (_ctx: AnalysisCtx, unit: Unit): void => {
-    for (const context of storeContexts(factsAnalysis.store)) {
-      for (const b of factsAnalysis.store.readAll(context).keys()) {
-        if (b.unit === unit) storeEvict(factsAnalysis.store, b, context);
-      }
-    }
-  };
+  const evictStaleEnvCells = (_ctx: AnalysisCtx, unit: Unit): void =>
+    evictStaleBlockCells(envAnalysis.store, unit);
+  const evictStaleFactsCells = (_ctx: AnalysisCtx, unit: Unit): void =>
+    evictStaleBlockCells(factsAnalysis.store, unit);
 
   // envAnalysis: lifecycle seeds and evictions, plus CFG-successor self-wake.
-  // Block cells are keyed by `BasicBlock` (not `Unit`), so the worklist's
-  // universal unit-keyed eviction doesn't reach them; we do it here.
   envEdges.push(
     { on: "mint", wake: (_ctx, unit) => [seedKey(unit)] },
     {
@@ -333,10 +335,10 @@ export function makeBlockFixpointAnalysis<L>(
  *  minted outside any indexed unit) or if the block's facts cell has no
  *  fact for that node yet. */
 export function readExprFact<L>(
-  topology: ProgramTopology,
+  topology: ReadonlyProgramTopology,
   analysis: BlockFixpointAnalysis<L>,
   nodeId: number,
-  context: Context,
+  context: AssumptionChain,
 ): L | undefined {
   const block = topology.blockOfNode(nodeId);
   if (block === undefined) return undefined;

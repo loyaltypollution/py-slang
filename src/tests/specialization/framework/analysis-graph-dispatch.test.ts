@@ -9,7 +9,7 @@
 import { parse } from "../../../parser/parser-adapter";
 import { Resolver } from "../../../resolver";
 import { Worklist } from "../../../specialization/framework/worklist";
-import { defineAnalysis, type EdgeSpec, type JoinSemiLattice, type Analysis, type StoreAlgebra, type TransformRule } from "../../../specialization/framework/analysis";
+import { defineAnalysis, type EdgeSpec, type JoinSemiLattice, type Analysis, type TransformRule } from "../../../specialization/framework/analysis";
 import type { Unit } from "../../../specialization/framework/function-unit";
 import { ROOT_CONTEXT, extendContext } from "../../../specialization/framework/context";
 
@@ -51,7 +51,7 @@ function identityWake<K>(analysis: Analysis<unknown, unknown>): EdgeSpec<K> {
 
 function makeAnalysis<K, V>(opts: {
   name: string;
-  storeAlgebra: StoreAlgebra<V>;
+  storeAlgebra: JoinSemiLattice<V>;
   edges?: ReadonlyArray<EdgeSpec<K>>;
   tier?: "runtime" | "analysis";
   polarity?: "may" | "must" | "opaque";
@@ -309,48 +309,36 @@ describe("Worklist analysis-graph dispatch", () => {
     expect(seenKeys).toEqual([3]);
   });
 
-  test("beginBatch/endBatch: processQueue deferred until outermost endBatch, same fixed point as unbatched", () => {
-    const runs: Array<{ batched: boolean; order: number[] }> = [];
-
-    for (const batched of [false, true]) {
-      const wl = buildWorklist();
-      const producer = makeAnalysis<number, number>({
-        name: "producer",
-        storeAlgebra: intMax,
-      });
-      const order: number[] = [];
-      const reader = makeAnalysis<number, number>({
-        name: "reader",
-        storeAlgebra: intMax,
-        edges: [{ on: "fact", analysis: producer, wake: (_c, k) => [k as number] }],
-        transfer: (k) => {
-          order.push(k);
-          return undefined;
-        },
-      });
-      wl.register(producer);
-      wl.register(reader);
-      for (let i = 0; i < 5; i++) wl.write(reader, i, 1, ROOT_CONTEXT);
-      order.length = 0;
-
-      if (batched) wl.beginBatch();
-      let midOrderLen = -1;
-      for (let i = 0; i < 5; i++) {
-        wl.observe(producer, i, 1);
-        if (i === 2) midOrderLen = order.length;
-      }
-      if (batched) {
-        expect(midOrderLen).toBe(0);
-        wl.endBatch();
-      }
-      wl.drain();
-      runs.push({ batched, order: order.slice() });
-    }
-
-    expect(runs[0].order).toEqual(runs[1].order);
-
+  test("observe processes the queue immediately and preserves enqueue order", () => {
     const wl = buildWorklist();
-    expect(() => wl.endBatch()).toThrow(/matching beginBatch/);
+    const producer = makeAnalysis<number, number>({
+      name: "producer",
+      storeAlgebra: intMax,
+    });
+    const order: number[] = [];
+    const reader = makeAnalysis<number, number>({
+      name: "reader",
+      storeAlgebra: intMax,
+      edges: [{ on: "fact", analysis: producer, wake: (_c, k) => [k as number] }],
+      transfer: (k) => {
+        order.push(k);
+        return undefined;
+      },
+    });
+    wl.register(producer);
+    wl.register(reader);
+    for (let i = 0; i < 5; i++) wl.write(reader, i, 1, ROOT_CONTEXT);
+    order.length = 0;
+
+    let midOrderLen = -1;
+    for (let i = 0; i < 5; i++) {
+      wl.observe(producer, i, 1);
+      if (i === 2) midOrderLen = order.length;
+    }
+    wl.drain();
+
+    expect(midOrderLen).toBeGreaterThan(0);
+    expect(order).toEqual([0, 1, 2, 3, 4]);
   });
 
   describe("context dispatch", () => {

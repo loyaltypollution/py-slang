@@ -295,7 +295,7 @@ The split prevents unnecessary ripples.
 
 ---
 
-## 6. Step 3: transforms read ROOT facts only
+## 6. Step 3: canonical transforms read ROOT facts only
 
 After the queue drains, transform rules sweep dirty units.
 
@@ -325,8 +325,17 @@ though that were universally true.
 
 This is the second reason the engine exists: it separates
 
-- root-only source-to-source rewrites, and
-- speculative per-context optimization artifacts.
+- root-only source-to-source rewrites (canonical AST, permanent), and
+- speculative per-context optimization artifacts (ephemeral, retractable).
+
+**Scope note:** a later addition, `speculative-clone.ts`, introduced a third
+lane: ephemeral clone bodies that apply similar dead-branch pruning but read
+non-ROOT facts. Clones are compilation artifacts discarded on deopt — never
+inserted into the shared program topology. That lane uses the same
+`TransformFactView` type but binds it to a speculative context rather than ROOT.
+`deadBranchRule` itself still operates at ROOT only. See
+`docs/evaluator-authoring-tutorial.md` for the clone lane's role in JIT
+compilation.
 
 ---
 
@@ -534,7 +543,7 @@ block expr facts wake transforms and other node-level consumers
 runtime observations can extend a speculative Context
 extending/pruning the active Context fires specContextChange
 JIT-like consumers listen to both fact changes and specContextChange
-transforms read ROOT only; speculative consumers read non-ROOT too
+canonical transforms read ROOT only; speculative clone bodies (speculative-clone.ts) read non-ROOT; other speculative consumers read non-ROOT too
 ```
 
 And for this tutorial's example specifically:

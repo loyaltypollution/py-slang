@@ -10,22 +10,27 @@
 
 import { ExprNS, StmtNS, resetNodeIds } from "../../../ast-types";
 import { findAssumption, ROOT_CONTEXT } from "../../../specialization/framework/context";
-import { constExprHandle } from "../../../specialization/const-analysis/analysis";
-import { typeExprHandle } from "../../../specialization/type-analysis/analysis";
+import { constNarrowing } from "../../../specialization/const-analysis/analysis";
+import { typeNarrowing } from "../../../specialization/type-analysis/analysis";
 import { SpeculationViolation } from "../../../engines/svml/errors";
 import { makeJitAnalysis } from "../../../conductor/svml-jit-analysis";
+import {
+  clearMemoCache,
+  memoCacheSnapshot,
+} from "../../../runtime/memo";
 import OpCodes, { SVMLKindBits } from "../../../engines/svml/opcodes";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 import {
-  returnKindHandle,
+  returnKindNarrowing,
   typeAnalysis,
 } from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
 import {
   observeRuntimeReturn,
+  runtimeCallAnalysis,
   runtimeParamAnalysis,
   runtimeWriteAnalysis,
   widenWriteObservation,
@@ -34,6 +39,7 @@ import { INT_BIT } from "../../../specialization/type-analysis/lattice";
 import { makeDfaQuery, makeJitObservers } from "../../../specialization";
 import { paramKey } from "../../../specialization/framework/key-spaces";
 import { entryGuardsFor } from "../../../specialization/entry-guards";
+import { MEMOIZATION_THRESHOLD } from "../../../specialization/transforms/memoization";
 import { hasOpcode } from "../../harness/opcode-assert";
 import { buildTestWorklist } from "../../utils";
 
@@ -52,8 +58,8 @@ function compile(ast: StmtNS.FileInput, environments: ReturnType<typeof analyzeW
     environments,
     makeDfaQuery(
       worklist.topology,
-      nodeId => worklist.specContextForNode(nodeId),
-      unit => worklist.specContextFor(unit),
+      nodeId => worklist.specAssumptionChainForNode(nodeId),
+      unit => worklist.specAssumptionChainFor(unit),
     ),
     worklist.registry,
     worklist,
@@ -88,7 +94,7 @@ def hot(x):
       worklist.topology,
       typeAnalysis,
       xRead.id,
-      worklist.specContextForNode(xRead.id),
+      worklist.specAssumptionChainForNode(xRead.id),
     );
 
     // `x` is a parameter — slot type is TOP. Widening analysis sees that `join(TOP, INT_POS) = TOP`.
@@ -155,7 +161,7 @@ hot("oops", 1)
     const jitAnalysis = makeJitAnalysis({
       compiler,
       interpreter,
-      specContextFor: unit => worklist.specContextFor(unit),
+      specAssumptionChainFor: unit => worklist.specAssumptionChainFor(unit),
     });
     worklist.register(jitAnalysis);
 
@@ -176,9 +182,9 @@ hot("oops", 1)
     worklist.drain();
 
     const unit = worklist.units.get(fn.id)!;
-    const ctx = worklist.specContextFor(unit);
-    expect(findAssumption(ctx, returnKindHandle, fn.id)).toBeUndefined();
-    expect(findAssumption(ctx, constExprHandle, modeRead.id)).toBeDefined();
+    const ctx = worklist.specAssumptionChainFor(unit);
+    expect(findAssumption(ctx, returnKindNarrowing, fn.id)).toBeUndefined();
+    expect(findAssumption(ctx, constNarrowing, modeRead.id)).toBeDefined();
 
     const currentProgram = (interpreter as unknown as { program: typeof program }).program;
     expect(hasOpcode(currentProgram, OpCodes.GUARD_KIND)).toBe(false);
@@ -202,7 +208,7 @@ def hot(x):
       worklist.topology,
       typeAnalysis,
       xRead.id,
-      worklist.specContextForNode(xRead.id),
+      worklist.specAssumptionChainForNode(xRead.id),
     );
     expect(before?.kinds).toBe(INT_BIT);
 
@@ -216,7 +222,7 @@ def hot(x):
       worklist.topology,
       typeAnalysis,
       xRead.id,
-      worklist.specContextForNode(xRead.id),
+      worklist.specAssumptionChainForNode(xRead.id),
     );
     // After widening, no narrowing assumption remains; fact falls back to
     // the static/widened value, which is TOP for an unannotated parameter.
@@ -294,7 +300,7 @@ hot(0)
     const jitAnalysis = makeJitAnalysis({
       compiler,
       interpreter,
-      specContextFor: unit => worklist.specContextFor(unit),
+      specAssumptionChainFor: unit => worklist.specAssumptionChainFor(unit),
     });
     worklist.register(jitAnalysis);
 
@@ -360,7 +366,7 @@ hot(1, 0)
     const jitAnalysis = makeJitAnalysis({
       compiler,
       interpreter,
-      specContextFor: unit => worklist.specContextFor(unit),
+      specAssumptionChainFor: unit => worklist.specAssumptionChainFor(unit),
     });
     worklist.register(jitAnalysis);
 
@@ -427,14 +433,14 @@ hot(1, 0)
     const jitAnalysis = makeJitAnalysis({
       compiler,
       interpreter,
-      specContextFor: trackedUnit => worklist.specContextFor(trackedUnit),
+      specAssumptionChainFor: trackedUnit => worklist.specAssumptionChainFor(trackedUnit),
     });
     worklist.register(jitAnalysis);
     worklist.drain();
 
     worklist.observe(runtimeWriteAnalysis, aRead.id, { kind: "number", value: 1 });
     worklist.drain();
-    const ctxA = worklist.specContextFor(unit);
+    const ctxA = worklist.specAssumptionChainFor(unit);
     const compilesAfterA = compileSpy.mock.calls.length;
 
     worklist.observe(runtimeWriteAnalysis, bRead.id, { kind: "number", value: 1 });
@@ -460,22 +466,22 @@ hot(1, 0)
     // resulting context is still distinct from the older sibling `ctxA`
     // (which only carried `a`'s assumptions). Because the const fact at the
     // fired branch really changed, the JIT may still need one recompile here.
-    const pruned = worklist.specContextFor(unit);
+    const pruned = worklist.specAssumptionChainFor(unit);
     expect(pruned).not.toBe(ROOT_CONTEXT);
     expect(pruned).not.toBe(ctxA);
-    expect(findAssumption(pruned, constExprHandle, bRead.id)).toBeUndefined();
-    expect(findAssumption(pruned, typeExprHandle, bRead.id)).toBeDefined();
+    expect(findAssumption(pruned, constNarrowing, bRead.id)).toBeUndefined();
+    expect(findAssumption(pruned, typeNarrowing, bRead.id)).toBeDefined();
     expect(compileSpy.mock.calls.length).toBeGreaterThanOrEqual(compilesAfterAB);
   });
 
   test("lineage-precise widen: pruned context retains the non-load-bearing narrowing", () => {
-    // Observation at modeRead lifts BOTH narrowings (constExprHandle@modeRead
-    // and typeExprHandle@modeRead). Only `constExprHandle@modeRead` is
+    // Observation at modeRead lifts BOTH narrowings (constNarrowing@modeRead
+    // and typeNarrowing@modeRead). Only `constNarrowing@modeRead` is
     // load-bearing for the const fact the GUARD_TRUTHY protects: removing
     // the const assumption widens cond's const fact to TOP, removing the type
     // assumption does not (const analysis doesn't consult type narrowings).
     //
-    // Post-deopt, `widenGuard` must retain `typeExprHandle@modeRead` —
+    // Post-deopt, `widenGuard` must retain `typeNarrowing@modeRead` —
     // whole-chain reset would drop both and land at ROOT. This test is the
     // regression guard: if `compileFunction` ever stops passing the
     // guardRegistrar through to its sub-compiler, `registerGuard` no-ops
@@ -501,7 +507,7 @@ hot(0)
     const jitAnalysis = makeJitAnalysis({
       compiler,
       interpreter,
-      specContextFor: unit => worklist.specContextFor(unit),
+      specAssumptionChainFor: unit => worklist.specAssumptionChainFor(unit),
     });
     worklist.register(jitAnalysis);
     worklist.drain();
@@ -524,20 +530,22 @@ hot(0)
     worklist.drain();
 
     const unit = worklist.topology.unitOfNode(modeRead.id)!;
-    const ctx = worklist.specContextFor(unit);
+    const ctx = worklist.specAssumptionChainFor(unit);
     // Lineage-precise: only the load-bearing const assumption was pruned.
     // Under whole-chain reset (the widenFullChain branch), ctx === ROOT.
     expect(ctx).not.toBe(ROOT_CONTEXT);
-    expect(findAssumption(ctx, constExprHandle, modeRead.id)).toBeUndefined();
-    expect(findAssumption(ctx, typeExprHandle, modeRead.id)).toBeDefined();
+    expect(findAssumption(ctx, constNarrowing, modeRead.id)).toBeUndefined();
+    expect(findAssumption(ctx, typeNarrowing, modeRead.id)).toBeDefined();
 
-    // The pruned context `[typeExprHandle@modeRead]` was never active pre-
+    // The pruned context `[typeNarrowing@modeRead]` was never active pre-
     // deopt, but once the const narrowing is gone the remaining speculative
-    // inputs are backend-irrelevant, so jitAnalysis can reuse the already-
-    // built sibling artifact instead of recompiling.
-    expect(compileSpy.mock.calls.length).toBe(compilesBeforeDeopt);
+    // inputs are backend-irrelevant. The JIT should therefore avoid a cascade
+    // of recompiles here; at most one reconciliation compile is acceptable
+    // now that the cloned-body lane may re-check artifact shape on context
+    // shifts.
+    expect(compileSpy.mock.calls.length).toBeLessThanOrEqual(compilesBeforeDeopt + 1);
 
-    // The recompile produced a guard-free IR: under [typeExprHandle@modeRead]
+    // The recompile produced a guard-free IR: under [typeNarrowing@modeRead]
     // (no const narrowing in chain), speculativeConditionTruth returns
     // undefined, so visitIfStmt takes the generic branch-emission path.
     const currentProgram = (interpreter as unknown as { program: typeof program }).program;
@@ -603,8 +611,8 @@ hot(True)
       environments,
       makeDfaQuery(
         worklist.topology,
-        nodeId => worklist.specContextForNode(nodeId),
-        unit => worklist.specContextFor(unit),
+        nodeId => worklist.specAssumptionChainForNode(nodeId),
+        unit => worklist.specAssumptionChainFor(unit),
       ),
       worklist.registry,
       worklist,
@@ -619,7 +627,7 @@ hot(True)
     const jitAnalysis = makeJitAnalysis({
       compiler,
       interpreter,
-      specContextFor: unit => worklist.specContextFor(unit),
+      specAssumptionChainFor: unit => worklist.specAssumptionChainFor(unit),
     });
     worklist.register(jitAnalysis);
 
@@ -630,7 +638,7 @@ hot(True)
       kind: "bool",
       value: true,
     });
-    expect(entryGuardsFor(unit, worklist.specContextFor(unit))).toContainEqual({
+    expect(entryGuardsFor(unit, worklist.specAssumptionChainFor(unit))).toContainEqual({
       kind: "param-const",
       paramIndex: 0,
       value: true,
@@ -641,6 +649,65 @@ hot(True)
     const allArg1s = currentProgram.functions.flatMap(ir => Array.from(ir.arg1s));
     expect(allArg1s).toContain(1);
     expect(allArg1s).not.toContain(999);
+  });
+});
+
+describe("svml-jit-analysis: speculative memoization", () => {
+  beforeEach(() => clearMemoCache());
+
+  test("hot positive-int collatz specializes away the impure branch and memoizes the guarded clone", () => {
+    const { ast, environments, worklist } = build(`
+def hot(x):
+    if x <= 0:
+        print("no collatz here")
+        return -1
+    if x == 1:
+        return 1
+    elif x % 2 == 0:
+        return hot(x // 2)
+    else:
+        return hot(3 * x + 1)
+
+hot(8)
+hot(8)
+`);
+    const fn = ast.statements[0] as StmtNS.FunctionDef;
+    const compiler = SVMLCompiler.fromProgramUnit(
+      ast,
+      environments,
+      makeDfaQuery(
+        worklist.topology,
+        nodeId => worklist.specAssumptionChainForNode(nodeId),
+        unit => worklist.specAssumptionChainFor(unit),
+      ),
+      worklist.registry,
+      worklist,
+    );
+    const program = compiler.compileProgram(ast);
+    const interpreter = new SVMLInterpreter(program, { sendOutput: () => {} });
+    const jitAnalysis = makeJitAnalysis({
+      compiler,
+      interpreter,
+      specAssumptionChainFor: unit => worklist.specAssumptionChainFor(unit),
+    });
+    worklist.register(jitAnalysis);
+
+    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 8 });
+    for (let i = 1; i <= MEMOIZATION_THRESHOLD; i++) {
+      worklist.observe(runtimeCallAnalysis, fn.id, i);
+    }
+    worklist.drain();
+
+    interpreter.execute();
+    worklist.drain();
+
+    const cacheKeys = Array.from(memoCacheSnapshot().keys());
+    expect(cacheKeys.some(k => k.startsWith("hot@L"))).toBe(true);
+    const hotCache = cacheKeys.find(k => k.startsWith("hot@L"))!;
+    expect(memoCacheSnapshot().get(hotCache)!.size).toBeGreaterThan(0);
+
+    const currentProgram = (interpreter as unknown as { program: typeof program }).program;
+    expect(hasOpcode(currentProgram, OpCodes.GUARD_KIND)).toBe(true);
   });
 });
 
@@ -705,7 +772,7 @@ def hot(x, y):
     wlA.observe(runtimeWriteAnalysis, xReadA.id, { kind: "number", value: 5 });
     wlA.observe(runtimeWriteAnalysis, yReadA.id, { kind: "number", value: 10 });
     const unitA = wlA.topology.unitOfNode(xReadA.id)!;
-    const ctxA = wlA.specContextFor(unitA);
+    const ctxA = wlA.specAssumptionChainFor(unitA);
 
     // Worklist B: observe y, then x (swapped).
     resetNodeIds();
@@ -723,7 +790,7 @@ def hot(x, y):
     wlB.observe(runtimeWriteAnalysis, yReadB.id, { kind: "number", value: 10 });
     wlB.observe(runtimeWriteAnalysis, xReadB.id, { kind: "number", value: 5 });
     const unitB = wlB.topology.unitOfNode(xReadB.id)!;
-    const ctxB = wlB.specContextFor(unitB);
+    const ctxB = wlB.specAssumptionChainFor(unitB);
 
     // Not vacuous: both observations landed, so the context is non-ROOT.
     expect(ctxA).not.toBe(ROOT_CONTEXT);
@@ -747,7 +814,7 @@ def hot(x, y):
 
     worklist.observe(runtimeWriteAnalysis, xRead.id, { kind: "number", value: 5 });
     worklist.observe(runtimeWriteAnalysis, yRead.id, { kind: "number", value: 10 });
-    const ctxForward = worklist.specContextFor(worklist.topology.unitOfNode(xRead.id)!);
+    const ctxForward = worklist.specAssumptionChainFor(worklist.topology.unitOfNode(xRead.id)!);
 
     // Re-observe the same values. Under canonical interning the context does
     // not shift (the translator's valueEqual check skips the extend) and no

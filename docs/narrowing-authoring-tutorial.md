@@ -16,7 +16,9 @@ That is the right canonical example because it explains the whole pipeline:
 - a narrowing lifts that observation into a `Context` assumption;
 - the relevant block DFA is re-seeded under the new context;
 - speculative facts become sharper;
-- transforms still stay ROOT-only.
+- canonical transforms still stay ROOT-only for permanent AST rewrites;
+- speculative clone bodies are a distinct compilation-artifact path added
+  later that reads non-ROOT facts (see §8 and `speculative-clone.ts`).
 
 In many cases, **you do not need to invent a new narrowing at all**. If your
 question is specifically "how do I make the framework notice that this node was
@@ -266,7 +268,7 @@ selection.
 
 ---
 
-## 8. Why transforms still must not use that speculative fact to rewrite AST
+## 8. Why canonical transforms must not use speculative facts for permanent AST rewrites
 
 Suppose the evaluator saw `x == 0` a hundred times.
 
@@ -281,9 +283,30 @@ revocable hypothesis, not a universal truth.
 So the pipeline intentionally splits in two:
 
 - **narrowings** sharpen non-ROOT facts;
-- **transforms** read ROOT facts only.
+- **canonical transforms** (`TransformRule.sweep`) read ROOT facts only and mutate `unit.body` permanently.
 
 If you keep just one thing from this tutorial, keep that boundary.
+
+---
+
+**Scope note: speculative clone bodies are a distinct path.**
+
+After the original transform/narrowing split was established, `speculative-clone.ts`
+added a second lane: it produces an ephemeral, per-`(Unit, Context)` clone of a
+function body for JIT compilation. That lane uses `transformFacts(topology, context)`
+bound to a **non-ROOT context** — so it can see sharper speculative facts when
+pruning dead branches and inserting memoization in the clone.
+
+This is intentional because clones are compilation artifacts, not canonical
+program structure. They can be discarded on deopt without corrupting the shared
+AST. The rule is therefore more precisely:
+
+- permanent AST mutations (`unit.body`) must read ROOT facts only;
+- ephemeral clone bodies may read non-ROOT facts because they are retractable.
+
+A canonical `TransformRule` author never calls `transformFacts(topology, context)`
+directly — that is the clone lane's concern. But it is worth knowing the boundary
+expanded here.
 
 ---
 

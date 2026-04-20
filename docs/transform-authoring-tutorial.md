@@ -57,7 +57,7 @@ analysis transfer.
 
 ---
 
-## 2. The most important rule: transforms are ROOT-only
+## 2. The most important rule: canonical transforms are ROOT-only
 
 Transforms make **permanent AST rewrites**.
 
@@ -75,7 +75,8 @@ export interface TransformFactView {
 }
 ```
 
-Every one of those reads is bound to `ROOT_CONTEXT`.
+The worklist supplies each `sweep(unit, facts)` call with a `TransformFactView`
+bound to `ROOT_CONTEXT` via `rootTransformFacts(topology)`.
 
 ### Why?
 
@@ -94,6 +95,19 @@ So the contract is:
 
 > If a fact might disappear after deopt or speculation widening, it must not
 > justify an unconditional transform.
+
+### Scope note: `transformFacts(topology, context)` exists but is not for you
+
+The API in `src/specialization/framework/transform-rule.ts` includes a more
+general constructor, `transformFacts(topology, context, profitabilityContext)`,
+that can bind a non-ROOT semantic context. That is used by the speculative clone
+lane (`src/specialization/speculative-clone.ts`), which rewrites **ephemeral
+clone bodies** — not `unit.body` — for JIT compilation artifacts.
+
+As a canonical transform author, you never call `transformFacts(...)` directly.
+The worklist calls `rootTransformFacts(topology)` for you. If you find yourself
+reaching for a non-ROOT context, you are writing a clone consumer, not a
+transform. See `docs/evaluator-authoring-tutorial.md` and `speculative-clone.ts`.
 
 ---
 
@@ -472,7 +486,8 @@ class MyStmtVisitor implements StmtNS.Visitor<void> {
 - [ ] Every fact read goes through the `facts` parameter.
 - [ ] No direct `analysis.store.read(..., context)` calls in the transform.
 - [ ] No speculative query API (`speculativeTypeOf`, `speculativeConstOf`, etc.).
-- [ ] The rewrite is justified by ROOT facts only.
+- [ ] No manual call to `transformFacts(topology, nonRootContext)` — the worklist binds ROOT for you.
+- [ ] The rewrite is justified by ROOT facts only and mutates `unit.body` permanently.
 
 ### Scheduling
 

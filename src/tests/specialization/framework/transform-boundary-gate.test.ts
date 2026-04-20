@@ -7,7 +7,7 @@ const TRANSFORM_FILES = fs.readdirSync(TRANSFORMS_DIR)
   .map(name => path.join(TRANSFORMS_DIR, name));
 
 describe("transform boundary gate", () => {
-  test("transforms stay on the root-only fact surface", () => {
+  test("transforms stay on the bounded fact-view surface", () => {
     for (const file of TRANSFORM_FILES) {
       const src = fs.readFileSync(file, "utf8");
       expect(src).not.toMatch(/\.store\./);

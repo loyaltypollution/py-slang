@@ -34,9 +34,8 @@ export async function runWithDeopt<T>(
         );
       }
       worklist.widenGuard(e.nodeId);
-      // observe() drains automatically when batchDepth permits; inside
-      // beginBatch we need to drain explicitly so the JIT recompile
-      // analysis fires and patches the function table before retry.
+      // `widenGuard` only retracts speculation state; the queued JIT
+      // recompile/patch must publish before we retry execution.
       worklist.drain();
     }
   }

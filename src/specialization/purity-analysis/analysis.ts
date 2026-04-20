@@ -29,7 +29,7 @@ import type {
   SemanticAnalysis,
 } from "../framework/analysis";
 import { addEdge, defineAnalysis } from "../framework/analysis";
-import { storeEvict } from "../framework/analysis-store";
+import { storeContexts, storeEvict } from "../framework/analysis-store";
 import { ROOT_CONTEXT } from "../framework/context";
 import { isCapture, isLocal, type SlotLookup } from "../framework/slot-table";
 import {
@@ -463,11 +463,19 @@ export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> 
       },
     },
     {
+      on: "specContextChange",
+      wake: (_ctx, unit) => {
+        const fd = unit.funcAst;
+        return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
+      },
+    },
+    {
       on: "retire",
       effect: (_ctx, unit) => {
         const fd = unit.funcAst;
-        if (fd instanceof StmtNS.FunctionDef) {
-          storeEvict(purityScopeAnalysis.store, fd.id, ROOT_CONTEXT);
+        if (!(fd instanceof StmtNS.FunctionDef)) return;
+        for (const context of storeContexts(purityScopeAnalysis.store)) {
+          storeEvict(purityScopeAnalysis.store, fd.id, context);
         }
       },
     },
@@ -479,13 +487,14 @@ export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> 
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
     // Purity is a whole-function property: "does any reachable block have a
-    // local impure effect?" The block DFA only writes facts for reachable
-    // blocks (worklist walks CFG successors from entry), so OR'ing the
-    // summaries of all visited blocks is the right aggregation. If no block
-    // has been visited yet, defer until the inner analysis has run.
+    // local impure effect?" Read block facts at the active speculation context
+    // first (which reflects pruning done on the speculative clone body), then
+    // fall back to ROOT so the static verdict is preserved when no speculative
+    // data has been written yet.
     let anyVisited = false;
     for (const block of unit.cfg.blocks) {
-      const facts = purityBlockAnalysis.facts.store.tryRead(block, ROOT_CONTEXT);
+      const facts = purityBlockAnalysis.facts.store.tryRead(block, ctx.currentContext)
+        ?? purityBlockAnalysis.facts.store.tryRead(block, ROOT_CONTEXT);
       if (facts === undefined) continue;
       anyVisited = true;
       if (facts.has(IMPURE_SENTINEL_NODE_ID)) return false;
@@ -515,3 +524,13 @@ const scopeToBlock: EdgeSpec<BasicBlock> = {
 // The scope→block wake re-runs the block transfer (which is on the `.env`
 // side); `.facts` is populated as a paired-cell side effect of that pass.
 addEdge(purityBlockAnalysis.env, scopeToBlock);
+
+// When the active speculation context for a unit changes, re-seed purityBlockAnalysis
+// at the new context. This populates block facts under the speculative context so
+// purityScopeAnalysis.transfer can read them there (rather than always falling back
+// to ROOT). The block transfer itself is context-independent today, but this wiring
+// is load-bearing once speculative-clone bodies can differ from the canonical body.
+addEdge(purityBlockAnalysis.env, {
+  on: "specContextChange",
+  wake: (_ctx, unit) => [purityBlockAnalysis.seed(unit)],
+});

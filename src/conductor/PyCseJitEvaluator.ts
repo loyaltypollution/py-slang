@@ -10,13 +10,31 @@ import {
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { Worklist, makeJitObservers } from "../specialization";
+import { StmtNS } from "../ast-types";
+import type { AssumptionChain } from "../specialization/framework/context";
+import type { JitHooks } from "../engines/cse/context";
+import type { Unit } from "../specialization/framework/function-unit";
+import {
+  DEFAULT_PASSES,
+  DEFAULT_TRANSFORMS,
+  Worklist,
+} from "../specialization/framework/worklist";
+import { memoizationRule } from "../specialization/transforms/memoization";
+import { makeJitObservers, specializedBodyFor } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import pairmutator from "../stdlib/pairmutator";
 import parser from "../stdlib/parser";
 import stream from "../stdlib/stream";
 import { PyCseEvaluatorBase } from "./PyCseEvaluator";
+
+const NO_CLONE = Symbol("no-clone");
+type CachedBody = ReadonlyArray<StmtNS.Stmt> | typeof NO_CLONE;
+
+// CSE's clone lane publishes only ephemeral specialized bodies at call-entry.
+// Shared-AST memoization is a different publication contract (structural
+// mutation of `fd.body`), so exclude that transform from this path.
+const CSE_JIT_TRANSFORMS = DEFAULT_TRANSFORMS.filter(rule => rule !== memoizationRule);
 
 abstract class PyCseJitEvaluatorBase extends PyCseEvaluatorBase {
   async evaluateChunk(chunk: string): Promise<void> {
@@ -46,25 +64,47 @@ abstract class PyCseJitEvaluatorBase extends PyCseEvaluatorBase {
         throw errors[errors.length - 1];
       }
 
-      const worklist = new Worklist(ast, environments);
+      const worklist = new Worklist(ast, environments, DEFAULT_PASSES, undefined, CSE_JIT_TRANSFORMS);
       worklist.drain();
 
-      this.context.runtime.rootScope = ast;
       const observers = makeJitObservers(worklist);
-      this.context.runtime.observeNodeWrite = observers.observeNodeWrite;
-      this.context.runtime.observeScopeCall = observers.observeScopeCall;
+      // Cache clones by (unit, AssumptionChain) reference. Chains are canonical
+      // via the interner, so reference equality is enough; stale entries for
+      // retired chains are simply never read.
+      // CSE's speculative clone lane is entry-guarded only: per-node write
+      // observations are not wired here because they would pollute the unit's
+      // active context with non-entry assumptions and block cloned-body selection.
+      const cloneCache = new Map<Unit, Map<AssumptionChain, CachedBody>>();
+      const jitHooks: JitHooks = {
+        rootScope: ast,
+        observeScopeCall: observers.observeScopeCall,
+        observeParamEntry: observers.observeParamEntry,
+        specializedFunctionBodyFor: (scopeId: number) => {
+          const unit = worklist.topology.unitOfFunctionId(scopeId);
+          if (unit === undefined) return undefined;
+          const ctx = worklist.specAssumptionChainFor(unit);
+          let perCtx = cloneCache.get(unit);
+          if (perCtx === undefined) {
+            perCtx = new Map();
+            cloneCache.set(unit, perCtx);
+          }
+          const hit = perCtx.get(ctx);
+          if (hit !== undefined) return hit === NO_CLONE ? undefined : hit;
+          const body = specializedBodyFor(unit, ctx, worklist.topology);
+          perCtx.set(ctx, body ?? NO_CLONE);
+          return body;
+        },
+      };
+      this.context.jitHooks = jitHooks;
 
-      worklist.beginBatch();
       try {
         await evaluate("", ast, this.context, {
           variant: this.variant,
           groups: this.groups,
         });
-      } finally {
-        worklist.endBatch();
         worklist.drain();
-        this.context.runtime.observeNodeWrite = undefined;
-        this.context.runtime.observeScopeCall = undefined;
+      } finally {
+        this.context.jitHooks = undefined;
       }
     } catch (e) {
       if (e instanceof SyntaxError) {

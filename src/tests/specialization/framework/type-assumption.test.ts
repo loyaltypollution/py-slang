@@ -1,6 +1,6 @@
 // Proves the narrowing-via-assumption mechanic that replaces
 // `speculativeTypeAnalysis`: running `typeAnalysis` under a non-ROOT
-// Context with a `typeExprHandle` assumption meets the computed static
+// Context with a `typeNarrowing` assumption meets the computed static
 // fact with the bound value, yielding the same narrowed per-node fact the
 // old speculative twin produced — without a parallel analysis, without
 // overwrite-mode cells, without an eviction-on-observation hook.
@@ -11,7 +11,7 @@ import { analyzeWithEnvironments } from "../../../resolver";
 import { extendContext, ROOT_CONTEXT } from "../../../specialization/framework/context";
 import { typeAnalysis } from "../../../specialization/framework/dfa-analyses";
 import { readExprFact } from "../../../specialization/framework/dfa-factory";
-import { typeExprHandle } from "../../../specialization/type-analysis/analysis";
+import { typeNarrowing } from "../../../specialization/type-analysis/analysis";
 import { INT_BIT, INT_POS, TOP } from "../../../specialization/type-analysis/lattice";
 import { buildTestWorklist } from "../../utils";
 
@@ -40,7 +40,7 @@ def hot(x):
       .not.toBe(INT_BIT);
 
     // Build a Context with a single assumption: x at `xRead.id` is INT_POS.
-    const ctx = extendContext(ROOT_CONTEXT, typeExprHandle, xRead.id, INT_POS);
+    const ctx = extendContext(ROOT_CONTEXT, typeNarrowing, xRead.id, INT_POS);
 
     // Re-run typeAnalysis under the context.
     worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctx);
@@ -81,7 +81,7 @@ def hot(x, z):
     const block = worklist.topology.blockOfNode(xRead.id)!;
 
     // Assumption only at xRead.id, not zRead.id.
-    const ctx = extendContext(ROOT_CONTEXT, typeExprHandle, xRead.id, INT_POS);
+    const ctx = extendContext(ROOT_CONTEXT, typeNarrowing, xRead.id, INT_POS);
     worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctx);
     worklist.drain();
 
@@ -104,9 +104,9 @@ def hot(x):
     const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
     const block = worklist.topology.blockOfNode(xRead.id)!;
 
-    const ctxIntPos = extendContext(ROOT_CONTEXT, typeExprHandle, xRead.id, INT_POS);
+    const ctxIntPos = extendContext(ROOT_CONTEXT, typeNarrowing, xRead.id, INT_POS);
     // A different assumption value at the same node.
-    const ctxNeg = extendContext(ROOT_CONTEXT, typeExprHandle, xRead.id, {
+    const ctxNeg = extendContext(ROOT_CONTEXT, typeNarrowing, xRead.id, {
       ...INT_POS,
       intRef: 1, // IntRef.Neg
     });

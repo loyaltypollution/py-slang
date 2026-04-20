@@ -94,8 +94,10 @@ Read:
 - `docs/evaluator-authoring-tutorial.md`
 - `docs/guard-and-deopt-tutorial.md`
 - `docs/topology-and-key-spaces-tutorial.md`
-- `src/conductor/PySvmlJitEvaluator.ts`
+- `src/conductor/PyCseJitEvaluator.ts` — current reference JIT evaluator
 - `src/conductor/svml-jit-analysis.ts`
+- `src/specialization/speculative-clone.ts` — per-(Unit, Context) clone lane (scope expansion)
+- `src/specialization/entry-guards.ts` — entry-specializable checks and memoization widening
 - `src/specialization/dfa-query.ts`
 - `src/specialization/framework/runtime-analyses.ts`
 
@@ -157,6 +159,37 @@ Examples of useful tension signals:
 
 That is exactly the kind of pressure these guides can surface and turn into
 engine simplification work.
+
+---
+
+### Known scope expansions
+
+The following features extended beyond the original role boundaries. They are
+working and sound, but each represents a moment where the atomic role model
+grew:
+
+1. **Speculative clone bodies** (`speculative-clone.ts`): the original
+   transform model was "canonical transforms rewrite `unit.body` at ROOT."
+   The clone lane added a second transform-like path that reads non-ROOT facts
+   and rewrites ephemeral clone bodies for JIT. It uses `TransformFactView` but
+   is NOT a `TransformRule` and is NOT driven by the worklist sweep. It is
+   invoked by the evaluator during artifact compilation. Boundary crossed:
+   transform role ↔ evaluator role.
+
+2. **Entry guards and memoization** (`entry-guards.ts`): what started as "the
+   evaluator chooses a speculation context" grew to include entry-specializable
+   context checks and memoization-threshold widening. These are evaluator-side
+   concerns layered on top of the narrowing infrastructure. Boundary crossed:
+   narrowing role ↔ evaluator role.
+
+3. **`contextPolicy: "root"` on EdgeSpec**: some analyses (SVML JIT analysis)
+   exist only at ROOT and declared this on their edges to prevent speculative
+   context wakes. This is a framework-level knob added to accommodate a
+   specific evaluator pattern. Boundary crossed: analysis role ↔ evaluator role.
+
+These are worth knowing when extending any of the four roles, because the
+current guides describe the intended clean model, not always the full current
+surface.
 
 ---
 

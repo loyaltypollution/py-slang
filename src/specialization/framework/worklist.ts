@@ -8,18 +8,33 @@ import {
   buildFunctionRegistry,
   type FunctionScopeNode,
 } from "./function-registry";
-import { storeEvict, storeWrite, type FactChange } from "./analysis-store";
+import {
+  storeClearContext,
+  storeEvict,
+  storeReadAt,
+  storeReadMinimal,
+  storeWrite,
+  type FactChange,
+} from "./analysis-store";
 import {
   buildUnits,
   buildOneUnit,
   wireCFG,
   type Unit,
 } from "./function-unit";
-import { REGISTERED_ANALYSES, type Analysis, type AnalysisCtx, type Narrowing, type TransformRule, type LifecycleEdge } from "./analysis";
+import {
+  REGISTERED_ANALYSES,
+  type Analysis,
+  type AnalysisCtx,
+  type Narrowing,
+  type TransformRule,
+  type LifecycleEdge,
+  type Reading,
+} from "./analysis";
 import type { FunctionId, NodeId, ParamKey } from "./key-spaces";
-import { MutableProgramTopology, type ProgramTopology } from "./topology";
+import { ProgramTopology } from "./topology";
 import { rootTransformFacts } from "./transform-rule";
-import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Assumption, type Context } from "./context";
+import { excludeAssumption, extendContext, findAssumption, ROOT_CONTEXT, type Assumption, type AssumptionChain } from "./context";
 import { immediateStrategy, type SpeculationStrategy } from "./speculation-strategy";
 import { runtimeCallAnalysis, runtimeWriteAnalysis } from "./runtime-analyses";
 import { purityBlockAnalysis, purityScopeAnalysis } from "../purity-analysis/analysis";
@@ -39,8 +54,14 @@ import {
 import { runtimeReturnAnalysis } from "./runtime-analyses";
 import { readExprFact } from "./dfa-factory";
 import type { RawKind } from "./raw-value";
+import {
+  describeContext,
+  formatKey,
+  formatValue,
+  type WorklistTracer,
+} from "./tracer";
 
-type QItem = { analysis: Analysis<any, any>; key: unknown; context: Context; seq: number };
+type QItem = { analysis: Analysis<any, any>; key: unknown; context: AssumptionChain; seq: number };
 
 /** Reference to a speculative fact site. A backend emitting a guard for
  *  this fact publishes this ref via `Worklist.registerGuard` so the engine
@@ -65,20 +86,35 @@ export interface GuardRegistrar {
   registerGuard(guardNodeId: number, ref: SpecFactRef): void;
 }
 
-/** Identity-key for an assumption. `analysis` is compared by symbol identity
- *  (Analyses are module singletons); `key` is compared by the JS `===`
- *  encoding used across the per-analysis stores. */
+/** Identity-key for an assumption. `narrowing` is compared by symbol
+ *  identity (Narrowings are module singletons); `key` is compared by the
+ *  JS `===` encoding used across the per-analysis stores. */
 function assumptionKey(a: Assumption): string {
-  return `${a.analysis.debugName}:${String(a.key)}`;
+  return `${a.narrowing.debugName}:${String(a.key)}`;
 }
 
 /** Identity-key for a speculative fact ref — same encoding as
  *  `assumptionKey` so a pruned-assumption set can be checked against
  *  a guard's ref in O(1). */
 function specRefKey(r: SpecFactRef): string {
-  return `${r.narrowing.handle.debugName}:${String(r.key)}`;
+  return `${r.narrowing.debugName}:${String(r.key)}`;
 }
 
+function unitDesc(unit: Unit): string {
+  const ast = unit.funcAst;
+  if (ast instanceof StmtNS.FunctionDef) {
+    const nameNode = (ast as any).name;
+    if (nameNode && typeof nameNode.name === "string") return `fn:${nameNode.name}`;
+  }
+  return `scope@${unit.slot}`;
+}
+
+function rawKindStr(raw: RawKind): string {
+  if (raw.kind === "number" || raw.kind === "bool" || raw.kind === "string") {
+    return `${raw.kind}(${String(raw.value)})`;
+  }
+  return raw.kind;
+}
 
 /** Default unit resolver for narrowings whose key is a nodeId. Shared
  *  identity so `buildUnitResolverBySource`'s agreement check compares
@@ -114,6 +150,18 @@ function buildUnitResolverBySource(
   return bySource;
 }
 
+function buildNarrowingsBySource(
+  narrowings: ReadonlyArray<Narrowing<any, any>>,
+): ReadonlyMap<Analysis<any, RawKind>, ReadonlyArray<Narrowing<any, any>>> {
+  const bySource = new Map<Analysis<any, RawKind>, Narrowing<any, any>[]>();
+  for (const n of narrowings) {
+    const group = bySource.get(n.observationSource);
+    if (group === undefined) bySource.set(n.observationSource, [n]);
+    else group.push(n);
+  }
+  return bySource;
+}
+
 const TIER_RANK = { runtime: 0, analysis: 1 } as const;
 
 const compareItems = (a: QItem, b: QItem): number => {
@@ -127,7 +175,7 @@ export class Worklist {
    *  functionId → unit, nodeId → {unit, block}. Replaces the worklist's old
    *  `_units`, `unitsByFunctionId`, and `nodeToUnit` maps, and the per-unit
    *  `blockOfNode` field that used to live on `Unit`. */
-  private readonly _topology = new MutableProgramTopology();
+  private readonly _topology = new ProgramTopology();
 
   /** Units awaiting CFG rebuild after a transform fire. */
   private readonly pendingRebuilds = new Set<Unit>();
@@ -141,9 +189,8 @@ export class Worklist {
    *  sibling contexts run independent Kildall. */
   private readonly pendingKeysByAnalysis = new Map<
     Analysis<any, any>,
-    Map<Context, Set<unknown>>
+    Map<AssumptionChain, Set<unknown>>
   >();
-  private batchDepth = 0;
 
   /** Registered transforms and their dirty sets. A unit enters the dirty set
    *  on mint, rebuild, or a write to an upstream analysis declared in the rule's
@@ -160,7 +207,7 @@ export class Worklist {
    *  ROOT_CONTEXT means the unit is currently emitting unspeculated IR.
    *  The tree structure is sibling-capable by construction; sibling
    *  materialization and subtree pruning follow in a later step. */
-  private readonly currentSpecContext: Map<Unit, Context> = new Map();
+  private readonly currentSpecContext: Map<Unit, AssumptionChain> = new Map();
 
   /** Single fact-change dispatch index. Analyses and transforms both compile
    *  their fact edges into callbacks here; no per-subscriber-kind branching
@@ -211,6 +258,22 @@ export class Worklist {
     (ctx: AnalysisCtx, key: any) => Unit | undefined
   >;
 
+  /** Index of narrowings by `observationSource`, derived from `narrowings` at
+   *  construction. Replaces O(m) filter on every observation with O(1) lookup. */
+  private readonly narrowingsBySource: ReadonlyMap<
+    Analysis<any, RawKind>,
+    ReadonlyArray<Narrowing<any, any>>
+  >;
+
+  /** Optional trace sink. Zero cost when absent. Wired at construction. */
+  private readonly tracer?: WorklistTracer;
+  /** Incremented per trace event so the formatter can show global order. */
+  private _traceSeq = 0;
+  /** Set immediately before any enqueue call to record why the wake happened.
+   *  Synchronous call sites (fact-edge dispatch, lifecycle edge, narrowing
+   *  re-seed) stamp this field before invoking enqueue; the enqueue reads it. */
+  private _enqueueReason = "";
+
   constructor(
     ast: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
@@ -219,10 +282,13 @@ export class Worklist {
     transforms: ReadonlyArray<TransformRule> = DEFAULT_TRANSFORMS,
     specStrategy: SpeculationStrategy = immediateStrategy,
     narrowings: ReadonlyArray<Narrowing<any, any>> = DEFAULT_NARROWINGS,
+    tracer?: WorklistTracer,
   ) {
+    this.tracer = tracer;
     this.specStrategy = specStrategy;
     this.narrowings = narrowings;
     this.unitResolverBySource = buildUnitResolverBySource(narrowings);
+    this.narrowingsBySource = buildNarrowingsBySource(narrowings);
     this.registry = registry ?? buildFunctionRegistry(ast);
     this.functionEnvironments = functionEnvironments;
     const built = buildUnits(ast, functionEnvironments, this.registry);
@@ -313,6 +379,7 @@ export class Worklist {
     const reader = analysis as Analysis<any, any>;
     const fireLifecycleEdge = (lc: LifecycleEdge<any>, unit: Unit): void => {
       if (lc.wake !== undefined) {
+        this._enqueueReason = `lifecycle:${lc.on}:${unitDesc(unit)}`;
         for (const k of lc.wake(this.passCtx, unit)) this.enqueue(reader, k);
       }
       if (lc.effect !== undefined) lc.effect(this.passCtx, unit);
@@ -369,14 +436,30 @@ export class Worklist {
    *  `analysis.store.*`. `context` is mandatory on every helper: `Context`
    *  is the primitive, ROOT is one tree-root position inside it, and the
    *  worklist does not guess which position a caller meant. */
-  read<K, V>(analysis: Analysis<K, V>, key: K, context: Context): V {
+  read<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): V {
     return analysis.store.read(key, context);
   }
-  tryRead<K, V>(analysis: Analysis<K, V>, key: K, context: Context): V | undefined {
+  tryRead<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): V | undefined {
     return analysis.store.tryRead(key, context);
   }
-  readAll<K, V>(analysis: Analysis<K, V>, context: Context): ReadonlyMap<K, V> {
+  readAll<K, V>(analysis: Analysis<K, V>, context: AssumptionChain): ReadonlyMap<K, V> {
     return analysis.store.readAll(context);
+  }
+  /** Exact positional read labeled with its witness. Uses the analysis
+   *  store's default semantics for unwritten cells at `context`; callers
+   *  that need to distinguish unwritten from bottom should use `tryRead`. */
+  readAt<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): Reading<V> {
+    return storeReadAt(analysis.store, key, context);
+  }
+  /** Walk `context → ROOT`, returning the shallowest ancestor whose exact
+   *  written cell satisfies `accept`. Unwritten ancestor cells are skipped. */
+  readMinimal<K, V>(
+    analysis: Analysis<K, V>,
+    key: K,
+    accept: (value: V) => boolean,
+    context: AssumptionChain,
+  ): Reading<V> | undefined {
+    return storeReadMinimal(analysis.store, key, accept, context);
   }
   /** Writes through `analysis.store` AND publishes a `FactChange` to
    *  every subscriber — the single advancing-write site alongside
@@ -386,11 +469,11 @@ export class Worklist {
     analysis: Analysis<K, V>,
     key: K,
     value: V,
-    context: Context,
+    context: AssumptionChain,
   ): boolean {
     return this.writeAndDispatch(analysis, key, value, context);
   }
-  evict<K, V>(analysis: Analysis<K, V>, key: K, context: Context): void {
+  evict<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): void {
     storeEvict(analysis.store, key, context);
   }
 
@@ -409,9 +492,17 @@ export class Worklist {
    *  analysis-identity branches here — participation is a property each
    *  analysis declares on itself. */
   observe<K, V>(analysis: Analysis<K, V>, key: K, value: V): void {
+    this.tracer?.onEvent({
+      phase: "observe",
+      seq: this._traceSeq++,
+      analysis: analysis.debugName,
+      key: formatKey(key),
+      rawKind: formatValue(value),
+    });
     analysis.onObserve?.(this.observationHost, key, value, ROOT_CONTEXT);
+    this._enqueueReason = `observe:${analysis.debugName}(${formatKey(key)})`;
     this.writeAndDispatch(analysis, key, value, ROOT_CONTEXT);
-    if (this.batchDepth === 0) this.processQueue();
+    this.processQueue();
   }
 
   /** Capability surface handed to `Analysis.onObserve` hooks. Narrow
@@ -427,25 +518,13 @@ export class Worklist {
     },
   };
 
-  beginBatch(): void {
-    this.batchDepth++;
-  }
-
-  endBatch(): void {
-    if (this.batchDepth === 0) {
-      throw new Error("[Worklist] endBatch called without matching beginBatch");
-    }
-    this.batchDepth--;
-    if (this.batchDepth === 0) this.processQueue();
-  }
-
   hasPendingWork(): boolean {
     if (!this.queue.isEmpty() || this.pendingRebuilds.size > 0) return true;
     for (const s of this.transformDirty.values()) if (s.size > 0) return true;
     return false;
   }
 
-  enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: Context = ROOT_CONTEXT): void {
+  enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain = ROOT_CONTEXT): void {
     const p = analysis as Analysis<any, any>;
     let byContext = this.pendingKeysByAnalysis.get(p);
     if (byContext === undefined) {
@@ -459,7 +538,17 @@ export class Worklist {
     }
     if (pending.has(key)) return;
     pending.add(key);
-    this.queue.enqueue({ analysis: p, key, context, seq: this.seqCounter++ });
+    const seq = this.seqCounter++;
+    this.tracer?.onEvent({
+      phase: "enqueue",
+      seq: this._traceSeq++,
+      analysis: analysis.debugName,
+      key: formatKey(key),
+      context: describeContext(context),
+      contextDepth: context.depth,
+      reason: this._enqueueReason,
+    });
+    this.queue.enqueue({ analysis: p, key, context, seq });
   }
 
   /** Pop the PQ to empty. Tier order: runtime < analysis. Does not rebuild CFGs. */
@@ -467,8 +556,25 @@ export class Worklist {
     while (!this.queue.isEmpty()) {
       const item = this.queue.dequeue()!;
       this.pendingKeysByAnalysis.get(item.analysis)?.get(item.context)?.delete(item.key);
+      this.tracer?.onEvent({
+        phase: "dequeue",
+        seq: this._traceSeq++,
+        analysis: item.analysis.debugName,
+        key: formatKey(item.key),
+        context: describeContext(item.context),
+        contextDepth: item.context.depth,
+      });
       const ctx = this.ctxFor(item.context);
       const value = item.analysis.transfer(ctx, item.key);
+      this.tracer?.onEvent({
+        phase: "transfer",
+        seq: this._traceSeq++,
+        analysis: item.analysis.debugName,
+        key: formatKey(item.key),
+        context: describeContext(item.context),
+        contextDepth: item.context.depth,
+        produced: value !== undefined,
+      });
       if (value !== undefined) {
         this.writeAndDispatch(item.analysis, item.key, value, item.context);
       }
@@ -482,16 +588,28 @@ export class Worklist {
     analysis: Analysis<K, V>,
     key: K,
     value: V,
-    context: Context,
+    context: AssumptionChain,
   ): boolean {
     const result = storeWrite(analysis.store, key, value, context);
-    if (result === null) return false;
+    const advanced = result !== null;
+    this.tracer?.onEvent({
+      phase: "write",
+      seq: this._traceSeq++,
+      analysis: analysis.debugName,
+      key: formatKey(key),
+      context: describeContext(context),
+      contextDepth: context.depth,
+      advanced,
+      oldValue: result !== null ? formatValue(result.prev) : formatValue(analysis.store.tryRead(key, context)),
+      newValue: advanced ? formatValue(result!.next) : formatValue(value),
+    });
+    if (!advanced) return false;
     this.handleFactChange({
       analysis: analysis as Analysis<unknown, unknown>,
       key,
       context,
-      oldValue: result.prev,
-      newValue: result.next,
+      oldValue: result!.prev,
+      newValue: result!.next,
     });
     return true;
   }
@@ -507,7 +625,15 @@ export class Worklist {
       dirty.clear();
       const facts = rootTransformFacts(this._topology);
       for (const unit of units) {
-        if (r.sweep(unit, facts)) {
+        const fired = r.sweep(unit, facts);
+        this.tracer?.onEvent({
+          phase: "transform-sweep",
+          seq: this._traceSeq++,
+          rule: r.debugName,
+          unit: unitDesc(unit),
+          fired,
+        });
+        if (fired) {
           this.pendingRebuilds.add(unit);
           anyFired = true;
         }
@@ -523,7 +649,7 @@ export class Worklist {
    *  factory's paired-cell `.facts` write from inside `.env`'s transfer).
    *  Cross-context reads still go through `analysis.store.read(key,
    *  otherContext)` directly when needed. */
-  private makeCtx(context: Context): AnalysisCtx {
+  private makeCtx(context: AssumptionChain): AnalysisCtx {
     const topology = this._topology;
     const worklist = this;
     return {
@@ -551,7 +677,7 @@ export class Worklist {
 
   /** Build an `AnalysisCtx` scoped to `context`. The root context reuses
    *  `passCtx` (hot path); non-root contexts allocate a fresh one. */
-  private ctxFor(context: Context): AnalysisCtx {
+  private ctxFor(context: AssumptionChain): AnalysisCtx {
     if (context === ROOT_CONTEXT) return this.passCtx;
     return this.makeCtx(context);
   }
@@ -572,6 +698,7 @@ export class Worklist {
     const subs = this.factSubs.get(change.analysis as Analysis<any, any>);
     if (subs === undefined) return;
     const ctx = this.ctxFor(change.context);
+    this._enqueueReason = `fact-change:${change.analysis.debugName}(${formatKey(change.key)})`;
     for (const sub of subs) sub(ctx, change.key);
   }
 
@@ -590,8 +717,9 @@ export class Worklist {
   /** Re-seed Kildall for every registered narrowing's block analysis at
    *  `unit`'s entry block under `context`. Used whenever the unit's active
    *  speculation context shifts (observation-extend, widen-guard,
-   *  widen-unit, lineageOf synthesis). */
-  private enqueueNarrowingEntry(unit: Unit, context: Context): void {
+   *  widen-unit, lineageOf synthesis). Callers set `_enqueueReason`
+   *  before calling so the enqueue events carry the right causal label. */
+  private enqueueNarrowingEntry(unit: Unit, context: AssumptionChain): void {
     for (const n of this.narrowings) {
       const bfa = n.blockAnalysis();
       // `.env` is the fixpoint driver; enqueuing the seed block on it
@@ -636,8 +764,8 @@ export class Worklist {
     key: any,
     observed: RawKind,
   ): void {
-    const applicable = this.narrowings.filter(n => n.observationSource === source);
-    if (applicable.length === 0) return;
+    const applicable = this.narrowingsBySource.get(source);
+    if (applicable === undefined || applicable.length === 0) return;
 
     // Per-source resolver is validated at construction — all narrowings on
     // this source agree on the resolver that ran here.
@@ -654,19 +782,47 @@ export class Worklist {
         observed,
         parentContext: parentCtx,
       });
+      this.tracer?.onEvent({
+        phase: "strategy",
+        seq: this._traceSeq++,
+        unit: unitDesc(unit),
+        key: formatKey(key),
+        rawKind: rawKindStr(observed),
+        accepted: accept,
+        parentContextDepth: parentCtx.depth,
+      });
       if (!accept) return;
     }
 
     if (observed.kind === "unknown") {
       let pruned = parentCtx;
       for (const n of applicable) {
-        pruned = excludeAssumption(pruned, n.handle, key);
+        pruned = excludeAssumption(pruned, n, key);
       }
       if (pruned === parentCtx) return;
       if (pruned === ROOT_CONTEXT) this.currentSpecContext.delete(unit);
       else this.currentSpecContext.set(unit, pruned);
+      this.tracer?.onEvent({
+        phase: "context-exclude",
+        seq: this._traceSeq++,
+        unit: unitDesc(unit),
+        handle: applicable.map(n => n.debugName).join("+"),
+        key: formatKey(key),
+        parentDepth: parentCtx.depth,
+        resultDepth: pruned.depth,
+        resultContext: describeContext(pruned),
+      });
+      this._enqueueReason = `observe-prune:${unitDesc(unit)}`;
       this.enqueueNarrowingEntry(unit, pruned);
       this.fireLifecycle("specContextChange", unit);
+      this.tracer?.onEvent({
+        phase: "spec-context-change",
+        seq: this._traceSeq++,
+        unit: unitDesc(unit),
+        kind: "prune",
+        newContextLabel: describeContext(pruned),
+        newContextDepth: pruned.depth,
+      });
       return;
     }
 
@@ -674,32 +830,52 @@ export class Worklist {
     for (const n of applicable) {
       const lifted = n.lift(observed);
       if (lifted === undefined) continue;
-      const existing = findAssumption(newCtx, n.handle, key);
-      if (existing !== undefined && n.handle.eq(existing, lifted)) continue;
+      const existing = findAssumption(newCtx, n, key);
+      if (existing !== undefined && n.eq(existing, lifted)) continue;
       const cleaned = existing !== undefined
-        ? excludeAssumption(newCtx, n.handle, key)
+        ? excludeAssumption(newCtx, n, key)
         : newCtx;
-      newCtx = extendContext(cleaned, n.handle, key, lifted);
+      newCtx = extendContext(cleaned, n, key, lifted);
     }
 
     if (newCtx === parentCtx) return;
+    this.tracer?.onEvent({
+      phase: "context-extend",
+      seq: this._traceSeq++,
+      unit: unitDesc(unit),
+      handle: applicable.map(n => n.debugName).join("+"),
+      key: formatKey(key),
+      value: rawKindStr(observed),
+      parentDepth: parentCtx.depth,
+      resultDepth: newCtx.depth,
+      resultContext: describeContext(newCtx),
+    });
     this.currentSpecContext.set(unit, newCtx);
+    this._enqueueReason = `observe-extend:${unitDesc(unit)}`;
     this.enqueueNarrowingEntry(unit, newCtx);
     this.fireLifecycle("specContextChange", unit);
+    this.tracer?.onEvent({
+      phase: "spec-context-change",
+      seq: this._traceSeq++,
+      unit: unitDesc(unit),
+      kind: "extend",
+      newContextLabel: describeContext(newCtx),
+      newContextDepth: newCtx.depth,
+    });
   }
 
   /** Active speculation context for a unit. Readers of `typeAnalysis`
    *  looking for speculatively-narrowed facts should pass this context to
    *  `readExprFact` / `analysis.store.tryRead`. */
-  specContextFor(unit: Unit): Context {
+  specAssumptionChainFor(unit: Unit): AssumptionChain {
     return this.currentSpecContext.get(unit) ?? ROOT_CONTEXT;
   }
 
-  /** Same as `specContextFor`, keyed by nodeId. Convenience for consumers
+  /** Same as `specAssumptionChainFor`, keyed by nodeId. Convenience for consumers
    *  that only have an AST node id (e.g. the DfaQuery projection). */
-  specContextForNode(nodeId: NodeId): Context {
+  specAssumptionChainForNode(nodeId: NodeId): AssumptionChain {
     const unit = this._topology.unitOfNode(nodeId);
-    return unit === undefined ? ROOT_CONTEXT : this.specContextFor(unit);
+    return unit === undefined ? ROOT_CONTEXT : this.specAssumptionChainFor(unit);
   }
 
   /** Retract ALL speculation for `unit`. The sound-but-coarse widen used by
@@ -721,8 +897,17 @@ export class Worklist {
     if (!this.currentSpecContext.has(unit)) return undefined;
     this.currentSpecContext.delete(unit);
     this.guardProvenance.get(unit)?.clear();
+    this._enqueueReason = `widen-full:${unitDesc(unit)}`;
     this.enqueueNarrowingEntry(unit, ROOT_CONTEXT);
     this.fireLifecycle("specContextChange", unit);
+    this.tracer?.onEvent({
+      phase: "spec-context-change",
+      seq: this._traceSeq++,
+      unit: unitDesc(unit),
+      kind: "prune-full",
+      newContextLabel: "ROOT",
+      newContextDepth: 0,
+    });
     return unit;
   }
 
@@ -791,10 +976,19 @@ export class Worklist {
     // the chain, so the first iteration below is guaranteed to advance
     // `pruned` off of `ctx`; the canonical interner has no cycle that could
     // bring it back. A `pruned === ctx` guard here would be unreachable.
-    let pruned: Context = ctx;
+    let pruned: AssumptionChain = ctx;
     for (const a of loadBearing) {
-      pruned = excludeAssumption(pruned, a.analysis, a.key);
+      pruned = excludeAssumption(pruned, a.narrowing, a.key);
     }
+
+    this.tracer?.onEvent({
+      phase: "widen-guard",
+      seq: this._traceSeq++,
+      guardNodeId,
+      unit: unitDesc(unit),
+      loadBearingAssumptions: loadBearing.map(assumptionKey),
+      widenedToRoot: pruned === ROOT_CONTEXT,
+    });
 
     if (pruned === ROOT_CONTEXT) this.currentSpecContext.delete(unit);
     else this.currentSpecContext.set(unit, pruned);
@@ -811,6 +1005,7 @@ export class Worklist {
         else perUnit.set(gid, kept);
       }
     }
+    this._enqueueReason = `widen-guard:${unitDesc(unit)}`;
     this.enqueueNarrowingEntry(unit, pruned);
     this.fireLifecycle("specContextChange", unit);
     return unit;
@@ -824,18 +1019,18 @@ export class Worklist {
    *  owning analyses' stores and linger — contexts are identity-keyed so no
    *  collision, but an eviction pass is a later step (C5b follow-up).
    *
-   *  Cost: O(chainDepth × Kildall-at-pruned-ctx). Chain depth is bounded by
-   *  the speculation strategy (`countBasedStrategy`, etc.) which throttles
-   *  extension; deep chains are the outlier case. */
+   *  Cost: O(Kildall-at-pruned-ctx). All pruned-context probes are enqueued
+   *  in Phase 1; a single processQueue() drain in Phase 2 resolves them all
+   *  simultaneously. Chain depth is bounded by the speculation strategy. */
   private lineageOf(
     ref: SpecFactRef,
-    ctx: Context,
+    ctx: AssumptionChain,
     unit: Unit,
   ): Assumption[] {
     const { narrowing, key } = ref;
     const topology = this._topology;
     const lineageValue = narrowing.lineageValue
-      ?? ((_owner: Unit, nodeId: NodeId, context: Context) =>
+      ?? ((_owner: Unit, nodeId: NodeId, context: AssumptionChain) =>
         readExprFact(topology, narrowing.blockAnalysis(), nodeId, context));
     const current = lineageValue(unit, key as never, ctx);
     // No readable fact under `ctx` ⇒ narrowing has no lineage surface here;
@@ -844,15 +1039,26 @@ export class Worklist {
     // removal happened to land the pruned context on an unvisited cell."
     if (current === undefined) return [];
     const lineageEq = narrowing.lineageEq
-      ?? ((a: unknown, b: unknown) => narrowing.handle.eq(a as never, b as never));
-    const loadBearing: Assumption[] = [];
-    for (let cur: Context | undefined = ctx; cur !== undefined; cur = cur.parent) {
+      ?? ((a: unknown, b: unknown) => narrowing.eq(a as never, b as never));
+    // Phase 1: collect all pruned contexts and enqueue them all before running
+    // the fixpoint. Independent contexts don't share cells, so their Kildall
+    // passes commute — one processQueue drain computes all of them at once
+    // instead of O(chainDepth) sequential drains.
+    const probes: Array<{ a: Assumption; without: AssumptionChain }> = [];
+    for (let cur: AssumptionChain | undefined = ctx; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
       if (a === undefined) continue;
-      const without = excludeAssumption(ctx, a.analysis, a.key);
+      const without = excludeAssumption(ctx, a.narrowing, a.key);
       if (without === ctx) continue;
+      probes.push({ a, without });
+      this._enqueueReason = `lineage-probe:${unitDesc(unit)}`;
       this.enqueueNarrowingEntry(unit, without);
-      this.processQueue();
+    }
+    if (probes.length > 0) this.processQueue();
+
+    // Phase 2: read results — all pruned contexts are now converged.
+    const loadBearing: Assumption[] = [];
+    for (const { a, without } of probes) {
       const widened = lineageValue(unit, key as never, without);
       // A link is load-bearing iff removing it widens the fact at `ref`.
       // Both reads can miss (returning undefined) if the pruned context has
@@ -864,6 +1070,26 @@ export class Worklist {
             && lineageEq(current, widened));
       if (!unchanged) loadBearing.push(a);
     }
+
+    // Phase 3: evict synthetic probe-context cells from every registered
+    // analysis's store. `widenGuard` computes the unit's new speculation
+    // context by multi-excluding every load-bearing assumption; that context
+    // gets re-enqueued and its cells must survive so the downstream Kildall
+    // drain sees no-op joins (and fires no spurious change events to JIT
+    // listeners). Every other probe is pure throwaway.
+    if (probes.length > 0) {
+      let finalPruned: AssumptionChain = ctx;
+      for (const a of loadBearing) {
+        finalPruned = excludeAssumption(finalPruned, a.narrowing, a.key);
+      }
+      for (const { without } of probes) {
+        if (without === finalPruned) continue;
+        for (const analysis of this.registeredAnalyses) {
+          storeClearContext(analysis.store, without);
+        }
+      }
+    }
+
     return loadBearing;
   }
 
@@ -895,16 +1121,31 @@ export class Worklist {
    *   4. `flushPendingRebuilds` — rewire CFGs for units that fired; fires
    *      `onUnitRebuilt`, which re-enqueues analyses and re-marks transforms
    *      dirty.
-   *  Terminates when no transform fired and no rebuild occurred. */
+   *  Terminates when no transform fired and no rebuild occurred.
+   *
+   *  This is the explicit heavy-weight publication barrier: it runs queued
+   *  analyses to quiescence, sweeps transforms, and rebuilds any mutated CFGs.
+   *  Online observation ingress happens in `observe()` via `processQueue()`;
+   *  callers invoke `drain()` when they need transform/rebuild publication. */
   drain(limit: number = Worklist.DEFAULT_DRAIN_LIMIT): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
     const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     let processed = 0;
+    let iteration = 0;
 
     while (true) {
       this.processQueue();
       const fired = this.sweepTransforms();
       this.processQueue();
       const rebuilt = this.flushPendingRebuilds();
+
+      this.tracer?.onEvent({
+        phase: "drain-iteration",
+        seq: this._traceSeq++,
+        iteration,
+        transformsFired: fired,
+        rebuiltUnits: rebuilt.map(unitDesc),
+      });
+      iteration++;
 
       if (!fired && rebuilt.length === 0) break;
 

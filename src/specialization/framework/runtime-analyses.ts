@@ -87,12 +87,17 @@ export const runtimeWriteAnalysis: OpaqueAnalysis<NodeId, RawKind> = defineAnaly
   },
 });
 
-/** Runtime-observation sink. Classifies the raw JS value and forwards it to
- *  the worklist. Monotone join (absorbing ⊤ on conflict) is enforced by the
- *  store's eq-gated write; this function only adds a fast path for sealed
- *  cells: once a node has seen two distinct values its fact is pinned at
- *  ⊤, no raw value can take it back off, and `classifyRawValue`
- *  allocates, so skip it. */
+/** Fast path the monotone store can't see: once a cell has saturated to ⊤
+ *  (`unknown`), no future observation can change either the stored fact or
+ *  the speculation policy outcome. Equal non-⊤ repeats are STILL forwarded
+ *  to `Worklist.observe`: `onObserve` must see every event even when the
+ *  store write would be a no-op (e.g. count-based strategies). Returns the
+ *  lifted `RawKind` to publish, or `undefined` only for the sealed-⊤ case. */
+function nextObservationOrSkip(prev: RawKind | undefined, raw: unknown): RawKind | undefined {
+  if (prev !== undefined && prev.kind === "unknown") return undefined;
+  return classifyRawValue(raw);
+}
+
 export function observeRuntimeWrite(
   observer: {
     observe: (p: Analysis<NodeId, RawKind>, k: NodeId, v: RawKind) => void;
@@ -101,8 +106,9 @@ export function observeRuntimeWrite(
   raw: unknown,
 ): void {
   const prev = runtimeWriteAnalysis.store.tryRead(nodeId, ROOT_CONTEXT);
-  if (prev !== undefined && prev.kind === "unknown") return;
-  observer.observe(runtimeWriteAnalysis, nodeId, classifyRawValue(raw));
+  const lifted = nextObservationOrSkip(prev, raw);
+  if (lifted === undefined) return;
+  observer.observe(runtimeWriteAnalysis, nodeId, lifted);
 }
 
 /** Force the per-node observation to ⊤ (`unknown`), erasing any singleton
@@ -165,8 +171,9 @@ export function observeRuntimeParam(
 ): void {
   const key = paramKey(functionId, paramIndex);
   const prev = runtimeParamAnalysis.store.tryRead(key, ROOT_CONTEXT);
-  if (prev !== undefined && prev.kind === "unknown") return;
-  observer.observe(runtimeParamAnalysis, key, classifyRawValue(raw));
+  const lifted = nextObservationOrSkip(prev, raw);
+  if (lifted === undefined) return;
+  observer.observe(runtimeParamAnalysis, key, lifted);
 }
 
 export const runtimeReturnAnalysis: OpaqueAnalysis<FunctionId, RawKind> = defineAnalysis({
@@ -208,8 +215,9 @@ export function observeRuntimeReturn(
   raw: unknown,
 ): void {
   const prev = runtimeReturnAnalysis.store.tryRead(functionId, ROOT_CONTEXT);
-  if (prev !== undefined && prev.kind === "unknown") return;
-  observer.observe(runtimeReturnAnalysis, functionId, classifyRawValue(raw));
+  const lifted = nextObservationOrSkip(prev, raw);
+  if (lifted === undefined) return;
+  observer.observe(runtimeReturnAnalysis, functionId, lifted);
 }
 
 /** Saturating call-count lattice: `bottom=0`, join clamped at
@@ -280,22 +288,22 @@ export function makeJitObservers(
       beforeObserve?.();
       observeRuntimeWrite(worklist, nodeId, value);
     },
+    // Convergence is the caller's responsibility. Observations enter the
+    // worklist immediately; evaluators choose when to run the full
+    // transform/rebuild drain loop.
     observeScopeCall: (scopeId) => {
       beforeObserve?.();
       const cur = runtimeCallAnalysis.store.tryRead(scopeId, ROOT_CONTEXT) ?? 0;
       if (cur >= RUNTIME_CALL_COUNT_SAT) return;
       worklist.observe(runtimeCallAnalysis, scopeId, cur + 1);
-      if (worklist.hasPendingWork()) worklist.drain();
     },
     observeScopeReturn: (scopeId, value) => {
       beforeObserve?.();
       observeRuntimeReturn(worklist, scopeId, value);
-      if (worklist.hasPendingWork()) worklist.drain();
     },
     observeParamEntry: (scopeId, paramIndex, value) => {
       beforeObserve?.();
       observeRuntimeParam(worklist, scopeId, paramIndex, value);
-      if (worklist.hasPendingWork()) worklist.drain();
     },
   };
 }

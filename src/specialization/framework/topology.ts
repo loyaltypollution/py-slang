@@ -1,10 +1,10 @@
 // Single mutable source of truth for program topology.
 //
 // Every node/block/unit/function lookup the framework needs funnels through
-// the readonly `ProgramTopology` projection. The `MutableProgramTopology`
-// implementation is the one writer — owned by the worklist, updated only
-// on unit lifecycle transitions (mint, rebuild, retire). Analyses,
-// transforms, DfaQuery, and narrowings read, never write.
+// `ProgramTopology`. The worklist owns the one instance and is the one
+// writer — updates happen only on unit lifecycle transitions (mint,
+// rebuild, retire). Analyses, transforms, DfaQuery, and narrowings receive
+// the `ReadonlyProgramTopology` projection and read, never write.
 //
 // Before this module existed the same indices were scattered: per-unit
 // `blockOfNode` populated inside `wireCFG`, cross-unit `nodeToUnit`
@@ -30,25 +30,11 @@ interface NodeLocation {
   readonly block: BasicBlock;
 }
 
-/** Readonly projection of the program's cross-unit index state.
- *  Consumed by `AnalysisCtx`, `DfaQuery`, transforms, and narrowings. */
-export interface ProgramTopology {
-  /** Every indexed unit, keyed by the `FunctionId` of its scope AST node
-   *  (`.id` of the FunctionDef or FileInput). Iterate via `.values()`;
-   *  look up by function id via `.get(id)`. */
-  readonly units: ReadonlyMap<FunctionId, Unit>;
-  unitOfFunctionId(functionId: FunctionId): Unit | undefined;
-  unitOfNode(nodeId: NodeId): Unit | undefined;
-  blockOfNode(nodeId: NodeId): BasicBlock | undefined;
-  /** NodeIds currently indexed under `unit`. Used by retirement eviction
-   *  paths that need to walk a unit's fact cells without re-traversing the
-   *  AST. Iteration order is insertion (indexing walk) order. */
-  nodesOfUnit(unit: Unit): Iterable<NodeId>;
-}
-
-/** Owning implementation. The worklist constructs exactly one and exposes
- *  the readonly view via `Worklist.topology`. */
-export class MutableProgramTopology implements ProgramTopology {
+/** Program's cross-unit index state. The worklist constructs exactly one
+ *  and exposes it via `Worklist.topology`. Consumers that should not
+ *  mutate the topology (analyses, DfaQuery, transforms, narrowings)
+ *  receive it typed as `ReadonlyProgramTopology`. */
+export class ProgramTopology {
   private readonly unitsByFunctionId = new Map<FunctionId, Unit>();
   private readonly nodeLocation = new Map<NodeId, NodeLocation>();
   private readonly nodesByUnit = new Map<Unit, Set<NodeId>>();
@@ -74,6 +60,9 @@ export class MutableProgramTopology implements ProgramTopology {
     this.indexUnitNodes(unit);
   }
 
+  /** Every indexed unit, keyed by the `FunctionId` of its scope AST node
+   *  (`.id` of the FunctionDef or FileInput). Iterate via `.values()`;
+   *  look up by function id via `.get(id)`. */
   get units(): ReadonlyMap<FunctionId, Unit> {
     return this.unitsByFunctionId;
   }
@@ -86,6 +75,9 @@ export class MutableProgramTopology implements ProgramTopology {
   blockOfNode(nodeId: NodeId): BasicBlock | undefined {
     return this.nodeLocation.get(nodeId)?.block;
   }
+  /** NodeIds currently indexed under `unit`. Used by retirement eviction
+   *  paths that need to walk a unit's fact cells without re-traversing the
+   *  AST. Iteration order is insertion (indexing walk) order. */
   nodesOfUnit(unit: Unit): Iterable<NodeId> {
     return this.nodesByUnit.get(unit) ?? EMPTY_IDS;
   }
@@ -107,6 +99,15 @@ export class MutableProgramTopology implements ProgramTopology {
     this.nodesByUnit.delete(unit);
   }
 }
+
+/** Read-only projection of `ProgramTopology` handed to analyses, DfaQuery,
+ *  transforms, and narrowings. Excludes the mutators
+ *  (`registerUnit` / `unregisterUnit` / `reindexUnit`) — only the worklist
+ *  is permitted to call those. */
+export type ReadonlyProgramTopology = Pick<
+  ProgramTopology,
+  "units" | "unitOfFunctionId" | "unitOfNode" | "blockOfNode" | "nodesOfUnit"
+>;
 
 const EMPTY_IDS: ReadonlySet<NodeId> = new Set();
 

@@ -1,6 +1,6 @@
 import type { ExprNS } from "../../ast-types";
 import type { CFGEdge } from "./cfg";
-import type { Context } from "./context";
+import type { AssumptionChain } from "./context";
 import type { MutableEnv } from "./mutable-env";
 import type { Lattice } from "./analysis";
 import type { NodeId } from "./key-spaces";
@@ -58,7 +58,7 @@ export interface BlockDfaSpec<L> extends Lattice<L> {
     unit: Unit,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: L) => void,
-    context: Context,
+    context: AssumptionChain,
   ): ExprNS.Visitor<L>;
 
   /** Per-edge env refinement. Called by the DFA factory before a predecessor

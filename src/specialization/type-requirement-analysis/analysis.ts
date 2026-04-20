@@ -20,7 +20,7 @@
 // model that dataflow direction.
 //
 // The seed is context-driven: at each `Return e`, the analysis reads
-// `findAssumption(ctx.currentContext, returnKindHandle, functionId)`. When the
+// `findAssumption(ctx.currentContext, returnKindNarrowing, functionId)`. When the
 // context carries no assumption (ROOT, or a chain without a return-kind
 // link for this functionId), the transfer is sound-no-op: all requirements stay
 // at TOP. Consumers (entry-guard hoisting, redundant-check elimination,
@@ -34,10 +34,9 @@ import type { Unit } from "../framework/function-unit";
 import {
   ROOT_CONTEXT,
   findAssumption,
-  type Context,
+  type AssumptionChain,
 } from "../framework/context";
 import {
-  type AssumptionHandle,
   type Narrowing,
 } from "../framework/analysis";
 import {
@@ -63,18 +62,6 @@ import {
   type TypeLattice,
 } from "../type-analysis/lattice";
 
-/** Narrowing-chain identity for per-function return-kind assumptions. Keyed
- *  by FunctionDef.id (functionId). Parallel to `typeExprHandle` /
- *  `constExprHandle` — a namespace token for Context bindings, never
- *  scheduled, owns no analysis store. `eq` matches the TypeLattice
- *  semantics so Context's canonical dedup at `extendContext` behaves
- *  correctly. */
-export const returnKindHandle: AssumptionHandle<FunctionId, TypeLattice> = {
-  id: Symbol("returnKindHandle"),
-  debugName: "returnKindHandle",
-  keySpace: "functionId",
-  eq,
-};
 
 /** Unconstrained int requirement — kind INT, sign unknown (Top). The
  *  conservative inverse of `int + int = int`: if the result is required to
@@ -256,21 +243,31 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
     transferBlock: (ctx, block, inEnv, unit) => {
       const fd = unit.funcAst;
       const required = fd instanceof StmtNS.FunctionDef
-        ? findAssumption(ctx.currentContext, returnKindHandle, fd.id)
+        ? findAssumption(ctx.currentContext, returnKindNarrowing, fd.id)
         : undefined;
       return transferBlockBackward(block, inEnv, unit.slotLookup, required);
     },
     refineOnEdge: (env, _edge) => env,
   });
 
-/** Narrowing dimension: runtime return observations. An observation at
- *  `functionId` (classified via `liftType`) extends the called unit's context
- *  with `(returnKindHandle, functionId, value)`; the analysis above consumes
- *  that assumption at Return statements. `resolveUnit` maps the functionId to
- *  the function's own unit (not its containing caller) so the extension
+/** Narrowing dimension for per-function return-kind assumptions. Keyed by
+ *  FunctionDef.id (functionId). Parallel to `typeNarrowing` /
+ *  `constNarrowing` — a namespace token for AssumptionChain bindings,
+ *  never scheduled, owns no analysis store. Carries both the identity
+ *  fields (`id`, `debugName`, `keySpace`, `eq` — the interner's canonical
+ *  dedup relation) and the narrowing metadata (`blockAnalysis`,
+ *  `observationSource`, `lift`, …) the worklist's observation→context
+ *  translator consumes. An observation at `functionId` (classified via
+ *  `liftType`) extends the called unit's context with
+ *  `(returnKindNarrowing, functionId, value)`; the analysis above consumes
+ *  that assumption at Return statements. `resolveUnit` maps the functionId
+ *  to the function's own unit (not its containing caller) so the extension
  *  lands where the body's requirement-propagation runs. */
 export const returnKindNarrowing: Narrowing<FunctionId, TypeLattice> = {
-  handle: returnKindHandle,
+  id: Symbol("returnKindNarrowing"),
+  debugName: "returnKindNarrowing",
+  keySpace: "functionId",
+  eq,
   blockAnalysis: () => typeRequirementAnalysis,
   observationSource: runtimeReturnAnalysis,
   resolveUnit: (ctx, key) => ctx.topology.unitOfFunctionId(key),
@@ -302,23 +299,20 @@ export interface EntryRequirement {
   readonly unprovable: ReadonlySet<number>;
 }
 
-/** True iff `v` describes at least one concrete runtime value. `TypeLattice`
- *  now canonicalizes empty refinements back to `BOTTOM`, so satisfiability is
- *  the domain-level question "does normalization collapse this to bottom?". */
-function isSatisfiable(v: TypeLattice): boolean {
-  return isSatisfiableType(v);
-}
-
 /** Read the per-slot type requirement at `unit`'s entry block under
  *  `context`. Returns the split `EntryRequirement`. TOP bindings (no
  *  constraint) are omitted from both halves. Returns empty sets when the
  *  analysis hasn't yet produced a fact for this (unit, context) —
  *  typically because the context carries no return-kind assumption and
  *  the analysis short-circuited. Consumers: guard-hoisting, redundant-
- *  check elimination. */
+ *  check elimination.
+ *
+ *  Satisfiability uses `isSatisfiableType`: `TypeLattice` canonicalizes
+ *  empty refinements back to `BOTTOM`, so it is the domain-level question
+ *  "does normalization collapse this to bottom?". */
 export function requirementAtEntry(
   unit: Unit,
-  context: Context = ROOT_CONTEXT,
+  context: AssumptionChain = ROOT_CONTEXT,
 ): EntryRequirement {
   const provable = new Map<number, TypeLattice>();
   const unprovable = new Set<number>();
@@ -327,7 +321,7 @@ export function requirementAtEntry(
   for (const slot of env.definedSlots()) {
     const req = env.get(slot);
     if (req === undefined || req === TOP) continue;
-    if (isSatisfiable(req)) provable.set(slot, req);
+    if (isSatisfiableType(req)) provable.set(slot, req);
     else unprovable.add(slot);
   }
   return { provable, unprovable };

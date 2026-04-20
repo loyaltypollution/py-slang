@@ -75,6 +75,7 @@ export class SVMLCompiler
    *  precisely on deopt (see `Worklist.widenGuard`). `undefined` means
    *  the engine will fall back to `widenUnitSpeculation` on violation. */
   private guardRegistrar: GuardRegistrar | undefined;
+  private allowSpeculativeConditionGuards = true;
   private _scopeIndexMap?: ScopeIndexMap;
   /**
    * Shared canonical registry of function identity and slot layout. Built
@@ -201,6 +202,7 @@ export class SVMLCompiler
    *  next compile returns the non-narrowed fact and this returns `undefined`.
    *  No separate blacklist gate required. */
   private speculativeConditionTruth(cond: ExprNS.Expr): boolean | undefined {
+    if (!this.allowSpeculativeConditionGuards) return undefined;
     if (!this.speculationAllowed()) return undefined;
     // Skip if the static const analysis already proves it — no guard needed.
     const staticConst = this.getConst(cond);
@@ -479,6 +481,7 @@ export class SVMLCompiler
     );
     subCompiler._scopeIndexMap = this._scopeIndexMap;
     subCompiler.registry = this.registry;
+    subCompiler.allowSpeculativeConditionGuards = specializedBody === undefined;
 
     const slotMap = new Map<string, number>();
     subCompiler.envSlotMaps.set(nextEnvironment, slotMap);

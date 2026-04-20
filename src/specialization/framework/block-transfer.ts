@@ -1,6 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "./cfg";
-import type { Context } from "./context";
+import type { AssumptionChain } from "./context";
 import type { BlockPassResult } from "./dfa-factory";
 import type { Unit } from "./function-unit";
 import type { BlockDfaSpec } from "./interfaces";
@@ -72,7 +72,7 @@ export function transferBlock<L>(
   inEnv: MutableEnv<L>,
   module: BlockDfaSpec<L>,
   unit: Unit,
-  context: Context,
+  context: AssumptionChain,
 ): BlockPassResult<L> {
   const outEnv = inEnv.snapshot();
   const exprFacts = new Map<number, L>();

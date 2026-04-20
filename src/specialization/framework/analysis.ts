@@ -13,14 +13,25 @@
 //                       `BlockFixpointAnalysis<L>` (paired `.env` + `.facts`
 //                       Analyses) the worklist registers.
 //
-//   AssumptionHandle<K, V> — namespace token for `Context` chains. Does NOT
+//   Narrowing<K, V>   — namespace token for `AssumptionChain` chains. Does NOT
 //                       own a `store`. No transfer, no edges, no tier, no
-//                       polarity, no `storeAlgebra`. Carries just `id`,
+//                       polarity, no `storeAlgebra`. Carries `id`,
 //                       `debugName`, `keySpace?`, and `eq` — the
 //                       value-equality relation the context interner uses
-//                       to dedup `(handle, key, value)` triples. Handles
-//                       cannot flow through the worklist's read/write
-//                       surface; the type checker rejects it.
+//                       to dedup `(narrowing, key, value)` triples — plus
+//                       `blockAnalysis` / `observationSource` / `lift` that
+//                       describe the dataflow dimension this narrowing
+//                       inhabits. Narrowings cannot flow through the
+//                       worklist's read/write surface; the type checker
+//                       rejects it.
+//
+//                       `AssumptionHandle<K, V>` is retained as a minimal
+//                       base shape (`id`, `debugName`, `keySpace?`, `eq`)
+//                       that `Narrowing` extends. Production contexts are
+//                       always bound against a full `Narrowing`; the base
+//                       `AssumptionHandle` is used by synthetic test
+//                       fixtures that need a context-identity token without
+//                       pulling in a block DFA and observation source.
 //
 //   TransformRule     — imperative AST sweep (defined below). Registered via
 //                       `worklist.registerTransform`; no lattice, no
@@ -28,7 +39,7 @@
 //                       returns `true` to trigger CFG rebuild.
 
 import type { Unit } from "./function-unit";
-import type { Context } from "./context";
+import type { AssumptionChain } from "./context";
 import type { RawKind } from "./raw-value";
 import type { BlockFixpointAnalysis } from "./dfa-factory";
 import type { ProgramTopology } from "./topology";
@@ -75,15 +86,6 @@ export interface Lattice<V> extends JoinSemiLattice<V> {
   readonly top: V;
   meet(a: V, b: V): V;
 }
-
-/** Named alias for the algebra over an analysis's stored cell domain.
- *
- *  This is the surface `AnalysisStore` consumes. For plain analyses it is
- *  often the same object as the semantic lattice; for lifted analyses it
- *  is the outer/store algebra over the stored summary domain. Keeping a
- *  separate name makes that role explicit even when the runtime shape is
- *  still `JoinSemiLattice<V>`. */
-export interface StoreAlgebra<V> extends JoinSemiLattice<V> {}
 
 /** An edge into an analysis. Two shapes, discriminated by the mandatory `on` tag:
  *
@@ -135,11 +137,11 @@ export interface LifecycleEdge<K> {
   /** Event kinds:
    *   - `mint` / `rebuild` / `retire` — unit-lifecycle transitions.
    *   - `specContextChange` — the owning unit's active speculation context
-   *     (`Worklist.specContextFor`) has changed. Fires on observation-driven
+   *     (`Worklist.specAssumptionChainFor`) has changed. Fires on observation-driven
    *     extend, on lineage-precise widen (`Worklist.widenGuard`), and on
    *     whole-unit widen (`Worklist.widenUnitSpeculation`). A pure context
    *     reset advances no facts, so fact-edge subscribers don't wake on their
-   *     own — analyses whose output depends on `specContextFor(unit)` (e.g.
+   *     own — analyses whose output depends on `specAssumptionChainFor(unit)` (e.g.
    *     backend JIT recompile) subscribe here so deopt handlers don't have to
    *     enqueue them manually. */
   readonly on: "mint" | "rebuild" | "retire" | "specContextChange";
@@ -190,14 +192,16 @@ export interface Analysis<K, V> {
    *  by (`nodeId`, `functionId`, `BasicBlock`, ...). Documents the topology boundary;
    *  bridge logic stays explicit in projectors/lookups. */
   readonly keySpace?: string;
-  /** Primary algebra over the stored cell domain `V`. Consumed by the
-   *  analysis's own `store` (at construction time) and by external callers
-   *  that need the algebra surface (e.g. svml-jit-analysis' snapshot-matches
-   *  comparison).
+  /** Primary algebra over the stored cell domain `V`. Serves the analysis's
+   *  stored cell domain — `AnalysisStore` consumes this for default value,
+   *  storage combine, and equality/change detection. For plain analyses it
+   *  is often the same object as the semantic lattice; for lifted analyses
+   *  it is the outer/store algebra over the stored summary domain.
    *
-   *  For scheduled analyses this is the algebra over the stored cell domain
-   *  `V`. */
-  readonly storeAlgebra: StoreAlgebra<V>;
+   *  Consumed by the analysis's own `store` (at construction time) and by
+   *  external callers that need the algebra surface (e.g. svml-jit-analysis'
+   *  snapshot-matches comparison). */
+  readonly storeAlgebra: JoinSemiLattice<V>;
   /** Optional explicit value for an unwritten cell. When absent, `store.read`
    *  falls back to `storeAlgebra.bottom`.
    *
@@ -261,7 +265,7 @@ export interface Analysis<K, V> {
     },
     key: K,
     value: V,
-    context: Context,
+    context: AssumptionChain,
   ): void;
   /** Compute the next stored value at `key` under `ctx.currentContext`.
    *  Reads happen via `ctx.read(someAnalysis, someKey)` (or the explicit
@@ -271,22 +275,20 @@ export interface Analysis<K, V> {
   transfer(ctx: AnalysisCtx, key: K): V | undefined;
 }
 
-/** Assumption-namespace token used in `Context` chains.
+/** Minimal identity-token shape for `AssumptionChain` links.
  *
- *  Structurally distinct from `Analysis<K, V>` — handles do NOT own a
- *  `store`, do NOT carry a `transfer` function, do NOT participate in
- *  worklist scheduling, and do NOT subscribe to fact-change edges. Their
- *  role is purely to identify *which* assumption a `(key, value)` pair
- *  binds when extending a Context, and to supply the value-equality
- *  relation used by `ContextInterner` to dedup `(handle, key, value)`
- *  triples so two call paths that converge on the same assumption set
- *  produce `===` context references.
+ *  Production code binds contexts against full `Narrowing<K, V>` objects
+ *  (which extend this interface). `AssumptionHandle` is retained as the
+ *  structural base so synthetic test fixtures can mint a context-identity
+ *  token without constructing a block DFA and observation source they do
+ *  not exercise. Every production `Narrowing` IS an `AssumptionHandle`.
  *
- *  Before the citizen split, `AssumptionHandle` was `Analysis<K, V>` —
- *  handles carried empty `edges`, a dummy `transfer`, `tier`, `polarity`,
- *  and a `storeAlgebra` only `.eq` was ever read from. The split removes
- *  those dead fields and makes the "handles don't store" fact a
- *  type-level guarantee rather than a runtime convention. */
+ *  Not an Analysis<K, V> — carries no `store`, no `transfer`, no edges, no
+ *  tier, no polarity, no `storeAlgebra`. Exists only to identify *which*
+ *  assumption a `(key, value)` pair binds when extending an AssumptionChain,
+ *  and to supply the value-equality relation used by `ContextInterner` to
+ *  dedup `(narrowing, key, value)` triples so two call paths that converge
+ *  on the same assumption set produce `===` context references. */
 export interface AssumptionHandle<K = unknown, V = unknown> {
   readonly id: symbol;
   readonly debugName: string;
@@ -294,22 +296,20 @@ export interface AssumptionHandle<K = unknown, V = unknown> {
    *  etc.). Not consumed by the framework. */
   readonly keySpace?: string;
   /** Value-equality relation used by `ContextInterner.internChild` to
-   *  dedup bucket entries at `(parent, handle, key)`. Also the default
+   *  dedup bucket entries at `(parent, narrowing, key)`. Also the default
    *  lineage-eq relation used by `Worklist.lineageOf` when the narrowing
    *  does not override `lineageEq`. Declared as a method so TypeScript
    *  treats it bivariantly — `AssumptionHandle<K, TypeLattice>` stays
    *  assignable to `AssumptionHandle<K, unknown>` for polymorphic
-   *  Narrowing-list storage (matching the pre-split behavior when handles
-   *  extended `Analysis` through its method-declared transfer). */
+   *  Narrowing-list storage. */
   eq(a: V, b: V): boolean;
 }
 
 /** A single dimension along which runtime observations can extend a
- *  speculation context. Bundles the identity (`handle`) named in Context
- *  assumption chains, the block DFA whose per-expression cells store the
+ *  speculation context. Carries the identity fields named in AssumptionChain
+ *  assumption chains (`id`, `debugName`, `keySpace?`, `eq` — inherited from
+ *  `AssumptionHandle`), the block DFA whose per-expression cells store the
  *  narrowed value, and the lift from raw observation to that value domain.
- *  Value equality is derived from the handle's `eq` at use sites —
- *  narrowings do not carry their own equality.
  *
  *  The worklist iterates a registered list of `Narrowing`s in four
  *  data-driven sites: observation→context translation, `widenGuard` and
@@ -343,21 +343,20 @@ export interface AssumptionHandle<K = unknown, V = unknown> {
  *  keyed in a different space (e.g. return-kind keyed by functionId) override it
  *  to point at the relevant block fact under that key-space. `lineageEq`
  *  supplies the equality relation for that chosen surface; the default
- *  reuses the handle's `eq`. */
+ *  reuses the narrowing's `eq`. */
 
-export interface Narrowing<K = any, V = unknown> {
-  readonly handle: AssumptionHandle<K, V>;
+export interface Narrowing<K = any, V = unknown> extends AssumptionHandle<K, V> {
   readonly blockAnalysis: () => BlockFixpointAnalysis<any>;
   readonly observationSource: Analysis<K, RawKind>;
   resolveUnit?(ctx: AnalysisCtx, key: K): Unit | undefined;
-  lineageValue?(unit: Unit, key: K, context: Context): unknown;
+  lineageValue?(unit: Unit, key: K, context: AssumptionChain): unknown;
   lineageEq?(a: unknown, b: unknown): boolean;
   lift(observed: RawKind): V | undefined;
 }
 
 /** Context handed to every `transfer` and wake dispatch.
  *
- *  `topology` is the readonly projection of the program's node/block/unit/fd
+ *  `topology` is the read-only projection of the program's node/block/unit/fd
  *  indices — the single surface for node→block, node→unit, functionId→unit
  *  lookups.
  *
@@ -371,7 +370,7 @@ export interface Narrowing<K = any, V = unknown> {
  *  reads (unusual), call `analysis.store.read(key, otherContext)` directly. */
 export interface AnalysisCtx {
   readonly topology: ProgramTopology;
-  readonly currentContext: Context;
+  readonly currentContext: AssumptionChain;
   read<K, V>(analysis: Analysis<K, V>, key: K): V;
   tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined;
   readAll<K, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V>;
@@ -388,24 +387,44 @@ export interface AnalysisCtx {
   evict<K, V>(analysis: Analysis<K, V>, key: K): void;
 }
 
-/** Root-only fact surface exposed to transforms. Unconditional AST rewrites
- *  must not consult speculative/non-ROOT cells, so the transform contract is
- *  intentionally narrower than `AnalysisCtx` — no `write`, no per-context
- *  reads. Semantic reads (`read` / `tryRead` / `readAll` / `readExprFact`)
- *  only accept may/must analyses. Opaque analyses (runtime observations,
- *  profitability counters) must go through the explicitly named
+/** Context-bound fact surface exposed to transforms. The surface is narrower
+ *  than `AnalysisCtx` — no `write`, no raw topology, no arbitrary cross-
+ *  context reads. Semantic reads (`read` / `tryRead` / `readAll` /
+ *  `readExprFact`) only accept may/must analyses. Opaque analyses (runtime
+ *  observations, profitability counters) must go through the explicitly named
  *  `readProfitability` surface so policy evidence cannot masquerade as
  *  semantic proof by sharing the same method name.
  *
- *  Node→block bridging is exposed only through the root-bound helper below.
- *  That keeps expression-fact reads on the same root-only surface instead of
- *  handing transforms the raw `topology` object they could pair with ad hoc
- *  helper calls. */
+ *  Worklist-driven canonical AST rewrites bind this view at ROOT.
+ *  Speculative clone consumers may bind it at a non-ROOT context because the
+ *  mutated tree is an ephemeral compilation artifact, not the shared program
+ *  topology. Node→block bridging is exposed only through the helper surface
+ *  below, so transforms still cannot pair raw topology access with ad hoc
+ *  cross-context reads. */
+export interface Reading<V> {
+  readonly value: V;
+  readonly witness: AssumptionChain;
+}
+
 export interface TransformFactView {
   read<K, V>(analysis: SemanticAnalysis<K, V>, key: K): V;
   tryRead<K, V>(analysis: SemanticAnalysis<K, V>, key: K): V | undefined;
   readAll<K, V>(analysis: SemanticAnalysis<K, V>): ReadonlyMap<K, V>;
+  /** Exact positional read: no ancestor search, no witness minimization.
+   *  Returns the semantic value at the view's bound context and labels the
+   *  reading with that exact witness. */
+  readAt<K, V>(analysis: SemanticAnalysis<K, V>, key: K): Reading<V>;
+  /** Return the shallowest ancestor context of the view's bound context whose
+   *  exact cell value satisfies `accept`. Unwritten ancestor cells are skipped
+   *  rather than treated as implicit ROOT fallbacks. */
+  readMinimal<K, V>(analysis: SemanticAnalysis<K, V>, key: K, accept: (value: V) => boolean): Reading<V> | undefined;
   readExprFact<L>(analysis: SemanticBlockFixpointAnalysis<L>, nodeId: number): L | undefined;
+  readExprFactAt<L>(analysis: SemanticBlockFixpointAnalysis<L>, nodeId: number): Reading<L> | undefined;
+  readExprFactMinimal<L>(
+    analysis: SemanticBlockFixpointAnalysis<L>,
+    nodeId: number,
+    accept: (value: L) => boolean,
+  ): Reading<L> | undefined;
   readProfitability<K, V>(analysis: OpaqueAnalysis<K, V>, key: K): V;
 }
 
@@ -433,8 +452,8 @@ export interface TransformRule {
    *  inside `Worklist.registerTransform`. */
   readonly autoDirtyOn?: ReadonlyArray<"mint" | "rebuild">;
   /** Returns `true` iff `unit.body` was mutated — the worklist then schedules
-   *  a CFG rebuild for `unit`. The fact surface is root-only by type, so a
-   *  transform cannot accidentally read speculative context cells. */
+   *  a CFG rebuild for `unit`. The worklist binds the fact surface at ROOT;
+   *  clone-oriented consumers may bind it at a different context explicitly. */
   sweep(unit: Unit, facts: TransformFactView): boolean;
 }
 

@@ -39,7 +39,6 @@ import {
 } from "../../../specialization/type-analysis/lattice";
 import {
   requirementAtEntry,
-  returnKindHandle,
   returnKindNarrowing,
   typeRequirementAnalysis,
 } from "../../../specialization/type-requirement-analysis/analysis";
@@ -82,7 +81,7 @@ def hot(x):
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.units.get(fn.id)!;
 
-    const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
+    const ctx = extendContext(ROOT_CONTEXT, returnKindNarrowing, fn.id, INT_POS);
     worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
@@ -100,7 +99,7 @@ def hot(x):
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.units.get(fn.id)!;
 
-    const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
+    const ctx = extendContext(ROOT_CONTEXT, returnKindNarrowing, fn.id, INT_POS);
     worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
@@ -125,7 +124,7 @@ def hot(x):
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.units.get(fn.id)!;
 
-    const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
+    const ctx = extendContext(ROOT_CONTEXT, returnKindNarrowing, fn.id, INT_POS);
     worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
@@ -151,7 +150,7 @@ def hot(x):
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.units.get(fn.id)!;
 
-    const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
+    const ctx = extendContext(ROOT_CONTEXT, returnKindNarrowing, fn.id, INT_POS);
     worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
@@ -171,7 +170,7 @@ def hot(x):
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.units.get(fn.id)!;
 
-    const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
+    const ctx = extendContext(ROOT_CONTEXT, returnKindNarrowing, fn.id, INT_POS);
     worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
@@ -188,7 +187,7 @@ def hot(x, y, c):
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.units.get(fn.id)!;
 
-    const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
+    const ctx = extendContext(ROOT_CONTEXT, returnKindNarrowing, fn.id, INT_POS);
     worklist.enqueue(typeRequirementAnalysis.env, unit.cfg.exit, ctx);
     worklist.drain();
 
@@ -215,9 +214,9 @@ def hot(x):
     observeRuntimeReturn(worklist, fn.id, 7);
     worklist.drain();
 
-    const ctx = worklist.specContextFor(unit);
+    const ctx = worklist.specAssumptionChainFor(unit);
     expect(ctx).not.toBe(ROOT_CONTEXT);
-    expect(findAssumption(ctx, returnKindHandle, fn.id)).toBeDefined();
+    expect(findAssumption(ctx, returnKindNarrowing, fn.id)).toBeDefined();
 
     const reqs = requirementAtEntry(unit, ctx);
     expect(reqs.provable.get(0)?.kinds).toBe(INT_BIT);
@@ -238,7 +237,7 @@ def hot(x):
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.units.get(fn.id)!;
 
-    const ctx = extendContext(ROOT_CONTEXT, returnKindHandle, fn.id, INT_POS);
+    const ctx = extendContext(ROOT_CONTEXT, returnKindNarrowing, fn.id, INT_POS);
     const env = new MutableEnv<TypeLattice>();
     env.set(10, BOTTOM);
     env.set(11, meet(INT_POS, INT_NEG));
@@ -300,7 +299,7 @@ def hot(x):
   test("write observation does NOT extend return-kind context", () => {
     // The observationSource filter is what prevents cross-narrowing
     // triggering. A write observation at a node inside `hot` must not
-    // attach a returnKindHandle assumption at any functionId — only the
+    // attach a returnKindNarrowing assumption at any functionId — only the
     // typeNarrowing / constNarrowing (both sourced from
     // runtimeWriteAnalysis) may respond.
     const { ast, worklist } = build(`
@@ -315,7 +314,7 @@ def hot(x):
     observeRuntimeWrite(worklist, xRead.id, 5);
     worklist.drain();
 
-    const ctx = worklist.specContextFor(unit);
-    expect(findAssumption(ctx, returnKindHandle, fn.id)).toBeUndefined();
+    const ctx = worklist.specAssumptionChainFor(unit);
+    expect(findAssumption(ctx, returnKindNarrowing, fn.id)).toBeUndefined();
   });
 });

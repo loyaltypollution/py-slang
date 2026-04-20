@@ -2,6 +2,18 @@ import { ConductorError } from "@sourceacademy/conductor/common";
 import { StmtNS } from "../../ast-types";
 import { ModuleContext, NativeStorage } from "../../types";
 
+/** Capabilities injected by JIT-capable evaluators. Absent in plain runs.
+ *  All fields are required: a partial hooks object is not meaningful. */
+export interface JitHooks {
+  readonly rootScope: StmtNS.FileInput;
+  /** Per-assignment observation. Not wired by the JIT clone lane (entry-guarded only),
+   *  but available for test harnesses and non-clone observation consumers. */
+  observeNodeWrite?: (nodeId: number, value: unknown) => void;
+  observeScopeCall(scopeId: number): void;
+  observeParamEntry(scopeId: number, paramIndex: number, value: unknown): void;
+  specializedFunctionBodyFor(scopeId: number): ReadonlyArray<StmtNS.Stmt> | undefined;
+}
+
 import { Control } from "./control";
 import { Environment } from "./environment";
 import { CseError } from "./error";
@@ -42,16 +54,11 @@ export class Context {
     envStepsTotal: number;
     breakpointSteps: number[];
     changepointSteps: number[];
-    /**
-     * Runtime-observation push hooks for the reactive optimizer. Wired by
-     * `PyCseEvaluator` for JIT-capable evaluators; `undefined` for
-     * standalone runs.
-     */
-    observeNodeWrite?: (nodeId: number, value: unknown) => void;
-    observeScopeCall?: (scopeId: number) => void;
-    /** Root scope key for emission when no enclosing closure exists (global scope). */
-    rootScope?: StmtNS.FileInput;
   };
+
+  /** JIT capabilities. Wired by JIT-capable evaluators before `evaluate`;
+   *  cleared afterward. `undefined` in plain (non-JIT) runs. */
+  jitHooks?: JitHooks;
 
   /**
    * Used for storing the native context and other values

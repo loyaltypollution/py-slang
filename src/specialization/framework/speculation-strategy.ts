@@ -1,4 +1,4 @@
-// Speculation strategy: the policy layer between observations and Context
+// Speculation strategy: the policy layer between observations and AssumptionChain
 // extensions. Mechanism — lifting a RawKind to a lattice assumption, extending
 // the context, enqueuing Kildall under it — is fixed and lives on Worklist.
 // Policy — whether a given observation should trigger speculation at all —
@@ -15,7 +15,7 @@
 // a call-count, a cost estimate, an oracle hint — the interface widens here;
 // analyses stay untouched.
 
-import type { Context } from "./context";
+import type { AssumptionChain } from "./context";
 import type { Unit } from "./function-unit";
 import type { RawKind } from "./raw-value";
 
@@ -30,7 +30,7 @@ export interface ObservationEvent {
   /** The unit's current speculation context at the moment of observation.
    *  Strategies that care about chain depth or existing assumptions read
    *  it through here rather than reaching into Worklist state. */
-  readonly parentContext: Context;
+  readonly parentContext: AssumptionChain;
 }
 
 export interface SpeculationStrategy {

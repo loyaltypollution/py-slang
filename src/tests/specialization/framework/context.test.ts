@@ -16,7 +16,7 @@ function makeAnalysis<K, V>(name: string): AssumptionHandle<K, V> {
   };
 }
 
-describe("Context", () => {
+describe("AssumptionChain", () => {
   it("ROOT_CONTEXT is root and has depth 0", () => {
     expect(isRoot(ROOT_CONTEXT)).toBe(true);
     expect(ROOT_CONTEXT.depth).toBe(0);
@@ -30,7 +30,7 @@ describe("Context", () => {
 
     expect(c1.parent).toBe(ROOT_CONTEXT);
     expect(c1.depth).toBe(1);
-    expect(c1.assumption).toEqual({ analysis: p, key: 7, value: 42 });
+    expect(c1.assumption).toEqual({ narrowing: p, key: 7, value: 42 });
     expect(isRoot(c1)).toBe(false);
   });
 

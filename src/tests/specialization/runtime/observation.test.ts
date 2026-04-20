@@ -1,7 +1,7 @@
 import { StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
-import { Context } from "../../../engines/cse/context";
+import { Context, type JitHooks } from "../../../engines/cse/context";
 import { evaluate } from "../../../engines/cse/interpreter";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
@@ -36,9 +36,13 @@ describe.each([
       const { ast, reactive } = build(code);
       reactive.drain();
       const context = new Context();
-      context.runtime.observeNodeWrite = (nodeId, value) =>
-        observeRuntimeWrite(reactive, nodeId, value);
-      context.runtime.rootScope = ast;
+      context.jitHooks = {
+        rootScope: ast,
+        observeNodeWrite: (nodeId, value) => observeRuntimeWrite(reactive, nodeId, value),
+        observeScopeCall: () => {},
+        observeParamEntry: () => {},
+        specializedFunctionBodyFor: () => undefined,
+      } satisfies JitHooks;
       await evaluate("", ast, context, { variant: 4, groups: [] });
       reactive.drain();
       return { ast, reactive };
@@ -91,7 +95,7 @@ f("hello")
       xRead.id,
       ROOT_CONTEXT,
     );
-    const specCtx = reactive.specContextForNode(xRead.id);
+    const specCtx = reactive.specAssumptionChainForNode(xRead.id);
     const specType = readExprFact(
       reactive.topology,
       typeAnalysis,
@@ -120,7 +124,7 @@ describe("observation: idempotence", () => {
     const after = readExprFact(
       reactive.topology,
       typeAnalysis, assign.value.id, ROOT_CONTEXT);
-    const specCtx = reactive.specContextForNode(assign.value.id);
+    const specCtx = reactive.specAssumptionChainForNode(assign.value.id);
     const spec = readExprFact(
       reactive.topology,
       typeAnalysis, assign.value.id, specCtx);
@@ -198,8 +202,8 @@ f(41)
 
     const reqs = makeDfaQuery(
       reactive.topology,
-      nodeId => reactive.specContextForNode(nodeId),
-      unit => reactive.specContextFor(unit),
+      nodeId => reactive.specAssumptionChainForNode(nodeId),
+      unit => reactive.specAssumptionChainFor(unit),
     ).entryRequirementsOf(fDef.id);
     expect(reqs).toBeDefined();
     expect(reqs!.provable.get(0)?.kinds).toBe(INT_BIT);
