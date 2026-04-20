@@ -282,15 +282,21 @@ export function makeBlockFixpointAnalysis<L>(
     evictStaleBlockCells(factsAnalysis.store, unit);
 
   // envAnalysis: lifecycle seeds and evictions, plus CFG-successor self-wake.
+  // Mint/retire stay on the legacy `edges` array; the rebuild edge migrated
+  // to typed `onRebuildDirty` + `onRebuildEvict` via `bind` below — the typed
+  // matrix splits dirty/evict so the original `wake + effect` lowers to two
+  // independent subscribers, matching the pre-migration order (wake-then-
+  // effect was guaranteed by the legacy edge dispatcher; the typed methods
+  // append in registration order to lifecycleSubs.rebuild and dispatch in
+  // that same order).
   envEdges.push(
     { on: "mint", wake: (_ctx, unit) => [seedKey(unit)] },
-    {
-      on: "rebuild",
-      wake: (_ctx, unit) => [seedKey(unit)],
-      effect: evictStaleEnvCells,
-    },
     { on: "retire", effect: evictStaleEnvCells },
   );
+  envAnalysis.bind = (wl) => {
+    wl.onRebuildDirty(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
+    wl.onRebuildEvict((_h, unit) => evictStaleBlockCells(envAnalysis.store, unit));
+  };
 
   // Self-wake: block OUT env change → CFG successors recompute IN. Appended
   // after construction so we can reference `envAnalysis` directly, no getter.
