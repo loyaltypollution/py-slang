@@ -2,7 +2,7 @@ import { StmtNS, ExprNS } from "../../ast-types";
 import { ROOT_CONTEXT, type AssumptionChain } from "../framework/context";
 import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
-import type { Reading, TransformRule } from "../framework/analysis";
+import type { AnalysisCtx, Reading, TransformRule } from "../framework/analysis";
 import { runtimeCallAnalysis, RUNTIME_CALL_COUNT_SAT } from "../framework/runtime-analyses";
 import { purityScopeAnalysis } from "../purity-analysis/analysis";
 import { guardKeyFromGuards, directParamEntryGuardsFor } from "../entry-guards";
@@ -152,16 +152,14 @@ function bodyHasMemoPrelude(body: readonly StmtNS.Stmt[]): boolean {
 // mutate shared AST — no special case).
 export const memoizationRule: TransformRule = {
   debugName: "memoizationRule",
-  edges: [
-    { on: "fact", analysis: runtimeCallAnalysis, wake: (ctx, functionId) => {
+  bind(wl) {
+    const wakeOwningUnit = (ctx: AnalysisCtx, functionId: unknown): Iterable<Unit> => {
       const u = ctx.topology.unitOfFunctionId(functionId as number);
       return u ? [u] : [];
-    }},
-    { on: "fact", analysis: purityScopeAnalysis, wake: (ctx, functionId) => {
-      const u = ctx.topology.unitOfFunctionId(functionId as number);
-      return u ? [u] : [];
-    }},
-  ],
+    };
+    wl.onTransformFactDirty(memoizationRule, runtimeCallAnalysis, wakeOwningUnit);
+    wl.onTransformFactDirty(memoizationRule, purityScopeAnalysis, wakeOwningUnit);
+  },
   sweep(unit: Unit, chain: AssumptionChain, _topology: ProgramTopology): boolean {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
