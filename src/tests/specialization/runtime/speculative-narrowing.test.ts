@@ -79,8 +79,8 @@ def hot(x):
     const ret = fn.body[0] as StmtNS.Return;
     const xRead = (ret.value as ExprNS.Binary).left as ExprNS.Variable;
 
-    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 8 });
-    observeRuntimeReturn(worklist, fn.id, 7);
+    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 8 }, ROOT_CONTEXT);
+    observeRuntimeReturn(worklist, fn.id, 7, ROOT_CONTEXT);
     worklist.drain();
 
     const ctx = worklist.specAssumptionChainFor(unit);
@@ -90,7 +90,7 @@ def hot(x):
 
     const typeAtIntermediate = readExprFact(worklist.topology, typeAnalysis, xRead.id, intermediate);
     expect(typeAtIntermediate?.kinds).toBe(INT_BIT);
-    expect(typeAnalysis.env.store.tryRead(unit.cfg.entry, intermediate)).toBeDefined();
+    expect(intermediate.tryRead(typeAnalysis.env, unit.cfg.entry)).toBeDefined();
   });
 });
 
@@ -102,7 +102,7 @@ def hot(x):
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
 
-    observeRuntimeReturn(worklist, fn.id, 7);
+    observeRuntimeReturn(worklist, fn.id, 7, ROOT_CONTEXT);
     worklist.drain();
 
     const { program } = compile(ast, environments, worklist);
@@ -244,8 +244,8 @@ def hot(x, y):
     resetNodeIds();
     const { ast: astA, worklist: wlA } = build(code);
     const fnA = astA.statements[0] as StmtNS.FunctionDef;
-    wlA.observe(runtimeParamAnalysis, paramKey(fnA.id, 0), { kind: "number", value: 5 });
-    wlA.observe(runtimeParamAnalysis, paramKey(fnA.id, 1), { kind: "number", value: 10 });
+    wlA.observe(runtimeParamAnalysis, paramKey(fnA.id, 0), { kind: "number", value: 5 }, ROOT_CONTEXT);
+    wlA.observe(runtimeParamAnalysis, paramKey(fnA.id, 1), { kind: "number", value: 10 }, ROOT_CONTEXT);
     const unitA = wlA.topology.unitOfFunctionId(fnA.id)!;
     const ctxA = wlA.specAssumptionChainFor(unitA);
 
@@ -253,8 +253,8 @@ def hot(x, y):
     resetNodeIds();
     const { ast: astB, worklist: wlB } = build(code);
     const fnB = astB.statements[0] as StmtNS.FunctionDef;
-    wlB.observe(runtimeParamAnalysis, paramKey(fnB.id, 1), { kind: "number", value: 10 });
-    wlB.observe(runtimeParamAnalysis, paramKey(fnB.id, 0), { kind: "number", value: 5 });
+    wlB.observe(runtimeParamAnalysis, paramKey(fnB.id, 1), { kind: "number", value: 10 }, ROOT_CONTEXT);
+    wlB.observe(runtimeParamAnalysis, paramKey(fnB.id, 0), { kind: "number", value: 5 }, ROOT_CONTEXT);
     const unitB = wlB.topology.unitOfFunctionId(fnB.id)!;
     const ctxB = wlB.specAssumptionChainFor(unitB);
 

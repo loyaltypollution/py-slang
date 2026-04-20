@@ -33,7 +33,6 @@ import {
 } from "./analysis";
 import type { FunctionId, NodeId, ParamKey } from "./key-spaces";
 import { ProgramTopology } from "./topology";
-import { transformFacts } from "./transform-rule";
 import { clearUnitBodies } from "./chain-body-store";
 import { excludeAssumption, extendContext, findAssumption, hasAncestor, ROOT_CONTEXT, type Assumption, type AssumptionChain } from "./context";
 import { immediateStrategy, type SpeculationStrategy } from "./speculation-strategy";
@@ -382,7 +381,7 @@ export class Worklist {
     const fireLifecycleEdge = (lc: LifecycleEdge<any>, unit: Unit): void => {
       if (lc.wake !== undefined) {
         this._enqueueReason = `lifecycle:${lc.on}:${unitDesc(unit)}`;
-        for (const k of lc.wake(this.passCtx, unit)) this.enqueue(reader, k);
+        for (const k of lc.wake(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
       }
       if (lc.effect !== undefined) lc.effect(this.passCtx, unit);
     };
@@ -479,13 +478,10 @@ export class Worklist {
     storeEvict(analysis.store, key, context);
   }
 
-  /** Record a runtime observation. Observations originate at ROOT by
-   *  architecture — they come from the running program, which has no
-   *  outstanding assumption chain of its own. The observation→context
-   *  translator (`handleObservationForSpec`) is the sole path from an
-   *  observation to a non-ROOT context, and it derives the target context
-   *  from the observation payload rather than from the caller. So `observe`
-   *  takes no `context` parameter: there is no other position to place it.
+  /** Record a runtime observation made under `context`. The caller — typically
+   *  the JIT observation adapter (`makeJitObservers`) — passes the speculation
+   *  context the running body was dispatched under. Top-level observations
+   *  with no enclosing specialized frame pass `ROOT_CONTEXT`.
    *
    *  Analyses that want to run observe-time logic (e.g. extend the unit's
    *  speculation context) declare `onObserve`. It fires BEFORE the
@@ -493,7 +489,12 @@ export class Worklist {
    *  call, including repeats the store would collapse. The worklist has no
    *  analysis-identity branches here — participation is a property each
    *  analysis declares on itself. */
-  observe<K, V>(analysis: Analysis<K, V>, key: K, value: V): void {
+  observe<K, V>(
+    analysis: Analysis<K, V>,
+    key: K,
+    value: V,
+    context: AssumptionChain,
+  ): void {
     this.tracer?.onEvent({
       phase: "observe",
       seq: this._traceSeq++,
@@ -501,9 +502,9 @@ export class Worklist {
       key: formatKey(key),
       rawKind: formatValue(value),
     });
-    analysis.onObserve?.(this.observationHost, key, value, ROOT_CONTEXT);
+    analysis.onObserve?.(this.observationHost, key, value, context);
     this._enqueueReason = `observe:${analysis.debugName}(${formatKey(key)})`;
-    this.writeAndDispatch(analysis, key, value, ROOT_CONTEXT);
+    this.writeAndDispatch(analysis, key, value, context);
     this.processQueue();
   }
 
@@ -526,7 +527,7 @@ export class Worklist {
     return false;
   }
 
-  enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain = ROOT_CONTEXT): void {
+  enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): void {
     const p = analysis as Analysis<any, any>;
     let byContext = this.pendingKeysByAnalysis.get(p);
     if (byContext === undefined) {
@@ -626,13 +627,12 @@ export class Worklist {
       const units = Array.from(dirty);
       dirty.clear();
       for (const unit of units) {
-        // Facts are always bound at the unit's active speculation context.
-        // Rules read witnesses via `readMinimal` / `readAt` and publish
-        // through `bodyAtWitness`, which forks at the view's bound context
-        // — ROOT is simply the case where that context is `ROOT_CONTEXT`
-        // and the fork resolves to `unit.funcAst.body` without a copy.
-        const facts = transformFacts(this._topology, this.specAssumptionChainFor(unit));
-        const fired = r.sweep(unit, facts);
+        // Rules sweep at the unit's active speculation chain. Reads go
+        // through the chain directly; publication is `chain.forkBody(unit,
+        // witness)` — under ROOT that resolves to `unit.funcAst.body`
+        // without a copy.
+        const chain = this.specAssumptionChainFor(unit);
+        const fired = r.sweep(unit, chain, this._topology);
         this.tracer?.onEvent({
           phase: "transform-sweep",
           seq: this._traceSeq++,

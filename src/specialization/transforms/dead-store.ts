@@ -19,9 +19,11 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 // `StmtNS.FileInput` import via namespace below.
 import type { BasicBlock } from "../framework/cfg";
+import type { AssumptionChain } from "../framework/context";
 import type { Unit } from "../framework/function-unit";
+import type { ProgramTopology } from "../framework/topology";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
-import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
+import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, liveOutOf } from "../liveness-analysis/analysis";
 import { LIVE } from "../liveness-analysis/lattice";
 import { MutableEnv } from "../framework/mutable-env";
@@ -240,10 +242,11 @@ function escapedLocalSlots(unit: Unit): Set<number> {
  *  while walking the AST without needing to know the containing block. */
 function buildLiveOutMap(
   unit: Unit,
+  chain: AssumptionChain,
 ): Map<StmtNS.Stmt, Set<number>> {
   const out = new Map<StmtNS.Stmt, Set<number>>();
   for (const block of unit.blockMap.values()) {
-    const env = liveOutOf(block);
+    const env = liveOutOf(block, chain);
     const stmts = block.stmts;
     for (let i = stmts.length - 1; i >= 0; i--) {
       const snapshot = new Set<number>();
@@ -303,9 +306,10 @@ function sweepStmts(
   return changed;
 }
 
-export const deadStoreRule = unitSweepRule(
-  "deadStoreRule",
-  (unit: Unit, facts: TransformFactView) => {
+export const deadStoreRule: TransformRule = {
+  debugName: "deadStoreRule",
+  edges: [{ on: "fact", analysis: livenessAnalysis.env, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  sweep(unit: Unit, chain: AssumptionChain, _topology: ProgramTopology): boolean {
     // Skip the module (FileInput) scope. Module-top-level names are part of
     // the program's observable namespace — other modules can import them,
     // REPL/tool consumers can inspect them after execution, and the
@@ -314,13 +318,15 @@ export const deadStoreRule = unitSweepRule(
     // module would change observable state. Function-scope locals, by
     // contrast, are dead at return; DSE on them is always sound.
     if (unit.funcAst instanceof StmtNS.FileInput) return false;
-    // Seed the Reading from the entry block's liveness env — this is the
-    // anchor fact the rule gates on. readAt always yields a Reading at
-    // the view's bound context.
-    const seed = facts.readAt(livenessAnalysis.env, unit.cfg.entry);
-    const liveOutMap = buildLiveOutMap(unit);
+    // Seed a Reading from the entry block's liveness env. The seed's witness
+    // is `chain` itself — the chain at which the forked body (and therefore
+    // the liveness facts that gate DSE) are valid. We thread that chain
+    // through `buildLiveOutMap` so every successor-INs read lands at the
+    // same chain the body was forked at; previously `liveOutOf` hardcoded
+    // ROOT, silently miscompiling any non-ROOT sweep.
+    const seed = chain.readAt(livenessAnalysis.env, unit.cfg.entry);
+    const liveOutMap = buildLiveOutMap(unit, chain);
     const escaped = escapedLocalSlots(unit);
-    return sweepStmts(facts.bodyAtWitness(unit, seed), liveOutMap, unit.slotLookup, escaped);
+    return sweepStmts(chain.forkBody(unit, seed), liveOutMap, unit.slotLookup, escaped);
   },
-  [{ on: "fact", analysis: livenessAnalysis.env, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
-);
+};

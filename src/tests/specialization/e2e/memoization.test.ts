@@ -34,7 +34,7 @@ function findFunctionDef(ast: StmtNS.FileInput, name: string): StmtNS.FunctionDe
 }
 
 function observeCallsTo(reactive: Worklist, fd: StmtNS.FunctionDef, n: number): void {
-  for (let i = 1; i <= n; i++) reactive.observe(runtimeCallAnalysis, fd.id, i);
+  for (let i = 1; i <= n; i++) reactive.observe(runtimeCallAnalysis, fd.id, i, ROOT_CONTEXT);
 }
 
 function memoFired(_reactive: Worklist, unit: Unit): boolean {

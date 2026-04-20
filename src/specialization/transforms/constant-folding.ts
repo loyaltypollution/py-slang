@@ -1,73 +1,90 @@
 // Constant folding. Idempotent: rewriting Binary/Compare to Literal removes the "const" fact match.
 //
-// Context-aware: reads const facts via `readExprFactMinimal` from the
-// view's bound context. A non-ROOT view sees facts specialized under the
-// active speculation; mutation lands on the forked body at that context
-// via `bodyAtWitness`.
+// Context-aware: reads const facts via `chain.readExprFactMinimal` from the
+// sweep's bound chain. A non-ROOT chain sees facts specialized under the
+// active speculation; mutation lands on the forked body at that chain via
+// `chain.forkBody`.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
+import type { AssumptionChain } from "../framework/context";
 import { constAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
-import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
-import type { Reading } from "../framework/analysis";
+import type { ProgramTopology } from "../framework/topology";
+import type { Reading, TransformRule } from "../framework/analysis";
 import type { ConstLattice } from "../const-analysis/lattice";
 
 type ConstReading = Reading<ConstLattice>;
 
-function constReading(facts: TransformFactView, nodeId: number): ConstReading | undefined {
-  return facts.readExprFactMinimal(constAnalysis, nodeId, cv => cv.tag === "const");
+function constReading(
+  chain: AssumptionChain,
+  topology: ProgramTopology,
+  nodeId: number,
+): ConstReading | undefined {
+  return chain.readExprFactMinimal(topology, constAnalysis, nodeId, cv => cv.tag === "const");
 }
 
 /** Scan for the first foldable (Binary/Compare) expression with a const
- *  fact. Used to seed `bodyAtWitness` before any mutation. */
-function findSeedReading(facts: TransformFactView, stmts: readonly StmtNS.Stmt[]): ConstReading | undefined {
+ *  fact. Used to seed `chain.forkBody` before any mutation. */
+function findSeedReading(
+  chain: AssumptionChain,
+  topology: ProgramTopology,
+  stmts: readonly StmtNS.Stmt[],
+): ConstReading | undefined {
   for (const s of stmts) {
-    const r = scanStmt(facts, s);
+    const r = scanStmt(chain, topology, s);
     if (r !== undefined) return r;
   }
   return undefined;
 }
 
-function scanStmt(facts: TransformFactView, s: StmtNS.Stmt): ConstReading | undefined {
-  if (s instanceof StmtNS.Assign || s instanceof StmtNS.AnnAssign) return scanExpr(facts, s.value);
-  if (s instanceof StmtNS.Return) return s.value ? scanExpr(facts, s.value) : undefined;
+function scanStmt(
+  chain: AssumptionChain,
+  topology: ProgramTopology,
+  s: StmtNS.Stmt,
+): ConstReading | undefined {
+  if (s instanceof StmtNS.Assign || s instanceof StmtNS.AnnAssign) return scanExpr(chain, topology, s.value);
+  if (s instanceof StmtNS.Return) return s.value ? scanExpr(chain, topology, s.value) : undefined;
   if (s instanceof StmtNS.If) {
-    return scanExpr(facts, s.condition)
-      ?? findSeedReading(facts, s.body)
-      ?? (s.elseBlock ? findSeedReading(facts, s.elseBlock) : undefined);
+    return scanExpr(chain, topology, s.condition)
+      ?? findSeedReading(chain, topology, s.body)
+      ?? (s.elseBlock ? findSeedReading(chain, topology, s.elseBlock) : undefined);
   }
-  if (s instanceof StmtNS.While) return scanExpr(facts, s.condition) ?? findSeedReading(facts, s.body);
-  if (s instanceof StmtNS.For) return scanExpr(facts, s.iter) ?? findSeedReading(facts, s.body);
-  if (s instanceof StmtNS.SimpleExpr) return scanExpr(facts, s.expression);
-  if (s instanceof StmtNS.Assert) return scanExpr(facts, s.value);
-  if (s instanceof StmtNS.FileInput) return findSeedReading(facts, s.statements);
+  if (s instanceof StmtNS.While) return scanExpr(chain, topology, s.condition) ?? findSeedReading(chain, topology, s.body);
+  if (s instanceof StmtNS.For) return scanExpr(chain, topology, s.iter) ?? findSeedReading(chain, topology, s.body);
+  if (s instanceof StmtNS.SimpleExpr) return scanExpr(chain, topology, s.expression);
+  if (s instanceof StmtNS.Assert) return scanExpr(chain, topology, s.value);
+  if (s instanceof StmtNS.FileInput) return findSeedReading(chain, topology, s.statements);
   return undefined;
 }
 
-function scanExpr(facts: TransformFactView, e: ExprNS.Expr): ConstReading | undefined {
+function scanExpr(
+  chain: AssumptionChain,
+  topology: ProgramTopology,
+  e: ExprNS.Expr,
+): ConstReading | undefined {
   if (e instanceof ExprNS.Binary || e instanceof ExprNS.Compare) {
-    const r = constReading(facts, e.id);
+    const r = constReading(chain, topology, e.id);
     if (r !== undefined) return r;
   }
   if (e instanceof ExprNS.Binary || e instanceof ExprNS.Compare || e instanceof ExprNS.BoolOp) {
-    return scanExpr(facts, e.left) ?? scanExpr(facts, e.right);
+    return scanExpr(chain, topology, e.left) ?? scanExpr(chain, topology, e.right);
   }
-  if (e instanceof ExprNS.Unary) return scanExpr(facts, e.right);
+  if (e instanceof ExprNS.Unary) return scanExpr(chain, topology, e.right);
   if (e instanceof ExprNS.Ternary) {
-    return scanExpr(facts, e.predicate) ?? scanExpr(facts, e.consequent) ?? scanExpr(facts, e.alternative);
+    return scanExpr(chain, topology, e.predicate) ?? scanExpr(chain, topology, e.consequent) ?? scanExpr(chain, topology, e.alternative);
   }
   if (e instanceof ExprNS.Call) {
-    const sc = scanExpr(facts, e.callee);
+    const sc = scanExpr(chain, topology, e.callee);
     if (sc !== undefined) return sc;
-    for (const a of e.args) { const r = scanExpr(facts, a); if (r !== undefined) return r; }
+    for (const a of e.args) { const r = scanExpr(chain, topology, a); if (r !== undefined) return r; }
   }
   if (e instanceof ExprNS.List) {
-    for (const el of e.elements) { const r = scanExpr(facts, el); if (r !== undefined) return r; }
+    for (const el of e.elements) { const r = scanExpr(chain, topology, el); if (r !== undefined) return r; }
   }
-  if (e instanceof ExprNS.Subscript) return scanExpr(facts, e.value) ?? scanExpr(facts, e.index);
-  if (e instanceof ExprNS.Grouping) return scanExpr(facts, e.expression);
-  if (e instanceof ExprNS.Starred) return scanExpr(facts, e.value);
+  if (e instanceof ExprNS.Subscript) return scanExpr(chain, topology, e.value) ?? scanExpr(chain, topology, e.index);
+  if (e instanceof ExprNS.Grouping) return scanExpr(chain, topology, e.expression);
+  if (e instanceof ExprNS.Starred) return scanExpr(chain, topology, e.value);
   return undefined;
 }
 
@@ -75,12 +92,13 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
 
   constructor(
-    private readonly facts: TransformFactView,
+    private readonly chain: AssumptionChain,
+    private readonly topology: ProgramTopology,
   ) {}
 
   private tryRewrite(expr: ExprNS.Expr): ExprNS.Expr {
     if (!(expr instanceof ExprNS.Binary || expr instanceof ExprNS.Compare)) return expr;
-    const r = constReading(this.facts, expr.id);
+    const r = constReading(this.chain, this.topology, expr.id);
     if (r === undefined) return expr;
     const cv = r.value;
     if (cv.tag !== "const") return expr;
@@ -175,8 +193,8 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: ConstFoldExprVisitor;
 
-  constructor(facts: TransformFactView) {
-    this.exprVisitor = new ConstFoldExprVisitor(facts);
+  constructor(chain: AssumptionChain, topology: ProgramTopology) {
+    this.exprVisitor = new ConstFoldExprVisitor(chain, topology);
   }
 
   private rewriteExpr(expr: ExprNS.Expr): ExprNS.Expr {
@@ -233,15 +251,15 @@ class ConstFoldStmtVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-export const constantFoldingRule = unitSweepRule(
-  "constantFoldingRule",
-  (unit: Unit, facts: TransformFactView) => {
-    const seed = findSeedReading(facts, unit.body);
+export const constantFoldingRule: TransformRule = {
+  debugName: "constantFoldingRule",
+  edges: [{ on: "fact", analysis: constAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
+    const seed = findSeedReading(chain, topology, unit.body);
     if (seed === undefined) return false;
-    const body = facts.bodyAtWitness(unit, seed);
-    const v = new ConstFoldStmtVisitor(facts);
+    const body = chain.forkBody(unit, seed);
+    const v = new ConstFoldStmtVisitor(chain, topology);
     v.sweep(body);
     return v.changed;
   },
-  [{ on: "fact", analysis: constAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
-);
+};

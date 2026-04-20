@@ -1,7 +1,8 @@
 // Runtime observation analyses. Written via `Worklist.observe`; tier "runtime".
 
 import { StmtNS } from "../../ast-types";
-import { ROOT_CONTEXT } from "./context";
+import { ROOT_CONTEXT, type AssumptionChain } from "./context";
+import type { Unit } from "./function-unit";
 import {
   defineAnalysis,
   type JoinSemiLattice,
@@ -100,24 +101,28 @@ function nextObservationOrSkip(prev: RawKind | undefined, raw: unknown): RawKind
 
 export function observeRuntimeWrite(
   observer: {
-    observe: (p: Analysis<NodeId, RawKind>, k: NodeId, v: RawKind) => void;
+    observe: (p: Analysis<NodeId, RawKind>, k: NodeId, v: RawKind, ctx: AssumptionChain) => void;
   },
   nodeId: NodeId,
   raw: unknown,
+  context: AssumptionChain,
 ): void {
-  const prev = runtimeWriteAnalysis.store.tryRead(nodeId, ROOT_CONTEXT);
+  const prev = context.tryRead(runtimeWriteAnalysis, nodeId);
   const lifted = nextObservationOrSkip(prev, raw);
   if (lifted === undefined) return;
-  observer.observe(runtimeWriteAnalysis, nodeId, lifted);
+  observer.observe(runtimeWriteAnalysis, nodeId, lifted, context);
 }
 
 /** Force the per-node observation to ⊤ (`unknown`), erasing any singleton
  *  narrowing the speculative analysis had derived for THIS specific node. */
 export function widenWriteObservation(
-  observer: { observe: (p: Analysis<NodeId, RawKind>, k: NodeId, v: RawKind) => void },
+  observer: {
+    observe: (p: Analysis<NodeId, RawKind>, k: NodeId, v: RawKind, ctx: AssumptionChain) => void;
+  },
   nodeId: NodeId,
+  context: AssumptionChain,
 ): void {
-  observer.observe(runtimeWriteAnalysis, nodeId, RAW_TOP);
+  observer.observe(runtimeWriteAnalysis, nodeId, RAW_TOP, context);
 }
 
 /** Runtime observation of per-function return kinds. Key = FunctionDef.id
@@ -164,16 +169,19 @@ export const runtimeParamAnalysis: OpaqueAnalysis<ParamKey, RawKind> = defineAna
 /** Emit a function-entry parameter observation. Called once per argument at
  *  callee entry by JIT-capable evaluators. */
 export function observeRuntimeParam(
-  observer: { observe: (p: Analysis<ParamKey, RawKind>, k: ParamKey, v: RawKind) => void },
+  observer: {
+    observe: (p: Analysis<ParamKey, RawKind>, k: ParamKey, v: RawKind, ctx: AssumptionChain) => void;
+  },
   functionId: FunctionId,
   paramIndex: number,
   raw: unknown,
+  context: AssumptionChain,
 ): void {
   const key = paramKey(functionId, paramIndex);
-  const prev = runtimeParamAnalysis.store.tryRead(key, ROOT_CONTEXT);
+  const prev = context.tryRead(runtimeParamAnalysis, key);
   const lifted = nextObservationOrSkip(prev, raw);
   if (lifted === undefined) return;
-  observer.observe(runtimeParamAnalysis, key, lifted);
+  observer.observe(runtimeParamAnalysis, key, lifted, context);
 }
 
 export const runtimeReturnAnalysis: OpaqueAnalysis<FunctionId, RawKind> = defineAnalysis({
@@ -209,15 +217,16 @@ export const runtimeReturnAnalysis: OpaqueAnalysis<FunctionId, RawKind> = define
  *  once per completed function return. */
 export function observeRuntimeReturn(
   observer: {
-    observe: (p: Analysis<FunctionId, RawKind>, k: FunctionId, v: RawKind) => void;
+    observe: (p: Analysis<FunctionId, RawKind>, k: FunctionId, v: RawKind, ctx: AssumptionChain) => void;
   },
   functionId: FunctionId,
   raw: unknown,
+  context: AssumptionChain,
 ): void {
-  const prev = runtimeReturnAnalysis.store.tryRead(functionId, ROOT_CONTEXT);
+  const prev = context.tryRead(runtimeReturnAnalysis, functionId);
   const lifted = nextObservationOrSkip(prev, raw);
   if (lifted === undefined) return;
-  observer.observe(runtimeReturnAnalysis, functionId, lifted);
+  observer.observe(runtimeReturnAnalysis, functionId, lifted, context);
 }
 
 /** Saturating call-count lattice: `bottom=0`, join clamped at
@@ -271,6 +280,33 @@ export const runtimeCallAnalysis: OpaqueAnalysis<FunctionId, number> = defineAna
  *  buffered writes so memoization / tier-up transforms fire before the next
  *  invocation uses the unspecialized body.
  *
+ *  ## Chain provenance
+ *
+ *  The adapter maintains an internal call-stack shadow. On `observeScopeCall`
+ *  it commits the unit's currently-active speculation chain and pushes a
+ *  frame; on `observeScopeReturn` it pops. All in-between observations
+ *  (`observeNodeWrite`, `observeParamEntry`, return value itself) attribute
+ *  to the stack-top frame's chain. Top-level observations with no enclosing
+ *  call use `ROOT_CONTEXT`.
+ *
+ *  Commit-at-entry eliminates the staleness window between dispatch and
+ *  observation: even if `worklist.specAssumptionChainFor(unit)` advances
+ *  during the call, the observations made inside this invocation continue
+ *  to attribute to the chain the body was selected under.
+ *
+ *  Body-selection callers (CSE's `specializedFunctionBodyFor`) read the
+ *  same committed chain via `committedChainFor(scopeId)` so dispatch and
+ *  observations agree on the chain.
+ *
+ *  ## Engine contract assumed
+ *
+ *  - `observeScopeCall(scopeId)` fires before any other observation in the
+ *    callee, and before `specializedFunctionBodyFor(scopeId)` is queried.
+ *  - `observeScopeReturn(scopeId, value)` fires on every unwind. Today the
+ *    engines have no exceptions and no tail calls, so plain return is the
+ *    only unwind path; if either is added later, the adapter's stack
+ *    discipline must be revisited.
+ *
  *  `beforeObserve` (optional) runs at the head of each callback. The Tiered
  *  evaluator uses it to throw an AbortError when its arm has lost the race;
  *  it must be cheap and may throw to short-circuit the host interpreter. */
@@ -282,28 +318,50 @@ export function makeJitObservers(
   observeScopeCall: (scopeId: FunctionId) => void;
   observeScopeReturn: (scopeId: FunctionId, value: unknown) => void;
   observeParamEntry: (scopeId: FunctionId, paramIndex: number, value: unknown) => void;
+  /** Committed chain for the currently-executing scopeId, set when its
+   *  `observeScopeCall` fired. Returns `ROOT_CONTEXT` when the stack top is
+   *  not this scopeId — including when the stack is empty (top-level), or
+   *  when the engine queries body selection without a matching call hook. */
+  committedChainFor: (scopeId: FunctionId) => AssumptionChain;
 } {
+  type Frame = { scopeId: FunctionId; unit: Unit | undefined; chain: AssumptionChain };
+  const stack: Frame[] = [];
+  const currentChain = (): AssumptionChain =>
+    stack.length === 0 ? ROOT_CONTEXT : stack[stack.length - 1].chain;
+
   return {
     observeNodeWrite: (nodeId, value) => {
       beforeObserve?.();
-      observeRuntimeWrite(worklist, nodeId, value);
+      observeRuntimeWrite(worklist, nodeId, value, currentChain());
     },
     // Convergence is the caller's responsibility. Observations enter the
     // worklist immediately; evaluators choose when to run the full
     // transform/rebuild drain loop.
     observeScopeCall: (scopeId) => {
       beforeObserve?.();
-      const cur = runtimeCallAnalysis.store.tryRead(scopeId, ROOT_CONTEXT) ?? 0;
+      const unit = worklist.topology.unitOfFunctionId(scopeId);
+      const chain = unit !== undefined ? worklist.specAssumptionChainFor(unit) : ROOT_CONTEXT;
+      stack.push({ scopeId, unit, chain });
+      const cur = chain.tryRead(runtimeCallAnalysis, scopeId) ?? 0;
       if (cur >= RUNTIME_CALL_COUNT_SAT) return;
-      worklist.observe(runtimeCallAnalysis, scopeId, cur + 1);
+      worklist.observe(runtimeCallAnalysis, scopeId, cur + 1, chain);
     },
     observeScopeReturn: (scopeId, value) => {
       beforeObserve?.();
-      observeRuntimeReturn(worklist, scopeId, value);
+      // The return observation belongs to the frame being unwound; pop
+      // AFTER observing so the chain attribution is correct.
+      const top = stack.length > 0 ? stack[stack.length - 1] : undefined;
+      const chain = top !== undefined && top.scopeId === scopeId ? top.chain : ROOT_CONTEXT;
+      observeRuntimeReturn(worklist, scopeId, value, chain);
+      if (top !== undefined && top.scopeId === scopeId) stack.pop();
     },
     observeParamEntry: (scopeId, paramIndex, value) => {
       beforeObserve?.();
-      observeRuntimeParam(worklist, scopeId, paramIndex, value);
+      observeRuntimeParam(worklist, scopeId, paramIndex, value, currentChain());
+    },
+    committedChainFor: (scopeId) => {
+      const top = stack.length > 0 ? stack[stack.length - 1] : undefined;
+      return top !== undefined && top.scopeId === scopeId ? top.chain : ROOT_CONTEXT;
     },
   };
 }

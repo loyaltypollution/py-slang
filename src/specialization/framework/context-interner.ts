@@ -27,7 +27,7 @@
 
 import { type AssumptionHandle } from "./analysis";
 import type { Assumption, AssumptionChain } from "./context";
-import { ROOT_CONTEXT } from "./context";
+import { CHAIN_PROTO, ROOT_CONTEXT } from "./context";
 
 /** Total order on (narrowing.debugName, key). `debugName` is globally unique
  *  across registered narrowings; keys are node ids (numbers) for narrowings.
@@ -154,15 +154,17 @@ export class ContextInterner {
     for (const entry of bucket) {
       if (narrowing.eq(entry.value as V, value)) return entry.node;
     }
-    const node: AssumptionChain = Object.freeze({
-      parent,
-      assumption: Object.freeze({
-        narrowing: narrowing as AssumptionHandle<unknown, unknown>,
-        key: key as unknown,
-        value: value as unknown,
-      }),
-      depth: parent.depth + 1,
-    });
+    const node: AssumptionChain = Object.freeze(
+      Object.assign(Object.create(CHAIN_PROTO), {
+        parent,
+        assumption: Object.freeze({
+          narrowing: narrowing as AssumptionHandle<unknown, unknown>,
+          key: key as unknown,
+          value: value as unknown,
+        }),
+        depth: parent.depth + 1,
+      }) as AssumptionChain,
+    );
     bucket.push({ value, node });
     return node;
   }

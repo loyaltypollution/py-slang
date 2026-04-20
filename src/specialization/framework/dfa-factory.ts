@@ -328,8 +328,8 @@ export function makeBlockFixpointAnalysis<L>(
  *  mandatory: `Context` is the primitive, ROOT is one tree-root position
  *  inside it, and a per-node fact read has no default position. Transform
  *  code does not call this directly — it reads through
- *  `TransformFactView.readExprFact`, which binds ROOT once at view
- *  construction.
+ *  `chain.readExprFactAt` / `readExprFactMinimal`, which dispatch to the
+ *  chain at the sweep's bound context.
  *
  *  Returns `undefined` if the node is unknown to `topology` (e.g. freshly
  *  minted outside any indexed unit) or if the block's facts cell has no

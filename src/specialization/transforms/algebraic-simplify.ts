@@ -19,10 +19,11 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokens";
 import type { BasicBlock } from "../framework/cfg";
+import type { AssumptionChain } from "../framework/context";
 import { typeAnalysis, constAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
-import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
-import type { Reading } from "../framework/analysis";
+import type { ProgramTopology } from "../framework/topology";
+import type { Reading, TransformRule } from "../framework/analysis";
 import type { ConstLattice } from "../const-analysis/lattice";
 import {
   INT_BIT,
@@ -34,57 +35,69 @@ import {
 import { truthiness } from "../type-analysis/transfer";
 
 /** Find the first expression in `stmts` with a type fact. Used as the seed
- *  Reading for `bodyAtWitness` — the rule only forks a body when there is
+ *  Reading for `chain.forkBody` — the rule only forks a body when there is
  *  at least one type-fact-bearing expression to potentially simplify. */
-function firstTypeReading(facts: TransformFactView, stmts: readonly StmtNS.Stmt[]): Reading<TypeLattice> | undefined {
+function firstTypeReading(
+  chain: AssumptionChain,
+  topology: ProgramTopology,
+  stmts: readonly StmtNS.Stmt[],
+): Reading<TypeLattice> | undefined {
   for (const s of stmts) {
-    const r = scanStmtTypes(facts, s);
+    const r = scanStmtTypes(chain, topology, s);
     if (r !== undefined) return r;
   }
   return undefined;
 }
 
-function scanStmtTypes(facts: TransformFactView, s: StmtNS.Stmt): Reading<TypeLattice> | undefined {
-  if (s instanceof StmtNS.Assign || s instanceof StmtNS.AnnAssign) return scanExprType(facts, s.value);
-  if (s instanceof StmtNS.Return) return s.value ? scanExprType(facts, s.value) : undefined;
+function scanStmtTypes(
+  chain: AssumptionChain,
+  topology: ProgramTopology,
+  s: StmtNS.Stmt,
+): Reading<TypeLattice> | undefined {
+  if (s instanceof StmtNS.Assign || s instanceof StmtNS.AnnAssign) return scanExprType(chain, topology, s.value);
+  if (s instanceof StmtNS.Return) return s.value ? scanExprType(chain, topology, s.value) : undefined;
   if (s instanceof StmtNS.If) {
-    return scanExprType(facts, s.condition)
-      ?? firstTypeReading(facts, s.body)
-      ?? (s.elseBlock ? firstTypeReading(facts, s.elseBlock) : undefined);
+    return scanExprType(chain, topology, s.condition)
+      ?? firstTypeReading(chain, topology, s.body)
+      ?? (s.elseBlock ? firstTypeReading(chain, topology, s.elseBlock) : undefined);
   }
-  if (s instanceof StmtNS.While) return scanExprType(facts, s.condition) ?? firstTypeReading(facts, s.body);
-  if (s instanceof StmtNS.For) return scanExprType(facts, s.iter) ?? firstTypeReading(facts, s.body);
-  if (s instanceof StmtNS.SimpleExpr) return scanExprType(facts, s.expression);
-  if (s instanceof StmtNS.Assert) return scanExprType(facts, s.value);
-  if (s instanceof StmtNS.FileInput) return firstTypeReading(facts, s.statements);
+  if (s instanceof StmtNS.While) return scanExprType(chain, topology, s.condition) ?? firstTypeReading(chain, topology, s.body);
+  if (s instanceof StmtNS.For) return scanExprType(chain, topology, s.iter) ?? firstTypeReading(chain, topology, s.body);
+  if (s instanceof StmtNS.SimpleExpr) return scanExprType(chain, topology, s.expression);
+  if (s instanceof StmtNS.Assert) return scanExprType(chain, topology, s.value);
+  if (s instanceof StmtNS.FileInput) return firstTypeReading(chain, topology, s.statements);
   return undefined;
 }
 
-function scanExprType(facts: TransformFactView, e: ExprNS.Expr): Reading<TypeLattice> | undefined {
+function scanExprType(
+  chain: AssumptionChain,
+  topology: ProgramTopology,
+  e: ExprNS.Expr,
+): Reading<TypeLattice> | undefined {
   if (e instanceof ExprNS.Binary || e instanceof ExprNS.BoolOp || e instanceof ExprNS.Unary) {
-    const r = facts.readExprFactAt(typeAnalysis, e.id);
+    const r = chain.readExprFactMinimal(topology, typeAnalysis, e.id, () => true);
     if (r !== undefined) return r;
   }
   // Descend; nested binary/boolop/unary may have facts even if the outer
   // shape (e.g. Call) doesn't.
   if (e instanceof ExprNS.Binary || e instanceof ExprNS.Compare || e instanceof ExprNS.BoolOp) {
-    return scanExprType(facts, e.left) ?? scanExprType(facts, e.right);
+    return scanExprType(chain, topology, e.left) ?? scanExprType(chain, topology, e.right);
   }
-  if (e instanceof ExprNS.Unary) return scanExprType(facts, e.right);
+  if (e instanceof ExprNS.Unary) return scanExprType(chain, topology, e.right);
   if (e instanceof ExprNS.Ternary) {
-    return scanExprType(facts, e.predicate) ?? scanExprType(facts, e.consequent) ?? scanExprType(facts, e.alternative);
+    return scanExprType(chain, topology, e.predicate) ?? scanExprType(chain, topology, e.consequent) ?? scanExprType(chain, topology, e.alternative);
   }
   if (e instanceof ExprNS.Call) {
-    const sc = scanExprType(facts, e.callee);
+    const sc = scanExprType(chain, topology, e.callee);
     if (sc !== undefined) return sc;
-    for (const a of e.args) { const r = scanExprType(facts, a); if (r !== undefined) return r; }
+    for (const a of e.args) { const r = scanExprType(chain, topology, a); if (r !== undefined) return r; }
   }
   if (e instanceof ExprNS.List) {
-    for (const el of e.elements) { const r = scanExprType(facts, el); if (r !== undefined) return r; }
+    for (const el of e.elements) { const r = scanExprType(chain, topology, el); if (r !== undefined) return r; }
   }
-  if (e instanceof ExprNS.Subscript) return scanExprType(facts, e.value) ?? scanExprType(facts, e.index);
-  if (e instanceof ExprNS.Grouping) return scanExprType(facts, e.expression);
-  if (e instanceof ExprNS.Starred) return scanExprType(facts, e.value);
+  if (e instanceof ExprNS.Subscript) return scanExprType(chain, topology, e.value) ?? scanExprType(chain, topology, e.index);
+  if (e instanceof ExprNS.Grouping) return scanExprType(chain, topology, e.expression);
+  if (e instanceof ExprNS.Starred) return scanExprType(chain, topology, e.value);
   return undefined;
 }
 
@@ -118,7 +131,8 @@ function zeroLiteralLike(e: ExprNS.Expr): ExprNS.Literal {
 class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
   constructor(
-    private readonly facts: TransformFactView,
+    private readonly chain: AssumptionChain,
+    private readonly topology: ProgramTopology,
   ) {}
 
   rewrite(expr: ExprNS.Expr): ExprNS.Expr {
@@ -131,10 +145,10 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   }
 
   private typeOf(node: ExprNS.Expr): TypeLattice | undefined {
-    return this.facts.readExprFactAt(typeAnalysis, node.id)?.value;
+    return this.chain.readExprFactMinimal(this.topology, typeAnalysis, node.id, () => true)?.value;
   }
   private constOf(node: ExprNS.Expr): ConstLattice | undefined {
-    return this.facts.readExprFactAt(constAnalysis, node.id)?.value;
+    return this.chain.readExprFactMinimal(this.topology, constAnalysis, node.id, () => true)?.value;
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
@@ -291,8 +305,8 @@ class AlgebraicSimplifyStmtVisitor implements StmtNS.Visitor<void> {
   changed = false;
   private readonly exprVisitor: AlgebraicSimplifyVisitor;
 
-  constructor(facts: TransformFactView) {
-    this.exprVisitor = new AlgebraicSimplifyVisitor(facts);
+  constructor(chain: AssumptionChain, topology: ProgramTopology) {
+    this.exprVisitor = new AlgebraicSimplifyVisitor(chain, topology);
   }
 
   private rewriteExpr(expr: ExprNS.Expr): ExprNS.Expr {
@@ -348,18 +362,18 @@ class AlgebraicSimplifyStmtVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-export const algebraicSimplifyRule = unitSweepRule(
-  "algebraicSimplifyRule",
-  (unit: Unit, facts: TransformFactView) => {
-    const seed = firstTypeReading(facts, unit.body);
-    if (seed === undefined) return false;
-    const body = facts.bodyAtWitness(unit, seed);
-    const v = new AlgebraicSimplifyStmtVisitor(facts);
-    v.sweep(body);
-    return v.changed;
-  },
+export const algebraicSimplifyRule: TransformRule = {
+  debugName: "algebraicSimplifyRule",
   // Subscribe to `.facts` — this transform reads per-node type lattice values
   // via `readExprFact`. `.env` changes that don't advance `.facts` wouldn't
   // produce new rewrites; watching `.facts` avoids spurious sweeps.
-  [{ on: "fact", analysis: typeAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
-);
+  edges: [{ on: "fact", analysis: typeAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
+    const seed = firstTypeReading(chain, topology, unit.body);
+    if (seed === undefined) return false;
+    const body = chain.forkBody(unit, seed);
+    const v = new AlgebraicSimplifyStmtVisitor(chain, topology);
+    v.sweep(body);
+    return v.changed;
+  },
+};

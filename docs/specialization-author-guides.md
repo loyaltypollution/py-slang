@@ -82,7 +82,6 @@ They care about:
 
 - ROOT-only reads;
 - `TransformFactView`;
-- `unitSweepRule(...)`;
 - idempotency;
 - CFG rebuild semantics;
 - the function-registry contract when changing function structure.

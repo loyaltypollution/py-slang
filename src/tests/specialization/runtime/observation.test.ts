@@ -43,7 +43,7 @@ describe("observation: idempotence", () => {
     const before = readExprFact(
       reactive.topology,
       typeAnalysis, assign.value.id, ROOT_CONTEXT);
-    observeRuntimeWrite(reactive, assign.value.id, 42);
+    observeRuntimeWrite(reactive, assign.value.id, 42, ROOT_CONTEXT);
     const after = readExprFact(
       reactive.topology,
       typeAnalysis, assign.value.id, ROOT_CONTEXT);
@@ -81,7 +81,7 @@ f()
         calls.push(scopeId);
         const next = (callCounts.get(scopeId) ?? 0) + 1;
         callCounts.set(scopeId, next);
-        reactive.observe(runtimeCallAnalysis, scopeId, next);
+        reactive.observe(runtimeCallAnalysis, scopeId, next, ROOT_CONTEXT);
       },
     });
 
@@ -111,7 +111,7 @@ f(41)
     const interpreter = new SVMLInterpreter(compiler.compileProgram(ast), {
       observeScopeReturn: (scopeId, value) => {
         returns.push({ scopeId, value });
-        observeRuntimeReturn(reactive, scopeId, value);
+        observeRuntimeReturn(reactive, scopeId, value, ROOT_CONTEXT);
       },
     });
 

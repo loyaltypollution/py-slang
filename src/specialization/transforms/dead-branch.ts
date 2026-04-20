@@ -1,27 +1,30 @@
 // Dead branch elimination. Idempotent: spliced-out `If` nodes no longer match.
 //
-// Context-aware: the rule reads const facts via `readExprFactMinimal` from
-// the view's bound context, uses the first match to obtain a fork at that
-// context via `bodyAtWitness`, then mutates the forked tree. Under ROOT
-// this is equivalent to the previous shared-AST rewrite; under a
-// non-ROOT view it prunes branches whose condition is proven const only
-// under speculation.
+// Context-aware: the rule reads const facts via `chain.readExprFactMinimal`
+// from the sweep's bound chain, uses the first match to obtain a fork at
+// that chain via `chain.forkBody`, then mutates the forked tree. Under ROOT
+// this is equivalent to the previous shared-AST rewrite; under a non-ROOT
+// chain it prunes branches whose condition is proven const only under
+// speculation.
 
 import { StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
+import type { AssumptionChain } from "../framework/context";
 import { constAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
-import { type TransformFactView, unitSweepRule } from "../framework/transform-rule";
-import type { Reading } from "../framework/analysis";
+import type { ProgramTopology } from "../framework/topology";
+import type { Reading, TransformRule } from "../framework/analysis";
 import type { ConstLattice } from "../const-analysis/lattice";
 
 type ConstReading = Reading<ConstLattice>;
 
 function constTruthReading(
-  facts: TransformFactView,
+  chain: AssumptionChain,
+  topology: ProgramTopology,
   nodeId: number,
 ): ConstReading | undefined {
-  return facts.readExprFactMinimal(
+  return chain.readExprFactMinimal(
+    topology,
     constAnalysis,
     nodeId,
     cv => cv.tag === "const" && typeof cv.value === "boolean",
@@ -29,26 +32,27 @@ function constTruthReading(
 }
 
 /** Scan for the first If whose condition reads as a const boolean. The
- *  returned Reading seeds `bodyAtWitness` so the sweep can fork before
+ *  returned Reading seeds `chain.forkBody` so the sweep can fork before
  *  mutating. Returns undefined when no Ifs in this unit have const
  *  conditions — the rule then reports "no changes" without touching the
  *  body store. */
 function findSeedReading(
-  facts: TransformFactView,
+  chain: AssumptionChain,
+  topology: ProgramTopology,
   stmts: readonly StmtNS.Stmt[],
 ): ConstReading | undefined {
   for (const s of stmts) {
     if (s instanceof StmtNS.If) {
-      const r = constTruthReading(facts, s.condition.id);
+      const r = constTruthReading(chain, topology, s.condition.id);
       if (r !== undefined) return r;
-      const inBody = findSeedReading(facts, s.body);
+      const inBody = findSeedReading(chain, topology, s.body);
       if (inBody !== undefined) return inBody;
       if (s.elseBlock) {
-        const inElse = findSeedReading(facts, s.elseBlock);
+        const inElse = findSeedReading(chain, topology, s.elseBlock);
         if (inElse !== undefined) return inElse;
       }
     } else if (s instanceof StmtNS.While || s instanceof StmtNS.For) {
-      const inBody = findSeedReading(facts, s.body);
+      const inBody = findSeedReading(chain, topology, s.body);
       if (inBody !== undefined) return inBody;
     }
   }
@@ -58,7 +62,8 @@ function findSeedReading(
 class DeadBranchVisitor implements StmtNS.Visitor<void> {
   changed = false;
   constructor(
-    private readonly facts: TransformFactView,
+    private readonly chain: AssumptionChain,
+    private readonly topology: ProgramTopology,
   ) {}
 
   sweep(stmts: StmtNS.Stmt[]): void {
@@ -79,7 +84,7 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
 
   private tryReplaceIf(stmt: StmtNS.Stmt): StmtNS.Stmt[] | null {
     if (!(stmt instanceof StmtNS.If)) return null;
-    const r = constTruthReading(this.facts, stmt.condition.id);
+    const r = constTruthReading(this.chain, this.topology, stmt.condition.id);
     if (r === undefined) return null;
     const cv = r.value;
     if (cv.tag !== "const" || typeof cv.value !== "boolean") return null;
@@ -114,15 +119,15 @@ class DeadBranchVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-export const deadBranchRule = unitSweepRule(
-  "deadBranchRule",
-  (unit: Unit, facts: TransformFactView) => {
-    const seed = findSeedReading(facts, unit.body);
+export const deadBranchRule: TransformRule = {
+  debugName: "deadBranchRule",
+  edges: [{ on: "fact", analysis: constAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
+  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
+    const seed = findSeedReading(chain, topology, unit.body);
     if (seed === undefined) return false;
-    const body = facts.bodyAtWitness(unit, seed);
-    const v = new DeadBranchVisitor(facts);
+    const body = chain.forkBody(unit, seed);
+    const v = new DeadBranchVisitor(chain, topology);
     v.sweep(body);
     return v.changed;
   },
-  [{ on: "fact", analysis: constAnalysis.facts, wake: (_ctx, block) => [(block as BasicBlock).unit] }],
-);
+};

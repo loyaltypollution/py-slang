@@ -237,10 +237,6 @@ either writing framework code or writing a clone consumer (see
 
 ## 5. The minimal ROOT-only rule (the common case)
 
-`unitSweepRule(...)` is a thin builder. It does not add semantics — it
-just fills in `id`, `debugName`, and packages a `sweep` callback into a
-`TransformRule`. Use it when your rule has no other state.
-
 ```ts
 export const myRule = unitSweepRule(
   "myRule",

@@ -18,6 +18,7 @@ import {
   type SpeculationStrategy,
 } from "../../../specialization/framework/speculation-strategy";
 import { Worklist, DEFAULT_PASSES, DEFAULT_TRANSFORMS } from "../../../specialization/framework/worklist";
+import { ROOT_CONTEXT } from "../../../specialization/framework/context";
 import { INT_BIT } from "../../../specialization/type-analysis/lattice";
 import { paramKey } from "../../../specialization/framework/key-spaces";
 
@@ -50,7 +51,7 @@ describe("SpeculationStrategy", () => {
     const unit = worklist.topology.unitOfFunctionId(fn.id)!;
     const xReadId = ((fn.body[0] as StmtNS.Assign).value as { id: number }).id;
 
-    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 5 });
+    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 5 }, ROOT_CONTEXT);
     worklist.drain();
 
     expect(worklist.specAssumptionChainFor(unit).depth).toBeGreaterThan(0);
@@ -69,15 +70,15 @@ describe("SpeculationStrategy", () => {
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.topology.unitOfFunctionId(fn.id)!;
 
-    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 5 });
+    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 5 }, ROOT_CONTEXT);
     worklist.drain();
     expect(worklist.specAssumptionChainFor(unit).depth).toBe(0);
 
-    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 5 });
+    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 5 }, ROOT_CONTEXT);
     worklist.drain();
     expect(worklist.specAssumptionChainFor(unit).depth).toBe(0);
 
-    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 5 });
+    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 5 }, ROOT_CONTEXT);
     worklist.drain();
     expect(worklist.specAssumptionChainFor(unit).depth).toBeGreaterThan(0);
   });
@@ -87,10 +88,10 @@ describe("SpeculationStrategy", () => {
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.topology.unitOfFunctionId(fn.id)!;
 
-    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 1 });
-    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 2 });
-    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 3 });
-    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 4 });
+    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 1 }, ROOT_CONTEXT);
+    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 2 }, ROOT_CONTEXT);
+    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 3 }, ROOT_CONTEXT);
+    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 4 }, ROOT_CONTEXT);
     worklist.drain();
 
     // No single discriminant hit 3; chain stays at ROOT.

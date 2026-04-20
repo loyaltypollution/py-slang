@@ -64,7 +64,7 @@ describe("entryGuardsFor: direct parameter assumptions", () => {
     const { ast, worklist } = buildWorklist("def f(x):\n    if x:\n        return 1\n    return 0");
     const fd = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.topology.unitOfFunctionId(fd.id)!;
-    worklist.observe(runtimeParamAnalysis, paramKey(fd.id, 0), { kind: "bool", value: true });
+    worklist.observe(runtimeParamAnalysis, paramKey(fd.id, 0), { kind: "bool", value: true }, ROOT_CONTEXT);
     worklist.drain();
     expect(entryGuardsFor(unit, worklist.specAssumptionChainFor(unit))).toContainEqual({
       kind: "param-type",

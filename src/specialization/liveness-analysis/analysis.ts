@@ -1,7 +1,7 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
 import { addEdge } from "../framework/analysis";
-import { ROOT_CONTEXT } from "../framework/context";
+import type { AssumptionChain } from "../framework/context";
 import {
   makeBlockFixpointAnalysis,
   nodeIdToBlock,
@@ -197,12 +197,20 @@ addEdge(livenessAnalysis.env, {
   wake: nodeIdToBlock,
 });
 
-/** Reconstruct live-OUT of `block`: join of live-INs (stored outEnvs) of
- *  CFG-successors. Terminal blocks have no successors ⇒ empty. */
-export function liveOutOf(block: BasicBlock): MutableEnv<LiveVal> {
+/** Reconstruct live-OUT of `block` under `chain`: join of live-INs (stored
+ *  outEnvs) of CFG-successors read at that chain. Terminal blocks have no
+ *  successors ⇒ empty.
+ *
+ *  `chain` is load-bearing: under a speculative context whose forked body
+ *  differs from ROOT, successor live-INs differ accordingly. The previous
+ *  ROOT-hardcoded read silently miscompiled any non-ROOT consumer. */
+export function liveOutOf(
+  block: BasicBlock,
+  chain: AssumptionChain,
+): MutableEnv<LiveVal> {
   const result = new MutableEnv<LiveVal>();
   for (const edge of block.successorEdges) {
-    const env = livenessAnalysis.env.store.tryRead(edge.to, ROOT_CONTEXT);
+    const env = chain.tryRead(livenessAnalysis.env, edge.to);
     if (env === undefined) continue;
     for (const slot of env.definedSlots()) {
       result.set(slot, LIVE);
@@ -220,10 +228,11 @@ export function liveOutOf(block: BasicBlock): MutableEnv<LiveVal> {
 export function perStatementLiveOut(
   block: BasicBlock,
   slotLookup: SlotLookup,
+  chain: AssumptionChain,
 ): ReadonlyArray<ReadonlySet<number>> {
   const stmts = block.stmts;
   const liveOuts: Set<number>[] = new Array(stmts.length);
-  const env = liveOutOf(block);
+  const env = liveOutOf(block, chain);
   const visitor = new ReadCollector(env, slotLookup);
   for (let i = stmts.length - 1; i >= 0; i--) {
     const snapshot = new Set<number>();

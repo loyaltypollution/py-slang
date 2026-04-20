@@ -183,53 +183,56 @@ This is exactly the effect we want:
 
 ## Required API shape
 
-The engine needs an easy transform-facing API that hides chain mechanics.
+### Principle: one reader, one noun
 
-### Reading with witness
+The reading surface lives on **`AssumptionChain` itself**. Nothing else can read
+facts. `analysis.store` is package-private; `TransformFactView` does not exist;
+`ROOT_CONTEXT` is not a module-level import — it is `engine.rootChain`, handed
+out by the engine.
 
-Introduce a witness-carrying read result:
+This is the load-bearing move: the contract is enforced structurally, not by
+convention or lint. A helper that wants to read must accept a chain. A helper
+that has no chain argument cannot reach into the store — there is no API for
+it.
+
+### The chain's reader surface
 
 ```ts
 interface Reading<V> {
   readonly value: V;
   readonly witness: AssumptionChain;
 }
+
+class AssumptionChain {
+  // positional
+  read<V>(a: Analysis<..., V>, key): V
+  tryRead<V>(a: Analysis<..., V>, key): V | undefined
+
+  // walk toward ROOT, return shallowest witness satisfying `accept`
+  readMinimal<V>(a, key, accept): Reading<V> | undefined
+  readExprFactMinimal<V>(a, nodeId, accept): Reading<V> | undefined
+
+  // publish at the chain's context; `reading.witness` must be an ancestor
+  forkBody(unit, reading): Stmt[]
+
+  readonly parent: AssumptionChain | undefined
+}
 ```
 
-### Two read modes
+Usage looks identical for transforms and analyses:
 
 ```ts
-readAt(a, key, ctx): Reading<V>
+const r = chain.readMinimal(purityScopeAnalysis, fd.id, v => v === true)
 ```
 
-- exact positional read
-- use when the caller truly wants facts at this exact context
+No `parent` walking, no interner details, no `TransformFactView`, no
+`ROOT_CONTEXT` import. One API, one noun along the reading axis.
 
-```ts
-readMinimal(a, key, accept, from): Reading<V> | undefined
-```
+### Profile/root reads
 
-- walk toward ROOT from `from`
-- return the shallowest witness whose value still satisfies `accept`
-- this is the canonical transform/evaluator helper
-
-### Transform-facing surface
-
-The transform surface should eventually expose helpers of this shape directly,
-so a transform author can write:
-
-```ts
-const r = facts.readMinimal(purityScopeAnalysis, fd.id, v => v === true)
-```
-
-without touching:
-
-- `parent`
-- `excludeAssumption`
-- interner details
-- ad hoc per-rule widening logic
-
-That is the load-bearing ergonomics requirement.
+Profile counters are ROOT-keyed by design (policy §). They read as
+`engine.rootChain.read(counter, key)` — no special `readProfitability` helper,
+just explicit root reach. The intent is visible at the call site.
 
 ---
 
@@ -295,37 +298,78 @@ ROOT transforms” and “speculative evaluator-local rewrites” as unrelated w
 
 ## Minimal implementation plan
 
-### Phase 1: witness API
+### Phase 1 (done): witness API
 
-Add:
+`Reading<V>`, `readAt`, `readMinimal`, `readExprFactMinimal`, `bodyAtWitness`
+exist on `TransformFactView`. Reuses the worklist's lineage walk.
 
-- `Reading<V>`
-- `readAt(...)`
-- `readMinimal(...)`
+### Phase 2 (done): transform-facing witness reads
 
-Reuse the existing context-probe machinery already present in the worklist
-rather than inventing a second lineage walk.
+Transform surfaces carry the minimal-witness API; transforms no longer walk
+chain internals.
 
-### Phase 2: transform-facing witness reads
+### Phase 3 (done): memoization on the canonical contract
 
-Extend transform fact surfaces so transforms can ask for minimal witnesses
-without handling chain mechanics manually.
+Memoization asks for minimal witness of purity/hotness; guard/key/artifact
+identity derived from the witness; local widening deleted.
 
-Initially this can be limited to the transforms we actively care about.
+### Phase 4: collapse the reader onto `AssumptionChain`, generalize to all transforms
 
-### Phase 3: move memoization onto the canonical contract
+Phases 1–3 layered a facade (`TransformFactView`) over a still-public
+`analysis.store`. That leaves two ways to read — the sanctioned view and the
+raw store — and ROOT-hardcoded helpers (e.g. `liveness-analysis/analysis.ts`'s
+`liveOutOf`) have been reaching past the view to the store. Phase 4 removes
+the second way.
 
-Refactor memoization so that:
+**Structural changes:**
 
-- policy supplies abstract assumptions (e.g. `pos-int`, not raw consts)
-- memoization asks for the minimal witness of purity/hotness
-- guard/key/artifact identity are derived from that witness
-- local widening logic is deleted
+1. Move `read`, `tryRead`, `readMinimal`, `readExprFactMinimal`, `forkBody`
+   onto `AssumptionChain`. Delegate to the existing store internally.
+2. Delete `TransformFactView` and `transformFacts(...)`. Transform sweep
+   callbacks receive `(unit, chain)` instead of `(unit, facts)`.
+3. Mark `analysis.store` package-private. Only `framework/worklist.ts` and the
+   chain's own methods touch it.
+4. Remove `ROOT_CONTEXT` as a module-level export. Each engine exposes its own
+   `engine.rootChain`. Helpers that legitimately need root reads (profile
+   counters in `runtime-analyses.ts`, `svml-jit-analysis.ts`) receive the root
+   chain explicitly.
+5. Drop the `readProfitability` helper; profile reads are
+   `rootChain.read(counter, key)`.
 
-### Phase 4: generalize the same contract to all transforms
+**Migration by site class:**
 
-Apply the same minimal-witness discipline to dead-branch, constant-folding, and
-future transforms so the engine has one consistent rule. Specifically, this must be done in a way that is not just purely migratory, but contract enforcing from the get go. We should almost discourage / remove the side channel path, or make the automatica assumption chain the easy default API.
+- *Mechanical swap* (~40 sites): `x.store.read(k, ctx)` → `ctx.read(x, k)`.
+- *Exposed bugs* (helpers with no chain arg currently hardcoding ROOT; the new
+  type forces chain threading):
+  - `liveness-analysis/analysis.ts:205` — `liveOutOf(block)` →
+    `liveOutOf(block, chain)`. This is the Phase 4 dead-store fix.
+  - `purity-analysis/analysis.ts:347,508` — ROOT fallback → chain walking.
+  - `dfa-query.ts:92-93` — same pattern.
+  - `framework/text-formatter.ts:291` — diagnostic; pass chain.
+- *Legitimate root reads* (profile channel): explicit `rootChain.read(...)`.
+- *Framework internals* (`worklist.ts`, `dfa-factory.ts`): keep direct store
+  access — these implement the chain's methods.
+- *Tests*: swap mechanically, or prune where they encode the old spec (the
+  external evaluation suite is the source of truth for behavior).
+
+**Order of operations:**
+
+1. Add chain methods; delegate to `.store`.
+2. Migrate transforms → analyses → tests in waves.
+3. Delete `TransformFactView` + `transformFacts(...)`.
+4. Mark `analysis.store` package-private.
+5. Replace `ROOT_CONTEXT` export with `engine.rootChain`.
+6. Liveness + purity chain-walking fixes fall out of (4) — the code stops
+   compiling until chain is threaded.
+
+**Why this is phase 4, not phase 1 reworked:** phases 1–3 validated that the
+minimal-witness discipline works for the transforms we care about. Phase 4
+deletes the old reader so nothing can opt out. Contract-enforcing, not
+migratory.
+
+**Non-goals for Phase 4:** a separate `TransferContext` / Reader token type /
+arch-test allowlist. These were considered; they add nouns without adding
+enforcement beyond what moving the reader onto the chain already provides.
 
 ---
 

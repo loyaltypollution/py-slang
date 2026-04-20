@@ -250,16 +250,16 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
     const literal = add.right as ExprNS.Literal;
     const oldEntry = gUnit.cfg.entry;
 
-    observeRuntimeWrite(worklist, literal.id, 7);
+    observeRuntimeWrite(worklist, literal.id, 7, ROOT_CONTEXT);
 
     const specCtx = worklist.specAssumptionChainFor(gUnit);
-    expect(typeAnalysis.env.store.tryRead(oldEntry, specCtx)).toBeDefined();
-    expect(typeAnalysis.facts.store.tryRead(oldEntry, specCtx)).toBeDefined();
+    expect(specCtx.tryRead(typeAnalysis.env, oldEntry)).toBeDefined();
+    expect(specCtx.tryRead(typeAnalysis.facts, oldEntry)).toBeDefined();
 
     worklist.registry.retire(g.id);
 
-    expect(typeAnalysis.env.store.tryRead(oldEntry, specCtx)).toBeUndefined();
-    expect(typeAnalysis.facts.store.tryRead(oldEntry, specCtx)).toBeUndefined();
+    expect(specCtx.tryRead(typeAnalysis.env, oldEntry)).toBeUndefined();
+    expect(specCtx.tryRead(typeAnalysis.facts, oldEntry)).toBeUndefined();
   });
 
   it("rebuild evicts block-analysis cells across speculative contexts too", async () => {
@@ -286,15 +286,14 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
     const literal = add.right as ExprNS.Literal;
     const oldEntry = gUnit.cfg.entry;
 
-    observeRuntimeWrite(worklist, literal.id, 7);
+    observeRuntimeWrite(worklist, literal.id, 7, ROOT_CONTEXT);
 
     const specCtx = worklist.specAssumptionChainFor(gUnit);
-    expect(typeAnalysis.env.store.tryRead(oldEntry, specCtx)).toBeDefined();
-    expect(typeAnalysis.facts.store.tryRead(oldEntry, specCtx)).toBeDefined();
+    expect(specCtx.tryRead(typeAnalysis.env, oldEntry)).toBeDefined();
+    expect(specCtx.tryRead(typeAnalysis.facts, oldEntry)).toBeDefined();
 
     let fired = false;
     worklist.registerTransform({
-      id: Symbol("one-shot-rebuild"),
       debugName: "one-shot-rebuild",
       sweep: unit => {
         if (fired || unit !== gUnit) return false;
@@ -305,7 +304,7 @@ describe("FunctionRegistry ↔ Worklist listener wiring", () => {
     worklist.drain();
 
     expect(fired).toBe(true);
-    expect(typeAnalysis.env.store.tryRead(oldEntry, specCtx)).toBeUndefined();
-    expect(typeAnalysis.facts.store.tryRead(oldEntry, specCtx)).toBeUndefined();
+    expect(specCtx.tryRead(typeAnalysis.env, oldEntry)).toBeUndefined();
+    expect(specCtx.tryRead(typeAnalysis.facts, oldEntry)).toBeUndefined();
   });
 });

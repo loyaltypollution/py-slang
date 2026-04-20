@@ -1,6 +1,8 @@
 import { StmtNS, ExprNS } from "../../ast-types";
+import { ROOT_CONTEXT, type AssumptionChain } from "../framework/context";
 import type { Unit } from "../framework/function-unit";
-import type { Reading, TransformRule, TransformFactView } from "../framework/analysis";
+import type { ProgramTopology } from "../framework/topology";
+import type { Reading, TransformRule } from "../framework/analysis";
 import { runtimeCallAnalysis, RUNTIME_CALL_COUNT_SAT } from "../framework/runtime-analyses";
 import { purityScopeAnalysis } from "../purity-analysis/analysis";
 import { guardKeyFromGuards, directParamEntryGuardsFor } from "../entry-guards";
@@ -107,9 +109,9 @@ export function memoWrappedBody(
 
 export function memoizationWitnessFor(
   fd: StmtNS.FunctionDef,
-  facts: TransformFactView,
+  chain: AssumptionChain,
 ): Reading<true> | undefined {
-  return facts.readMinimal(purityScopeAnalysis, fd.id, value => value === true) as Reading<true> | undefined;
+  return chain.readMinimal(purityScopeAnalysis, fd.id, value => value === true) as Reading<true> | undefined;
 }
 
 function mkTok(fd: StmtNS.FunctionDef, type: TokenType, lexeme: string): Token {
@@ -149,7 +151,6 @@ function bodyHasMemoPrelude(body: readonly StmtNS.Stmt[]): boolean {
 // forked body (ROOT's body is `unit.funcAst.body`, so ROOT witnesses still
 // mutate shared AST — no special case).
 export const memoizationRule: TransformRule = {
-  id: Symbol("memoizationRule"),
   debugName: "memoizationRule",
   edges: [
     { on: "fact", analysis: runtimeCallAnalysis, wake: (ctx, functionId) => {
@@ -161,15 +162,17 @@ export const memoizationRule: TransformRule = {
       return u ? [u] : [];
     }},
   ],
-  sweep(unit: Unit, facts: TransformFactView): boolean {
+  sweep(unit: Unit, chain: AssumptionChain, _topology: ProgramTopology): boolean {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
-    // runtimeCallAnalysis already saturates at RUNTIME_CALL_COUNT_SAT via its
-    // lattice join, so readProfitability returns the capped count directly.
-    if (facts.readProfitability(runtimeCallAnalysis, fd.id) < MEMOIZATION_THRESHOLD) return false;
-    const witness = memoizationWitnessFor(fd, facts);
+    // Profitability counters are ROOT-keyed by design (runtime observations
+    // come from the running program, not from speculation). Read explicitly
+    // from ROOT so the policy channel is visible at the call site rather
+    // than hidden behind a method-name convention.
+    if (ROOT_CONTEXT.read(runtimeCallAnalysis, fd.id) < MEMOIZATION_THRESHOLD) return false;
+    const witness = memoizationWitnessFor(fd, chain);
     if (witness === undefined) return false;
-    const body = facts.bodyAtWitness(unit, witness);
+    const body = chain.forkBody(unit, witness);
     if (bodyHasMemoPrelude(body)) return false;
     // Memo variant identity derives from the witness context, so sibling
     // contexts that readMinimal the same witness converge on the same

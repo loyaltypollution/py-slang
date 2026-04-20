@@ -102,11 +102,11 @@ def f(x):
       const expectedSeed = seed === "entry" ? unit.cfg.entry : unit.cfg.exit;
       expect(analysis.seed(unit)).toBe(expectedSeed);
 
-      const seededEnv = analysis.env.store.tryRead(expectedSeed, ROOT_CONTEXT);
+      const seededEnv = ROOT_CONTEXT.tryRead(analysis.env, expectedSeed);
       expect(seededEnv).toBeDefined();
       expect(seededEnv?.get(0)).toBe(1);
 
-      const seededFacts = analysis.facts.store.tryRead(expectedSeed, ROOT_CONTEXT);
+      const seededFacts = ROOT_CONTEXT.tryRead(analysis.facts, expectedSeed);
       expect(seededFacts).toBeDefined();
       expect(seededFacts?.get(-1)).toBe(expectedSeed.stmts.length);
     },

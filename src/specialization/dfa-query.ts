@@ -89,8 +89,8 @@ export function makeDfaQuery(
     isPureScope: scopeId => {
       const unit = topology.unitOfFunctionId(scopeId);
       const context = unit !== undefined ? specAssumptionChainForUnit(unit) : ROOT_CONTEXT;
-      return purityScopeAnalysis.store.tryRead(scopeId, context)
-        ?? purityScopeAnalysis.store.tryRead(scopeId, ROOT_CONTEXT);
+      return context.tryRead(purityScopeAnalysis, scopeId)
+        ?? ROOT_CONTEXT.tryRead(purityScopeAnalysis, scopeId);
     },
   };
 }

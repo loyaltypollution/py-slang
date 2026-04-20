@@ -54,7 +54,7 @@ def f(a, b):
     const unit = worklist.units.get(fn.id)!;
 
     const entry = unit.cfg.entry;
-    const env = definitelyBoundAnalysis.env.store.read(entry, ROOT_CONTEXT);
+    const env = ROOT_CONTEXT.read(definitelyBoundAnalysis.env, entry);
     // After transferBlock runs on entry, all param slots should be BOUND.
     const slotA = unit.slotLookup(fn.parameters[0]).slot;
     const slotB = unit.slotLookup(fn.parameters[1]).slot;
@@ -78,7 +78,7 @@ def f(flag):
     const slotX = unit.slotLookup(xTarget.name).slot;
 
     const entry = unit.cfg.entry;
-    const env = definitelyBoundAnalysis.env.store.read(entry, ROOT_CONTEXT);
+    const env = ROOT_CONTEXT.read(definitelyBoundAnalysis.env, entry);
     expect(env.get(slotX)).toBe(UNBOUND);
   });
 
@@ -98,7 +98,7 @@ def f():
     const slotX = unit.slotLookup(xRef.name).slot;
 
     const exit = unit.cfg.exit;
-    const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
+    const env = ROOT_CONTEXT.read(definitelyBoundAnalysis.env, exit);
     expect(env.get(slotX)).toBe(BOUND);
   });
 
@@ -120,7 +120,7 @@ def f(flag):
     const slotX = unit.slotLookup(xTarget.name).slot;
 
     const exit = unit.cfg.exit;
-    const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
+    const env = ROOT_CONTEXT.read(definitelyBoundAnalysis.env, exit);
     expect(env.get(slotX)).toBe(UNBOUND);
   });
 
@@ -141,7 +141,7 @@ def f(flag):
     const slotX = unit.slotLookup(xRef.name).slot;
 
     const exit = unit.cfg.exit;
-    const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
+    const env = ROOT_CONTEXT.read(definitelyBoundAnalysis.env, exit);
     expect(env.get(slotX)).toBe(BOUND);
   });
 
@@ -160,7 +160,7 @@ def f(xs):
     const slotI = unit.slotLookup(forStmt.target).slot;
 
     const exit = unit.cfg.exit;
-    const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
+    const env = ROOT_CONTEXT.read(definitelyBoundAnalysis.env, exit);
     // `i` is bound by the For header; definitely bound at exit when the body
     // runs at least once. Under must semantics, a zero-iteration path would
     // leave `i` unbound — the analysis is conservative and doesn't model the

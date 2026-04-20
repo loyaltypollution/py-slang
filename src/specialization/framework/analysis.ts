@@ -35,8 +35,9 @@
 //
 //   TransformRule     — imperative AST sweep (defined below). Registered via
 //                       `worklist.registerTransform`; no lattice, no
-//                       transfer, no store write. `sweep(unit, facts)`
-//                       returns `true` to trigger CFG rebuild.
+//                       transfer, no store write. `sweep(unit, chain,
+//                       topology)` returns `true` to trigger CFG rebuild;
+//                       reads happen through the chain directly.
 
 import type { StmtNS } from "../../ast-types";
 import type { Unit } from "./function-unit";
@@ -218,7 +219,7 @@ export interface Analysis<K, V> {
    *
    *  Storage is owned by the Analysis itself; there is no shared external
    *  registry. Consumers reach cells via `analysis.store.read(key, context)`,
-   *  or — for transforms — through the ROOT-bound `TransformFactView`.
+   *  or — for transforms — through the chain passed to `sweep`.
    *
    *  Construction is handled by `defineAnalysis({...})` so declarations
    *  stay literal-shaped without boilerplate. */
@@ -388,72 +389,19 @@ export interface AnalysisCtx {
   evict<K, V>(analysis: Analysis<K, V>, key: K): void;
 }
 
-/** Context-bound fact surface exposed to transforms. The surface is narrower
- *  than `AnalysisCtx` — no `write`, no raw topology, no arbitrary cross-
- *  context reads. Semantic reads (`read` / `tryRead` / `readAll` /
- *  `readExprFact`) only accept may/must analyses. Opaque analyses (runtime
- *  observations, profitability counters) must go through the explicitly named
- *  `readProfitability` surface so policy evidence cannot masquerade as
- *  semantic proof by sharing the same method name.
+/** Witness-labeled fact read. Produced by `chain.readMinimal` / `readAt` /
+ *  `readExprFactMinimal` / `readExprFactAt`, and consumed by
+ *  `chain.forkBody` as proof of authorization: a transform that has not
+ *  read any fact has no `Reading<V>` to pass, and therefore cannot rewrite.
  *
- *  Worklist-driven canonical AST rewrites bind this view at ROOT.
- *  Speculative clone consumers may bind it at a non-ROOT context because the
- *  mutated tree is an ephemeral compilation artifact, not the shared program
- *  topology. Node→block bridging is exposed only through the helper surface
- *  below, so transforms still cannot pair raw topology access with ad hoc
- *  cross-context reads. */
+ *  `witness` names the chain node that produced the value. For `readAt` /
+ *  `readExprFactAt` that is the reading chain itself. For `readMinimal` /
+ *  `readExprFactMinimal` that is the shallowest ancestor whose cell
+ *  satisfied the caller's predicate — the most reusable assumption under
+ *  which the rewrite is sound. */
 export interface Reading<V> {
   readonly value: V;
   readonly witness: AssumptionChain;
-}
-
-export interface TransformFactView {
-  /** Exact positional read at the view's bound context. Returns a
-   *  `Reading<V>` labeled with that context; the value is the store's
-   *  `read()` result (uses `emptyValue` / `storeAlgebra.bottom` for
-   *  unwritten cells — no silent ROOT fallback). Use this when the rule
-   *  knows it cares about facts at exactly this context. */
-  readAt<K, V>(analysis: SemanticAnalysis<K, V>, key: K): Reading<V>;
-  /** Walk `bound context → ROOT`, returning the shallowest ancestor whose
-   *  written cell value satisfies `accept`. Unwritten ancestor cells are
-   *  skipped; no ROOT fallback. Use this when the rule's rewrite should
-   *  pick the most reusable witness of a predicate. */
-  readMinimal<K, V>(analysis: SemanticAnalysis<K, V>, key: K, accept: (value: V) => boolean): Reading<V> | undefined;
-  /** Block-DFA equivalent of `readAt`, keyed by AST nodeId (framework
-   *  locates the owning block). Returns `undefined` when no fact was
-   *  written at this node under the view's bound context. */
-  readExprFactAt<L>(analysis: SemanticBlockFixpointAnalysis<L>, nodeId: number): Reading<L> | undefined;
-  /** Block-DFA equivalent of `readMinimal`: walks `bound context → ROOT`,
-   *  returning the shallowest ancestor whose per-node fact satisfies
-   *  `accept`. */
-  readExprFactMinimal<L>(
-    analysis: SemanticBlockFixpointAnalysis<L>,
-    nodeId: number,
-    accept: (value: L) => boolean,
-  ): Reading<L> | undefined;
-  /** Opaque-analysis read (runtime observations, profitability counters).
-   *  Keyed at a fixed "profitability context" — typically ROOT because
-   *  runtime observations are architecturally ROOT-scoped (they come from
-   *  the running program, not from speculation). Not a witness read: the
-   *  return is a raw `V`, since opaque facts do not participate in the
-   *  witness-justification contract. */
-  readProfitability<K, V>(analysis: OpaqueAnalysis<K, V>, key: K): V;
-  /** Mutable body handle, authorized by a `Reading<V>` obtained from one
-   *  of the witness-producing reads above. The typed parameter IS the
-   *  contract: a transform that has not read any fact has no Reading to
-   *  pass, and therefore cannot rewrite.
-   *
-   *  Fork location is the view's bound context — `reading.witness` plays
-   *  the role of *proof of authorization*, not *publication site*. This
-   *  keeps rule composition clean: when several rules fire at one
-   *  context, they all see and mutate the same forked body. Rules that
-   *  want to influence downstream identity by witness (memoization's memo
-   *  variant key) consult `reading.witness` directly; they don't need
-   *  the fork itself to live there.
-   *
-   *  When the view is ROOT-bound the returned array IS `unit.funcAst.body`
-   *  — no special path, just the ROOT case of the single model. */
-  bodyAtWitness<V>(unit: Unit, reading: Reading<V>): StmtNS.Stmt[];
 }
 
 /** One-shot or cascading imperative AST sweep gated on analyses. Transforms
@@ -466,7 +414,6 @@ export interface TransformFactView {
  *  idempotent (rewriting removes the precondition); memoization must track
  *  its own wrapped-set. */
 export interface TransformRule {
-  readonly id: symbol;
   readonly debugName: string;
   /** Fact-driven wake edges — reuses `FactEdge<Unit>` so transform
    *  and analysis edges go through the same dispatch shape. A write to the
@@ -479,12 +426,21 @@ export interface TransformRule {
    *  mint/rebuild auto-dirty is visible in the type rather than hidden
    *  inside `Worklist.registerTransform`. */
   readonly autoDirtyOn?: ReadonlyArray<"mint" | "rebuild">;
-  /** Returns `true` iff the body at the view's bound context was mutated —
-   *  the worklist then schedules a CFG rebuild for `unit`. The worklist
-   *  always binds `facts` at `specAssumptionChainFor(unit)`; under ROOT
-   *  that resolves to `unit.funcAst.body` via `bodyAtWitness`, under a
-   *  non-ROOT active context it returns the forked body there. */
-  sweep(unit: Unit, facts: TransformFactView): boolean;
+  /** Returns `true` iff the body at `chain` was mutated — the worklist
+   *  then schedules a CFG rebuild for `unit`. The worklist always passes
+   *  `chain = specAssumptionChainFor(unit)`; under ROOT that resolves to
+   *  `unit.funcAst.body` via `chain.forkBody`, under a non-ROOT active
+   *  context it returns the forked body there.
+   *
+   *  Profitability / opaque-analysis reads are no longer a typed surface:
+   *  transforms reach for `ROOT_CONTEXT.read(counter, key)` explicitly.
+   *  This keeps policy evidence visibly distinct from semantic proof at
+   *  the call site rather than through a method name. */
+  sweep(
+    unit: Unit,
+    chain: AssumptionChain,
+    topology: ProgramTopology,
+  ): boolean;
 }
 
 /** Construct an Analysis, auto-attaching its `store` from `storeAlgebra`

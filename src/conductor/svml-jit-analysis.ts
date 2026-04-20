@@ -117,7 +117,7 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
       on: "fact",
       analysis: runtimeCallAnalysis,
       wake: (ctx, functionId) => {
-        const count = runtimeCallAnalysis.store.tryRead(functionId as number, ROOT_CONTEXT) ?? 0;
+        const count = ROOT_CONTEXT.tryRead(runtimeCallAnalysis, functionId as number) ?? 0;
         if (count !== MEMOIZATION_THRESHOLD) return [];
         const u = ctx.topology.unitOfFunctionId(functionId as number);
         return u !== undefined && u.funcAst instanceof StmtNS.FunctionDef ? [u] : [];
@@ -178,7 +178,7 @@ export function makeJitAnalysis(deps: JitPassDeps): Analysis<Unit, SVMLIR> {
 
       const artifact = describeCompiledArtifact(unit, specAssumptionChainFor(unit), ctx.topology);
       const newCode = compiler.compileFunction(unit, artifact.specBody, artifact.entryGuards);
-      const prevIR = jitAnalysis.store.read(unit, ROOT_CONTEXT);
+      const prevIR = ROOT_CONTEXT.read(jitAnalysis, unit);
       if (structuralEquals(newCode, prevIR)) return undefined;
       interpreter.patchFunction(index, newCode);
       return newCode;

@@ -275,7 +275,7 @@ export const returnKindNarrowing: Narrowing<FunctionId, TypeLattice> = {
   // fact surface that drives guard hoisting. Reading `.env` here matches
   // what `requirementAtEntry` below consumes.
   lineageValue: (unit, _functionId, context) =>
-    typeRequirementAnalysis.env.store.tryRead(unit.cfg.entry, context),
+    context.tryRead(typeRequirementAnalysis.env, unit.cfg.entry),
   lineageEq: (a, b) => typeRequirementAnalysis.env.storeAlgebra.eq(
     a as MutableEnv<TypeLattice>,
     b as MutableEnv<TypeLattice>,
@@ -316,7 +316,7 @@ export function requirementAtEntry(
 ): EntryRequirement {
   const provable = new Map<number, TypeLattice>();
   const unprovable = new Set<number>();
-  const env = typeRequirementAnalysis.env.store.tryRead(unit.cfg.entry, context);
+  const env = context.tryRead(typeRequirementAnalysis.env, unit.cfg.entry);
   if (env === undefined) return { provable, unprovable };
   for (const slot of env.definedSlots()) {
     const req = env.get(slot);

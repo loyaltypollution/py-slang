@@ -13,7 +13,6 @@ import { defineAnalysis, type EdgeSpec, type JoinSemiLattice, type Analysis, typ
 import type { BasicBlock } from "../../../specialization/framework/cfg";
 import type { Unit } from "../../../specialization/framework/function-unit";
 import { ROOT_CONTEXT, extendContext } from "../../../specialization/framework/context";
-import { transformFacts } from "../../../specialization/framework/transform-rule";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -178,7 +177,6 @@ describe("Worklist analysis-graph dispatch", () => {
     // rebuild, fires `onUnitRebuilt`.
     let fired = false;
     const oneShot: TransformRule = {
-      id: Symbol("oneShot"),
       debugName: "oneShot",
       sweep: unit => {
         if (fired || unit !== fUnit) return false;
@@ -208,7 +206,6 @@ describe("Worklist analysis-graph dispatch", () => {
       },
     });
     const transform: TransformRule = {
-      id: Symbol("transform"),
       debugName: "transform",
       sweep() {
         order.push("transform");
@@ -237,7 +234,6 @@ describe("Worklist analysis-graph dispatch", () => {
     });
     let fired = false;
     const transform: TransformRule = {
-      id: Symbol("one-shot"),
       debugName: "one-shot",
       sweep() {
         if (fired) return false;
@@ -334,7 +330,7 @@ describe("Worklist analysis-graph dispatch", () => {
 
     let midOrderLen = -1;
     for (let i = 0; i < 5; i++) {
-      wl.observe(producer, i, 1);
+      wl.observe(producer, i, 1, ROOT_CONTEXT);
       if (i === 2) midOrderLen = order.length;
     }
     wl.drain();
@@ -484,7 +480,7 @@ describe("Worklist analysis-graph dispatch", () => {
       expect(wl.readMinimal(analysis, "k", value => value >= 9, c2)).toBeUndefined();
     });
 
-    test("transformFacts.readExprFactMinimal returns the shallowest matching witness", () => {
+    test("chain.readExprFactMinimal returns the shallowest matching witness", () => {
       const wl = buildWorklist("x = 1\n");
       const factsAnalysis = makeAnalysis<BasicBlock, Map<number, number>>({
         name: "exprFacts",
@@ -510,11 +506,10 @@ describe("Worklist analysis-graph dispatch", () => {
       wl.write(factsAnalysis, block, new Map([[nodeId, 5]]), c2);
 
       const fauxBfa = { facts: factsAnalysis } as any;
-      const facts = transformFacts(wl.topology, c2);
-      expect(facts.readExprFactAt(fauxBfa, nodeId)).toEqual({ value: 5, witness: c2 });
-      expect(facts.readExprFactMinimal(fauxBfa, nodeId, (value: number) => value >= 3)).toEqual({ value: 3, witness: c1 });
-      expect(facts.readExprFactMinimal(fauxBfa, nodeId, (value: number) => value >= 1)).toEqual({ value: 1, witness: ROOT_CONTEXT });
-      expect(facts.readExprFactMinimal(fauxBfa, nodeId, (value: number) => value >= 9)).toBeUndefined();
+      expect(c2.readExprFactAt(wl.topology, fauxBfa, nodeId)).toEqual({ value: 5, witness: c2 });
+      expect(c2.readExprFactMinimal(wl.topology, fauxBfa, nodeId, (value: number) => value >= 3)).toEqual({ value: 3, witness: c1 });
+      expect(c2.readExprFactMinimal(wl.topology, fauxBfa, nodeId, (value: number) => value >= 1)).toEqual({ value: 1, witness: ROOT_CONTEXT });
+      expect(c2.readExprFactMinimal(wl.topology, fauxBfa, nodeId, (value: number) => value >= 9)).toBeUndefined();
     });
   });
 });

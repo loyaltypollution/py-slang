@@ -288,7 +288,7 @@ export function toMermaid(
 
       if (options.analyses !== undefined && options.analyses.length > 0) {
         for (const analysis of options.analyses) {
-          const value = analysis.store.tryRead(block as any, ctx);
+          const value = ctx.tryRead(analysis, block as any);
           if (value !== undefined) {
             annotations.push(`${analysis.debugName}: ${formatValue(value)}`);
           }

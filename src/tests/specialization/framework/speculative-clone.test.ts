@@ -101,7 +101,7 @@ def f(x):
     const { ast, worklist } = buildWorklist(code);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.topology.unitOfFunctionId(fd.id)!;
-    worklist.observe(runtimeParamAnalysis, paramKey(fd.id, 0), { kind: "bool", value: true });
+    worklist.observe(runtimeParamAnalysis, paramKey(fd.id, 0), { kind: "bool", value: true }, ROOT_CONTEXT);
     worklist.drain();
 
     const specContext = worklist.specAssumptionChainFor(unit);

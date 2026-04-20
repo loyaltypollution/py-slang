@@ -344,7 +344,7 @@ function transferStmt(stmt: StmtNS.Stmt, state: BlockState): void {
         state.impure = true;
         return;
       }
-      const innerPure = purityScopeAnalysis.store.tryRead(fd.id, ROOT_CONTEXT);
+      const innerPure = ROOT_CONTEXT.tryRead(purityScopeAnalysis, fd.id);
       // Defer on `undefined`: the inner hasn't been analyzed yet — record a
       // *pending* Closure. Call sites and escape points treat pending as
       // "deferred" (no markImpure), keeping this block's summary monotone
@@ -505,8 +505,8 @@ export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> 
     let anyVisited = false;
     for (const block of unit.cfg.blocks) {
       if (!reachable.has(block)) continue;
-      const facts = purityBlockAnalysis.facts.store.tryRead(block, ctx.currentContext)
-        ?? purityBlockAnalysis.facts.store.tryRead(block, ROOT_CONTEXT);
+      const facts = ctx.currentContext.tryRead(purityBlockAnalysis.facts, block)
+        ?? ROOT_CONTEXT.tryRead(purityBlockAnalysis.facts, block);
       if (facts === undefined) continue;
       anyVisited = true;
       if (facts.has(IMPURE_SENTINEL_NODE_ID)) return false;

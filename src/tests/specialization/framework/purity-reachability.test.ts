@@ -44,7 +44,7 @@ def hot(x):
 
     // Speculate: observe a positive-int param. The observation translator
     // extends the unit's speculation context with `x : int` (lifted type).
-    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 8 });
+    worklist.observe(runtimeParamAnalysis, paramKey(fn.id, 0), { kind: "number", value: 8 }, ROOT_CONTEXT);
     worklist.drain();
 
     const unit = worklist.topology.unitOfFunctionId(fn.id)!;

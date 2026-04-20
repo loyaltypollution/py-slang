@@ -67,13 +67,13 @@ f()
       polarity: "may",
       transfer(_ctx, key) {
         transferRuns++;
-        return runtimeCallAnalysis.store.read(key, ROOT_CONTEXT) ?? 0;
+        return ROOT_CONTEXT.read(runtimeCallAnalysis, key) ?? 0;
       },
     });
     worklist.register(observer);
 
     for (let i = 1; i <= MEMOIZATION_THRESHOLD * 5; i++) {
-      worklist.observe(runtimeCallAnalysis, fDef.id, i);
+      worklist.observe(runtimeCallAnalysis, fDef.id, i, ROOT_CONTEXT);
     }
     expect(transferRuns).toBeGreaterThan(0);
     expect(transferRuns).toBeLessThanOrEqual(MEMOIZATION_THRESHOLD + 1);
@@ -96,21 +96,21 @@ f()
       tier: "analysis",
       polarity: "opaque",
       transfer(_ctx, u) {
-        const c = runtimeCallAnalysis.store.read(fDef.id, ROOT_CONTEXT) ?? 0;
+        const c = ROOT_CONTEXT.read(runtimeCallAnalysis, fDef.id) ?? 0;
         if (c <= MEMOIZATION_THRESHOLD) return undefined;
-        const prev = jitAnalysis.store.read(u, ROOT_CONTEXT);
+        const prev = ROOT_CONTEXT.read(jitAnalysis, u);
         if (prev === 1) return undefined;
         patchCalls++;
         return 1;
       },
     });
     worklist.register(jitAnalysis);
-    worklist.enqueue(jitAnalysis, unit);
+    worklist.enqueue(jitAnalysis, unit, ROOT_CONTEXT);
     worklist.drain();
     expect(patchCalls).toBe(0);
 
     for (let i = 1; i <= MEMOIZATION_THRESHOLD * 3; i++) {
-      worklist.observe(runtimeCallAnalysis, fDef.id, i);
+      worklist.observe(runtimeCallAnalysis, fDef.id, i, ROOT_CONTEXT);
     }
     expect(patchCalls).toBe(1);
   });
@@ -269,7 +269,7 @@ f(1)
     reactive.register(jitAnalysis);
 
     const enqueue = () => {
-      reactive.enqueue(jitAnalysis, unit);
+      reactive.enqueue(jitAnalysis, unit, ROOT_CONTEXT);
       reactive.drain();
     };
     return {
@@ -302,7 +302,7 @@ f(1)
     // A None observation at the literal creates a fresh speculative context,
     // but does not lift into const narrowing, so no backend-relevant fact
     // changes and the current artifact stays valid.
-    observeRuntimeWrite(worklist, literal.id, null);
+    observeRuntimeWrite(worklist, literal.id, null, ROOT_CONTEXT);
 
     expect(counters.compiles).toBeGreaterThanOrEqual(baseline);
   });
@@ -330,6 +330,7 @@ f(1)
       analysis.env as unknown as Analysis<unknown, unknown>,
       block,
       outEnv as never,
+      ROOT_CONTEXT,
     );
 
     expect(counters.compiles).toBeGreaterThan(baseline);
@@ -366,6 +367,7 @@ f(1)
       constAnalysis.env as unknown as Analysis<unknown, unknown>,
       block,
       currentConst as never,
+      ROOT_CONTEXT,
     );
     worklist.drain();
 
