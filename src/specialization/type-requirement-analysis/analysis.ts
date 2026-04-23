@@ -33,9 +33,9 @@ import type { BasicBlock } from "../framework/cfg";
 import type { Unit } from "../framework/function-unit";
 import {
   ROOT_CONTEXT,
-  findAssumption,
   type AssumptionChain,
 } from "../framework/assumption-chain";
+import { at } from "../framework/assumption-algebra";
 import {
   type Narrowing,
 } from "../framework/analysis";
@@ -242,7 +242,7 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
     transferBlock: (ctx, block, inEnv, unit) => {
       const fd = unit.funcAst;
       const required = fd instanceof StmtNS.FunctionDef
-        ? findAssumption(ctx.currentContext, returnKindNarrowing, fd.id)
+        ? at(ctx.currentContext, returnKindNarrowing, fd.id)
         : undefined;
       return transferBlockBackward(block, inEnv, unit.slotLookup, required);
     },

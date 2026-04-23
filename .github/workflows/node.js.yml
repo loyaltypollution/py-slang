@@ -23,17 +23,11 @@ jobs:
         with:
           node-version: 22
           cache: yarn
-      - name: Use Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - run: yarn install --frozen-lockfile
       - run: yarn run build --all
       - run: yarn run format:ci
       - run: yarn run lint
       - run: yarn run test-coverage
-        env:
-          PYSLANG_DIFF: "1"
       - name: Coveralls
         uses: coverallsapp/github-action@v2
         with:

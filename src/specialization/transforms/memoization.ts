@@ -7,6 +7,7 @@ import type { TransformRule } from "../framework/analysis";
 import { unitOfFunctionId, wakeOwningUnit } from "../framework/analysis";
 import { shadowNode } from "../framework/ast-deep-clone";
 import { type AssumptionChain } from "../framework/assumption-chain";
+import { forkBody } from "../framework/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 import { RUNTIME_CALL_COUNT_SAT, runtimeCallCounter } from "../framework/runtime-analyses";
 import type { ProgramTopology } from "../framework/topology";
@@ -158,7 +159,7 @@ export const memoizationRule: TransformRule = {
     // If purity holds at ROOT, the rewrite lands on the shared AST once;
     // descendant sweeps see it via `bodyFor` walk and short-circuit on the
     // prelude check below instead of redundantly re-memoizing.
-    const body = witnessChain.forkBody(unit);
+    const body = forkBody(unit, witnessChain);
     if (bodyHasMemoPrelude(body)) return false;
     // Memo variant identity derives from the witness context, so sibling
     // contexts that readMinimal the same witness converge on the same

@@ -1,7 +1,8 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
 import type { Narrowing } from "../framework/analysis";
-import { findAssumption, isRoot, type AssumptionChain } from "../framework/assumption-chain";
+import { isRoot, type AssumptionChain } from "../framework/assumption-chain";
+import { at } from "../framework/assumption-algebra";
 import { MutableEnv } from "../framework/mutable-env";
 import { paramTypeNarrowing } from "../framework/param-handles";
 import type { BlockDfaSpec } from "../framework/dfa-factory";
@@ -121,7 +122,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   private annotate(node: ExprNS.Expr, val: TypeLattice): TypeLattice {
     const assumption = this.rootContext
       ? undefined
-      : findAssumption(this.context, typeNarrowing, node.id);
+      : at(this.context, typeNarrowing, node.id);
     const combined = assumption !== undefined ? meet(val, assumption) : val;
     this.recordExprFact(node.id, combined);
     return combined;
@@ -154,7 +155,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 
   private paramAssumption(slot: number): TypeLattice | undefined {
     if (this.rootContext || slot < 0 || slot >= this.paramKeys.length) return undefined;
-    return findAssumption(this.context, paramTypeNarrowing, this.paramKeys[slot]);
+    return at(this.context, paramTypeNarrowing, this.paramKeys[slot]);
   }
 
   visitVariableExpr(expr: ExprNS.Variable): TypeLattice {

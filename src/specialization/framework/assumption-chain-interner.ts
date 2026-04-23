@@ -76,7 +76,13 @@ export class ContextInterner {
   /** Extend `parent` with `(narrowing, key, value)`, returning a canonical
    *  AssumptionChain. Equal values are dedup'd via the narrowing's
    *  value-equality relation; the caller does not supply an equality
-   *  predicate. */
+   *  predicate.
+   *
+   *  Strict on conflict: throws if `parent` already binds `(narrowing, key)`
+   *  to a value that differs from `value` under `narrowing.eq`. The
+   *  worklist-level "retire + exclude + re-extend" flow handles genuine
+   *  value changes; a direct `extend` conflict here means a bug at the
+   *  caller. Idempotent when the already-bound value equals the new one. */
   extend<K, V>(
     parent: AssumptionChain,
     narrowing: Narrowing<K, V>,
@@ -96,8 +102,17 @@ export class ContextInterner {
     if (cmp > 0) {
       return this.internChild(parent, narrowing, key, value);
     }
-    // cmp === 0 (same (narrowing, key) — replace) or cmp < 0 (sorts earlier —
-    // must rebuild). Either path goes through rebuildWith.
+    // cmp === 0: new link matches parent's tip on (narrowing, key). Either
+    // the value agrees (idempotent — return parent) or it conflicts.
+    if (cmp === 0) {
+      if (narrowing.eq(parentAssumption.value as V, value)) return parent;
+      throw new Error(
+        "assumption-algebra: extend conflicts with existing binding at same (narrowing, key). " +
+          "Use without(s, narrowing, key) first if the old value is being replaced.",
+      );
+    }
+    // cmp < 0: sorts earlier than parent's tip — must rebuild. Mid-chain
+    // conflicts are detected in rebuildWith.
     return this.rebuildWith(parent, narrowing, key, value);
   }
 
@@ -205,25 +220,38 @@ export class ContextInterner {
     for (const entry of bucket) {
       if (narrowing.eq(entry.value as V, value)) return entry.node;
     }
+    const assumption = Object.freeze({
+      narrowing: narrowing as Narrowing<unknown, unknown>,
+      key: key as unknown,
+      value: value as unknown,
+    });
+    // Build the child's content-addressed bindings from parent's, extended
+    // with the new tip. Clone only the outer Map and the inner Map under
+    // `narrowing`; other inner Maps are shared read-only.
+    const bindings = new Map(parent.bindings);
+    const parentInner = parent.bindings.get(narrowingAsKey);
+    const inner = parentInner !== undefined ? new Map(parentInner) : new Map();
+    inner.set(key as unknown, assumption);
+    bindings.set(narrowingAsKey, inner);
     const node: AssumptionChain = Object.freeze(
       Object.assign(Object.create(CHAIN_PROTO), {
         parent,
-        assumption: Object.freeze({
-          narrowing: narrowing as Narrowing<unknown, unknown>,
-          key: key as unknown,
-          value: value as unknown,
-        }),
+        assumption,
         depth: parent.depth + 1,
+        bindings,
       }) as AssumptionChain,
     );
     bucket.push({ value, node });
     return node;
   }
 
-  /** Flatten parent chain, dedup at `(narrowing, key)` keeping the new
-   *  value, sort canonically, and intern. Used when the new assumption
-   *  sorts before an existing one or collides at the same `(narrowing,
-   *  key)`. */
+  /** Flatten parent chain, sort canonically, and intern. Called when the
+   *  new assumption sorts before parent's tip.
+   *
+   *  If the parent chain already binds `(narrowing, key)` mid-chain, the
+   *  existing value must agree with the new one under `narrowing.eq`
+   *  (idempotent re-extend). A conflicting mid-chain value throws — the
+   *  caller should `without(s, narrowing, key)` first. */
   private rebuildWith<K, V>(
     parent: AssumptionChain,
     narrowing: Narrowing<K, V>,
@@ -235,7 +263,13 @@ export class ContextInterner {
     for (let cur: AssumptionChain | undefined = parent; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
       if (a === undefined) continue;
-      if (a.narrowing === narrowingAsKey && a.key === key) continue;
+      if (a.narrowing === narrowingAsKey && a.key === key) {
+        if (narrowing.eq(a.value as V, value)) continue;
+        throw new Error(
+          "assumption-algebra: extend conflicts with existing binding mid-chain at same (narrowing, key). " +
+            "Use without(s, narrowing, key) first if the old value is being replaced.",
+        );
+      }
       links.push(a);
     }
     links.push({

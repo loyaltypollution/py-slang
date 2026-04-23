@@ -18,14 +18,12 @@ import {
   type ReadonlyAnalysisStore,
 } from "./analysis-store";
 import {
-  clearBodyIfForked,
-  clearUnitBodies,
-  excludeAssumption,
-  extendContext,
-  findAssumptionCarrier,
   ROOT_CONTEXT,
   type AssumptionChain
 } from "./assumption-chain";
+import { carrier as carrierOf, extend, without } from "./assumption-algebra";
+import { clearUnitBodies } from "./assumption-bodies";
+import { Retirement } from "./retirement";
 import type { CounterStore } from "./counter-store";
 import {
   buildFunctionRegistry,
@@ -252,14 +250,12 @@ export class Worklist {
   private readonly retireSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
   private readonly specRevSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
 
-  /** Chain nodes whose speculative authorization has been refuted by a
-   *  conflicting runtime observation. A retired node's forked body and
-   *  memo bucket are cleared at retire time; subsequent dispatch requests
-   *  for a retired chain are declined by `specializedBodyFor` so the
-   *  evaluator falls back to the baseline ROOT body. Monotone by design:
-   *  once a node is retired, it stays retired for the life of the
-   *  worklist — no re-speculation machinery. */
-  private readonly retiredNodes: WeakSet<AssumptionChain> = new WeakSet();
+  /** Retirement filter. Stores minimal generators; `isRetired(c)` is the
+   *  algebraic-membership check `∃ r ∈ R. leq(r, c)`. Correct for
+   *  rebuild-path supersets that parent-walk ancestry would miss.
+   *  Monotone: once a generator is retired it stays retired for the life
+   *  of the worklist. */
+  private readonly retirement: Retirement = new Retirement();
 
   readonly registry: FunctionRegistry;
   private readonly functionEnvironments: FunctionEnvironments;
@@ -399,50 +395,28 @@ export class Worklist {
     for (const sub of this.specRevSubs) sub(this.passCtx, unit);
   }
 
-  /** True iff `node` has been retired. Safe to call with ROOT (always false)
-   *  or any chain node; the predicate is a WeakSet membership test. */
+  /** `c` is retired iff any retired generator is an algebraic subset.
+   *  Safe to call with ROOT (always false). */
   isRetired(node: AssumptionChain): boolean {
-    return node !== ROOT_CONTEXT && this.retiredNodes.has(node);
+    return this.retirement.isRetired(node);
   }
 
-  /** Canonical interner can hand back an already-retired node when a
-   *  pruned/re-extended suffix matches a prior chain. Don't route dispatch
-   *  through a retired node: drop to ROOT and skip re-seeding analyses.
-   *  Returns ROOT when redirection applies, `undefined` otherwise. */
-  private redirectIfRetired(unit: Unit, ctx: AssumptionChain): AssumptionChain | undefined {
-    if (!this.retiredNodes.has(ctx)) return undefined;
-    this.futureDispatchContext.delete(unit);
-    return ROOT_CONTEXT;
-  }
-
-  /** Retire `node` for `unit`: drop its forked body, clear the memo bucket
-   *  minted against its direct-param entry guards, and mark it so that
-   *  future dispatches skip it. Idempotent. ROOT is never retired. The
-   *  interner entry is left intact — re-observation of the same value will
-   *  hand back the same (still-retired) node, which `specializedBodyFor`
-   *  declines; this avoids churn from releasing and re-creating the node
-   *  on every subsequent call.
-   *
-   *  Coarse policy: retires the node whose tip carries the violated
-   *  assumption. Chains deeper than the retired node (siblings that
-   *  extend past it) are not walked; their forked bodies and memo
-   *  buckets, if any, are not cleared here. For the current narrowing
-   *  set (single param-type axis) the chain depth is 1 and this is
-   *  sufficient; widen the walk if a deeper axis lands. */
-  private retireChain(unit: Unit, node: AssumptionChain): void {
-    if (node === ROOT_CONTEXT) return;
-    if (this.retiredNodes.has(node)) return;
-    this.retiredNodes.add(node);
-    clearBodyIfForked(unit, node);
+  /** Retire `carrier` for `unit`: add it to the retirement filter, clear
+   *  the memo bucket minted against its direct-param entry guards, and
+   *  drop `futureDispatchContext[unit]` if it now points into the
+   *  retired subtree (algebraic check — not just pointwise equality).
+   *  Body eviction is lazy: retirement-aware `visibleBody` skips retired
+   *  ancestors on future reads; stale forks are reclaimed when the unit
+   *  releases. Idempotent. */
+  private retireChain(unit: Unit, carrier: AssumptionChain): void {
+    if (carrier === ROOT_CONTEXT) return;
+    this.retirement.retire(carrier);
     const fd = unit.funcAst;
     if (fd instanceof StmtNS.FunctionDef) {
-      clearMemoId(memoIdFor(fd, guardKeyFromGuards(directParamEntryGuardsFor(unit, node))));
+      clearMemoId(memoIdFor(fd, guardKeyFromGuards(directParamEntryGuardsFor(unit, carrier))));
     }
-    // Drop the unit's future-dispatch pointer so the next call starts from
-    // ROOT rather than re-entering the retired node. Re-observation may
-    // still produce the same interned (still-retired) node; that is caught
-    // by `specializedBodyFor`'s `isRetired` check.
-    if (this.futureDispatchContext.get(unit) === node) {
+    const fdCtx = this.futureDispatchContext.get(unit);
+    if (fdCtx !== undefined && this.retirement.isRetired(fdCtx)) {
       this.futureDispatchContext.delete(unit);
     }
   }
@@ -1055,13 +1029,15 @@ export class Worklist {
     if (observed.kind === "unknown") {
       let pruned = parentCtx;
       for (const n of applicable) {
-        const carrier = findAssumptionCarrier(pruned, n, key);
-        if (carrier !== undefined) this.retireChain(unit, carrier);
-        pruned = excludeAssumption(pruned, n, key);
+        const c = carrierOf(pruned, n, key);
+        if (c !== undefined) this.retireChain(unit, c);
+        pruned = without(pruned, n, key);
       }
       if (pruned === parentCtx) return parentCtx;
-      const redirected = this.redirectIfRetired(unit, pruned);
-      if (redirected !== undefined) return redirected;
+      if (this.retirement.isRetired(pruned)) {
+        this.futureDispatchContext.delete(unit);
+        return ROOT_CONTEXT;
+      }
       if (pruned === ROOT_CONTEXT) this.futureDispatchContext.delete(unit);
       else this.futureDispatchContext.set(unit, pruned);
       this.enqueueNarrowingEntry(unit, pruned);
@@ -1073,24 +1049,24 @@ export class Worklist {
     for (const n of applicable) {
       const lifted = n.lift(observed);
       if (lifted === undefined) continue;
-      const carrier = findAssumptionCarrier(newCtx, n, key);
-      const existing = carrier?.assumption?.value as unknown;
-      if (carrier !== undefined && n.eq(existing, lifted)) continue;
-      if (carrier !== undefined) {
+      const c = carrierOf(newCtx, n, key);
+      const existing = c?.assumption?.value as unknown;
+      if (c !== undefined && n.eq(existing, lifted)) continue;
+      if (c !== undefined) {
         // Assumption violated by a conflicting concrete observation.
         // Retire the chain node whose tip carries the stale (n, key)
         // assumption before we splice it out.
-        this.retireChain(unit, carrier);
+        this.retireChain(unit, c);
       }
-      const cleaned = carrier !== undefined
-        ? excludeAssumption(newCtx, n, key)
-        : newCtx;
-      newCtx = extendContext(cleaned, n, key, lifted);
+      const cleaned = c !== undefined ? without(newCtx, n, key) : newCtx;
+      newCtx = extend(cleaned, n, key, lifted);
     }
 
     if (newCtx === parentCtx) return parentCtx;
-    const redirected = this.redirectIfRetired(unit, newCtx);
-    if (redirected !== undefined) return redirected;
+    if (this.retirement.isRetired(newCtx)) {
+      this.futureDispatchContext.delete(unit);
+      return ROOT_CONTEXT;
+    }
     this.futureDispatchContext.set(unit, newCtx);
     this.enqueueNarrowingEntry(unit, newCtx);
     this.fireSpecRev(unit);
@@ -1141,7 +1117,38 @@ export class Worklist {
    *  This is the explicit heavy-weight publication barrier: it runs queued
    *  analyses to quiescence, sweeps transforms, and rebuilds any mutated CFGs.
    *  Online observation ingress happens in `observe()` via `processAnalysesToFixpoint()`;
-   *  callers invoke `drain()` when they need transform/rebuild publication. */
+   *  callers invoke `drain()` when they need transform/rebuild publication.
+   *
+   *  ## Contract
+   *
+   *  **Idempotency.** A second `drain()` call with no intervening observations
+   *  or transform-dirty marks is a no-op that returns an empty set — step 1
+   *  finds nothing queued, step 2 returns false, no rebuilds are pending.
+   *  Callers can safely re-drain after reading state; cost is a single fixpoint
+   *  check.
+   *
+   *  **Reentrancy guard.** `publish` and `bump` throw if invoked while step 2
+   *  (`sweepTransforms`) is executing. Transforms may read analysis state
+   *  freely, but must not enqueue new facts mid-sweep — a transform that needs
+   *  to publish should schedule the publication through a rebuild or defer it
+   *  to the next drain. See `ctxGuardSweep` for the mechanism.
+   *
+   *  **Return value.** The set of `FileInput | FunctionDef` AST nodes whose
+   *  CFGs were rewired during this drain (via `flushPendingRebuilds`). Empty
+   *  when the drain reached fixpoint without triggering any transform that
+   *  mutated the AST. Useful for cache invalidation in downstream compilers
+   *  that key on AST identity.
+   *
+   *  **Observation channels.** Drain does not directly trigger the three
+   *  observation channels (`observeScopeCall`, `observeParamEntry`,
+   *  `observeScopeReturn`) — those fire from the evaluator. What drain does
+   *  guarantee is that any observations posted between drains (via `observe`)
+   *  have been absorbed into analysis state by the time it returns, so
+   *  downstream reads are consistent.
+   *
+   *  **Non-termination.** Throws if `limit` CFG rebuilds occur without
+   *  converging; this indicates a transform cascade that does not stabilise
+   *  (typically a pair of transforms that re-dirty each other). */
   drain(limit: number = Worklist.DEFAULT_DRAIN_LIMIT): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
     const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     let processed = 0;

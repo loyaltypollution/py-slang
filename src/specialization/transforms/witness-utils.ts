@@ -1,5 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../framework/assumption-chain";
+import { forkBody } from "../framework/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 
 /** Walk every expression inside `stmts` and invoke `onExpr` on each one. Used
@@ -155,7 +156,7 @@ export function runWitnessSweep(
   if (ordered.length === 0) return false;
   let changed = false;
   for (const witness of ordered) {
-    const body = witness.forkBody(unit);
+    const body = forkBody(unit, witness);
     const v = makeVisitor(witness);
     v.sweep(body);
     changed = v.changed || changed;

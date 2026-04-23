@@ -5,7 +5,7 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { makeDfaQuery, makeJitObservers } from "../specialization";
 import { createDefaultWorklist } from "../specialization/defaults";
-import { specializedBodyFor } from "../specialization/speculative-clone";
+import { bodyToCompile, dispatchValid } from "../specialization/framework/dispatch";
 import { EvaluatorError } from "./errors";
 
 /**
@@ -59,13 +59,17 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           // keeps the bytecode consistent with transform publication.
           worklist.sweepTransforms();
           const chain = observers.currentChainFor(scopeId);
-          const specBody = specializedBodyFor(unit, chain, worklist.topology, n => worklist.isRetired(n));
-          // specBody === undefined means no speculation-owned rewrite applies
-          // at this chain. We still must re-lower from the current visible
-          // body: transforms (memoization, dead-branch, etc.) may have mutated
-          // unit.funcAst.body in place post-load, and the baseline bytecode
-          // cached at compileProgram time does not reflect those mutations.
-          return compiler.compileFunction(unit, specBody);
+          const isRetired = (n: Parameters<typeof worklist.isRetired>[0]) => worklist.isRetired(n);
+          // SVML policy is "always recompile": even when dispatch is
+          // invalid we re-lower the baseline body, because transforms
+          // (memoization, dead-branch, etc.) may have mutated
+          // unit.funcAst.body in place post-load. The explicit
+          // dispatchValid branch surfaces the policy asymmetry that
+          // was previously hidden inside an `undefined` overload.
+          const body = dispatchValid(unit, chain, isRetired)
+            ? bodyToCompile(unit, chain, worklist.topology, isRetired)
+            : undefined;
+          return compiler.compileFunction(unit, body);
         },
         dispatchReturn: (scopeId, value) => observers.observeScopeReturn(scopeId, value),
       });

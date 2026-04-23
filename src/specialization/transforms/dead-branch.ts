@@ -9,6 +9,7 @@ import { StmtNS } from "../../ast-types";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
 import type { AssumptionChain } from "../framework/assumption-chain";
+import { visibleBody } from "../framework/assumption-bodies";
 import { typeAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
@@ -112,7 +113,7 @@ class DeadBranchVisitor extends BaseStmtVisitor {
 export const deadBranchRule: TransformRule = {
   sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
     const finder = new SeedFinderVisitor(chain, topology);
-    finder.walk(chain.visibleBody(unit));
+    finder.walk(visibleBody(unit, chain));
     return runWitnessSweep(
       unit,
       finder.witnesses,

@@ -13,6 +13,7 @@
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../framework/assumption-chain";
+import { forkBody, visibleBody } from "../framework/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
@@ -292,7 +293,7 @@ function witnessForRemoval(
   escapedCache: Map<AssumptionChain, ReadonlySet<number>>,
 ): AssumptionChain | undefined {
   for (const witness of lineage) {
-    const body = witness.visibleBody(unit);
+    const body = visibleBody(unit, witness);
     const stmt = findAssignById(body, stmtId);
     if (stmt === undefined) continue;
 
@@ -331,16 +332,16 @@ export const deadStoreRule: TransformRule = {
     // contrast, are dead at return; DSE on them is always sound.
     if (unit.funcAst instanceof StmtNS.FileInput) return false;
 
-    const visibleBody = chain.visibleBody(unit);
+    const body = visibleBody(unit, chain);
     const liveOutCache = new Map<AssumptionChain, ReadonlyMap<number, ReadonlySet<number>>>();
     const escapedCache = new Map<AssumptionChain, ReadonlySet<number>>();
     const liveOutMap = buildLiveOutMap(unit, chain);
     liveOutCache.set(chain, liveOutMap);
-    const escaped = escapedLocalSlotsIn(visibleBody, unit.slotLookup);
+    const escaped = escapedLocalSlotsIn(body, unit.slotLookup);
     escapedCache.set(chain, escaped);
 
     const removableNow = new Set<number>();
-    collectRemovableStmtIds(visibleBody, liveOutMap, unit.slotLookup, escaped, removableNow);
+    collectRemovableStmtIds(body, liveOutMap, unit.slotLookup, escaped, removableNow);
     if (removableNow.size === 0) return false;
 
     const lineage = lineageTo(chain);
@@ -357,8 +358,8 @@ export const deadStoreRule: TransformRule = {
     for (const witness of lineage) {
       const removableIds = removalsByWitness.get(witness);
       if (removableIds === undefined || removableIds.size === 0) continue;
-      const body = witness.forkBody(unit);
-      changed = sweepRemovalsById(body, removableIds) || changed;
+      const witnessBody = forkBody(unit, witness);
+      changed = sweepRemovalsById(witnessBody, removableIds) || changed;
     }
     return changed;
   },

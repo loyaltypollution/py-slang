@@ -13,6 +13,7 @@ import type { ConstLattice } from "../const-analysis/lattice";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
 import type { AssumptionChain } from "../framework/assumption-chain";
+import { visibleBody } from "../framework/assumption-bodies";
 import { constAnalysis, typeAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
@@ -367,7 +368,7 @@ export const algebraicSimplifyRule: TransformRule = {
   },
   sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
     const witnesses = new Set<AssumptionChain>();
-    collectWitnesses(chain, topology, chain.visibleBody(unit), witnesses);
+    collectWitnesses(chain, topology, visibleBody(unit, chain), witnesses);
     return runWitnessSweep(
       unit,
       witnesses,

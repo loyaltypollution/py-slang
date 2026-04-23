@@ -128,7 +128,13 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
    *  via `ctx.write`) publishes events based on the return value so
    *  change-dispatch stays centralized. `context` is mandatory: the store
    *  never invents a default position on behalf of a writer that forgot
-   *  which context-tree node it meant to land in. */
+   *  which context-tree node it meant to land in.
+   *
+   *  No-op gating is eq-based, not leq-based. For a must-style algebra that
+   *  takes `min` as `join`, an incoming `value` with `leq(value, prev)` is
+   *  still advancing — the cell moves to `min(prev, value)` and `write`
+   *  returns `{prev, next}`. Callers must not short-circuit on `leq(value,
+   *  prev)` as a no-op predicate; only the algebra's `eq` decides. */
   write(key: K, value: V, context: AssumptionChain): StoreWriteResult<V> | null {
     let cells = this.cellsByContext.get(context);
     if (cells === undefined) {

@@ -11,11 +11,8 @@
 // to entry-block type requirements via `requirementAtEntry`.
 
 import { StmtNS } from "../ast-types";
-import {
-  findAssumption,
-  isRoot,
-  type AssumptionChain,
-} from "./framework/assumption-chain";
+import { isRoot, type AssumptionChain } from "./framework/assumption-chain";
+import { at } from "./framework/assumption-algebra";
 import type { Unit } from "./framework/function-unit";
 import {
   paramKey,
@@ -36,7 +33,7 @@ export function directParamEntryGuardsFor(
   const guards: EntryGuard[] = [];
   for (let i = 0; i < unit.funcAst.parameters.length; i++) {
     const key = paramKey(unit.funcAst.id, i);
-    const ty = findAssumption(context, paramTypeNarrowing, key);
+    const ty = at(context, paramTypeNarrowing, key);
     if (ty !== undefined) guards.push({ paramIndex: i, ty });
   }
   return guards.length > 0 ? guards : undefined;

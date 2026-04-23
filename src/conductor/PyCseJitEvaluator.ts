@@ -11,8 +11,9 @@ import {
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { makeJitObservers, specializedBodyFor } from "../specialization";
+import { makeJitObservers } from "../specialization";
 import { DEFAULT_PASSES, DEFAULT_TRANSFORMS } from "../specialization/defaults";
+import { bodyToCompile, dispatchValid } from "../specialization/framework/dispatch";
 import { Worklist } from "../specialization/framework/worklist";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
@@ -72,7 +73,11 @@ abstract class PyCseJitEvaluatorBase extends PyCseEvaluatorBase {
           // meaning the CSE interpreter would re-walk the unrewritten body
           // on every recursive call. Symmetric with SVML JIT's dispatchCall.
           worklist.sweepTransforms();
-          return specializedBodyFor(unit, observers.currentChainFor(scopeId), worklist.topology, n => worklist.isRetired(n));
+          const chain = observers.currentChainFor(scopeId);
+          const isRetired = (n: Parameters<typeof worklist.isRetired>[0]) => worklist.isRetired(n);
+          if (!dispatchValid(unit, chain, isRetired)) return undefined;
+          const body = bodyToCompile(unit, chain, worklist.topology, isRetired);
+          return body === unit.body ? undefined : body;
         },
         dispatchReturn: (scopeId, value) => {
           observers.observeScopeReturn(scopeId, value);

@@ -12,7 +12,4 @@ export {
   type StaticDfaQuery,
 } from "./dfa-query";
 export { makeJitObservers } from "./framework/runtime-analyses";
-export {
-  hasSpecializedBody,
-  specializedBodyFor,
-} from "./speculative-clone";
+export { bodyToCompile, dispatchValid } from "./framework/dispatch";
