@@ -30,7 +30,7 @@
 
 import { StmtNS } from "../../ast-types";
 import type { JoinSemiLattice } from "./analysis";
-import { ROOT_CONTEXT, type AssumptionChain } from "./assumption-chain";
+import { ROOT_CONTEXT, type Speculation } from "./assumption-chain";
 import { defineCounterStore, type CounterStore } from "./counter-store";
 import {
   paramKey,
@@ -82,15 +82,6 @@ const rawValueLattice: JoinSemiLattice<RawKind> = {
 export const runtimeParamChannel: ObservationChannel<ParamKey, RawKind> =
   defineObservationChannel<ParamKey, RawKind>({
     lattice: rawValueLattice,
-    bind(wl) {
-      wl.onRetireEvict((_h, unit) => {
-        const fd = unit.funcAst;
-        if (!(fd instanceof StmtNS.FunctionDef)) return;
-        for (let i = 0; i < fd.parameters.length; i++) {
-          runtimeParamChannel.evictKeyAcrossChains(paramKey(fd.id, i));
-        }
-      });
-    },
   });
 
 /** Per-function return-kind observations. Key = FunctionId (FunctionDef.id),
@@ -102,14 +93,6 @@ export const runtimeParamChannel: ObservationChannel<ParamKey, RawKind> =
 export const runtimeReturnChannel: ObservationChannel<FunctionId, RawKind> =
   defineObservationChannel<FunctionId, RawKind>({
     lattice: rawValueLattice,
-    bind(wl) {
-      wl.onRetireEvict((_h, unit) => {
-        const fd = unit.funcAst;
-        if (fd instanceof StmtNS.FunctionDef) {
-          runtimeReturnChannel.evictKeyAcrossChains(fd.id);
-        }
-      });
-    },
   });
 
 /** Runtime call-count counter. Key = FunctionDef.id.
@@ -123,14 +106,6 @@ export const runtimeReturnChannel: ObservationChannel<FunctionId, RawKind> =
  *  dispatch, avoiding cascade work once the signal is stable. */
 export const runtimeCallCounter: CounterStore<FunctionId> = defineCounterStore<FunctionId>({
   saturation: RUNTIME_CALL_COUNT_SAT,
-  bind(wl) {
-    wl.onRetireEvict((_h, unit) => {
-      const fd = unit.funcAst;
-      if (fd instanceof StmtNS.FunctionDef) {
-        runtimeCallCounter.evict(fd.id);
-      }
-    });
-  },
 });
 
 /** Builds the runtime-observation callbacks used by every JIT evaluator.
@@ -175,7 +150,7 @@ export function makeJitObservers(
    *  Returns `ROOT_CONTEXT` when the stack top is not this `scopeId` —
    *  including when the stack is empty (top-level), or when the engine
    *  queries body selection without a matching call hook. */
-  currentChainFor: (scopeId: FunctionId) => AssumptionChain;
+  currentChainFor: (scopeId: FunctionId) => Speculation;
 } {
   // Parallel arrays instead of Frame objects: `observeScopeCall` fires on
   // every function invocation, so allocating a `{scopeId, provenanceChain}`
@@ -183,7 +158,7 @@ export function makeJitObservers(
   // with a shared depth index carry the same LIFO state with zero per-push
   // allocation beyond the occasional array-grow amortized doubling.
   const scopeIds: FunctionId[] = [];
-  const chains: AssumptionChain[] = [];
+  const chains: Speculation[] = [];
 
   const topIsScope = (scopeId: FunctionId): boolean =>
     scopeIds.length > 0 && scopeIds[scopeIds.length - 1] === scopeId;

@@ -1,4 +1,4 @@
-// AssumptionChain is a canonical finite partial map
+// Speculation is a canonical finite partial map
 // (Narrowing, Key) ⇀ Value, interned into a tree whose parent-edges
 // follow a canonical sorted build order. The algebra on this structure
 // lives in `assumption-algebra.ts` and reads the content-addressed
@@ -24,8 +24,8 @@ export type BindingsByNarrowing = ReadonlyMap<
   ReadonlyMap<unknown, Assumption>
 >;
 
-export interface AssumptionChain {
-  readonly parent: AssumptionChain | undefined;
+export interface Speculation {
+  readonly parent: Speculation | undefined;
   readonly assumption: Assumption | undefined;
   readonly depth: number;
   readonly bindings: BindingsByNarrowing;
@@ -38,20 +38,20 @@ export const CHAIN_PROTO: object = Object.freeze({});
 
 const EMPTY_BINDINGS: BindingsByNarrowing = new Map();
 
-export const ROOT_CONTEXT: AssumptionChain = Object.freeze(
+export const ROOT_CONTEXT: Speculation = Object.freeze(
   Object.assign(Object.create(CHAIN_PROTO), {
     parent: undefined,
     assumption: undefined,
     depth: 0,
     bindings: EMPTY_BINDINGS,
-  }) as AssumptionChain,
+  }) as Speculation,
 );
 
-export function isRoot(ctx: AssumptionChain): boolean {
+export function isRoot(ctx: Speculation): boolean {
   return ctx.parent === undefined;
 }
 
 /** Remove `ctx` from the process-wide interner. ROOT is a no-op. */
-export function releaseChain(ctx: AssumptionChain): void {
+export function releaseChain(ctx: Speculation): void {
   defaultInterner.release(ctx);
 }

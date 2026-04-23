@@ -2,7 +2,7 @@
 //
 // The three storage concerns live in one explicit owner:
 //
-//   1. Context-partitioned cells (`Map<AssumptionChain, Map<K, V>>`).
+//   1. Context-partitioned cells (`Map<Speculation, Map<K, V>>`).
 //   2. Algebra-gated writes (`join(prev, value)` + `eq(joined, prev)`
 //      advance-check).
 //   3. Unwritten-cell default (`emptyValue` or `algebra.bottom`).
@@ -15,21 +15,21 @@
 // cannot silently bypass listener fan-out.
 
 import type { Analysis, JoinSemiLattice } from "./analysis";
-import type { AssumptionChain } from "./assumption-chain";
+import type { Speculation } from "./assumption-chain";
 
 export interface ReadonlyAnalysisStore<K, V> {
-  read(key: K, context: AssumptionChain): V;
-  tryRead(key: K, context: AssumptionChain): V | undefined;
-  readAll(context: AssumptionChain): ReadonlyMap<K, V>;
+  read(key: K, context: Speculation): V;
+  tryRead(key: K, context: Speculation): V | undefined;
+  readAll(context: Speculation): ReadonlyMap<K, V>;
   readMinimal(
-    chain: AssumptionChain,
+    chain: Speculation,
     key: K,
     accept: (value: V) => boolean,
-  ): { value: V; witness: AssumptionChain } | undefined;
+  ): { value: V; witness: Speculation } | undefined;
   readDeepest(
-    chain: AssumptionChain,
+    chain: Speculation,
     key: K,
-  ): { value: V; witness: AssumptionChain } | undefined;
+  ): { value: V; witness: Speculation } | undefined;
 }
 
 /** Result of an advancing write. `null` from `AnalysisStore.write` means
@@ -47,7 +47,7 @@ export interface StoreWriteResult<V> {
 export interface FactChange<K, V> {
   readonly analysis: Analysis<K, V>;
   readonly key: K;
-  readonly context: AssumptionChain;
+  readonly context: Speculation;
   readonly oldValue: V | undefined;
   readonly newValue: V;
 }
@@ -55,7 +55,7 @@ export interface FactChange<K, V> {
 const EMPTY_MAP: ReadonlyMap<unknown, unknown> = new Map();
 
 export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
-  private readonly cellsByContext = new Map<AssumptionChain, Map<K, V>>();
+  private readonly cellsByContext = new Map<Speculation, Map<K, V>>();
 
   constructor(
     private readonly algebra: JoinSemiLattice<V>,
@@ -69,7 +69,7 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
    *  that position. Making it implicit historically turned "forgot to
    *  thread the speculative context" into a silent ROOT read — exactly the
    *  review-by-folklore seam the transform-boundary audit flagged. */
-  read(key: K, context: AssumptionChain): V {
+  read(key: K, context: Speculation): V {
     const cells = this.cellsByContext.get(context);
     if (cells !== undefined) {
       const hit = cells.get(key);
@@ -83,24 +83,24 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
   /** Cell value under `context`, or `undefined` if the cell is unwritten.
    *  Distinguishes "unwritten" from "written to bottom". `context` is
    *  mandatory — see `read`. */
-  tryRead(key: K, context: AssumptionChain): V | undefined {
+  tryRead(key: K, context: Speculation): V | undefined {
     return this.cellsByContext.get(context)?.get(key);
   }
 
   /** Every written cell under `context`. Returns the backing Map as a
    *  readonly view — mutation via the cast is a bug. Empty Map when no
    *  writes have landed under `context`. `context` is mandatory — see `read`. */
-  readAll(context: AssumptionChain): ReadonlyMap<K, V> {
+  readAll(context: Speculation): ReadonlyMap<K, V> {
     return (this.cellsByContext.get(context) ?? EMPTY_MAP) as ReadonlyMap<K, V>;
   }
 
   readMinimal(
-    chain: AssumptionChain,
+    chain: Speculation,
     key: K,
     accept: (value: V) => boolean,
-  ): { value: V; witness: AssumptionChain } | undefined {
-    let match: { value: V; witness: AssumptionChain } | undefined;
-    for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
+  ): { value: V; witness: Speculation } | undefined {
+    let match: { value: V; witness: Speculation } | undefined;
+    for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
       const value = this.tryRead(key, cur);
       if (value === undefined || !accept(value)) continue;
       match = { value, witness: cur };
@@ -109,10 +109,10 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
   }
 
   readDeepest(
-    chain: AssumptionChain,
+    chain: Speculation,
     key: K,
-  ): { value: V; witness: AssumptionChain } | undefined {
-    for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
+  ): { value: V; witness: Speculation } | undefined {
+    for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
       const value = this.tryRead(key, cur);
       if (value !== undefined) return { value, witness: cur };
     }
@@ -135,7 +135,7 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
    *  still advancing — the cell moves to `min(prev, value)` and `write`
    *  returns `{prev, next}`. Callers must not short-circuit on `leq(value,
    *  prev)` as a no-op predicate; only the algebra's `eq` decides. */
-  write(key: K, value: V, context: AssumptionChain): StoreWriteResult<V> | null {
+  write(key: K, value: V, context: Speculation): StoreWriteResult<V> | null {
     let cells = this.cellsByContext.get(context);
     if (cells === undefined) {
       // First-ever write under `context`: fresh partition, no eq-check possible.
@@ -160,7 +160,7 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
 
   /** Delete a single cell. Silent if absent. `context` is mandatory —
    *  see `read`. */
-  evict(key: K, context: AssumptionChain): void {
+  evict(key: K, context: Speculation): void {
     this.cellsByContext.get(context)?.delete(key);
   }
 
@@ -168,7 +168,7 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
    *  is empty or absent. Used to reclaim memory from synthetic probe contexts
    *  whose cells were written by speculative Kildall drains and are no longer
    *  needed. */
-  clearContext(context: AssumptionChain): void {
+  clearContext(context: Speculation): void {
     this.cellsByContext.delete(context);
   }
 
@@ -184,7 +184,7 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
    *  do is add new contexts mid-traversal and expect them to be visited;
    *  snapshot manually (`[...store.contexts()]`) at the call site if that
    *  matters. No current caller relies on snapshot semantics. */
-  contexts(): IterableIterator<AssumptionChain> {
+  contexts(): IterableIterator<Speculation> {
     return this.cellsByContext.keys();
   }
 }
@@ -197,7 +197,7 @@ export function storeWrite<K, V>(
   store: ReadonlyAnalysisStore<K, V>,
   key: K,
   value: V,
-  context: AssumptionChain,
+  context: Speculation,
 ): StoreWriteResult<V> | null {
   return (store as AnalysisStore<K, V>).write(key, value, context);
 }
@@ -206,7 +206,7 @@ export function storeWrite<K, V>(
 export function storeEvict<K, V>(
   store: ReadonlyAnalysisStore<K, V>,
   key: K,
-  context: AssumptionChain,
+  context: Speculation,
 ): void {
   (store as AnalysisStore<K, V>).evict(key, context);
 }
@@ -215,7 +215,7 @@ export function storeEvict<K, V>(
  *  `AnalysisStore.contexts` for iteration/mutation rules. */
 export function storeContexts<K, V>(
   store: ReadonlyAnalysisStore<K, V>,
-): IterableIterator<AssumptionChain> {
+): IterableIterator<Speculation> {
   return (store as AnalysisStore<K, V>).contexts();
 }
 

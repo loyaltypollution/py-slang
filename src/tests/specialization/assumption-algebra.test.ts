@@ -146,4 +146,42 @@ describe("assumption-algebra", () => {
     expect(leq(a, b)).toBe(true);
     expect(leq(b, a)).toBe(false);
   });
+
+  // Partial-order axioms for ⊑. Pinned explicitly so refactors that touch
+  // leq can't silently break the semilattice contract.
+
+  it("leq is reflexive: leq(s, s) for every s", () => {
+    const p = mkN<number, number>();
+    const q = mkN<number, number>();
+    const s0 = empty;
+    const s1 = extend(empty, p, 1, 10);
+    const s2 = extend(extend(empty, p, 1, 10), q, 2, 20);
+    expect(leq(s0, s0)).toBe(true);
+    expect(leq(s1, s1)).toBe(true);
+    expect(leq(s2, s2)).toBe(true);
+  });
+
+  it("leq is antisymmetric: leq(a,b) ∧ leq(b,a) ⇒ a === b (via interner canonicity)", () => {
+    const p = mkN<number, number>();
+    const q = mkN<number, number>();
+    // Two build orders for the same binding set reconverge; mutual leq
+    // witnesses antisymmetry collapsed onto reference equality.
+    const forward = extend(extend(empty, p, 1, 10), q, 2, 20);
+    const reverse = extend(extend(empty, q, 2, 20), p, 1, 10);
+    expect(leq(forward, reverse)).toBe(true);
+    expect(leq(reverse, forward)).toBe(true);
+    expect(forward).toBe(reverse);
+  });
+
+  it("leq is transitive: leq(a,b) ∧ leq(b,c) ⇒ leq(a,c)", () => {
+    const p = mkN<number, number>();
+    const q = mkN<number, number>();
+    const r = mkN<number, number>();
+    const a = extend(empty, p, 1, 10);
+    const b = extend(a, q, 2, 20);
+    const c = extend(b, r, 3, 30);
+    expect(leq(a, b)).toBe(true);
+    expect(leq(b, c)).toBe(true);
+    expect(leq(a, c)).toBe(true);
+  });
 });

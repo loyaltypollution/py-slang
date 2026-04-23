@@ -1,8 +1,8 @@
-// Per-(Unit, AssumptionSet) forked function bodies.
+// Per-(Unit, Speculation) forked function bodies.
 //
 // This is storage, not algebra. An assumption-set is a point in the
 // meet-semilattice; a "body" is the Stmt[] a transform has rewritten for
-// compilation at that point. The `(Unit, AssumptionSet) ⇀ Body` store is
+// compilation at that point. The `(Unit, Speculation) ⇀ Body` store is
 // a presheaf shape: many points carry no rewrite, some ancestor did, and
 // `visibleBody` is a nearest-ancestor lookup.
 //
@@ -18,13 +18,13 @@
 
 import type { StmtNS } from "../../ast-types";
 import { cloneStmts } from "./ast-deep-clone";
-import type { AssumptionSet } from "./assumption-algebra";
+import type { Speculation } from "./assumption-algebra";
 import { leq } from "./assumption-algebra";
 import type { Unit } from "./function-unit";
 
-const bodies: WeakMap<Unit, Map<AssumptionSet, StmtNS.Stmt[]>> = new WeakMap();
+const bodies: WeakMap<Unit, Map<Speculation, StmtNS.Stmt[]>> = new WeakMap();
 
-function perUnit(unit: Unit): Map<AssumptionSet, StmtNS.Stmt[]> {
+function perUnit(unit: Unit): Map<Speculation, StmtNS.Stmt[]> {
   let m = bodies.get(unit);
   if (m === undefined) {
     m = new Map();
@@ -45,22 +45,22 @@ function perUnit(unit: Unit): Map<AssumptionSet, StmtNS.Stmt[]> {
  *  canonical witness chains so this edge case does not arise in
  *  practice.
  *
- *  When `isRetired` is supplied, any stored fork at a retired chain is
+ *  When `isRefuted` is supplied, any stored fork at a retired chain is
  *  skipped — lazy invalidation of stale forks. Callers that don't care
  *  about retirement (transform sweeps during drain, tests exercising
  *  pure body-storage semantics) omit the predicate. */
 export function visibleBody(
   unit: Unit,
-  s: AssumptionSet,
-  isRetired?: (s: AssumptionSet) => boolean,
+  s: Speculation,
+  isRefuted?: (s: Speculation) => boolean,
 ): readonly StmtNS.Stmt[] {
   if (s.parent === undefined) return unit.body;
   const m = bodies.get(unit);
   if (m === undefined) return unit.body;
-  let best: AssumptionSet | undefined;
+  let best: Speculation | undefined;
   for (const k of m.keys()) {
     if (!leq(k, s)) continue;
-    if (isRetired !== undefined && isRetired(k)) continue;
+    if (isRefuted !== undefined && isRefuted(k)) continue;
     if (best === undefined || k.depth > best.depth) best = k;
   }
   return best !== undefined ? m.get(best)! : unit.body;
@@ -69,7 +69,7 @@ export function visibleBody(
 /** Materialize (or reuse) a forked body at `s`. Under `empty` returns
  *  `unit.body` (no fork — transforms may not mutate the canonical AST at
  *  `empty` through this path; that is enforced by caller convention). */
-export function forkBody(unit: Unit, s: AssumptionSet): StmtNS.Stmt[] {
+export function forkBody(unit: Unit, s: Speculation): StmtNS.Stmt[] {
   if (s.parent === undefined) return unit.body;
   const m = perUnit(unit);
   const existing = m.get(s);
@@ -86,7 +86,7 @@ export function clearUnitBodies(unit: Unit): void {
 
 /** Drop the forked body at `s` for `unit`, if any. No-op at `empty` or
  *  when `s` has no fork. Returns true iff a fork was dropped. */
-export function evictAt(unit: Unit, s: AssumptionSet): boolean {
+export function evictAt(unit: Unit, s: Speculation): boolean {
   if (s.parent === undefined) return false;
   const m = bodies.get(unit);
   if (m === undefined) return false;

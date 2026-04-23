@@ -19,11 +19,10 @@ import {
 } from "./analysis-store";
 import {
   ROOT_CONTEXT,
-  type AssumptionChain
+  type Speculation
 } from "./assumption-chain";
 import { carrier as carrierOf, extend, without } from "./assumption-algebra";
-import { clearUnitBodies } from "./assumption-bodies";
-import { Retirement } from "./retirement";
+import { Refutations } from "./refutation";
 import type { CounterStore } from "./counter-store";
 import {
   buildFunctionRegistry,
@@ -54,14 +53,14 @@ import type { RawKind } from "./raw-value";
 class TripleQueue {
   private readonly analyses: Array<Analysis<any, any>> = [];
   private readonly keys: unknown[] = [];
-  private readonly contexts: AssumptionChain[] = [];
+  private readonly contexts: Speculation[] = [];
   private head = 0;
 
   size(): number {
     return this.analyses.length - this.head;
   }
 
-  push(analysis: Analysis<any, any>, key: unknown, context: AssumptionChain): void {
+  push(analysis: Analysis<any, any>, key: unknown, context: Speculation): void {
     this.analyses.push(analysis);
     this.keys.push(key);
     this.contexts.push(context);
@@ -71,7 +70,7 @@ class TripleQueue {
    *  Callers read `out.analysis` / `out.key` / `out.context` and must not
    *  retain the reference — `out` is a shared scratch object. Returns true
    *  iff an item was dequeued. */
-  pop(out: { analysis: Analysis<any, any>; key: unknown; context: AssumptionChain }): boolean {
+  pop(out: { analysis: Analysis<any, any>; key: unknown; context: Speculation }): boolean {
     if (this.head >= this.analyses.length) return false;
     out.analysis = this.analyses[this.head];
     out.key = this.keys[this.head];
@@ -80,7 +79,7 @@ class TripleQueue {
     // array is reused.
     this.analyses[this.head] = undefined as unknown as Analysis<any, any>;
     this.keys[this.head] = undefined;
-    this.contexts[this.head] = undefined as unknown as AssumptionChain;
+    this.contexts[this.head] = undefined as unknown as Speculation;
     this.head++;
     if (this.head >= this.analyses.length) {
       this.analyses.length = 0;
@@ -93,9 +92,9 @@ class TripleQueue {
 }
 
 /** Capability surface handed to evict subscribers (`onFactEvict`,
- *  `onRebuildEvict`, `onRetireEvict`). Replaces the recurring
+ *  `onRebuildEvict`). Replaces the recurring
  *  `for (const c of storeContexts(store)) storeEvict(store, key, c)` shape
- *  that every retire-edge `effect` had to spell out by hand.
+ *  that every evict-edge `effect` had to spell out by hand.
  *
  *  - `evictAt` evicts a single (key, context) pair — the same operation as
  *    `ctx.evict(analysis, key)` but reachable from evict callbacks that
@@ -105,7 +104,7 @@ class TripleQueue {
  *    invalidates a key irrespective of speculation chain (the common case
  *    for unit-scoped facts like purity verdicts and runtime observations). */
 export interface EvictHandle {
-  evictAt<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K, context: AssumptionChain): void;
+  evictAt<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K, context: Speculation): void;
   evictAcrossContexts<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K): void;
 }
 
@@ -115,7 +114,7 @@ export interface EvictHandle {
  *  shared frozen object. The dispatcher passes this same reference to every
  *  evict callback. */
 const EVICT_HANDLE: EvictHandle = Object.freeze({
-  evictAt<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K, context: AssumptionChain): void {
+  evictAt<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K, context: Speculation): void {
     storeEvict(store, key, context);
   },
   evictAcrossContexts<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K): void {
@@ -180,17 +179,17 @@ export class Worklist {
   private readonly analysisQueue = new TripleQueue();
   /** Scratch object reused by `TripleQueue.pop` — avoids allocating a result
    *  object per dequeue. Fields are overwritten on every pop. */
-  private readonly dequeued: { analysis: Analysis<any, any>; key: unknown; context: AssumptionChain } = {
+  private readonly dequeued: { analysis: Analysis<any, any>; key: unknown; context: Speculation } = {
     analysis: undefined as unknown as Analysis<any, any>,
     key: undefined,
-    context: undefined as unknown as AssumptionChain,
+    context: undefined as unknown as Speculation,
   };
   /** Dedup guard: a given (analysis, context, key) enqueued twice before being
    *  drained is a single item. Context is part of the dedup identity because
    *  sibling contexts run independent Kildall. */
   private readonly pendingKeysByAnalysis = new Map<
     Analysis<any, any>,
-    Map<AssumptionChain, Set<unknown>>
+    Map<Speculation, Set<unknown>>
   >();
 
   /** Registered transforms and their dirty sets. A unit enters the dirty set
@@ -216,7 +215,7 @@ export class Worklist {
    *  currently executing frames for the unit — evaluators track active-frame
    *  provenance separately. Unset or ROOT_CONTEXT means future dispatch is
    *  currently unspecialized for that unit. */
-  private readonly futureDispatchContext: Map<Unit, AssumptionChain> = new Map();
+  private readonly futureDispatchContext: Map<Unit, Speculation> = new Map();
 
   /** Single fact-change dispatch index. Analyses and transforms both compile
    *  their fact subscriptions into callbacks here; no per-subscriber-kind
@@ -247,15 +246,14 @@ export class Worklist {
    *  for the public `onSpecRev` event (future-dispatch context revision). */
   private readonly mintSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
   private readonly rebuildSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
-  private readonly retireSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
   private readonly specRevSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
 
-  /** Retirement filter. Stores minimal generators; `isRetired(c)` is the
+  /** Refutation filter. Stores minimal generators; `contains(c)` is the
    *  algebraic-membership check `∃ r ∈ R. leq(r, c)`. Correct for
    *  rebuild-path supersets that parent-walk ancestry would miss.
-   *  Monotone: once a generator is retired it stays retired for the life
-   *  of the worklist. */
-  private readonly retirement: Retirement = new Retirement();
+   *  Monotone: once a generator is added it stays for the life of the
+   *  worklist. */
+  private readonly refutations: Refutations = new Refutations();
 
   readonly registry: FunctionRegistry;
   private readonly functionEnvironments: FunctionEnvironments;
@@ -274,7 +272,7 @@ export class Worklist {
    *  External consumers (backends, ROOT-keyed profile reads) take this from
    *  the engine instead of importing `ROOT_CONTEXT` directly, so the
    *  framework stays the only place that names the symbol. */
-  get rootChain(): AssumptionChain {
+  get rootChain(): Speculation {
     return ROOT_CONTEXT;
   }
 
@@ -346,7 +344,6 @@ export class Worklist {
 
     this.registry.setListener({
       onMint: (node, slot) => this.onRegistryMint(node, slot),
-      onRetire: (functionId, node) => this.onRegistryRetire(functionId, node),
     });
   }
 
@@ -355,20 +352,6 @@ export class Worklist {
     const unit = buildOneUnit(node, this.functionEnvironments, this.registry);
     this._topology.registerUnit(unit);
     this.fireMint(unit);
-  }
-
-  private onRegistryRetire(functionId: FunctionId, _node: FunctionScopeNode): void {
-    const unit = this._topology.unitOfFunctionId(functionId);
-    if (unit === undefined) return;
-    this.pendingRebuilds.delete(unit);
-    this.futureDispatchContext.delete(unit);
-    for (const s of this.transformDirty.values()) s.delete(unit);
-    clearUnitBodies(unit);
-    // Each analysis declares its own eviction via `{on:"retire", effect}`.
-    // Fire lifecycle BEFORE dropping topology indices so retire effects that
-    // walk `topology.nodesOfUnit(unit)` still see the unit's nodes.
-    this.fireRetire(unit);
-    this._topology.unregisterUnit(unit);
   }
 
   /** Return `rule`'s dirty set, asserting it exists. `registerTransform` is
@@ -388,35 +371,47 @@ export class Worklist {
   private fireRebuild(unit: Unit): void {
     for (const sub of this.rebuildSubs) sub(this.passCtx, unit);
   }
-  private fireRetire(unit: Unit): void {
-    for (const sub of this.retireSubs) sub(this.passCtx, unit);
-  }
   private fireSpecRev(unit: Unit): void {
     for (const sub of this.specRevSubs) sub(this.passCtx, unit);
   }
 
-  /** `c` is retired iff any retired generator is an algebraic subset.
-   *  Safe to call with ROOT (always false). */
-  isRetired(node: AssumptionChain): boolean {
-    return this.retirement.isRetired(node);
+  /** `c` is refuted iff any generator is an algebraic subset.
+   *  Safe to call with the empty speculation (always false). */
+  isRefuted(node: Speculation): boolean {
+    return this.refutations.contains(node);
   }
 
-  /** Retire `carrier` for `unit`: add it to the retirement filter, clear
-   *  the memo bucket minted against its direct-param entry guards, and
-   *  drop `futureDispatchContext[unit]` if it now points into the
-   *  retired subtree (algebraic check — not just pointwise equality).
-   *  Body eviction is lazy: retirement-aware `visibleBody` skips retired
+  /** Refute `carrier` for `unit`: add the minimal singleton of the
+   *  carrier's tip binding to the refutation filter, clear the memo
+   *  bucket minted against its direct-param entry guards, and drop
+   *  `futureDispatchContext[unit]` if it now points into the refuted
+   *  subtree (algebraic check — not just pointwise equality). Body
+   *  eviction is lazy: refutation-aware `visibleBody` skips refuted
    *  ancestors on future reads; stale forks are reclaimed when the unit
    *  releases. Idempotent. */
-  private retireChain(unit: Unit, carrier: AssumptionChain): void {
+  private refute(unit: Unit, carrier: Speculation): void {
     if (carrier === ROOT_CONTEXT) return;
-    this.retirement.retire(carrier);
+    // The refutation filter stores MINIMAL generators: the singleton of
+    // the refuted binding alone. Storing the full carrier chain (which
+    // carries every binding on its canonical parent-path) would under-
+    // refute — sibling chains carrying the same refuted binding under a
+    // different prefix would escape `isRefuted`, because they are not
+    // supersets of the prefix-heavy carrier.
+    const a = carrier.assumption!;
+    const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
+    this.refutations.add(minimal);
+    // Memo bucket cleanup stays keyed to the carrier's specific chain:
+    // memoization publishes its memoId off the carrier's full entry-guard
+    // prefix, so the id for the singleton is a different id. Stale memo
+    // buckets at non-carrier supersets become dead data (never re-served
+    // because `visibleBody` skips refuted supersets) rather than
+    // incorrect data; eager sweep across supersets is a follow-up.
     const fd = unit.funcAst;
     if (fd instanceof StmtNS.FunctionDef) {
       clearMemoId(memoIdFor(fd, guardKeyFromGuards(directParamEntryGuardsFor(unit, carrier))));
     }
     const fdCtx = this.futureDispatchContext.get(unit);
-    if (fdCtx !== undefined && this.retirement.isRetired(fdCtx)) {
+    if (fdCtx !== undefined && this.refutations.contains(fdCtx)) {
       this.futureDispatchContext.delete(unit);
     }
   }
@@ -442,7 +437,6 @@ export class Worklist {
   //   factWrite  → onFactDirty    + onFactEvict
   //   mint       → onMint
   //   rebuild    → onRebuildDirty + onRebuildEvict
-  //   retire     → onRetireEvict
   //   specRev    → onSpecRev
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -461,7 +455,7 @@ export class Worklist {
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, key: unknown) => Iterable<K>,
-    opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
+    opts?: { enqueueAt?: (sourceCtx: Speculation) => Speculation },
   ): void {
     const project = opts?.enqueueAt;
     this.subscribeFact(from, (ctx, key) => {
@@ -519,14 +513,6 @@ export class Worklist {
    *  CFG generation. */
   onRebuildEvict(evict: (h: EvictHandle, unit: Unit) => void): void {
     this.rebuildSubs.push((_ctx, unit) => evict(EVICT_HANDLE, unit));
-  }
-
-  /** Subscribe an evict callback to retire. The matrix is evict-only here:
-   *  dirtying keys against a retiring unit is meaningless (no transfer will
-   *  ever consume them), and cross-unit invalidation triggered by retirement
-   *  is the job of fact subscriptions, not the retire hook. */
-  onRetireEvict(evict: (h: EvictHandle, unit: Unit) => void): void {
-    this.retireSubs.push((_ctx, unit) => evict(EVICT_HANDLE, unit));
   }
 
   /** Subscribe `reader` to spec-context bumps on any unit. Fires when
@@ -669,13 +655,13 @@ export class Worklist {
    *  helper: `Context` is the primitive, ROOT is one tree-root position
    *  inside it, and the worklist does not guess which position a caller
    *  meant. */
-  read<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): V {
+  read<K, V>(analysis: Analysis<K, V>, key: K, context: Speculation): V {
     return analysis.read(key, context);
   }
-  tryRead<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): V | undefined {
+  tryRead<K, V>(analysis: Analysis<K, V>, key: K, context: Speculation): V | undefined {
     return analysis.tryRead(key, context);
   }
-  readAll<K, V>(analysis: Analysis<K, V>, context: AssumptionChain): ReadonlyMap<K, V> {
+  readAll<K, V>(analysis: Analysis<K, V>, context: Speculation): ReadonlyMap<K, V> {
     return analysis.readAll(context);
   }
   /** Writes through `analysis.store` AND publishes a `FactChange` to
@@ -686,11 +672,11 @@ export class Worklist {
     analysis: Analysis<K, V>,
     key: K,
     value: V,
-    context: AssumptionChain,
+    context: Speculation,
   ): boolean {
     return this.writeAndDispatch(analysis, key, value, context);
   }
-  evict<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): void {
+  evict<K, V>(analysis: Analysis<K, V>, key: K, context: Speculation): void {
     storeEvict(analysis.store, key, context);
   }
 
@@ -711,8 +697,8 @@ export class Worklist {
     channel: ObservationChannel<K, RawKind>,
     key: K,
     value: RawKind,
-    context: AssumptionChain,
-  ): AssumptionChain {
+    context: Speculation,
+  ): Speculation {
     if (this.inTransformSweep) {
       throw new Error(
         `[Worklist.publish] called during transform sweep. ` +
@@ -759,7 +745,7 @@ export class Worklist {
     channel: ObservationChannel<K, any>,
     reader: Analysis<K2, any>,
     dirtied: (ctx: AnalysisCtx, key: K) => Iterable<K2>,
-    opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
+    opts?: { enqueueAt?: (sourceCtx: Speculation) => Speculation },
   ): void {
     const project = opts?.enqueueAt;
     this.subscribeChannel(channel as ObservationChannel<any, any>, (ctx, key) => {
@@ -787,7 +773,7 @@ export class Worklist {
     return false;
   }
 
-  enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): void {
+  enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: Speculation): void {
     const p = analysis as Analysis<any, any>;
     let byContext = this.pendingKeysByAnalysis.get(p);
     if (byContext === undefined) {
@@ -841,7 +827,7 @@ export class Worklist {
     analysis: Analysis<K, V>,
     key: K,
     value: V,
-    context: AssumptionChain,
+    context: Speculation,
   ): boolean {
     const result = storeWrite(analysis.store, key, value, context);
     if (result === null) return false;
@@ -891,11 +877,11 @@ export class Worklist {
           // witness)` — under ROOT that resolves to `unit.funcAst.body`
           // without a copy.
           const chain = this.futureDispatchChainFor(unit);
-          // Retirement guard: fix #2 already prevents `futureDispatchContext`
-          // from pointing to a retired node, but keep this as defense so
-          // any future path that writes a retired chain still doesn't
+          // Refutation guard: fix #2 already prevents `futureDispatchContext`
+          // from pointing to a refuted node, but keep this as defense so
+          // any future path that writes a refuted chain still doesn't
           // re-authorize speculative rewrites against it.
-          if (this.isRetired(chain)) continue;
+          if (this.isRefuted(chain)) continue;
           const fired = r.sweep(unit, chain, this._topology);
           if (fired) {
             this.pendingRebuilds.add(unit);
@@ -916,7 +902,7 @@ export class Worklist {
    *  dispatch so side-effect writes fan out to subscribers (critical for the
    *  DFA factory's paired-cell `.facts` write from inside `.env`'s transfer).
    *  Cross-context reads still go through the analysis directly when needed. */
-  private makeCtx(context: AssumptionChain): AnalysisCtx {
+  private makeCtx(context: Speculation): AnalysisCtx {
     const topology = this._topology;
     const worklist = this;
     return {
@@ -948,11 +934,11 @@ export class Worklist {
    *  identical for any two calls at the same context. The WeakMap lets the
    *  cached entry get collected once its chain is no longer reachable (e.g.
    *  after `releaseChain`), so entries don't pin pruned contexts. */
-  private readonly ctxCache: WeakMap<AssumptionChain, AnalysisCtx> = new WeakMap();
+  private readonly ctxCache: WeakMap<Speculation, AnalysisCtx> = new WeakMap();
 
   /** Build an `AnalysisCtx` scoped to `context`. The root context reuses
    *  `passCtx` (hot path); non-root contexts memoize the first-seen wrapper. */
-  private ctxFor(context: AssumptionChain): AnalysisCtx {
+  private ctxFor(context: Speculation): AnalysisCtx {
     if (context === ROOT_CONTEXT) return this.passCtx;
     let ctx = this.ctxCache.get(context);
     if (ctx === undefined) {
@@ -999,7 +985,7 @@ export class Worklist {
    *  narrowing dimension of its own, but witness discovery and memoization do
    *  need its per-context verdicts to exist at intermediate ancestor
    *  contexts. */
-  private enqueueNarrowingEntry(unit: Unit, context: AssumptionChain): void {
+  private enqueueNarrowingEntry(unit: Unit, context: Speculation): void {
     for (const n of this.narrowings) {
       const bfa = n.blockAnalysis();
       // `.env` is the fixpoint driver; enqueuing the seed block on it
@@ -1013,8 +999,8 @@ export class Worklist {
     source: ObservationChannel<any, RawKind>,
     key: any,
     observed: RawKind,
-    context: AssumptionChain,
-  ): AssumptionChain {
+    context: Speculation,
+  ): Speculation {
     const applicable = this.narrowingsBySource.get(source);
     if (applicable === undefined || applicable.length === 0) return context;
 
@@ -1030,11 +1016,11 @@ export class Worklist {
       let pruned = parentCtx;
       for (const n of applicable) {
         const c = carrierOf(pruned, n, key);
-        if (c !== undefined) this.retireChain(unit, c);
+        if (c !== undefined) this.refute(unit, c);
         pruned = without(pruned, n, key);
       }
       if (pruned === parentCtx) return parentCtx;
-      if (this.retirement.isRetired(pruned)) {
+      if (this.refutations.contains(pruned)) {
         this.futureDispatchContext.delete(unit);
         return ROOT_CONTEXT;
       }
@@ -1054,16 +1040,16 @@ export class Worklist {
       if (c !== undefined && n.eq(existing, lifted)) continue;
       if (c !== undefined) {
         // Assumption violated by a conflicting concrete observation.
-        // Retire the chain node whose tip carries the stale (n, key)
-        // assumption before we splice it out.
-        this.retireChain(unit, c);
+        // Refute the chain node whose tip carries the stale (n, key)
+        // binding before we splice it out.
+        this.refute(unit, c);
       }
       const cleaned = c !== undefined ? without(newCtx, n, key) : newCtx;
       newCtx = extend(cleaned, n, key, lifted);
     }
 
     if (newCtx === parentCtx) return parentCtx;
-    if (this.retirement.isRetired(newCtx)) {
+    if (this.refutations.contains(newCtx)) {
       this.futureDispatchContext.delete(unit);
       return ROOT_CONTEXT;
     }
@@ -1077,13 +1063,13 @@ export class Worklist {
    *  specialized facts/body to use for the NEXT compile/dispatch should pass
    *  this context to the analysis's read surface. This is not active-frame
    *  runtime provenance. */
-  futureDispatchChainFor(unit: Unit): AssumptionChain {
+  futureDispatchChainFor(unit: Unit): Speculation {
     return this.futureDispatchContext.get(unit) ?? ROOT_CONTEXT;
   }
 
   /** Same as `futureDispatchChainFor`, keyed by nodeId. Convenience for
    *  consumers that only have an AST node id (e.g. the DfaQuery projection). */
-  futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
+  futureDispatchChainForNode(nodeId: NodeId): Speculation {
     const unit = this._topology.unitOfNode(nodeId);
     return unit === undefined ? ROOT_CONTEXT : this.futureDispatchChainFor(unit);
   }

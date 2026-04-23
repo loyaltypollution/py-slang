@@ -1,3 +1,12 @@
+// Integration: memoization × speculation chain.
+//
+// `memoization.test.ts` covers the rule's unit-level contract (threshold,
+// purity gate, runtime cache, SVML wiring). The one interaction not
+// exercised there is chain-local purity: a function whose impure branch is
+// statically unreachable *only* under a speculation chain. The rule's
+// `readMinimal` walk must witness purity at the chain, fork the body, and
+// rewrite the fork — without touching the shared ROOT AST.
+
 import { ExprNS, StmtNS } from "../../ast-types";
 import { SVMLCompiler } from "../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../engines/svml/svml-interpreter";
@@ -9,15 +18,10 @@ import type { Unit } from "../../specialization/framework/function-unit";
 import type { Worklist } from "../../specialization/framework/worklist";
 import { setup } from "./harness/compile-pipelines";
 
-interface JitRun {
-  ast: StmtNS.FileInput;
-  returnValue: unknown;
-  fd: StmtNS.FunctionDef;
-  unit: Unit;
-  worklist: Worklist;
-}
-
-async function runWithJit(code: string, functionName: string): Promise<JitRun> {
+// `runSvmlJit` in harness/jit-runners.ts returns captured stdout only; this
+// test needs worklist/unit introspection to distinguish ROOT body from
+// spec body, so it runs the pipeline directly.
+async function runJitWithIntrospection(code: string, functionName: string) {
   const { ast, environments, worklist } = setup(code);
   worklist.drain();
 
@@ -42,28 +46,23 @@ async function runWithJit(code: string, functionName: string): Promise<JitRun> {
       for (let i = 0; i < args.length; i++) observers.observeParamEntry(scopeId, i, args[i]);
       worklist.sweepTransforms();
       const chain = observers.currentChainFor(scopeId);
-      const isRetired = (n: Parameters<typeof worklist.isRetired>[0]) => worklist.isRetired(n);
-      if (!dispatchValid(unit, chain, isRetired)) return undefined;
-      const body = bodyToCompile(unit, chain, worklist.topology, isRetired);
+      const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
+      if (!dispatchValid(unit, chain, isRefuted)) return undefined;
+      const body = bodyToCompile(unit, chain, worklist.topology, isRefuted);
       if (body === unit.body) return undefined;
       return compiler.compileFunction(unit, body);
     },
     dispatchReturn: (scopeId, value) => observers.observeScopeReturn(scopeId, value),
   });
-  const returnValue = await interpreter.execute();
+  await interpreter.execute();
 
   const fd = ast.statements.find(
     (s): s is StmtNS.FunctionDef =>
       s instanceof StmtNS.FunctionDef && s.name.lexeme === functionName,
   );
   if (!fd) throw new Error(`${functionName} not found`);
-  return {
-    ast,
-    returnValue,
-    fd,
-    unit: worklist.topology.unitOfFunctionId(fd.id)!,
-    worklist,
-  };
+  const unit = worklist.topology.unitOfFunctionId(fd.id)!;
+  return { fd, unit, worklist };
 }
 
 function startsWithMemoHas(body: readonly StmtNS.Stmt[]): boolean {
@@ -85,46 +84,12 @@ function specBody(unit: Unit, worklist: Worklist): readonly StmtNS.Stmt[] {
 
 beforeEach(clearMemoCache);
 
-test("A. pure-at-root: plain recursive fib → ROOT memoized, cache populated", async () => {
-  const { fd } = await runWithJit(
-    `
-def fib(n):
-    if n < 2:
-        return n
-    return fib(n - 1) + fib(n - 2)
-
-fib(17)
-`,
-    "fib",
-  );
-  expect(startsWithMemoHas(fd.body)).toBe(true);
-  expect(memoBucketCount("fib")).toBeGreaterThan(0);
-});
-
-// `n < 2` can't be decided from a type narrowing alone → print stays reachable
-// under every speculation chain.
-test("B. impure-every-chain: no memo anywhere, cache empty", async () => {
-  const { fd, unit, worklist } = await runWithJit(
-    `
-def fib(n):
-    if n < 2:
-        print("side effect")
-        return n
-    return fib(n - 1) + fib(n - 2)
-
-fib(17)
-`,
-    "fib",
-  );
-  expect(startsWithMemoHas(fd.body)).toBe(false);
-  expect(startsWithMemoHas(specBody(unit, worklist))).toBe(false);
-  expect(memoBucketCount("fib")).toBe(0);
-});
-
-// Type-narrowing kills the impure branch → memo fires on the spec body
-// but not on the shared ROOT AST.
-test("C. pure-under-spec (collatz): spec body memoized, ROOT untouched", async () => {
-  const { fd, unit, worklist } = await runWithJit(
+// collatz has an impure branch guarded by `x <= 0`. Type-narrowing on the
+// hot-looped positive inputs kills that branch on the speculation chain
+// (but not at ROOT, where `x` could still be non-positive). Memo must
+// fire on the spec body and leave the shared ROOT AST alone.
+test("purity witness only on speculation chain → memo fires on spec body, ROOT untouched", async () => {
+  const { fd, unit, worklist } = await runJitWithIntrospection(
     `
 def collatz(x):
     if x <= 0:
@@ -145,48 +110,4 @@ for i in range(20):
   expect(startsWithMemoHas(specBody(unit, worklist))).toBe(true);
   expect(startsWithMemoHas(fd.body)).toBe(false);
   expect(memoBucketCount("collatz")).toBeGreaterThan(0);
-});
-
-// Under strict retirement, fib(0) breaks INT_POS and fib(>=2) breaks the
-// NEG/ZERO siblings, so dispatch stabilises at ROOT with no memo prelude.
-test("C. pure-under-spec (fib n<0 guard): POS unstable → dispatch stabilises at ROOT", async () => {
-  const { fd, unit, worklist } = await runWithJit(
-    `
-def fib(n):
-    if n < 0:
-        print("side effect")
-    if n < 2:
-        return n
-    return fib(n - 1) + fib(n - 2)
-
-fib(17)
-`,
-    "fib",
-  );
-  expect(worklist.futureDispatchChainFor(unit).depth).toBe(0);
-  expect(startsWithMemoHas(specBody(unit, worklist))).toBe(false);
-  expect(startsWithMemoHas(fd.body)).toBe(false);
-});
-
-// fib(-1) inside the POS-speculated body statically escapes the narrowing:
-// every speculation is eventually refuted, dispatch stabilises at ROOT.
-test("D. spec-broken-by-lit: no memo at ROOT or spec; program still computes", async () => {
-  const { fd, unit, worklist, returnValue } = await runWithJit(
-    `
-def fib(n):
-    if n < 0:
-        print("side effect")
-    if n < 2:
-        return n
-    fib(-1)
-    return fib(n - 1) + fib(n - 2)
-
-fib(17)
-`,
-    "fib",
-  );
-  expect(returnValue).toBe(1597n);
-  expect(worklist.futureDispatchChainFor(unit).depth).toBe(0);
-  expect(startsWithMemoHas(fd.body)).toBe(false);
-  expect(startsWithMemoHas(specBody(unit, worklist))).toBe(false);
 });

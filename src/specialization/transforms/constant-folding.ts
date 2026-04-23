@@ -10,7 +10,7 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { ConstLattice } from "../const-analysis/lattice";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
-import type { AssumptionChain } from "../framework/assumption-chain";
+import type { Speculation } from "../framework/assumption-chain";
 import { visibleBody } from "../framework/assumption-bodies";
 import { constAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
@@ -18,22 +18,22 @@ import type { ProgramTopology } from "../framework/topology";
 import { BaseStmtVisitor, runWitnessSweep, walkExprs } from "./witness-utils";
 
 function constInfo(
-  chain: AssumptionChain,
+  chain: Speculation,
   topology: ProgramTopology,
   nodeId: number,
-): { value: Extract<ConstLattice, { tag: "const" }>; witness: AssumptionChain } | undefined {
+): { value: Extract<ConstLattice, { tag: "const" }>; witness: Speculation } | undefined {
   return constAnalysis
     .perExpr(topology)
     .readMinimal(chain, nodeId, (cv: ConstLattice) => cv.tag === "const") as
-    | { value: Extract<ConstLattice, { tag: "const" }>; witness: AssumptionChain }
+    | { value: Extract<ConstLattice, { tag: "const" }>; witness: Speculation }
     | undefined;
 }
 
 function collectWitnesses(
-  chain: AssumptionChain,
+  chain: Speculation,
   topology: ProgramTopology,
   stmts: readonly StmtNS.Stmt[],
-  out: Set<AssumptionChain>,
+  out: Set<Speculation>,
 ): void {
   walkExprs(stmts, (e) => {
     if (!(e instanceof ExprNS.Binary)) return;
@@ -46,7 +46,7 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
 
   constructor(
-    private readonly chain: AssumptionChain,
+    private readonly chain: Speculation,
     private readonly topology: ProgramTopology,
   ) {}
 
@@ -140,7 +140,7 @@ class ConstFoldExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
 class ConstFoldStmtVisitor extends BaseStmtVisitor {
   private readonly exprVisitor: ConstFoldExprVisitor;
 
-  constructor(chain: AssumptionChain, topology: ProgramTopology) {
+  constructor(chain: Speculation, topology: ProgramTopology) {
     super();
     this.exprVisitor = new ConstFoldExprVisitor(chain, topology);
   }
@@ -191,8 +191,8 @@ class ConstFoldStmtVisitor extends BaseStmtVisitor {
 }
 
 export const constantFoldingRule: TransformRule = {
-  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
-    const witnesses = new Set<AssumptionChain>();
+  sweep(unit: Unit, chain: Speculation, topology: ProgramTopology): boolean {
+    const witnesses = new Set<Speculation>();
     collectWitnesses(chain, topology, visibleBody(unit, chain), witnesses);
     return runWitnessSweep(
       unit,

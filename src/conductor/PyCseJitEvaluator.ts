@@ -74,9 +74,9 @@ abstract class PyCseJitEvaluatorBase extends PyCseEvaluatorBase {
           // on every recursive call. Symmetric with SVML JIT's dispatchCall.
           worklist.sweepTransforms();
           const chain = observers.currentChainFor(scopeId);
-          const isRetired = (n: Parameters<typeof worklist.isRetired>[0]) => worklist.isRetired(n);
-          if (!dispatchValid(unit, chain, isRetired)) return undefined;
-          const body = bodyToCompile(unit, chain, worklist.topology, isRetired);
+          const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
+          if (!dispatchValid(unit, chain, isRefuted)) return undefined;
+          const body = bodyToCompile(unit, chain, worklist.topology, isRefuted);
           return body === unit.body ? undefined : body;
         },
         dispatchReturn: (scopeId, value) => {

@@ -1,24 +1,26 @@
 // Interner load-bearing-ness, driven through real Python code and the
 // production narrowings (paramTypeNarrowing / paramConstNarrowing).
 //
-// The scenarios here mirror the two JIT regimes where chain reconvergence
-// decides whether cached specialization state survives:
+// Two intra-interner invariants that the JIT relies on:
 //
 //   1. Widen-then-reobserve: a hot shape → deopt drops a link → the same
 //      shape returns. Without the interner, the reborn chain is a distinct
 //      object; everything keyed by the old chain (AnalysisStore cells,
 //      forked bodies, compiled IR) orphans on every deopt-retry cycle.
 //
-//   2. Two worklists observing the same program in different orders reach
-//      reference-equal chains — the module-global `defaultInterner` is what
-//      makes this work, and it is the same invariant that lets a single
-//      worklist converge when multiple narrowings for one param extend in
-//      whichever order the applicable-array happens to yield.
+//   2. Order-independence of `extend`: when an applicable-array yields
+//      narrowings in a different order than last time, canonicalization
+//      must reconverge to the same Speculation node. This is also what
+//      lets a single worklist stay stable across observation reorderings.
+//
+// Cross-parse / cross-worklist chain identity is NOT a contract —
+// `fn.id` is a process-global counter so two parses have disjoint key
+// spaces by construction (see context-interner.ts header).
 
 import { StmtNS } from "../../ast-types";
 import {
   ROOT_CONTEXT,
-  type AssumptionChain,
+  type Speculation,
 } from "../../specialization/framework/assumption-chain";
 import {
   at,
@@ -75,93 +77,47 @@ describe("chain reconvergence across widen → re-observe (Python-driven)", () =
     expect(reborn).toBe(hotChain);
   });
 
-  test("two worklists, two observation orders, one canonical chain", () => {
-    // Same Python program parsed twice into two independent worklists. The
-    // per-worklist structures (store, topology, etc.) are distinct, but the
-    // AssumptionChain nodes are interned in the process-global
-    // `defaultInterner`, so structurally-equal chains share identity across
-    // worklists. That's the cross-worklist cache-hit property the memory
-    // comment in context-interner.ts promises.
-    const code = "def f(x, y):\n    return x * y\n";
-    const a = setupAndDrain(code);
-    const b = setupAndDrain(code);
-    const fdA = a.ast.statements[0] as StmtNS.FunctionDef;
-    const fdB = b.ast.statements[0] as StmtNS.FunctionDef;
-    const unitA = a.worklist.topology.unitOfFunctionId(fdA.id)!;
-    const unitB = b.worklist.topology.unitOfFunctionId(fdB.id)!;
+  test("extend is order-independent: reversed arrival order canonicalizes", () => {
+    // `fn.id` is a process-global monotonic counter (ast-types.ts), so two
+    // parses of the same source produce disjoint key spaces; cross-parse
+    // chain identity is not a framework contract. The real invariant is
+    // intra-interner: `extend` canonicalizes links so that applying the
+    // same (narrowing, key, value) triples in opposite orders reaches the
+    // same Speculation node.
+    const { ast, worklist } = setupAndDrain(
+      "def f(x, y):\n    return x * y\n",
+    );
+    const fd = ast.statements[0] as StmtNS.FunctionDef;
+    const unit = worklist.topology.unitOfFunctionId(fd.id)!;
 
-    // Worklist A: observe x before y.
-    a.worklist.publish(
-      runtimeParamChannel, paramKey(fdA.id, 0),
+    worklist.publish(
+      runtimeParamChannel, paramKey(fd.id, 0),
       { kind: "number", value: 7 }, ROOT_CONTEXT,
     );
-    a.worklist.publish(
-      runtimeParamChannel, paramKey(fdA.id, 1),
+    worklist.publish(
+      runtimeParamChannel, paramKey(fd.id, 1),
       { kind: "number", value: 11 }, ROOT_CONTEXT,
     );
-    a.worklist.drain();
+    worklist.drain();
 
-    // Worklist B: observe y before x.
-    b.worklist.publish(
-      runtimeParamChannel, paramKey(fdB.id, 1),
-      { kind: "number", value: 11 }, ROOT_CONTEXT,
-    );
-    b.worklist.publish(
-      runtimeParamChannel, paramKey(fdB.id, 0),
-      { kind: "number", value: 7 }, ROOT_CONTEXT,
-    );
-    b.worklist.drain();
+    const chain = worklist.futureDispatchChainFor(unit);
 
-    const chainA = a.worklist.futureDispatchChainFor(unitA);
-    const chainB = b.worklist.futureDispatchChainFor(unitB);
-
-    // The chains are keyed by paramKey(functionId, index). fdA.id !== fdB.id
-    // (two independent parses), so the keys differ and the chains won't
-    // literally ===. What we assert instead: the SHAPE (assumption set
-    // per-key) is reference-stable under reordering within a worklist.
-    //
-    // Re-run worklist A with a third parse using a *different* publish
-    // order to prove order-independence on the interner itself.
-    const c = setupAndDrain(code);
-    const fdC = c.ast.statements[0] as StmtNS.FunctionDef;
-    const unitC = c.worklist.topology.unitOfFunctionId(fdC.id)!;
-    // Observe y first, then x.
-    c.worklist.publish(
-      runtimeParamChannel, paramKey(fdC.id, 1),
-      { kind: "number", value: 11 }, ROOT_CONTEXT,
-    );
-    c.worklist.publish(
-      runtimeParamChannel, paramKey(fdC.id, 0),
-      { kind: "number", value: 7 }, ROOT_CONTEXT,
-    );
-    c.worklist.drain();
-
-    // Now synthesize what chainC would look like re-built in worklist-A's
-    // key space by walking chainA's assumptions and re-extending from ROOT
-    // in reverse depth order. If the interner canonicalizes, applying the
-    // same assumptions in the opposite order from ROOT must === chainA.
-    const linksA: Array<{ n: any; k: any; v: any }> = [];
-    for (let cur: AssumptionChain | undefined = chainA; cur !== undefined; cur = cur.parent) {
+    // Walk chain child-first, then rebuild from ROOT in that (reversed)
+    // arrival order. Interner canonicalization makes the result ===.
+    const links: Array<{ n: any; k: any; v: any }> = [];
+    for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
       if (cur.assumption !== undefined) {
-        linksA.push({
+        links.push({
           n: cur.assumption.narrowing,
           k: cur.assumption.key,
           v: cur.assumption.value,
         });
       }
     }
-    // Rebuild in arrival order (child-first from the walk above) — this is
-    // the *opposite* of the canonical order the original extend followed.
-    let rebuilt: AssumptionChain = ROOT_CONTEXT;
-    for (const l of linksA) {
+    let rebuilt: Speculation = ROOT_CONTEXT;
+    for (const l of links) {
       rebuilt = extend(rebuilt, l.n, l.k, l.v);
     }
-    expect(rebuilt).toBe(chainA);
-
-    // chainB is just here to verify the second worklist did speculate —
-    // otherwise the test would vacuously pass if observation failed.
-    expect(chainB.parent).not.toBeUndefined();
-    void unitB;
-    void unitC;
+    expect(rebuilt).toBe(chain);
   });
 });

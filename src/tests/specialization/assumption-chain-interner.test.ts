@@ -206,7 +206,7 @@ describe("default interner via free functions", () => {
 
 // Downstream-payoff tests. The interner's value proposition is that
 // structurally-equal chains reach reference-equality, so downstream
-// `Map<AssumptionChain, _>` consumers (here: AnalysisStore's cellsByContext)
+// `Map<Speculation, _>` consumers (here: AnalysisStore's cellsByContext)
 // see the chain reconverge across widen → re-extend. Without the interner,
 // step-3's chain would be a fresh object and the fact written at step-1
 // would be unreachable — a silent fact-cache orphan on every successful

@@ -1,7 +1,7 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
 import type { Narrowing } from "../framework/analysis";
-import { isRoot, type AssumptionChain } from "../framework/assumption-chain";
+import { isRoot, type Speculation } from "../framework/assumption-chain";
 import { at } from "../framework/assumption-algebra";
 import { MutableEnv } from "../framework/mutable-env";
 import { paramTypeNarrowing } from "../framework/param-handles";
@@ -94,7 +94,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   private paramKeys!: readonly ParamKey[];
   private slotLookup!: SlotLookup;
   private recordExprFact!: (nodeId: NodeId, val: TypeLattice) => void;
-  private context!: AssumptionChain;
+  private context!: Speculation;
   private rootContext = true;
 
   reset(
@@ -102,7 +102,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     paramKeys: readonly ParamKey[],
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: TypeLattice) => void,
-    context: AssumptionChain,
+    context: Speculation,
   ): this {
     this.slotTypes = slotTypes;
     this.paramKeys = paramKeys;
@@ -320,7 +320,7 @@ const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
     unit,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: TypeLattice) => void,
-    context: AssumptionChain,
+    context: Speculation,
   ): ExprNS.Visitor<TypeLattice> {
     const paramCount = unit.funcAst instanceof StmtNS.FunctionDef
       ? unit.funcAst.parameters.length

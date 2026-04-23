@@ -60,7 +60,7 @@ def f(x):
       { kind: "bool", value: false }, chain,
     );
     worklist.drain();
-    expect(dispatchValid(unit, chain, n => worklist.isRetired(n))).toBe(false);
+    expect(dispatchValid(unit, chain, n => worklist.isRefuted(n))).toBe(false);
   });
 });
 

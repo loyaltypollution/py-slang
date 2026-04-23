@@ -6,7 +6,7 @@ import { directParamEntryGuardsFor, guardKeyFromGuards } from "../entry-guards";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfFunctionId, wakeOwningUnit } from "../framework/analysis";
 import { shadowNode } from "../framework/ast-deep-clone";
-import { type AssumptionChain } from "../framework/assumption-chain";
+import { type Speculation } from "../framework/assumption-chain";
 import { forkBody } from "../framework/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 import { RUNTIME_CALL_COUNT_SAT, runtimeCallCounter } from "../framework/runtime-analyses";
@@ -93,10 +93,10 @@ function memoWrappedBody(
 
 function memoizationWitnessFor(
   fd: StmtNS.FunctionDef,
-  chain: AssumptionChain,
-): { value: true; witness: AssumptionChain } | undefined {
+  chain: Speculation,
+): { value: true; witness: Speculation } | undefined {
   return purityScopeAnalysis.readMinimal(chain, fd.id, value => value === true) as
-    | { value: true; witness: AssumptionChain }
+    | { value: true; witness: Speculation }
     | undefined;
 }
 
@@ -142,7 +142,7 @@ export const memoizationRule: TransformRule = {
     wl.onTransformCounterBumped(memoizationRule, runtimeCallCounter, wakeUnit);
     wl.onTransformFactDirty(memoizationRule, purityScopeAnalysis, wakeUnit);
   },
-  sweep(unit: Unit, chain: AssumptionChain, _topology: ProgramTopology): boolean {
+  sweep(unit: Unit, chain: Speculation, _topology: ProgramTopology): boolean {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
     // Profitability gate: call hotness is a profile counter, not a lattice

@@ -21,7 +21,7 @@
 
 import { StmtNS } from "../../ast-types";
 import { contextIsEntrySpecializable, directParamEntryGuardsFor } from "../entry-guards";
-import type { AssumptionChain } from "./assumption-chain";
+import type { Speculation } from "./assumption-chain";
 import { visibleBody } from "./assumption-bodies";
 import { shadowNode } from "./ast-deep-clone";
 import { typeAnalysis } from "./dfa-analyses";
@@ -32,7 +32,7 @@ import { BOOL_BIT, BoolRef } from "../type-analysis/lattice";
 function conditionTruth(
   condId: number,
   topology: ReadonlyProgramTopology,
-  context: AssumptionChain,
+  context: Speculation,
 ): boolean | undefined {
   const fact = typeAnalysis.perExpr(topology).tryRead(condId, context);
   if (fact === undefined || fact.kinds !== BOOL_BIT) return undefined;
@@ -45,7 +45,7 @@ function conditionTruth(
  *  original array when no rewrite was needed. */
 function pruneWithFactsAt(
   stmts: readonly StmtNS.Stmt[],
-  context: AssumptionChain,
+  context: Speculation,
   topology: ReadonlyProgramTopology,
 ): readonly StmtNS.Stmt[] {
   let changed = false;
@@ -91,23 +91,23 @@ function pruneWithFactsAt(
  *   - `unit.funcAst` is a FunctionDef.
  *   - `contextIsEntrySpecializable(unit, s)` — every assumption in `s`
  *     is of a kind the entry-guard machinery can lower.
- *   - `!isRetired(s)` — the retirement filter has no generator that is
- *     a subset of `s`. Under algebraic `isRetired` this single query
+ *   - `!isRefuted(s)` — the retirement filter has no generator that is
+ *     a subset of `s`. Under algebraic `isRefuted` this single query
  *     covers every retired generator transitively.
  *   - `directParamEntryGuardsFor(unit, s) !== undefined` — there are
  *     concrete param-type assumptions to emit guards from.
  *
- *  When `isRetired` is omitted, retirement is assumed trivial (useful
+ *  When `isRefuted` is omitted, retirement is assumed trivial (useful
  *  for unit tests on pure dispatch predicates). Production call sites
  *  supply the worklist's algebraic predicate. */
 export function dispatchValid(
   unit: Unit,
-  s: AssumptionChain,
-  isRetired?: (s: AssumptionChain) => boolean,
+  s: Speculation,
+  isRefuted?: (s: Speculation) => boolean,
 ): boolean {
   if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return false;
   if (!contextIsEntrySpecializable(unit, s)) return false;
-  if (isRetired !== undefined && isRetired(s)) return false;
+  if (isRefuted !== undefined && isRefuted(s)) return false;
   if (directParamEntryGuardsFor(unit, s) === undefined) return false;
   return true;
 }
@@ -123,14 +123,14 @@ export function dispatchValid(
  *    result !== unit.body  → either an ancestor rewrite, the pruner
  *                            fired, or both; caller compiles the clone.
  *
- *  Preconditions: call `dispatchValid(unit, s, isRetired)` first. This
+ *  Preconditions: call `dispatchValid(unit, s, isRefuted)` first. This
  *  function does not re-check admissibility. */
 export function bodyToCompile(
   unit: Unit,
-  s: AssumptionChain,
+  s: Speculation,
   topology: ReadonlyProgramTopology,
-  isRetired?: (s: AssumptionChain) => boolean,
+  isRefuted?: (s: Speculation) => boolean,
 ): readonly StmtNS.Stmt[] {
-  const source = visibleBody(unit, s, isRetired);
+  const source = visibleBody(unit, s, isRefuted);
   return pruneWithFactsAt(source, s, topology);
 }

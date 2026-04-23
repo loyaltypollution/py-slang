@@ -10,7 +10,7 @@
 
 import { StmtNS } from "../../ast-types";
 import type { TransformRule } from "../../specialization/framework/analysis";
-import type { AssumptionChain } from "../../specialization/framework/assumption-chain";
+import type { Speculation } from "../../specialization/framework/assumption-chain";
 import { ROOT_CONTEXT } from "../../specialization/framework/assumption-chain";
 import type { Unit } from "../../specialization/framework/function-unit";
 import { paramKey } from "../../specialization/framework/key-spaces";
@@ -66,7 +66,7 @@ def f(x):
 
     let sawThrow = false;
     const rule: TransformRule = {
-      sweep(_unit: Unit, _chain: AssumptionChain, _topology: ProgramTopology): boolean {
+      sweep(_unit: Unit, _chain: Speculation, _topology: ProgramTopology): boolean {
         try {
           worklist.publish(
             runtimeParamChannel,
@@ -106,7 +106,7 @@ def g(y):
 
     let sawThrow = false;
     const rule: TransformRule = {
-      sweep(_unit: Unit, _chain: AssumptionChain, _topology: ProgramTopology): boolean {
+      sweep(_unit: Unit, _chain: Speculation, _topology: ProgramTopology): boolean {
         try {
           worklist.bump(runtimeCallCounter, fn.id);
         } catch (e) {

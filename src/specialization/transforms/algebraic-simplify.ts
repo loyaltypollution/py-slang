@@ -12,7 +12,7 @@ import { TokenType } from "../../tokenizer";
 import type { ConstLattice } from "../const-analysis/lattice";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
-import type { AssumptionChain } from "../framework/assumption-chain";
+import type { Speculation } from "../framework/assumption-chain";
 import { visibleBody } from "../framework/assumption-bodies";
 import { constAnalysis, typeAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
@@ -21,11 +21,11 @@ import { BOOL_BIT, BoolRef, INT_BIT, IntRef, type TypeLattice } from "../type-an
 import { truthiness } from "../type-analysis/transfer";
 import { BaseStmtVisitor, deepestWitness, runWitnessSweep, shallowestWitness, walkExprs } from "./witness-utils";
 
-type Witnessed<T> = { value: T; witness: AssumptionChain };
-type RewritePlan = { witness: AssumptionChain; replacement: ExprNS.Expr };
+type Witnessed<T> = { value: T; witness: Speculation };
+type RewritePlan = { witness: Speculation; replacement: ExprNS.Expr };
 
 function typeInfo(
-  chain: AssumptionChain,
+  chain: Speculation,
   topology: ProgramTopology,
   node: ExprNS.Expr,
 ): Witnessed<TypeLattice> | undefined {
@@ -33,25 +33,25 @@ function typeInfo(
 }
 
 function constInfo(
-  chain: AssumptionChain,
+  chain: Speculation,
   topology: ProgramTopology,
   node: ExprNS.Expr,
 ): Witnessed<ConstLattice> | undefined {
   return constAnalysis.perExpr(topology).readMinimal(chain, node.id, () => true);
 }
 
-function pureIntWitness(info: Witnessed<TypeLattice> | undefined): AssumptionChain | undefined {
+function pureIntWitness(info: Witnessed<TypeLattice> | undefined): Speculation | undefined {
   return info !== undefined && info.value.kinds === INT_BIT ? info.witness : undefined;
 }
 
-function boolWitness(info: Witnessed<TypeLattice> | undefined): AssumptionChain | undefined {
+function boolWitness(info: Witnessed<TypeLattice> | undefined): Speculation | undefined {
   return info !== undefined && info.value.kinds === BOOL_BIT ? info.witness : undefined;
 }
 
 function intZeroWitness(
   type: Witnessed<TypeLattice> | undefined,
   konst: Witnessed<ConstLattice> | undefined,
-): AssumptionChain | undefined {
+): Speculation | undefined {
   return shallowestWitness(
     type !== undefined && type.value.kinds === INT_BIT && type.value.intRef === IntRef.Zero
       ? type.witness
@@ -62,7 +62,7 @@ function intZeroWitness(
   );
 }
 
-function intOneWitness(konst: Witnessed<ConstLattice> | undefined): AssumptionChain | undefined {
+function intOneWitness(konst: Witnessed<ConstLattice> | undefined): Speculation | undefined {
   return konst !== undefined && konst.value.tag === "const" && konst.value.value === 1
     ? konst.witness
     : undefined;
@@ -71,7 +71,7 @@ function intOneWitness(konst: Witnessed<ConstLattice> | undefined): AssumptionCh
 function truthWitness(
   type: Witnessed<TypeLattice> | undefined,
   wanted: BoolRef,
-): AssumptionChain | undefined {
+): Speculation | undefined {
   if (type === undefined) return undefined;
   return truthiness(type.value) === wanted ? type.witness : undefined;
 }
@@ -99,7 +99,7 @@ function zeroLiteralLike(e: ExprNS.Expr): ExprNS.Literal {
 }
 
 function rewritePlan(
-  chain: AssumptionChain,
+  chain: Speculation,
   topology: ProgramTopology,
   expr: ExprNS.Expr,
 ): RewritePlan | undefined {
@@ -202,10 +202,10 @@ function rewritePlan(
 }
 
 function collectWitnesses(
-  chain: AssumptionChain,
+  chain: Speculation,
   topology: ProgramTopology,
   stmts: readonly StmtNS.Stmt[],
-  out: Set<AssumptionChain>,
+  out: Set<Speculation>,
 ): void {
   walkExprs(stmts, (expr) => {
     const plan = rewritePlan(chain, topology, expr);
@@ -216,7 +216,7 @@ function collectWitnesses(
 class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   changed = false;
   constructor(
-    private readonly chain: AssumptionChain,
+    private readonly chain: Speculation,
     private readonly topology: ProgramTopology,
   ) {}
 
@@ -308,7 +308,7 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
 class AlgebraicSimplifyStmtVisitor extends BaseStmtVisitor {
   private readonly exprVisitor: AlgebraicSimplifyVisitor;
 
-  constructor(chain: AssumptionChain, topology: ProgramTopology) {
+  constructor(chain: Speculation, topology: ProgramTopology) {
     super();
     this.exprVisitor = new AlgebraicSimplifyVisitor(chain, topology);
   }
@@ -366,8 +366,8 @@ export const algebraicSimplifyRule: TransformRule = {
       wakeOwningUnit(unitOfBlock),
     );
   },
-  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
-    const witnesses = new Set<AssumptionChain>();
+  sweep(unit: Unit, chain: Speculation, topology: ProgramTopology): boolean {
+    const witnesses = new Set<Speculation>();
     collectWitnesses(chain, topology, visibleBody(unit, chain), witnesses);
     return runWitnessSweep(
       unit,

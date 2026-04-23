@@ -1,8 +1,8 @@
 // Algebraic surface for assumption sets.
 //
-// An AssumptionSet is a canonical finite partial map
+// An Speculation is a canonical finite partial map
 // (Narrowing, Key) ⇀ Value, canonicalized by the interner and carrying
-// its full binding map content-addressably (see AssumptionChain.bindings).
+// its full binding map content-addressably (see Speculation.bindings).
 //
 // The structure is a bounded meet-semilattice:
 //   - Order: x ⊑ y iff every binding in x is also bound to the same
@@ -19,44 +19,44 @@
 // interner and is not surfaced here.
 
 import type { Narrowing } from "./analysis";
-import type { Assumption, AssumptionChain } from "./assumption-chain";
+import type { Assumption, Speculation } from "./assumption-chain";
 import { ROOT_CONTEXT } from "./assumption-chain";
 import { defaultInterner } from "./assumption-chain-interner";
 
-/** The algebraic carrier. Reference-equal iff structurally equal; the
- *  interner guarantees canonicalization. */
-export type AssumptionSet = AssumptionChain;
+// Re-export the carrier type so callers reading the algebra don't need a
+// second import of the structural module.
+export type { Speculation } from "./assumption-chain";
 
 /** Bottom element: the empty partial map. `leq(empty, s)` for all `s`. */
-export const empty: AssumptionSet = ROOT_CONTEXT;
+export const empty: Speculation = ROOT_CONTEXT;
 
 /** Extend `s` with a binding `(narrowing, key) ↦ value`. Idempotent when
  *  `s` already carries the same value under `narrowing.eq`. Throws when
  *  `s` already binds `(narrowing, key)` to a different value — callers
  *  that need to replace should `without(s, narrowing, key)` first. */
 export function extend<K, V>(
-  s: AssumptionSet,
+  s: Speculation,
   narrowing: Narrowing<K, V>,
   key: K,
   value: V,
-): AssumptionSet {
+): Speculation {
   return defaultInterner.extend(s, narrowing, key, value);
 }
 
 /** Drop the binding at `(narrowing, key)` if any. Identity-returns `s`
  *  unchanged when no binding matched. */
 export function without<K>(
-  s: AssumptionSet,
+  s: Speculation,
   narrowing: Narrowing<K, any>,
   key: K,
-): AssumptionSet {
+): Speculation {
   return defaultInterner.exclude(s, narrowing, key);
 }
 
 /** Point-query: the bound value at `(narrowing, key)`, or `undefined`.
  *  O(1) map lookup. */
 export function at<K, V>(
-  s: AssumptionSet,
+  s: Speculation,
   narrowing: Narrowing<K, V>,
   key: K,
 ): V | undefined {
@@ -72,13 +72,13 @@ export function at<K, V>(
  *  a handle on "retire the carrier of this binding." Algebraic readers
  *  should prefer `at`. */
 export function carrier<K>(
-  s: AssumptionSet,
+  s: Speculation,
   narrowing: Narrowing<K, any>,
   key: K,
-): AssumptionSet | undefined {
+): Speculation | undefined {
   if (at(s, narrowing, key) === undefined) return undefined;
   const target = narrowing as Narrowing<unknown, unknown>;
-  for (let cur: AssumptionSet | undefined = s; cur !== undefined; cur = cur.parent) {
+  for (let cur: Speculation | undefined = s; cur !== undefined; cur = cur.parent) {
     const a = cur.assumption;
     if (a !== undefined && a.narrowing === target && a.key === key) return cur;
   }
@@ -88,7 +88,7 @@ export function carrier<K>(
 /** `leq(x, y)` iff `x ⊑ y` algebraically: every binding in `x` is also
  *  present in `y` with the same value. O(|x|). Argument order is
  *  anc-first (opposite of the prior `hasAncestor(ctx, anc)` spelling). */
-export function leq(x: AssumptionSet, y: AssumptionSet): boolean {
+export function leq(x: Speculation, y: Speculation): boolean {
   if (x === y) return true;
   if (x === ROOT_CONTEXT) return true;
   if (x.depth > y.depth) return false;
@@ -109,7 +109,7 @@ export function leq(x: AssumptionSet, y: AssumptionSet): boolean {
 /** Iterate every binding in `s` as a frozen `Assumption`. Order is
  *  implementation-defined (outer Map iteration × inner Map iteration).
  *  Callers that need stable iteration should sort on their own. */
-export function* bindings(s: AssumptionSet): Generator<Assumption> {
+export function* bindings(s: Speculation): Generator<Assumption> {
   for (const inner of s.bindings.values()) {
     for (const a of inner.values()) yield a;
   }

@@ -1,6 +1,6 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
-import type { AssumptionChain } from "../framework/assumption-chain";
+import type { Speculation } from "../framework/assumption-chain";
 import type { BlockDfaSpec } from "../framework/dfa-factory";
 import { MutableEnv } from "../framework/mutable-env";
 import type { RawKind } from "../framework/raw-value";
@@ -198,7 +198,7 @@ export const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
     _unit,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: ConstLattice) => void,
-    _context: AssumptionChain,
+    _context: Speculation,
   ): ExprNS.Visitor<ConstLattice> {
     return new ConstAnalysisVisitor(env, slotLookup, recordExprFact);
   },

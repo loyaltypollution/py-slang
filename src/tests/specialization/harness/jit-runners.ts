@@ -50,9 +50,9 @@ export async function runSvmlJit(code: string): Promise<string[]> {
       for (let i = 0; i < args.length; i++) observers.observeParamEntry(scopeId, i, args[i]);
       worklist.sweepTransforms();
       const chain = observers.currentChainFor(scopeId);
-      const isRetired = (n: Parameters<typeof worklist.isRetired>[0]) => worklist.isRetired(n);
-      if (!dispatchValid(unit, chain, isRetired)) return undefined;
-      const body = bodyToCompile(unit, chain, worklist.topology, isRetired);
+      const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
+      if (!dispatchValid(unit, chain, isRefuted)) return undefined;
+      const body = bodyToCompile(unit, chain, worklist.topology, isRefuted);
       if (body === unit.body) return undefined;
       return compiler.compileFunction(unit, body);
     },
@@ -115,9 +115,9 @@ export async function runCseJit(code: string): Promise<string[]> {
       if (unit === undefined) return undefined;
       for (let i = 0; i < args.length; i++) observers.observeParamEntry(scopeId, i, args[i]);
       const chain = observers.currentChainFor(scopeId);
-      const isRetired = (n: Parameters<typeof worklist.isRetired>[0]) => worklist.isRetired(n);
-      if (!dispatchValid(unit, chain, isRetired)) return undefined;
-      const body = bodyToCompile(unit, chain, worklist.topology, isRetired);
+      const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
+      if (!dispatchValid(unit, chain, isRefuted)) return undefined;
+      const body = bodyToCompile(unit, chain, worklist.topology, isRefuted);
       return body === unit.body ? undefined : body;
     },
     dispatchReturn: (scopeId, value) => observers.observeScopeReturn(scopeId, value),

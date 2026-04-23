@@ -13,7 +13,7 @@
 //                       `BlockFixpointAnalysis<L>` (paired `.env` + `.facts`
 //                       Analyses) the worklist registers.
 //
-//   Narrowing<K, V>   — namespace token for `AssumptionChain` chains. Does NOT
+//   Narrowing<K, V>   — namespace token for `Speculation` chains. Does NOT
 //                       own a `store`. No transfer, no edges, no tier, no
 //                       polarity, no `storeAlgebra`. Identity is object
 //                       reference (narrowings are module singletons).
@@ -32,7 +32,7 @@
 //                       reads happen through analysis views, not the chain.
 
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
-import type { AssumptionChain } from "./assumption-chain";
+import type { Speculation } from "./assumption-chain";
 import type { BlockFixpointAnalysis } from "./dfa-factory";
 import type { Unit } from "./function-unit";
 import type { RawKind } from "./raw-value";
@@ -149,13 +149,13 @@ export interface Analysis<K, V> {
   readonly store: ReadonlyAnalysisStore<K, V>;
   /** Exact positional read at `context`. Uses the store's default value for
    *  unwritten cells. */
-  read(key: K, context: AssumptionChain): V;
+  read(key: K, context: Speculation): V;
   /** Exact positional read at `context`, returning `undefined` when the
    *  cell is unwritten. */
-  tryRead(key: K, context: AssumptionChain): V | undefined;
+  tryRead(key: K, context: Speculation): V | undefined;
   /** Every written cell under `context`. Returns a read-only view of the
    *  backing partition. */
-  readAll(context: AssumptionChain): ReadonlyMap<K, V>;
+  readAll(context: Speculation): ReadonlyMap<K, V>;
   /** Priority tier. Runtime observations settle before analyses within a
    *  `processQueue` drain. Transforms are no longer analyses — see
    *  `TransformRule`. Mandatory: a forgotten tier used to silently default
@@ -188,17 +188,17 @@ export interface Analysis<K, V> {
    *  cell value satisfies `accept` as `{ value, witness }`. Unwritten
    *  ancestor cells are skipped. */
   readMinimal(
-    chain: AssumptionChain,
+    chain: Speculation,
     key: K,
     accept: (value: V) => boolean,
-  ): { value: V; witness: AssumptionChain } | undefined;
+  ): { value: V; witness: Speculation } | undefined;
 
   /** Walk `chain → ROOT`, returning the deepest ancestor with a written
    *  cell. Unwritten ancestor cells are skipped. */
   readDeepest(
-    chain: AssumptionChain,
+    chain: Speculation,
     key: K,
-  ): { value: V; witness: AssumptionChain } | undefined;
+  ): { value: V; witness: Speculation } | undefined;
 
   /** Optional registration hook. Called by `Worklist.register`.
    *  Implementations subscribe via the typed `wl.on*` methods directly; the
@@ -241,7 +241,7 @@ export interface Narrowing<K = any, V = unknown> {
 
 export interface AnalysisCtx {
   readonly topology: ProgramTopology;
-  readonly currentContext: AssumptionChain;
+  readonly currentContext: Speculation;
   read<K, V>(analysis: Analysis<K, V>, key: K): V;
   tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined;
   readAll<K, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V>;
@@ -281,7 +281,7 @@ export interface TransformRule {
    *  rather than through a method name. */
   sweep(
     unit: Unit,
-    chain: AssumptionChain,
+    chain: Speculation,
     topology: ProgramTopology,
   ): boolean;
   /** Optional registration hook. Called by `Worklist.registerTransform`.

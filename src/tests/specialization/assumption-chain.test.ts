@@ -18,7 +18,7 @@ function makeAnalysis<K, V>(_name: string): Narrowing<K, V> {
   };
 }
 
-describe("AssumptionChain", () => {
+describe("Speculation", () => {
   it("ROOT_CONTEXT is root and has depth 0", () => {
     expect(isRoot(ROOT_CONTEXT)).toBe(true);
     expect(ROOT_CONTEXT.depth).toBe(0);

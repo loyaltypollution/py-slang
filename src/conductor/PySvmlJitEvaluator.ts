@@ -59,15 +59,15 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           // keeps the bytecode consistent with transform publication.
           worklist.sweepTransforms();
           const chain = observers.currentChainFor(scopeId);
-          const isRetired = (n: Parameters<typeof worklist.isRetired>[0]) => worklist.isRetired(n);
+          const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
           // SVML policy is "always recompile": even when dispatch is
           // invalid we re-lower the baseline body, because transforms
           // (memoization, dead-branch, etc.) may have mutated
           // unit.funcAst.body in place post-load. The explicit
           // dispatchValid branch surfaces the policy asymmetry that
           // was previously hidden inside an `undefined` overload.
-          const body = dispatchValid(unit, chain, isRetired)
-            ? bodyToCompile(unit, chain, worklist.topology, isRetired)
+          const body = dispatchValid(unit, chain, isRefuted)
+            ? bodyToCompile(unit, chain, worklist.topology, isRefuted)
             : undefined;
           return compiler.compileFunction(unit, body);
         },

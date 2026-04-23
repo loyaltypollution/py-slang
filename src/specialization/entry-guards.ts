@@ -1,4 +1,4 @@
-// Entry-guard projection: the subset of (unit, AssumptionChain) assumptions
+// Entry-guard projection: the subset of (unit, Speculation) assumptions
 // that are checkable at function entry. Under the V2 onion-less JIT the
 // former GUARD_KIND opcode path is gone; what survives is a compact shape
 // used by (a) `speculative-clone` to admit/reject a unit as entry-
@@ -11,7 +11,7 @@
 // to entry-block type requirements via `requirementAtEntry`.
 
 import { StmtNS } from "../ast-types";
-import { isRoot, type AssumptionChain } from "./framework/assumption-chain";
+import { isRoot, type Speculation } from "./framework/assumption-chain";
 import { at } from "./framework/assumption-algebra";
 import type { Unit } from "./framework/function-unit";
 import {
@@ -27,7 +27,7 @@ export type EntryGuard = { paramIndex: number; ty: TypeLattice };
 
 export function directParamEntryGuardsFor(
   unit: Unit,
-  context: AssumptionChain,
+  context: Speculation,
 ): readonly EntryGuard[] | undefined {
   if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return undefined;
   const guards: EntryGuard[] = [];
@@ -39,9 +39,9 @@ export function directParamEntryGuardsFor(
   return guards.length > 0 ? guards : undefined;
 }
 
-export function contextIsEntrySpecializable(unit: Unit, context: AssumptionChain): boolean {
+export function contextIsEntrySpecializable(unit: Unit, context: Speculation): boolean {
   if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return false;
-  for (let cur: AssumptionChain | undefined = context; cur !== undefined && !isRoot(cur); cur = cur.parent) {
+  for (let cur: Speculation | undefined = context; cur !== undefined && !isRoot(cur); cur = cur.parent) {
     const a = cur.assumption;
     if (a === undefined) continue;
     if (a.narrowing === paramTypeNarrowing) {

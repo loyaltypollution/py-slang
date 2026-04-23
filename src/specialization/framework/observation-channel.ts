@@ -15,7 +15,7 @@
 
 import { AnalysisStore } from "./analysis-store";
 import type { JoinSemiLattice } from "./analysis";
-import type { AssumptionChain } from "./assumption-chain";
+import type { Speculation } from "./assumption-chain";
 import type { Worklist } from "./worklist";
 
 export interface ObservationChannelSpec<K, V> {
@@ -24,7 +24,6 @@ export interface ObservationChannelSpec<K, V> {
    *  internally by the channel's shadow store. */
   readonly lattice: JoinSemiLattice<V>;
   /** Optional registration hook. Called by `Worklist.registerChannel`.
-   *  Typical use: wire `onRetireEvict` to drop cells for retiring units.
    *  Mirrors `Analysis.bind` / `CounterStore.bind`. */
   bind?(this: ObservationChannel<K, V>, worklist: Worklist): void;
 }
@@ -47,7 +46,7 @@ export class ObservationChannel<K, V> {
    *  short-circuit when a prior observation has already saturated the cell.
    *  Not a semantic fact — consumers that need a semantic read should
    *  subscribe a narrowing, not poke at this surface. */
-  tryReadAt(chain: AssumptionChain, key: K): V | undefined {
+  tryReadAt(chain: Speculation, key: K): V | undefined {
     return this.shadow.tryRead(key, chain);
   }
 
@@ -64,7 +63,7 @@ export class ObservationChannel<K, V> {
 
   /** Package-private. Called only by `Worklist.publish`. Joins `value`
    *  into the shadow at `chain`. */
-  _writeShadow(chain: AssumptionChain, key: K, value: V): void {
+  _writeShadow(chain: Speculation, key: K, value: V): void {
     this.shadow.write(key, value, chain);
   }
 }

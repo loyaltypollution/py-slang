@@ -1,5 +1,5 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { AssumptionChain } from "../framework/assumption-chain";
+import type { Speculation } from "../framework/assumption-chain";
 import { forkBody } from "../framework/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 
@@ -89,23 +89,23 @@ function walkExpr(e: ExprNS.Expr, onExpr: (expr: ExprNS.Expr) => void): void {
   if (e instanceof ExprNS.Starred) walkExpr(e.value, onExpr);
 }
 
-export function lineageTo(chain: AssumptionChain): AssumptionChain[] {
-  const out: AssumptionChain[] = [];
-  for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
+export function lineageTo(chain: Speculation): Speculation[] {
+  const out: Speculation[] = [];
+  for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
     out.push(cur);
   }
   out.reverse();
   return out;
 }
 
-function sortByDepth<T extends AssumptionChain>(chains: Iterable<T>): T[] {
+function sortByDepth<T extends Speculation>(chains: Iterable<T>): T[] {
   return Array.from(chains).sort((a, b) => a.depth - b.depth);
 }
 
 export function deepestWitness(
-  ...witnesses: ReadonlyArray<AssumptionChain | undefined>
-): AssumptionChain | undefined {
-  let deepest: AssumptionChain | undefined;
+  ...witnesses: ReadonlyArray<Speculation | undefined>
+): Speculation | undefined {
+  let deepest: Speculation | undefined;
   for (const witness of witnesses) {
     if (witness === undefined) continue;
     if (deepest === undefined || deepest.depth < witness.depth) deepest = witness;
@@ -149,8 +149,8 @@ interface SweepingVisitor {
  *  visitor over it. Returns whether any sweep reported a rewrite. */
 export function runWitnessSweep(
   unit: Unit,
-  witnesses: Iterable<AssumptionChain>,
-  makeVisitor: (witness: AssumptionChain) => SweepingVisitor,
+  witnesses: Iterable<Speculation>,
+  makeVisitor: (witness: Speculation) => SweepingVisitor,
 ): boolean {
   const ordered = sortByDepth(witnesses);
   if (ordered.length === 0) return false;
@@ -165,9 +165,9 @@ export function runWitnessSweep(
 }
 
 export function shallowestWitness(
-  ...witnesses: ReadonlyArray<AssumptionChain | undefined>
-): AssumptionChain | undefined {
-  let shallowest: AssumptionChain | undefined;
+  ...witnesses: ReadonlyArray<Speculation | undefined>
+): Speculation | undefined {
+  let shallowest: Speculation | undefined;
   for (const witness of witnesses) {
     if (witness === undefined) continue;
     if (shallowest === undefined || shallowest.depth > witness.depth) shallowest = witness;

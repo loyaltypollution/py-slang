@@ -1,4 +1,4 @@
-// Structural deep-clone for Stmt / Expr trees, used by AssumptionChain body forks
+// Structural deep-clone for Stmt / Expr trees, used by Speculation body forks
 // to fork an entire AST subtree when a non-ROOT chain node first gains a
 // forked body. The clone preserves `id` and prototype on every node so the
 // analysis store (keyed by `nodeId`) continues to apply: transforms running

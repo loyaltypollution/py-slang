@@ -8,7 +8,7 @@
 import { StmtNS } from "../../ast-types";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
-import type { AssumptionChain } from "../framework/assumption-chain";
+import type { Speculation } from "../framework/assumption-chain";
 import { visibleBody } from "../framework/assumption-bodies";
 import { typeAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
@@ -17,7 +17,7 @@ import { BOOL_BIT, BoolRef, TypeLattice } from "../type-analysis/lattice";
 import { BaseStmtVisitor, runWitnessSweep } from "./witness-utils";
 
 function boolCondition(
-  chain: AssumptionChain,
+  chain: Speculation,
   topology: ProgramTopology,
   nodeId: number,
 ) {
@@ -34,9 +34,9 @@ function boolCondition(
 /** Collect every witness chain that can justify a dead-branch rewrite in the
  *  body currently visible at the sweep chain. */
 class SeedFinderVisitor extends BaseStmtVisitor {
-  readonly witnesses = new Set<AssumptionChain>();
+  readonly witnesses = new Set<Speculation>();
   constructor(
-    private readonly chain: AssumptionChain,
+    private readonly chain: Speculation,
     private readonly topology: ProgramTopology,
   ) {
     super();
@@ -66,7 +66,7 @@ class SeedFinderVisitor extends BaseStmtVisitor {
 class DeadBranchVisitor extends BaseStmtVisitor {
   changed = false;
   constructor(
-    private readonly chain: AssumptionChain,
+    private readonly chain: Speculation,
     private readonly topology: ProgramTopology,
   ) {
     super();
@@ -111,7 +111,7 @@ class DeadBranchVisitor extends BaseStmtVisitor {
 }
 
 export const deadBranchRule: TransformRule = {
-  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
+  sweep(unit: Unit, chain: Speculation, topology: ProgramTopology): boolean {
     const finder = new SeedFinderVisitor(chain, topology);
     finder.walk(visibleBody(unit, chain));
     return runWitnessSweep(

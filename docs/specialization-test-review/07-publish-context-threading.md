@@ -49,25 +49,3 @@ observations on the same frame thread the refined chain forward. The test
 at lines 48–54 does exactly this threading by hand — and notably does it
 suboptimally (it re-fetches `futureDispatchChainFor(unit)` for the second
 publish rather than capturing the first publish's return value).
-
-## Verdict: batch helper would help; publish's signature is right
-
-- `publish`'s explicit `context: AssumptionChain` + `AssumptionChain`
-  return is the correct low-level contract. The chain-threading is real
-  semantics, not ceremony.
-- What's missing is the **adapter layer** that production has
-  (`makeJitObservers`' scope stack) but tests must reimplement by hand.
-  A small helper — e.g. `worklist.observeAtUnit(unit, [(ch,k,v) => ...])`
-  or exposing a minimal `ObservationFrame` that tests can push/pop — would
-  let the test express "stack two observations at `unit`" in one line
-  without re-deriving `futureDispatchChainFor(unit)` per call.
-- The test's bug-shaped smell (calling `futureDispatchChainFor` twice
-  instead of threading the first `publish`'s return) is direct evidence
-  that hand-rolling the stack discipline in tests is error-prone. That is
-  the production-code gap: **the stack-threading pattern is inlined in
-  `makeJitObservers`** and not reusable.
-
-**Recommendation:** extract the LIFO frame discipline from
-`makeJitObservers` into a reusable `ObservationFrame` primitive on
-`Worklist` (or a companion helper), and have both `makeJitObservers` and
-tests consume it. Do not change `publish`'s signature.

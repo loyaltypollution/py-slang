@@ -1,6 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
-import type { AssumptionChain } from "../framework/assumption-chain";
+import type { Speculation } from "../framework/assumption-chain";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
@@ -188,7 +188,7 @@ export const livenessAnalysis: BlockFixpointAnalysis<LiveVal> =
  *  ROOT-hardcoded read silently miscompiled any non-ROOT consumer. */
 export function liveOutOf(
   block: BasicBlock,
-  chain: AssumptionChain,
+  chain: Speculation,
 ): MutableEnv<LiveVal> {
   const result = new MutableEnv<LiveVal>();
   for (const edge of block.successorEdges) {
@@ -212,7 +212,7 @@ export function liveOutOf(
 export function perStatementLiveOut(
   block: BasicBlock,
   slotLookup: SlotLookup,
-  chain: AssumptionChain,
+  chain: Speculation,
 ): ReadonlyArray<ReadonlySet<number>> {
   const stmts = block.stmts;
   const liveOuts: Set<number>[] = new Array(stmts.length);

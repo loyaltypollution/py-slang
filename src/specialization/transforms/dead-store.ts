@@ -12,7 +12,7 @@
 // the active future-dispatch lineage.
 
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { AssumptionChain } from "../framework/assumption-chain";
+import type { Speculation } from "../framework/assumption-chain";
 import { forkBody, visibleBody } from "../framework/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
@@ -192,7 +192,7 @@ function escapedLocalSlotsIn(
  *  logical statement across ancestor bodies. */
 function buildLiveOutMap(
   unit: Unit,
-  chain: AssumptionChain,
+  chain: Speculation,
 ): Map<number, ReadonlySet<number>> {
   const out = new Map<number, ReadonlySet<number>>();
   for (const block of unit.blockMap.values()) {
@@ -287,11 +287,11 @@ function sweepRemovalsById(stmts: StmtNS.Stmt[], removableIds: ReadonlySet<numbe
 
 function witnessForRemoval(
   unit: Unit,
-  lineage: readonly AssumptionChain[],
+  lineage: readonly Speculation[],
   stmtId: number,
-  liveOutCache: Map<AssumptionChain, ReadonlyMap<number, ReadonlySet<number>>>,
-  escapedCache: Map<AssumptionChain, ReadonlySet<number>>,
-): AssumptionChain | undefined {
+  liveOutCache: Map<Speculation, ReadonlyMap<number, ReadonlySet<number>>>,
+  escapedCache: Map<Speculation, ReadonlySet<number>>,
+): Speculation | undefined {
   for (const witness of lineage) {
     const body = visibleBody(unit, witness);
     const stmt = findAssignById(body, stmtId);
@@ -322,7 +322,7 @@ export const deadStoreRule: TransformRule = {
       wakeOwningUnit(unitOfBlock),
     );
   },
-  sweep(unit: Unit, chain: AssumptionChain, _topology: ProgramTopology): boolean {
+  sweep(unit: Unit, chain: Speculation, _topology: ProgramTopology): boolean {
     // Skip the module (FileInput) scope. Module-top-level names are part of
     // the program's observable namespace — other modules can import them,
     // REPL/tool consumers can inspect them after execution, and the
@@ -333,8 +333,8 @@ export const deadStoreRule: TransformRule = {
     if (unit.funcAst instanceof StmtNS.FileInput) return false;
 
     const body = visibleBody(unit, chain);
-    const liveOutCache = new Map<AssumptionChain, ReadonlyMap<number, ReadonlySet<number>>>();
-    const escapedCache = new Map<AssumptionChain, ReadonlySet<number>>();
+    const liveOutCache = new Map<Speculation, ReadonlyMap<number, ReadonlySet<number>>>();
+    const escapedCache = new Map<Speculation, ReadonlySet<number>>();
     const liveOutMap = buildLiveOutMap(unit, chain);
     liveOutCache.set(chain, liveOutMap);
     const escaped = escapedLocalSlotsIn(body, unit.slotLookup);
@@ -345,7 +345,7 @@ export const deadStoreRule: TransformRule = {
     if (removableNow.size === 0) return false;
 
     const lineage = lineageTo(chain);
-    const removalsByWitness = new Map<AssumptionChain, Set<number>>();
+    const removalsByWitness = new Map<Speculation, Set<number>>();
     for (const stmtId of removableNow) {
       const witness = witnessForRemoval(unit, lineage, stmtId, liveOutCache, escapedCache);
       if (witness === undefined) continue;

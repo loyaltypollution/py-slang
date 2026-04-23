@@ -11,7 +11,7 @@ import type {
 } from "../framework/analysis";
 import { composeBind, defineAnalysis } from "../framework/analysis";
 import type { BasicBlock, CFGEdge } from "../framework/cfg";
-import { type AssumptionChain } from "../framework/assumption-chain";
+import { type Speculation } from "../framework/assumption-chain";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
@@ -45,13 +45,13 @@ class BlockState {
   env!: MutableEnv<AbsVal>;
   slotLookup!: SlotLookup;
   selfName: string | undefined;
-  chain!: AssumptionChain;
+  chain!: Speculation;
 
   reset(
     env: MutableEnv<AbsVal>,
     slotLookup: SlotLookup,
     selfName: string | undefined,
-    chain: AssumptionChain,
+    chain: Speculation,
   ): this {
     this.impure = false;
     this.env = env;
@@ -381,18 +381,13 @@ export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> 
     wl.onMint(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
     wl.onRebuildDirty(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
     wl.onSpecRev(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
-    wl.onRetireEvict((h, unit) => {
-      const fd = unit.funcAst;
-      if (!(fd instanceof StmtNS.FunctionDef)) return;
-      h.evictAcrossContexts(purityScopeAnalysis.store, fd.id);
-    });
   },
 });
 
 function reachableBlocks(
   unit: Unit,
   topology: ProgramTopology,
-  context: AssumptionChain,
+  context: Speculation,
 ): Set<BasicBlock> {
   const reached = new Set<BasicBlock>();
   const queue: BasicBlock[] = [unit.cfg.entry];
@@ -416,7 +411,7 @@ function reachableBlocks(
 function edgeIsDead(
   edge: CFGEdge,
   topology: ProgramTopology,
-  context: AssumptionChain,
+  context: Speculation,
 ): boolean {
   if (edge.kind === "unconditional") return false;
   const truth = conditionTruth(edge.condition.id, topology, context);
@@ -430,7 +425,7 @@ function edgeIsDead(
 function conditionTruth(
   nodeId: number,
   topology: ProgramTopology,
-  context: AssumptionChain,
+  context: Speculation,
 ): boolean | undefined {
   const cReading = constAnalysis.perExpr(topology).readDeepest(context, nodeId);
   if (cReading !== undefined && cReading.value.tag === "const" && typeof cReading.value.value === "boolean") {

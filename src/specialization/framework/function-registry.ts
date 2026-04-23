@@ -1,6 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { traverseAST } from "../../validator/traverse";
-import { AssumptionChain, ROOT_CONTEXT, isRoot } from "./assumption-chain";
+import { Speculation, ROOT_CONTEXT, isRoot } from "./assumption-chain";
 
 export type FunctionScopeNode =
   | StmtNS.FileInput
@@ -9,12 +9,11 @@ export type FunctionScopeNode =
   | ExprNS.MultiLambda;
 
 /** Observes structural events on the registry. The owning Worklist (if any)
- *  attaches itself here so that mint/retire wake downstream analyses for the
- *  affected units. Registry does not know about the Worklist lifecycle API;
+ *  attaches itself here so that mint wakes downstream analyses for the
+ *  affected unit. Registry does not know about the Worklist lifecycle API;
  *  it only dispatches "what happened to whom". */
 export interface FunctionRegistryListener {
   onMint(node: FunctionScopeNode, slot: number): void;
-  onRetire(functionId: number, node: FunctionScopeNode): void;
 }
 
 /**
@@ -25,41 +24,33 @@ export interface FunctionRegistryListener {
  * registry instance. Callers look up by either the node or the node.id; both
  * resolve to the same slot.
  *
- * ## mint / retire contract
+ * ## mint contract
  *
  * Structural transforms that add a FunctionDef/Lambda/MultiLambda MUST call
- * `mint`. Transforms that remove one MUST call `retire`. Skipping either
- * diverges the registry from the worklist/compiler silently and miscompiles.
- * The throws in this class convert the silent-miscompile failure mode into a
- * loud "not registered" at the first slot lookup.
+ * `mint`. Skipping diverges the registry from the worklist/compiler silently
+ * and miscompiles. The throw in this class converts the silent-miscompile
+ * failure mode into a loud "not registered" at the first slot lookup.
  *
- * The registry's `listener` hook fires onUnitMinted/onUnitRetired for the
- * newly-minted or removed unit. Rebuilding the enclosing unit whose body
- * structurally changed is handled by the worklist's transform sweep: a
- * `TransformRule.sweep` that mutates the enclosing unit returns `true`, and
- * the worklist schedules the rebuild automatically.
+ * The registry's `listener` hook fires onMint for the newly-minted unit.
+ * Rebuilding the enclosing unit whose body structurally changed is handled
+ * by the worklist's transform sweep: a `TransformRule.sweep` that mutates
+ * the enclosing unit returns `true`, and the worklist schedules the rebuild
+ * automatically.
+ *
+ * No retire path exists. Slots are append-only within a registry instance;
+ * function retirement would be chain-scoped (a structural rewrite under a
+ * non-ROOT chain must not invalidate siblings), and no production transform
+ * retires today. If such a transform arrives, the registry has to be made
+ * chain-scoped (mirror the per-(Unit, Speculation) body-fork model), since
+ * slots and functionIds currently have no chain dimension.
  *
  * ## ROOT-only invariant
  *
- * `mint`/`retire` require `chain === ROOT_CONTEXT` and assert it. The registry
- * is global — slots and functionIds have no chain dimension — so a speculative
- * structural rewrite under a non-ROOT chain would publish a new function that
- * every sibling chain can also observe, violating the isolation that
+ * `mint` requires `chain === ROOT_CONTEXT` and asserts it. The registry is
+ * global — slots and functionIds have no chain dimension — so a speculative
+ * structural rewrite under a non-ROOT chain would publish a new function
+ * that every sibling chain can also observe, violating the isolation that
  * `forkBody` provides for body mutations.
- *
- * Example of what this rules out: a transform that, under the assumption
- * `x: int`, inlines a helper `f` as a freshly-minted specialized function
- * `f_int`. If the chain assuming `x: int` is later retired (assumption
- * invalidated), `f_int` would remain in the registry and compiler output,
- * despite no chain justifying its existence. Worse, a sibling chain assuming
- * `x: str` would see `f_int` too.
- *
- * If you are writing such a transform and hitting this assert: the fix is not
- * to weaken it. The fix is to make the registry chain-scoped (mirror the
- * per-(Unit, AssumptionChain) body-fork model on `AssumptionChain`), so mint/retire
- * are scoped to the chain that created them and cascade on chain retirement.
- * That is a real contract change — justify it against a concrete consumer
- * rather than pre-emptively.
  */
 export class FunctionRegistry {
   private nextSlot = 0;
@@ -76,7 +67,7 @@ export class FunctionRegistry {
   /** Allocate and record a slot for `node`. Throws if already registered.
    *  `chain` must be `ROOT_CONTEXT`; see the class-level "ROOT-only invariant"
    *  section for the rationale and the fix path if you need non-ROOT minting. */
-  mint(node: FunctionScopeNode, chain: AssumptionChain): number {
+  mint(node: FunctionScopeNode, chain: Speculation): number {
     if (!isRoot(chain)) {
       throw new Error(
         `FunctionRegistry.mint: structural rewrites are ROOT-only ` +
@@ -91,25 +82,6 @@ export class FunctionRegistry {
     this.nodeToFunctionId.set(node, node.id);
     this.listener?.onMint(node, slot);
     return slot;
-  }
-
-  /** Remove `functionId` from the registry. Slot number is not reused.
-   *  `chain` must be `ROOT_CONTEXT`; see the class-level "ROOT-only invariant"
-   *  section. */
-  retire(functionId: number, chain: AssumptionChain): void {
-    if (!isRoot(chain)) {
-      throw new Error(
-        `FunctionRegistry.retire: structural rewrites are ROOT-only ` +
-          `(chain depth=${chain.depth}). See class doc "ROOT-only invariant".`,
-      );
-    }
-    const entry = this.byFunctionId.get(functionId);
-    if (!entry) {
-      throw new Error(`FunctionRegistry: functionId=${functionId} not registered`);
-    }
-    this.byFunctionId.delete(functionId);
-    this.nodeToFunctionId.delete(entry.node);
-    this.listener?.onRetire(functionId, entry.node);
   }
 
   slotOf(functionId: number): number {
@@ -149,8 +121,7 @@ export class FunctionRegistry {
 
   /** Iterate entries in mint order (slot-ascending). Map iteration is
    *  insertion-order, and `mint` assigns `nextSlot++`, so this matches
-   *  slot order without an explicit sort — `retire` only removes entries,
-   *  it does not reorder survivors. */
+   *  slot order without an explicit sort. */
   *entries(): IterableIterator<{ functionId: number; node: FunctionScopeNode; slot: number }> {
     for (const [functionId, { node, slot }] of this.byFunctionId) yield { functionId, node, slot };
   }

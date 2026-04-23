@@ -1,6 +1,6 @@
 import type { ExprNS } from "../../ast-types";
 import type { BasicBlock, CFGEdge } from "./cfg";
-import type { AssumptionChain } from "./assumption-chain";
+import type { Speculation } from "./assumption-chain";
 import type { Unit } from "./function-unit";
 import type { NodeId } from "./key-spaces";
 import type { SlotLookup } from "./slot-table";
@@ -42,7 +42,7 @@ export interface BlockDfaSpec<L> extends Lattice<L> {
     unit: Unit,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: L) => void,
-    context: AssumptionChain,
+    context: Speculation,
   ): ExprNS.Visitor<L>;
 
   /** Per-edge env refinement. Called by the DFA factory before a predecessor
@@ -289,7 +289,7 @@ export function makeBlockFixpointAnalysis<L>(
   function inEnvFor(
     block: BasicBlock,
     unit: Unit,
-    context: AssumptionChain,
+    context: Speculation,
   ): MutableEnv<L> {
     // Iterate predecessor *edges* so `refineOnEdge` sees the labeled edge
     // (branch-true/false + condition). Backward analyses treat CFG successors
@@ -370,7 +370,6 @@ export function makeBlockFixpointAnalysis<L>(
     wl.onMint(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
     wl.onRebuildDirty(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
     wl.onRebuildEvict((_h, unit) => evictStaleBlockCells(envAnalysis.store, unit));
-    wl.onRetireEvict((_h, unit) => evictStaleBlockCells(envAnalysis.store, unit));
     // Self-wake: block OUT env change → CFG successors recompute IN.
     wl.onFactDirty(envAnalysis as Analysis<any, any>, envAnalysis, (_ctx, key) =>
       downstreamBlocks(key as BasicBlock),
@@ -384,7 +383,6 @@ export function makeBlockFixpointAnalysis<L>(
   // now eliminated by the split).
   factsAnalysis.bind = (wl) => {
     wl.onRebuildEvict((_h, unit) => evictStaleBlockCells(factsAnalysis.store, unit));
-    wl.onRetireEvict((_h, unit) => evictStaleBlockCells(factsAnalysis.store, unit));
   };
 
   const perExprCache = new WeakMap<ReadonlyProgramTopology, ReadonlyAnalysisStore<number, L>>();
@@ -411,8 +409,8 @@ export function makeBlockFixpointAnalysis<L>(
         return flat;
       },
       readMinimal(chain, key, accept) {
-        let match: { value: L; witness: AssumptionChain } | undefined;
-        for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
+        let match: { value: L; witness: Speculation } | undefined;
+        for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
           const value = this.tryRead(key, cur);
           if (value === undefined || !accept(value)) continue;
           match = { value, witness: cur };
@@ -420,7 +418,7 @@ export function makeBlockFixpointAnalysis<L>(
         return match;
       },
       readDeepest(chain, key) {
-        for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
+        for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
           const value = this.tryRead(key, cur);
           if (value !== undefined) return { value, witness: cur };
         }

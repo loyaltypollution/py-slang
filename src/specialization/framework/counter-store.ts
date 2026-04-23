@@ -39,14 +39,13 @@ export class CounterStore<K> implements CounterSpec {
     return this.counts.get(key) ?? 0;
   }
 
-  /** Drop the cell at `key`. Used by retire hooks. Idempotent. */
+  /** Drop the cell at `key`. Idempotent. */
   evict(key: K): void {
     this.counts.delete(key);
   }
 
   /** Optional registration hook. Called by `Worklist.registerCounter`.
-   *  Typical use: subscribe to `onRetireEvict` to drop cells for retiring
-   *  units. Mirrors `Analysis.bind`. */
+   *  Mirrors `Analysis.bind`. */
   bind?(worklist: Worklist): void;
 
   /** Package-private. Called only by `Worklist.bump`. Returns the prev/next

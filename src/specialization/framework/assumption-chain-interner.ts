@@ -1,13 +1,13 @@
-// Canonicalizing interner for AssumptionChain chains.
+// Canonicalizing interner for Speculation chains.
 //
 // `extendContext` used to allocate a fresh `Object.freeze({...})` per call; two
-// observations producing the same assumption chain produced two distinct AssumptionChain
-// objects, fragmenting every AssumptionChain-keyed data structure downstream
+// observations producing the same assumption chain produced two distinct Speculation
+// objects, fragmenting every Speculation-keyed data structure downstream
 // (analysis-store cells, JIT IR cache, worklist pending-set). This interner
 // canonicalizes:
 //
 //   1. Structural equality ⇒ reference equality. Repeating an observation
-//      returns the same AssumptionChain object — downstream Map<AssumptionChain,_> structures
+//      returns the same Speculation object — downstream Map<Speculation,_> structures
 //      de-fragment automatically.
 //
 //   2. Assumption-set identity ⇒ chain identity, regardless of arrival order.
@@ -29,7 +29,7 @@
 // structurally equal but reference-different.
 
 import { type Narrowing } from "./analysis";
-import type { Assumption, AssumptionChain } from "./assumption-chain";
+import type { Assumption, Speculation } from "./assumption-chain";
 import { CHAIN_PROTO, ROOT_CONTEXT } from "./assumption-chain";
 
 function compareKey(a: unknown, b: unknown): number {
@@ -41,12 +41,12 @@ function compareKey(a: unknown, b: unknown): number {
 
 interface ValueEntry {
   readonly value: unknown;
-  readonly node: AssumptionChain;
+  readonly node: Speculation;
 }
 
 export class ContextInterner {
   private readonly children: Map<
-    AssumptionChain,
+    Speculation,
     Map<Narrowing<any, any>, Map<unknown, ValueEntry[]>>
   > = new Map();
 
@@ -74,7 +74,7 @@ export class ContextInterner {
   }
 
   /** Extend `parent` with `(narrowing, key, value)`, returning a canonical
-   *  AssumptionChain. Equal values are dedup'd via the narrowing's
+   *  Speculation. Equal values are dedup'd via the narrowing's
    *  value-equality relation; the caller does not supply an equality
    *  predicate.
    *
@@ -84,11 +84,11 @@ export class ContextInterner {
    *  value changes; a direct `extend` conflict here means a bug at the
    *  caller. Idempotent when the already-bound value equals the new one. */
   extend<K, V>(
-    parent: AssumptionChain,
+    parent: Speculation,
     narrowing: Narrowing<K, V>,
     key: K,
     value: V,
-  ): AssumptionChain {
+  ): Speculation {
     const parentAssumption = parent.assumption;
     if (parentAssumption === undefined) {
       return this.internChild(parent, narrowing, key, value);
@@ -121,11 +121,11 @@ export class ContextInterner {
    *  equality. The canonical invariant guarantees at most one match
    *  (collisions at the same `(narrowing, key)` are replaced at
    *  extend-time, not layered). */
-  exclude<K>(ctx: AssumptionChain, narrowing: Narrowing<K, any>, key: K): AssumptionChain {
+  exclude<K>(ctx: Speculation, narrowing: Narrowing<K, any>, key: K): Speculation {
     const narrowingAsKey = narrowing as unknown as Narrowing<unknown, unknown>;
     const links: Assumption[] = [];
     let found = false;
-    for (let cur: AssumptionChain | undefined = ctx; cur !== undefined; cur = cur.parent) {
+    for (let cur: Speculation | undefined = ctx; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
       if (a === undefined) continue;
       if (a.narrowing === narrowingAsKey && a.key === key) {
@@ -137,7 +137,7 @@ export class ContextInterner {
     if (!found) return ctx;
     // Links are collected child-first. Build the interned chain from root to
     // child by walking backward — avoids Array.reverse() + internList allocation.
-    let result: AssumptionChain = ROOT_CONTEXT;
+    let result: Speculation = ROOT_CONTEXT;
     for (let i = links.length - 1; i >= 0; i--) {
       const a = links[i];
       result = this.internChild(result, a.narrowing, a.key as never, a.value as never);
@@ -158,7 +158,7 @@ export class ContextInterner {
    *  discover when an ancestor becomes reclaimable. This is the conservative
    *  choice — a missed eviction higher up the trie wastes memory but does
    *  not fragment downstream data structures. */
-  release(ctx: AssumptionChain): void {
+  release(ctx: Speculation): void {
     const a = ctx.assumption;
     if (a === undefined) return; // ROOT: never interned, never freed.
     const parent = ctx.parent;
@@ -196,11 +196,11 @@ export class ContextInterner {
   }
 
   private internChild<K, V>(
-    parent: AssumptionChain,
+    parent: Speculation,
     narrowing: Narrowing<K, V>,
     key: K,
     value: V,
-  ): AssumptionChain {
+  ): Speculation {
     const narrowingAsKey = narrowing as unknown as Narrowing<any, any>;
     let byNarrowing = this.children.get(parent);
     if (byNarrowing === undefined) {
@@ -233,13 +233,13 @@ export class ContextInterner {
     const inner = parentInner !== undefined ? new Map(parentInner) : new Map();
     inner.set(key as unknown, assumption);
     bindings.set(narrowingAsKey, inner);
-    const node: AssumptionChain = Object.freeze(
+    const node: Speculation = Object.freeze(
       Object.assign(Object.create(CHAIN_PROTO), {
         parent,
         assumption,
         depth: parent.depth + 1,
         bindings,
-      }) as AssumptionChain,
+      }) as Speculation,
     );
     bucket.push({ value, node });
     return node;
@@ -253,14 +253,14 @@ export class ContextInterner {
    *  (idempotent re-extend). A conflicting mid-chain value throws — the
    *  caller should `without(s, narrowing, key)` first. */
   private rebuildWith<K, V>(
-    parent: AssumptionChain,
+    parent: Speculation,
     narrowing: Narrowing<K, V>,
     key: K,
     value: V,
-  ): AssumptionChain {
+  ): Speculation {
     const links: Assumption[] = [];
     const narrowingAsKey = narrowing as unknown as Narrowing<unknown, unknown>;
-    for (let cur: AssumptionChain | undefined = parent; cur !== undefined; cur = cur.parent) {
+    for (let cur: Speculation | undefined = parent; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
       if (a === undefined) continue;
       if (a.narrowing === narrowingAsKey && a.key === key) {
@@ -281,8 +281,8 @@ export class ContextInterner {
     return this.internList(links);
   }
 
-  private internList(sorted: ReadonlyArray<Assumption>): AssumptionChain {
-    let cur: AssumptionChain = ROOT_CONTEXT;
+  private internList(sorted: ReadonlyArray<Assumption>): Speculation {
+    let cur: Speculation = ROOT_CONTEXT;
     for (const a of sorted) {
       cur = this.internChild(cur, a.narrowing, a.key, a.value);
     }

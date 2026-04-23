@@ -33,7 +33,7 @@ import type { BasicBlock } from "../framework/cfg";
 import type { Unit } from "../framework/function-unit";
 import {
   ROOT_CONTEXT,
-  type AssumptionChain,
+  type Speculation,
 } from "../framework/assumption-chain";
 import { at } from "../framework/assumption-algebra";
 import {
@@ -251,7 +251,7 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
 
 /** Narrowing dimension for per-function return-kind assumptions. Keyed by
  *  FunctionDef.id (functionId). Parallel to `paramTypeNarrowing` — a
- *  namespace token for AssumptionChain bindings, never scheduled, owns no
+ *  namespace token for Speculation bindings, never scheduled, owns no
  *  analysis store. Carries `eq` (the interner's canonical dedup relation)
  *  plus the narrowing metadata (`blockAnalysis`, `observationSource`,
  *  `lift`, …) the worklist's observation→context translator consumes. An observation at `functionId` (classified via
@@ -297,7 +297,7 @@ export interface EntryRequirement {
  *  "does normalization collapse this to bottom?". */
 export function requirementAtEntry(
   unit: Unit,
-  context: AssumptionChain = ROOT_CONTEXT,
+  context: Speculation = ROOT_CONTEXT,
 ): EntryRequirement {
   const provable = new Map<number, TypeLattice>();
   const unprovable = new Set<number>();
