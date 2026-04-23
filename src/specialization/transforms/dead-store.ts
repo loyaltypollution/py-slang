@@ -1,15 +1,9 @@
 // Dead-store elimination. Splices out `x = <pure expr>` when x is not live
-// at that program point (i.e. no downstream read before a re-definition).
+// at that program point. Designed to fire *after* dead-branch and
+// constant-folding have removed the only consumers of a slot.
 //
-// Idempotent: once an assignment is spliced out, it no longer matches the
-// pattern. Designed to fire *after* dead-branch and constant-folding have
-// removed the only consumers of a slot; this is the pass that collapses the
-// runtime-const "gate" pattern described in the poster.
-//
-// Witness-aware: every actual removal is authorized at the shallowest chain
-// where the assignment is still present, syntactically pure, and dead by the
-// liveness facts. One sweep can therefore publish removals shallow→deep along
-// the active future-dispatch lineage.
+// Witness-aware: each removal is authorized at the shallowest chain where
+// the assignment is still present, pure, and dead by the liveness facts.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { Speculation } from "../framework/assumption-chain";
@@ -20,12 +14,10 @@ import { isLocal, type SlotLookup } from "../framework/slot-table";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
 import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../liveness-analysis/analysis";
-import { lineageTo } from "./witness-utils";
+import { lineageTo, walkExpr, walkExprs } from "./witness-utils";
 
-/** Conservative syntactic purity: an expression whose evaluation cannot
- *  observe or produce side effects and whose elision is safe even if its
- *  slot target is dead. Calls, subscripts, lambdas (capture semantics are
- *  not tracked by liveness here), and list literals are excluded. */
+// Conservative syntactic purity. Call/Subscript/List/Starred/Lambda are
+// excluded: they may side-effect, throw, or capture.
 function isPureRhs(expr: ExprNS.Expr, slotLookup: SlotLookup): boolean {
   if (
     expr instanceof ExprNS.Literal ||
@@ -52,114 +44,11 @@ function isPureRhs(expr: ExprNS.Expr, slotLookup: SlotLookup): boolean {
       isPureRhs(expr.alternative, slotLookup)
     );
   }
-  // Call, Subscript, List, Starred, Lambda, MultiLambda: impure.
   return false;
 }
 
-/** Typed walk of every sub-expression, invoking `onExpr` on each. Descends
- *  into lambda bodies — callers use this to find variable reads that would
- *  escape the current scope's liveness view. */
-function walkAllExprs(expr: ExprNS.Expr, onExpr: (e: ExprNS.Expr) => void): void {
-  onExpr(expr);
-  if (
-    expr instanceof ExprNS.Binary ||
-    expr instanceof ExprNS.Compare ||
-    expr instanceof ExprNS.BoolOp
-  ) {
-    walkAllExprs(expr.left, onExpr);
-    walkAllExprs(expr.right, onExpr);
-    return;
-  }
-  if (expr instanceof ExprNS.Unary) {
-    walkAllExprs(expr.right, onExpr);
-    return;
-  }
-  if (expr instanceof ExprNS.Grouping) {
-    walkAllExprs(expr.expression, onExpr);
-    return;
-  }
-  if (expr instanceof ExprNS.Ternary) {
-    walkAllExprs(expr.predicate, onExpr);
-    walkAllExprs(expr.consequent, onExpr);
-    walkAllExprs(expr.alternative, onExpr);
-    return;
-  }
-  if (expr instanceof ExprNS.Call) {
-    walkAllExprs(expr.callee, onExpr);
-    for (const a of expr.args) walkAllExprs(a, onExpr);
-    return;
-  }
-  if (expr instanceof ExprNS.List) {
-    for (const el of expr.elements) walkAllExprs(el, onExpr);
-    return;
-  }
-  if (expr instanceof ExprNS.Subscript) {
-    walkAllExprs(expr.value, onExpr);
-    walkAllExprs(expr.index, onExpr);
-    return;
-  }
-  if (expr instanceof ExprNS.Starred) {
-    walkAllExprs(expr.value, onExpr);
-    return;
-  }
-  if (expr instanceof ExprNS.Lambda) {
-    walkAllExprs(expr.body, onExpr);
-    return;
-  }
-  if (expr instanceof ExprNS.MultiLambda) {
-    for (const s of expr.body) walkStmtAllExprs(s, onExpr);
-    return;
-  }
-}
-
-function walkStmtAllExprs(stmt: StmtNS.Stmt, onExpr: (e: ExprNS.Expr) => void): void {
-  if (stmt instanceof StmtNS.Assign) {
-    walkAllExprs(stmt.target, onExpr);
-    walkAllExprs(stmt.value, onExpr);
-    return;
-  }
-  if (stmt instanceof StmtNS.AnnAssign) {
-    walkAllExprs(stmt.value, onExpr);
-    return;
-  }
-  if (stmt instanceof StmtNS.Return) {
-    if (stmt.value) walkAllExprs(stmt.value, onExpr);
-    return;
-  }
-  if (stmt instanceof StmtNS.If) {
-    walkAllExprs(stmt.condition, onExpr);
-    for (const s of stmt.body) walkStmtAllExprs(s, onExpr);
-    if (stmt.elseBlock) for (const s of stmt.elseBlock) walkStmtAllExprs(s, onExpr);
-    return;
-  }
-  if (stmt instanceof StmtNS.While) {
-    walkAllExprs(stmt.condition, onExpr);
-    for (const s of stmt.body) walkStmtAllExprs(s, onExpr);
-    return;
-  }
-  if (stmt instanceof StmtNS.For) {
-    walkAllExprs(stmt.iter, onExpr);
-    for (const s of stmt.body) walkStmtAllExprs(s, onExpr);
-    return;
-  }
-  if (stmt instanceof StmtNS.SimpleExpr) {
-    walkAllExprs(stmt.expression, onExpr);
-    return;
-  }
-  if (stmt instanceof StmtNS.Assert) {
-    walkAllExprs(stmt.value, onExpr);
-    return;
-  }
-  if (stmt instanceof StmtNS.FileInput) {
-    for (const s of stmt.statements) walkStmtAllExprs(s, onExpr);
-  }
-}
-
-/** Scan the currently visible body for every Lambda/MultiLambda expression and
- *  collect the set of this unit's local slots that appear as free variable
- *  reads inside any lambda body. Lambda bodies resolve names against a
- *  different scope's env; this unit's `slotLookup` returns local info only
- *  for names that *this unit* owns, which is the conservative "escape" set. */
+/** Local slots read inside any Lambda/MultiLambda body in `stmts`. Liveness
+ *  under-approximates inside lambdas, so treat such locals as escaping. */
 function escapedLocalSlotsIn(
   stmts: ReadonlyArray<StmtNS.Stmt>,
   slotLookup: SlotLookup,
@@ -174,25 +63,20 @@ function escapedLocalSlotsIn(
       // Name unresolvable in this unit's scope — not a local escape.
     }
   };
-  const visit = (expr: ExprNS.Expr) => {
-    if (expr instanceof ExprNS.Lambda) {
-      walkAllExprs(expr.body, recordVar);
-    } else if (expr instanceof ExprNS.MultiLambda) {
-      for (const s of expr.body) walkStmtAllExprs(s, recordVar);
-    }
+  const visitInLambda = (expr: ExprNS.Expr) => {
+    recordVar(expr);
+    if (expr instanceof ExprNS.Lambda) walkExpr(expr.body, visitInLambda);
+    else if (expr instanceof ExprNS.MultiLambda) walkExprs(expr.body, visitInLambda);
   };
-  for (const stmt of stmts) walkStmtAllExprs(stmt, visit);
+  walkExprs(stmts, (expr) => {
+    if (expr instanceof ExprNS.Lambda) walkExpr(expr.body, visitInLambda);
+    else if (expr instanceof ExprNS.MultiLambda) walkExprs(expr.body, visitInLambda);
+  });
   return escaped;
 }
 
-/** Build `Map<stmt.id, ReadonlySet<number>>` of per-statement live-OUT for
- *  every statement in every block of `unit`. `stmt.id` is stable across
- *  deep-cloned forked bodies, so witness discovery can compare the same
- *  logical statement across ancestor bodies. */
-function buildLiveOutMap(
-  unit: Unit,
-  chain: Speculation,
-): Map<number, ReadonlySet<number>> {
+// Keyed by `stmt.id`, stable across deep-cloned forked bodies.
+function buildLiveOutMap(unit: Unit, chain: Speculation): Map<number, ReadonlySet<number>> {
   const out = new Map<number, ReadonlySet<number>>();
   for (const block of unit.blockMap.values()) {
     const liveOuts = perStatementLiveOut(block, unit.slotLookup, chain);
@@ -225,6 +109,20 @@ function removableAssignment(
 const isLoopStmt = (s: StmtNS.Stmt): s is StmtNS.While | StmtNS.For =>
   s instanceof StmtNS.While || s instanceof StmtNS.For;
 
+function forEachNestedBody(
+  stmts: readonly StmtNS.Stmt[],
+  visit: (body: readonly StmtNS.Stmt[]) => void,
+): void {
+  for (const s of stmts) {
+    if (s instanceof StmtNS.If) {
+      visit(s.body);
+      if (s.elseBlock) visit(s.elseBlock);
+    } else if (isLoopStmt(s)) {
+      visit(s.body);
+    }
+  }
+}
+
 function collectRemovableStmtIds(
   stmts: readonly StmtNS.Stmt[],
   liveOutMap: ReadonlyMap<number, ReadonlySet<number>>,
@@ -236,13 +134,10 @@ function collectRemovableStmtIds(
     if (s instanceof StmtNS.Assign && removableAssignment(s, liveOutMap, slotLookup, escaped)) {
       out.add(s.id);
     }
-    if (s instanceof StmtNS.If) {
-      collectRemovableStmtIds(s.body, liveOutMap, slotLookup, escaped, out);
-      if (s.elseBlock) collectRemovableStmtIds(s.elseBlock, liveOutMap, slotLookup, escaped, out);
-    } else if (isLoopStmt(s)) {
-      collectRemovableStmtIds(s.body, liveOutMap, slotLookup, escaped, out);
-    }
   }
+  forEachNestedBody(stmts, (body) =>
+    collectRemovableStmtIds(body, liveOutMap, slotLookup, escaped, out),
+  );
 }
 
 function findAssignById(stmts: readonly StmtNS.Stmt[], stmtId: number): StmtNS.Assign | undefined {
@@ -315,20 +210,11 @@ function witnessForRemoval(
 
 export const deadStoreRule: TransformRule = {
   bind(wl) {
-    wl.onTransformFactDirty(
-      deadStoreRule,
-      livenessAnalysis.env,
-      wakeOwningUnit(unitOfBlock),
-    );
+    wl.onTransformFactDirty(deadStoreRule, livenessAnalysis.env, wakeOwningUnit(unitOfBlock));
   },
   sweep(unit: Unit, chain: Speculation, _topology: ProgramTopology): boolean {
-    // Skip the module (FileInput) scope. Module-top-level names are part of
-    // the program's observable namespace — other modules can import them,
-    // REPL/tool consumers can inspect them after execution, and the
-    // conductor's benchmark harness reads module-global bindings. Eliding
-    // a top-level `x = 1` whose slot has no syntactic reader inside the
-    // module would change observable state. Function-scope locals, by
-    // contrast, are dead at return; DSE on them is always sound.
+    // Skip module scope: top-level names are observable (imports, REPL, harness).
+    // Function-scope locals are dead at return; DSE on them is always sound.
     if (unit.funcAst instanceof StmtNS.FileInput) return false;
 
     const body = visibleBody(unit, chain);

@@ -1,9 +1,6 @@
-// Conductor-facing public surface.
-//
-// Barrel policy: this module re-exports only what `src/conductor/*` needs to
-// wire up a JIT evaluator. Engines (`src/engines/*`) and tests import directly
-// from `./framework/*` and sibling subpaths — the barrel is not the canonical
-// internal entry point.
+// Conductor-facing public surface. Re-exports only what `src/conductor/*`
+// needs to wire a JIT evaluator. Engines and tests import directly from
+// `./framework/*` and sibling subpaths.
 
 export { Worklist } from "./framework/worklist";
 export {

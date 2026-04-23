@@ -1,24 +1,11 @@
-// BasicBlock / CFG types + builder.
-//
-// Edges are first-class values: a `CFGEdge` carries `from`, `to`, a `kind`
-// discriminant, and (for branch edges) the `condition` expression whose
-// truth value the edge reflects. Analysis analyses that implement
-// `refineOnEdge` read `condition` to narrow the env at merge sites.
-//
-// Iterate `block.successorEdges` / `block.predecessorEdges` to traverse.
-// The legacy array-of-block views (`successors` / `predecessors`) were
-// removed once the last consumer migrated.
+// BasicBlock / CFG types + builder. Edges are first-class values:
+// branch edges carry the `condition` expression for refineOnEdge.
 
 import type { ExprNS, StmtNS } from "../../ast-types";
 import type { Unit } from "./function-unit";
 
 export type BlockId = number;
 
-/** Control-flow edge between two blocks. The `kind` tag is the local
- *  discriminant: `"unconditional"` is the structural default, the two
- *  `"branch-*"` variants carry the condition whose truth value the edge
- *  reflects. Readers that don't care about the condition treat all three
- *  uniformly via `from`/`to`. */
 export type CFGEdge =
   | { readonly kind: "unconditional"; readonly from: BasicBlock; readonly to: BasicBlock }
   | {
@@ -38,11 +25,8 @@ export interface BasicBlock {
   readonly id: BlockId;
   /** View into the AST's statement arrays; do not mutate. */
   readonly stmts: StmtNS.Stmt[];
-  /** Outgoing control-flow edges. */
   readonly successorEdges: CFGEdge[];
-  /** Incoming control-flow edges. */
   readonly predecessorEdges: CFGEdge[];
-  /** Back-pointer to owning unit; set by `buildCFG` at creation. */
   readonly unit: Unit;
 }
 
@@ -52,8 +36,8 @@ export interface CFG {
   readonly blocks: ReadonlyArray<BasicBlock>;
 }
 
-/** Build CFG from a flat stmt list. Single entry/exit; unreachable tails not represented.
- *  `unit` is the owning Unit; every block's `unit` back-pointer is set at creation. */
+/** Build CFG from a flat stmt list. Single entry/exit; unreachable tails
+ *  not represented. */
 export function buildCFG(body: StmtNS.Stmt[], unit: Unit): CFG {
   let nextId = 0;
   const blocks: BasicBlock[] = [];
@@ -70,8 +54,6 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Unit): CFG {
     return block;
   }
 
-  /** Create a labeled edge between two blocks. Callers supply the edge `kind`
-   *  and (when the kind demands it) the `condition` expression. */
   function linkBlocks(
     from: BasicBlock,
     to: BasicBlock,
@@ -112,15 +94,11 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Unit): CFG {
             linkBlocks(current, falseBlock, "branch-false", ifStmt.condition);
             const afterFalse = emitBlock(ifStmt.elseBlock, falseBlock);
 
-            if (afterTrue || afterFalse) {
-              const join = makeBlock();
-              if (afterTrue) linkBlocks(afterTrue, join);
-              if (afterFalse) linkBlocks(afterFalse, join);
-              current = join;
-            } else {
-              // Both branches diverge.
-              return null;
-            }
+            if (!afterTrue && !afterFalse) return null;
+            const join = makeBlock();
+            if (afterTrue) linkBlocks(afterTrue, join);
+            if (afterFalse) linkBlocks(afterFalse, join);
+            current = join;
           } else {
             const join = makeBlock();
             linkBlocks(current, join, "branch-false", ifStmt.condition);
@@ -130,46 +108,30 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Unit): CFG {
           break;
         }
 
-        case "While": {
-          const whileStmt = stmt as StmtNS.While;
-          const header = makeBlock();
-          linkBlocks(current, header);
-          (header.stmts as StmtNS.Stmt[]).push(stmt);
-
-          const loopBody = makeBlock();
-          linkBlocks(header, loopBody, "branch-true", whileStmt.condition);
-
-          const loopExit = makeBlock();
-          linkBlocks(header, loopExit, "branch-false", whileStmt.condition);
-
-          loopStack.push({ header, exit: loopExit });
-          const afterBody = emitBlock(whileStmt.body, loopBody);
-          loopStack.pop();
-
-          if (afterBody) linkBlocks(afterBody, header);
-
-          current = loopExit;
-          break;
-        }
-
+        case "While":
         case "For": {
-          const forStmt = stmt as StmtNS.For;
           const header = makeBlock();
           linkBlocks(current, header);
           (header.stmts as StmtNS.Stmt[]).push(stmt);
 
           // `for` has no narrowable predicate; branch edges carry the
-          // iterable expression as the "condition" purely as a placeholder.
-          // Analyses that implement `refineOnEdge` should ignore non-Compare
-          // conditions.
+          // iterable as the "condition" placeholder. refineOnEdge should
+          // ignore non-Compare conditions.
+          const condition = stmt.kind === "While"
+            ? (stmt as StmtNS.While).condition
+            : (stmt as StmtNS.For).iter;
+          const body = stmt.kind === "While"
+            ? (stmt as StmtNS.While).body
+            : (stmt as StmtNS.For).body;
+
           const loopBody = makeBlock();
-          linkBlocks(header, loopBody, "branch-true", forStmt.iter);
+          linkBlocks(header, loopBody, "branch-true", condition);
 
           const loopExit = makeBlock();
-          linkBlocks(header, loopExit, "branch-false", forStmt.iter);
+          linkBlocks(header, loopExit, "branch-false", condition);
 
           loopStack.push({ header, exit: loopExit });
-          const afterBody = emitBlock(forStmt.body, loopBody);
+          const afterBody = emitBlock(body, loopBody);
           loopStack.pop();
 
           if (afterBody) linkBlocks(afterBody, header);
@@ -202,19 +164,16 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Unit): CFG {
           return null;
         }
 
-        default: {
+        default:
           (current.stmts as StmtNS.Stmt[]).push(stmt);
           break;
-        }
       }
     }
     return current;
   }
 
   const lastBlock = emitBlock(body, entry);
-  if (lastBlock) {
-    linkBlocks(lastBlock, exit);
-  }
+  if (lastBlock) linkBlocks(lastBlock, exit);
 
   return { entry, exit, blocks };
 }

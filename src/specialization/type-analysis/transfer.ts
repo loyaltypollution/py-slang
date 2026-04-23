@@ -162,70 +162,60 @@ export function neqSigns(l: IntRef, r: IntRef): BoolRef {
 
 // Top-level transfer functions operating on TypeLattice.
 
-/** Apply a sign-arithmetic operator; returns `undefined` for unknown ops. */
-function applySignOp(op: string, lRef: IntRef, rRef: IntRef): IntRef | undefined {
-  switch (op) {
-    case "+": return addSigns(lRef, rRef);
-    case "-": return subSigns(lRef, rRef);
-    case "*": return mulSigns(lRef, rRef);
-    case "//": return divSigns(lRef, rRef);
-    case "%": return modSigns(lRef, rRef);
-    default: return undefined;
-  }
+function numericSignRef(t: TypeLattice): IntRef {
+  return t.kinds === FLOAT_BIT ? t.floatRef : t.intRef;
+}
+
+function isPureNumeric(kinds: number): boolean {
+  return kinds === INT_BIT || kinds === FLOAT_BIT;
 }
 
 export function transferBinaryOp(op: string, left: TypeLattice, right: TypeLattice): TypeLattice {
   const lk = left.kinds;
   const rk = right.kinds;
 
-  // Complex promotion: spec only defines +, -, *, / for complex.
-  // // and % raise TypeError at runtime.
+  // Complex promotion: spec defines +, -, *, / only; // and % raise TypeError.
   if (lk === COMPLEX_BIT || rk === COMPLEX_BIT) {
     if (op === "//" || op === "%") return TOP;
     const otherKinds = lk === COMPLEX_BIT ? rk : lk;
-    // complex op numeric = complex; complex op non-numeric = TOP
     if (otherKinds & ~(INT_BIT | FLOAT_BIT | COMPLEX_BIT)) return TOP;
     return COMPLEX;
   }
 
-  const lIsFloat = lk === FLOAT_BIT;
-  const rIsFloat = rk === FLOAT_BIT;
-  const lIsInt = lk === INT_BIT;
-  const rIsInt = rk === INT_BIT;
+  if (!isPureNumeric(lk) || !isPureNumeric(rk)) return TOP;
 
-  // Only pure numeric (int/float) kinds participate in sign-tracked arithmetic.
-  if (!(lIsInt || lIsFloat) || !(rIsInt || rIsFloat)) return TOP;
-
-  const lRef = lIsFloat ? left.floatRef : left.intRef;
-  const rRef = rIsFloat ? right.floatRef : right.intRef;
+  const lRef = numericSignRef(left);
+  const rRef = numericSignRef(right);
 
   // True division always returns float (per spec).
   if (op === "/") return floatValue(divSigns(lRef, rRef));
 
-  const resultRef = applySignOp(op, lRef, rRef);
-  if (resultRef === undefined) return TOP;
+  let resultRef: IntRef;
+  switch (op) {
+    case "+": resultRef = addSigns(lRef, rRef); break;
+    case "-": resultRef = subSigns(lRef, rRef); break;
+    case "*": resultRef = mulSigns(lRef, rRef); break;
+    case "//": resultRef = divSigns(lRef, rRef); break;
+    case "%": resultRef = modSigns(lRef, rRef); break;
+    default: return TOP;
+  }
 
-  // Float result whenever either operand is float; otherwise pure int.
-  return lIsFloat || rIsFloat ? floatValue(resultRef) : integer(resultRef);
+  return lk === FLOAT_BIT || rk === FLOAT_BIT ? floatValue(resultRef) : integer(resultRef);
 }
 
 export function transferCompare(op: string, left: TypeLattice, right: TypeLattice): TypeLattice {
   const lk = left.kinds;
   const rk = right.kinds;
+  const bothPureNumeric = isPureNumeric(lk) && isPureNumeric(rk);
 
-  // == and != work on any types
   if (op === "==" || op === "!=") {
-    // Use sign analysis when both operands are numeric (int or float)
-    if ((lk === INT_BIT || lk === FLOAT_BIT) && (rk === INT_BIT || rk === FLOAT_BIT)) {
-      const lRef = lk === FLOAT_BIT ? left.floatRef : left.intRef;
-      const rRef = rk === FLOAT_BIT ? right.floatRef : right.intRef;
-      const ref = op === "==" ? eqSigns(lRef, rRef) : neqSigns(lRef, rRef);
-      return boolValue(ref);
+    if (bothPureNumeric) {
+      const lRef = numericSignRef(left);
+      const rRef = numericSignRef(right);
+      return boolValue(op === "==" ? eqSigns(lRef, rRef) : neqSigns(lRef, rRef));
     }
-    // Disjoint kinds with no numeric crossover → statically unequal.
-    // `x == y` is False when no single value could inhabit both sides.
-    // Numeric kinds (int/bool/float/complex) compare by value and so must
-    // not be treated as disjoint from each other.
+    // Disjoint non-numeric kinds → statically (un)equal. Numeric kinds
+    // (int/bool/float/complex) compare by value, so crossover is not disjoint.
     if (
       (lk & rk) === 0 &&
       lk !== 0 &&
@@ -237,14 +227,12 @@ export function transferCompare(op: string, left: TypeLattice, right: TypeLattic
     return boolValue(BoolRef.Top);
   }
 
-  // Ordering comparisons: not valid on complex (raises TypeError at runtime)
+  // Ordering: not valid on complex (TypeError at runtime).
   if (lk === COMPLEX_BIT || rk === COMPLEX_BIT) return TOP;
 
-  // Ordering comparisons on any numeric types (int, float, mixed) — sign analysis applies
-  // since int and float both use IntRef for their sign refinement.
-  if ((lk === INT_BIT || lk === FLOAT_BIT) && (rk === INT_BIT || rk === FLOAT_BIT)) {
-    const lRef = lk === FLOAT_BIT ? left.floatRef : left.intRef;
-    const rRef = rk === FLOAT_BIT ? right.floatRef : right.intRef;
+  if (bothPureNumeric) {
+    const lRef = numericSignRef(left);
+    const rRef = numericSignRef(right);
     switch (op) {
       case ">": return boolValue(gtSigns(lRef, rRef));
       case "<": return boolValue(ltSigns(lRef, rRef));
@@ -269,16 +257,12 @@ function intRefTruth(r: IntRef): BoolRef {
   const hasZero = (r & 2) !== 0;
   const hasNonzero = (r & 5) !== 0; // Neg | Pos
   if (hasZero && hasNonzero) return BoolRef.Top;
-  if (hasZero) return BoolRef.False;
-  return BoolRef.True;
+  return hasZero ? BoolRef.False : BoolRef.True;
 }
 
-/**
- * Truthiness over the full kind lattice. Joins per-kind contributions:
- *   None → False, closure → True, bool → boolRef, int/float → intRefTruth,
- *   str/complex → Top (length/nonzero not tracked).
- * Returns BoolRef.Bottom only for the empty lattice.
- */
+/** Truthiness over the full kind lattice. Joins per-kind contributions:
+ *  None → False, closure → True, bool → boolRef, int/float → intRefTruth,
+ *  str/complex → Top (length/nonzero not tracked). Bottom iff empty lattice. */
 export function truthiness(t: TypeLattice): BoolRef {
   const k = t.kinds;
   if (k === 0) return BoolRef.Bottom;

@@ -129,19 +129,15 @@ class PurityExprVisitor implements ExprNS.Visitor<AbsVal> {
       state.impure = true;
     }
 
+    // Closure.pure: true = resolved pure, false = resolved impure, undefined =
+    // not a closure call OR inner not yet analyzed (pending defers impurity
+    // to stay monotone).
+    const closurePure = calleeAbs?.kind === "closure" ? calleeAbs.pure : undefined;
+    const isPureClosureCall = closurePure === true;
+    const isPendingClosureCall = calleeAbs?.kind === "closure" && closurePure === undefined;
     const isWhitelistedBuiltin =
       calleeName !== undefined && WHITELISTED_BUILTINS.has(calleeName);
-    const isSelfRecursion =
-      calleeName !== undefined && calleeName === state.selfName;
-    // Closure sub-state: `true` = resolved pure, `false` = resolved impure,
-    // `undefined` = either not a closure call, or inner not yet analyzed.
-    // Pending (not yet analyzed) defers: marking impure here would lock this
-    // block's summary under monotone-join; wait for scope-analysis to refine.
-    const closurePure =
-      calleeAbs?.kind === "closure" ? calleeAbs.pure : undefined;
-    const isPureClosureCall = closurePure === true;
-    const isPendingClosureCall =
-      calleeAbs?.kind === "closure" && closurePure === undefined;
+    const isSelfRecursion = calleeName !== undefined && calleeName === state.selfName;
 
     if (closurePure === false) {
       state.impure = true;
@@ -157,15 +153,14 @@ class PurityExprVisitor implements ExprNS.Visitor<AbsVal> {
 
     // Self-recursion is NOT exempt from arg escape: without an interprocedural
     // summary the callee could mutate its params, so a Fresh alias passed to
-    // self must widen post-call. Rare; tighten with a summary if it bites.
+    // self must widen post-call.
     const argsEscape = !isWhitelistedBuiltin && !isPureClosureCall && !isPendingClosureCall;
     for (const arg of expr.args) {
       arg.accept(this);
-      if (argsEscape && arg instanceof ExprNS.Variable) {
-        const info = state.slotLookup(arg.name);
-        if (isLocal(info) && state.env.get(info.slot)?.kind !== "unknown") {
-          state.env.set(info.slot, UNKNOWN);
-        }
+      if (!argsEscape || !(arg instanceof ExprNS.Variable)) continue;
+      const info = state.slotLookup(arg.name);
+      if (isLocal(info) && state.env.get(info.slot)?.kind !== "unknown") {
+        state.env.set(info.slot, UNKNOWN);
       }
     }
     return UNKNOWN;
@@ -279,10 +274,8 @@ function transferStmt(
   }
 }
 
-// No natural meet/top for AbsVal: MutableEnv uses slot absence as ⊥ and the
-// DfaConfig discriminated union rejects pairing this with `mergeKind: "must"`,
-// so those fields stay honestly absent. `bottom` stays as the structural
-// minimum in case any consumer reads a missing cell through this lattice.
+// No natural meet/top for AbsVal: MutableEnv uses slot absence as ⊥, and the
+// DfaConfig discriminated union rejects pairing this with `mergeKind: "must"`.
 const absValLattice: JoinSemiLattice<AbsVal> = {
   bottom: BOTTOM,
   leq: absLeq,
@@ -292,9 +285,6 @@ const absValLattice: JoinSemiLattice<AbsVal> = {
 
 const EMPTY_EXPR_FACTS: ReadonlyMap<number, AbsVal> = new Map();
 
-/** Pooled visitor+state. Re-entrancy-safe for the same reason as the
- *  type-analysis singleton: transferBlock is synchronous and no subscriber
- *  path re-enters purity's transfer before the call returns. */
 const POOLED_PURITY_VISITOR = new PurityExprVisitor();
 
 export const purityBlockAnalysis: BlockFixpointAnalysis<AbsVal> =
@@ -331,8 +321,8 @@ export const purityBlockAnalysis: BlockFixpointAnalysis<AbsVal> =
 });
 
 // Ordering: undefined ⊏ true ⊏ false. `false` (seen-and-impure) sits at ⊤ so
-// memoization's strict `=== true` gate treats both `false` and `undefined`
-// as non-firing. Never expected to race; join is defensive.
+// memoization's strict `=== true` gate treats both `false` and `undefined` as
+// non-firing.
 const outerLattice: JoinSemiLattice<boolean | undefined> = {
   bottom: undefined,
   leq: (a, b) => a === undefined || a === b || (a === true && b === false),
@@ -353,10 +343,9 @@ export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> 
     if (unit === undefined) return undefined;
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
-    // Reachability is per-context: a block whose only entry edge is a branch
-    // condition const-false under `ctx.currentContext` is dead and its impure
-    // sentinel must not poison the verdict. Without this, Collatz's
-    // `print("no collatz")` joins IMPURE under `x : pos-int`.
+    // Per-context reachability: a block reached only via a const-dead edge
+    // under `ctx.currentContext` must not contribute its impure sentinel
+    // (e.g. Collatz joining IMPURE under `x : pos-int`).
     const reachable = reachableBlocks(unit, ctx.topology, ctx.currentContext);
     let anyVisited = false;
     for (const block of unit.cfg.blocks) {
@@ -389,11 +378,9 @@ function reachableBlocks(
   topology: ProgramTopology,
   context: Speculation,
 ): Set<BasicBlock> {
-  const reached = new Set<BasicBlock>();
+  const reached = new Set<BasicBlock>([unit.cfg.entry]);
   const queue: BasicBlock[] = [unit.cfg.entry];
-  reached.add(unit.cfg.entry);
-  // Head cursor instead of `queue.shift()` — shift() is O(n) in V8 and
-  // degrades BFS to O(n²) for large CFGs.
+  // Head cursor (O(1) amortized) vs shift() which is O(n) in V8.
   let head = 0;
   while (head < queue.length) {
     const block = queue[head++];
@@ -427,24 +414,20 @@ function conditionTruth(
   topology: ProgramTopology,
   context: Speculation,
 ): boolean | undefined {
-  const cReading = constAnalysis.perExpr(topology).readDeepest(context, nodeId);
-  if (cReading !== undefined && cReading.value.tag === "const" && typeof cReading.value.value === "boolean") {
-    return cReading.value.value;
-  }
-  const tReading = typeAnalysis.perExpr(topology).readDeepest(context, nodeId);
-  if (tReading !== undefined && tReading.value.kinds === BOOL_BIT) {
-    if (tReading.value.boolRef === BoolRef.True) return true;
-    if (tReading.value.boolRef === BoolRef.False) return false;
+  const cVal = constAnalysis.perExpr(topology).readDeepest(context, nodeId)?.value;
+  if (cVal?.tag === "const" && typeof cVal.value === "boolean") return cVal.value;
+  const tVal = typeAnalysis.perExpr(topology).readDeepest(context, nodeId)?.value;
+  if (tVal?.kinds === BOOL_BIT) {
+    if (tVal.boolRef === BoolRef.True) return true;
+    if (tVal.boolRef === BoolRef.False) return false;
   }
   return undefined;
 }
 
-// Scope→block: outer block's FunctionDef transfer reads purityScopeAnalysis
-// for nested fd verdicts. Project the fd.id write to the outer block via
-// `topology.blockOfNode`. Mutual reference — installed at bind time.
-//
-// SpecRev re-seed: repopulates block facts under the new speculative context
-// so scope transfer can read them there instead of falling back to ROOT.
+// Scope→block mutual dependency installed at bind time: outer block's
+// FunctionDef transfer reads purityScopeAnalysis for nested fd verdicts; the
+// fd.id write is projected to the outer block via `topology.blockOfNode`.
+// SpecRev re-seeds block facts under the new speculative context.
 purityBlockAnalysis.env.bind = composeBind(purityBlockAnalysis.env.bind, (wl) => {
   wl.onFactDirty(purityScopeAnalysis, purityBlockAnalysis.env, (ctx, key) => {
     if (typeof key !== "number") return [];

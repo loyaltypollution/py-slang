@@ -1,34 +1,12 @@
-// Forward + must: "definitely-bound locals."
+// Forward + must: "definitely-bound locals" — at each program point, is this
+// slot bound on every path from entry? Transfer binds slots at `x = e`,
+// `x: T = e`, `for x in ...`, and `def x(...)`; CFG-joins are pointwise meet
+// (unbound wins on disagreement).
 //
-// Companion to the framework tutorial's §13 four-quadrant claim. Until this
-// analysis landed, the in-tree corpus exercised three of the four classical
-// DFA quadrants (forward/may, backward/may, backward/must); this fills the
-// forward/must corner so the framework's quadrant-symmetry claim has a
-// concrete witness, not just a type-system argument.
-//
-// Semantics. At each program point we track, per local slot, whether the
-// slot is bound on every path from function entry. Entry seeds parameter
-// slots as `bound` and the remaining locals as `unbound`. Transfer:
-//
-//   - `x = e`        ⇒ slot(x) := BOUND
-//   - `x: T = e`     ⇒ slot(x) := BOUND
-//   - `for x in ...` ⇒ slot(x) := BOUND      (loop iterator is bound in body)
-//   - all others     ⇒ no change
-//
-// Merge at CFG joins is pointwise meet on the per-slot lattice: if any
-// predecessor says `unbound`, the merge says `unbound`. The shape-level
-// consumer of this analysis is a future transform that elides CPython-style
-// "unbound local" checks at reads whose slot is definitely bound.
-//
-// Implementation note — the seed must initialize every slot. `MutableEnv`'s
-// `meetWith` treats absent-slot sides as `top` (= BOUND here), which is fine
-// for analyses whose semantic top is "no constraint" (e.g.
-// typeRequirementAnalysis) but collides with definitely-bound's
-// "unbound/unknown" default. The fix is to make every slot explicitly
-// present at entry (via `slotLookup.slotCount`) and to never `clear` a slot
-// during transfer — only `set` it to an explicit status. That keeps merges
-// in the "both sides present" branch of `meetWith`, where the lattice's
-// `meet` is called directly.
+// Seeding invariant: every slot must be explicitly present at entry (params
+// BOUND, rest UNBOUND), and transfer must only `set` — never `clear`.
+// `MutableEnv.meetWith` treats absent-slot sides as `top` (= BOUND), which
+// would silently promote unbound locals on merges of partially-seeded envs.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "../framework/cfg";
@@ -68,10 +46,7 @@ function transferStmtForward(
       bindSlot(env, slotLookup, (stmt as StmtNS.For).target);
       return;
     case "FunctionDef":
-      // A `def name(...)` binds `name` in the enclosing scope.
       bindSlot(env, slotLookup, (stmt as StmtNS.FunctionDef).name);
-      return;
-    default:
       return;
   }
 }
@@ -82,19 +57,14 @@ function transferBlockForward(
   slotLookup: SlotLookup,
 ): BlockPassResult<BoundStatus> {
   const outEnv = inEnv.snapshot();
-  for (const stmt of block.stmts) {
-    transferStmtForward(stmt, outEnv, slotLookup);
-  }
+  for (const stmt of block.stmts) transferStmtForward(stmt, outEnv, slotLookup);
   return { outEnv, exprFacts: new Map() };
 }
 
-/** Forward + must block DFA: "is this slot bound on every path to here?"
- *
- *  The `.env` cell stores the block's OUT-env; read per-slot via
- *  `definitelyBoundAnalysis.env.read(block, ROOT_CONTEXT).get(slot)`. A
- *  missing binding at the read site would indicate a seeding bug (the
- *  invariant is that every slot is always present); callers should treat
- *  that as an internal error rather than "unbound." */
+/** Forward + must block DFA. `.env` stores the block's OUT-env; read per-slot
+ *  via `definitelyBoundAnalysis.env.read(block, chain).get(slot)`. A missing
+ *  slot indicates a seeding bug (every slot is always present) — treat as
+ *  internal error, not "unbound". */
 export const definitelyBoundAnalysis: BlockFixpointAnalysis<BoundStatus> =
   makeBlockFixpointAnalysis<BoundStatus>({
     direction: "forward",

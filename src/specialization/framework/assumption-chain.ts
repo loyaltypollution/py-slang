@@ -1,10 +1,6 @@
-// Speculation is a canonical finite partial map
-// (Narrowing, Key) ⇀ Value, interned into a tree whose parent-edges
-// follow a canonical sorted build order. The algebra on this structure
-// lives in `assumption-algebra.ts` and reads the content-addressed
-// `bindings` map; per-chain body storage lives in `assumption-bodies.ts`.
-// This module defines the interface, the ROOT sentinel, and lifecycle
-// helpers.
+// Speculation: canonical finite partial map (Narrowing, Key) ⇀ Value,
+// interned into a trie by the default interner. Algebra is in
+// `assumption-algebra.ts`; per-chain body storage in `assumption-bodies.ts`.
 
 import type { Narrowing } from "./analysis";
 import { defaultInterner } from "./assumption-chain-interner";
@@ -15,10 +11,8 @@ export interface Assumption<K = unknown, V = unknown> {
   readonly value: V;
 }
 
-/** Content-addressed binding map carried by every canonical chain. Built
- *  at intern-time as `parent.bindings` extended with the tip. Nested by
- *  narrowing first, then key, both compared by `===`. Consumers read it
- *  via `assumption-algebra.ts`. */
+/** Content-addressed binding map carried by every canonical chain,
+ *  nested by narrowing then key (both `===` compared). */
 export type BindingsByNarrowing = ReadonlyMap<
   Narrowing<any, any>,
   ReadonlyMap<unknown, Assumption>

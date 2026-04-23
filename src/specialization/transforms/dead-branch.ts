@@ -1,9 +1,6 @@
-// Dead branch elimination. Idempotent: spliced-out `If` nodes no longer match.
-//
-// Witness-aware: every actual branch prune recovers the shallowest chain that
-// proves the condition constant, then publishes at that witness. One sweep can
-// therefore materialize ancestor-safe prunes shallow→deep along the active
-// future-dispatch lineage.
+// Dead branch elimination. Idempotent (spliced-out `If` nodes cannot match
+// again). Witness-aware: each prune publishes at the shallowest chain that
+// proves the condition constant.
 
 import { StmtNS } from "../../ast-types";
 import type { TransformRule } from "../framework/analysis";
@@ -16,11 +13,7 @@ import type { ProgramTopology } from "../framework/topology";
 import { BOOL_BIT, BoolRef, TypeLattice } from "../type-analysis/lattice";
 import { BaseStmtVisitor, runWitnessSweep } from "./witness-utils";
 
-function boolCondition(
-  chain: Speculation,
-  topology: ProgramTopology,
-  nodeId: number,
-) {
+function boolCondition(chain: Speculation, topology: ProgramTopology, nodeId: number) {
   return typeAnalysis
     .perExpr(topology)
     .readMinimal(
@@ -31,8 +24,6 @@ function boolCondition(
     );
 }
 
-/** Collect every witness chain that can justify a dead-branch rewrite in the
- *  body currently visible at the sweep chain. */
 class SeedFinderVisitor extends BaseStmtVisitor {
   readonly witnesses = new Set<Speculation>();
   constructor(

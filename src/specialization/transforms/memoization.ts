@@ -22,9 +22,7 @@ export function memoIdFor(fd: StmtNS.FunctionDef, variant?: string): string {
   return variant === undefined ? base : `${base}#${variant}`;
 }
 
-/** Clone each Variable so every call-site gets a distinct AST node.
- *  Sharing a single Variable across multiple call arguments would violate
- *  the invariant that each AST node has one parent / one position. */
+/** Clone each Variable so every call-site gets a distinct AST node. */
 function cloneVars(vars: readonly ExprNS.Variable[]): ExprNS.Variable[] {
   return vars.map(p => new ExprNS.Variable(p.startToken, p.endToken, p.name));
 }
@@ -121,10 +119,7 @@ function mkCall(fd: StmtNS.FunctionDef, fn: string, args: ExprNS.Expr[]): ExprNS
   return new ExprNS.Call(fd.startToken, fd.endToken, mkVar(fd, fn), args);
 }
 
-
-/** True iff `body`'s first statement is the memo-check prelude. Used to
- *  short-circuit re-firing once the rewrite has landed at a given witness
- *  — same shape-idempotence pattern as dead-branch / const-fold. */
+/** True iff `body` already opens with the memo-check prelude. */
 function bodyHasMemoPrelude(body: readonly StmtNS.Stmt[]): boolean {
   const first = body[0];
   if (!(first instanceof StmtNS.If)) return false;
@@ -134,11 +129,6 @@ function bodyHasMemoPrelude(body: readonly StmtNS.Stmt[]): boolean {
   return callee instanceof ExprNS.Variable && callee.name.lexeme === MEMO_HAS;
 }
 
-// Shape-idempotent: once the body at the winning witness opens with the
-// memo prelude, re-sweeps at descendant contexts see the prelude via
-// ancestor-walk and short-circuit. Publication sink is the witness's
-// forked body (ROOT's body is `unit.funcAst.body`, so ROOT witnesses still
-// mutate shared AST — no special case).
 export const memoizationRule: TransformRule = {
   bind(wl) {
     const wakeUnit = wakeOwningUnit(unitOfFunctionId);
@@ -148,30 +138,16 @@ export const memoizationRule: TransformRule = {
   sweep(unit: Unit, chain: Speculation, _topology: ProgramTopology): boolean {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
-    // Profitability gate: call hotness is a profile counter, not a lattice
-    // cell. `runtimeCallCounter.at` is the only read path — there is no
-    // chain-keyed API, so "read at ROOT" is structural rather than doc-only.
-    const count = runtimeCallCounter.at(fd.id);
-    if (count < MEMOIZATION_THRESHOLD) return false;
-    // Semantic witness: the shallowest chain that proves purity. This IS
-    // the rewrite's authorization, and therefore also its publication sink.
+    if (runtimeCallCounter.at(fd.id) < MEMOIZATION_THRESHOLD) return false;
     const witnessInfo = memoizationWitnessFor(fd, chain);
     if (witnessInfo === undefined) return false;
-    const { witness: witnessChain } = witnessInfo;
-    // Publish the memoized body at the witness, not at the sweep chain.
-    // If purity holds at ROOT, the rewrite lands on the shared AST once;
-    // descendant sweeps see it via `bodyFor` walk and short-circuit on the
-    // prelude check below instead of redundantly re-memoizing.
-    const body = forkBody(unit, witnessChain);
+    const body = forkBody(unit, witnessInfo.witness);
     if (bodyHasMemoPrelude(body)) return false;
-    // Memo variant identity derives from the witness context, so sibling
-    // contexts that readMinimal the same witness converge on the same
-    // memo table.
-    const variant = guardKeyFromGuards(directParamEntryGuardsFor(unit, witnessChain));
+    // Variant identity from witness context: sibling contexts that readMinimal
+    // the same witness converge on one memo table.
+    const variant = guardKeyFromGuards(directParamEntryGuardsFor(unit, witnessInfo.witness));
     const rewritten = memoWrappedBody(fd, body, variant);
-    // In-place replacement of the body's contents. The array identity is
-    // preserved so descendant chain nodes that inherit via bodyFor walk
-    // still see the rewrite.
+    // In-place replace preserves array identity so descendants inherit via bodyFor.
     body.length = 0;
     body.push(...rewritten);
     return true;

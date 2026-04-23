@@ -1,29 +1,21 @@
-/** Program-derived key spaces used by the specialization framework.
+/** Program-derived key spaces. Plain aliases of their runtime
+ *  representation — naming documents that `NodeId`, `FunctionId`, etc. are
+ *  distinct index spaces even when encoded as `number`.
  *
- *  These are intentionally plain aliases of their runtime representation: the
- *  framework stores and compares the underlying values directly, but naming the
- *  spaces documents that `NodeId`, `FunctionId`, `BasicBlock`, and `Unit`
- *  are distinct index spaces even when some happen to be encoded as `number`.
- *
- *  Note on the Node/Function overlap: every `FunctionId` is, at runtime, the
- *  `.id` of a scope-owning AST node (FunctionDef or FileInput) — the same
- *  number you'd see as a `NodeId`. The two aliases route different semantic
- *  queries: `topology.unitOfNode(id)` returns the innermost unit whose CFG
- *  *contains* `id`, while `topology.unitOfFunctionId(id)` returns the unit
- *  whose scope node *is* identified by `id`. The distinction is semantic, not
- *  type-level; the alias exists so call sites read honestly. */
+ *  Note on Node/Function overlap: every `FunctionId` is the `.id` of a
+ *  scope-owning AST node. `topology.unitOfNode(id)` returns the innermost
+ *  unit whose CFG contains `id`; `topology.unitOfFunctionId(id)` returns
+ *  the unit whose scope node *is* `id`. Distinction is semantic. */
 
 /** AST node id. Indexes individual expression/statement nodes. */
 export type NodeId = number;
 
-/** `FunctionDef.id` or `FileInput.id` — the node id of a scope-owning AST
- *  node whose optimization unit is registered with the topology. Same
- *  runtime representation as `NodeId`; the alias documents intent. */
+/** `FunctionDef.id` or `FileInput.id` — node id of a scope-owning AST node
+ *  whose optimization unit is registered with the topology. */
 export type FunctionId = number;
 
-/** Function-entry parameter identity. Encoded as `${functionId}:${paramIndex}` so
- *  it is stable, comparable by value, and usable directly as a Context/store
- *  key without object-identity pitfalls. */
+/** Function-entry parameter identity, encoded as `${functionId}:${paramIndex}`
+ *  so it is stable and usable directly as a Context/store key. */
 export type ParamKey = `${FunctionId}:${number}`;
 
 export function paramKey(functionId: FunctionId, paramIndex: number): ParamKey {
@@ -31,12 +23,8 @@ export function paramKey(functionId: FunctionId, paramIndex: number): ParamKey {
 }
 
 /** Interned `paramKey` strings, keyed by `FunctionId`. Hot-path callers
- *  (per-variable-visit in TypeAnalysisVisitor) index `paramKeysFor(fid, n)[slot]`
- *  instead of re-formatting the template literal on every visit.
- *
- *  A unit's parameter count is fixed at construction, but the cache grows the
- *  array if a later call requests a larger count (defensive — param counts
- *  never shrink in practice). */
+ *  index `paramKeysFor(fid, n)[slot]` instead of re-formatting on every
+ *  visit. Grows the array if a later call requests a larger count. */
 const PARAM_KEYS_CACHE = new Map<FunctionId, ParamKey[]>();
 
 export function paramKeysFor(functionId: FunctionId, paramCount: number): readonly ParamKey[] {

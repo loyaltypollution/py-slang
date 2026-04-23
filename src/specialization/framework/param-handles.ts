@@ -1,24 +1,13 @@
-// Narrowings for the entry-parameter speculation dimension.
+// Narrowings for the entry-parameter speculation dimension. Declared here
+// (inside framework/) so framework/dfa-analyses.ts and const/type-analysis
+// all import from the same canonical location. Identity is object-
+// reference; the context interner dedups `(narrowing, key, value)` triples
+// via `eq`.
 //
-// Declared here (inside framework/) so that:
-//   - framework/dfa-analyses.ts (DEFAULT_NARROWINGS)
-//   - const-analysis and type-analysis (context-aware param slot lookups via
-//     `findAssumption`)
-// all import from the same canonical location without a cross-layer dependency.
-//
-// The narrowing is the AssumptionHandle: `Narrowing extends AssumptionHandle`,
-// so production `findAssumption` / `extendContext` callers pass these
-// narrowings directly. Identity is object-reference — narrowings are module
-// singletons; the context interner assigns a per-process ordinal for
-// canonical chain ordering, and `eq` is the value-equality relation the
-// interner uses to dedup `(narrowing, key, value)` triples.
-//
-// `blockAnalysis` and `lineageValue` are thunks: the narrowing references
-// `typeAnalysis` / `constAnalysis` (type- and const-analysis modules) and
-// `contextIsEntrySpecializable` (entry-guards), which all import back from
-// this module. ESM live bindings make the cycle safe as long as the imports
-// are only dereferenced after all modules finish loading — which is what
-// the thunks guarantee.
+// `blockAnalysis` is a thunk: the narrowing references typeAnalysis /
+// constAnalysis, which import back from this module. ESM live bindings
+// make the cycle safe as long as the imports are only dereferenced after
+// module loading completes.
 
 import type { Narrowing, AnalysisCtx } from "./analysis";
 import { constEq, type ConstLattice } from "../const-analysis/lattice";
@@ -47,4 +36,3 @@ export const paramTypeNarrowing: Narrowing<ParamKey, TypeLattice> = {
   resolveUnit: resolveParamUnit,
   lift: liftType,
 };
-

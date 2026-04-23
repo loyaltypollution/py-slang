@@ -3,11 +3,8 @@ import type { Speculation } from "../framework/assumption-chain";
 import { forkBody } from "../framework/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 
-/** Walk every expression inside `stmts` and invoke `onExpr` on each one. Used
- *  by transform-time witness collection: the caller's `onExpr` probes the
- *  relevant analysis at the expression's node id and adds any discovered
- *  witness chain to `out`. The traversal itself is identical across all such
- *  transforms, so only the per-expression probe varies. */
+/** Invoke `onExpr` on every expression (and sub-expression) inside `stmts`.
+ *  Lambda/MultiLambda bodies are not descended — they belong to separate units. */
 export function walkExprs(
   stmts: readonly StmtNS.Stmt[],
   onExpr: (expr: ExprNS.Expr) => void,
@@ -18,75 +15,51 @@ export function walkExprs(
 function walkStmt(s: StmtNS.Stmt, onExpr: (expr: ExprNS.Expr) => void): void {
   if (s instanceof StmtNS.Assign || s instanceof StmtNS.AnnAssign) {
     walkExpr(s.value, onExpr);
-    return;
-  }
-  if (s instanceof StmtNS.Return) {
+  } else if (s instanceof StmtNS.Return) {
     if (s.value) walkExpr(s.value, onExpr);
-    return;
-  }
-  if (s instanceof StmtNS.If) {
+  } else if (s instanceof StmtNS.If) {
     walkExpr(s.condition, onExpr);
     walkExprs(s.body, onExpr);
     if (s.elseBlock) walkExprs(s.elseBlock, onExpr);
-    return;
-  }
-  if (s instanceof StmtNS.While) {
+  } else if (s instanceof StmtNS.While) {
     walkExpr(s.condition, onExpr);
     walkExprs(s.body, onExpr);
-    return;
-  }
-  if (s instanceof StmtNS.For) {
+  } else if (s instanceof StmtNS.For) {
     walkExpr(s.iter, onExpr);
     walkExprs(s.body, onExpr);
-    return;
-  }
-  if (s instanceof StmtNS.SimpleExpr) {
+  } else if (s instanceof StmtNS.SimpleExpr) {
     walkExpr(s.expression, onExpr);
-    return;
-  }
-  if (s instanceof StmtNS.Assert) {
+  } else if (s instanceof StmtNS.Assert) {
     walkExpr(s.value, onExpr);
-    return;
+  } else if (s instanceof StmtNS.FileInput) {
+    walkExprs(s.statements, onExpr);
   }
-  if (s instanceof StmtNS.FileInput) walkExprs(s.statements, onExpr);
 }
 
-function walkExpr(e: ExprNS.Expr, onExpr: (expr: ExprNS.Expr) => void): void {
+export function walkExpr(e: ExprNS.Expr, onExpr: (expr: ExprNS.Expr) => void): void {
   onExpr(e);
   if (e instanceof ExprNS.Binary || e instanceof ExprNS.Compare || e instanceof ExprNS.BoolOp) {
     walkExpr(e.left, onExpr);
     walkExpr(e.right, onExpr);
-    return;
-  }
-  if (e instanceof ExprNS.Unary) {
+  } else if (e instanceof ExprNS.Unary) {
     walkExpr(e.right, onExpr);
-    return;
-  }
-  if (e instanceof ExprNS.Ternary) {
+  } else if (e instanceof ExprNS.Ternary) {
     walkExpr(e.predicate, onExpr);
     walkExpr(e.consequent, onExpr);
     walkExpr(e.alternative, onExpr);
-    return;
-  }
-  if (e instanceof ExprNS.Call) {
+  } else if (e instanceof ExprNS.Call) {
     walkExpr(e.callee, onExpr);
     for (const a of e.args) walkExpr(a, onExpr);
-    return;
-  }
-  if (e instanceof ExprNS.List) {
+  } else if (e instanceof ExprNS.List) {
     for (const el of e.elements) walkExpr(el, onExpr);
-    return;
-  }
-  if (e instanceof ExprNS.Subscript) {
+  } else if (e instanceof ExprNS.Subscript) {
     walkExpr(e.value, onExpr);
     walkExpr(e.index, onExpr);
-    return;
-  }
-  if (e instanceof ExprNS.Grouping) {
+  } else if (e instanceof ExprNS.Grouping) {
     walkExpr(e.expression, onExpr);
-    return;
+  } else if (e instanceof ExprNS.Starred) {
+    walkExpr(e.value, onExpr);
   }
-  if (e instanceof ExprNS.Starred) walkExpr(e.value, onExpr);
 }
 
 export function lineageTo(chain: Speculation): Speculation[] {
@@ -94,37 +67,39 @@ export function lineageTo(chain: Speculation): Speculation[] {
   for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
     out.push(cur);
   }
-  out.reverse();
-  return out;
+  return out.reverse();
 }
 
-function sortByDepth<T extends Speculation>(chains: Iterable<T>): T[] {
-  return Array.from(chains).sort((a, b) => a.depth - b.depth);
+function pickWitness(
+  witnesses: ReadonlyArray<Speculation | undefined>,
+  better: (candidate: Speculation, current: Speculation) => boolean,
+): Speculation | undefined {
+  let chosen: Speculation | undefined;
+  for (const w of witnesses) {
+    if (w === undefined) continue;
+    if (chosen === undefined || better(w, chosen)) chosen = w;
+  }
+  return chosen;
 }
 
 export function deepestWitness(
   ...witnesses: ReadonlyArray<Speculation | undefined>
 ): Speculation | undefined {
-  let deepest: Speculation | undefined;
-  for (const witness of witnesses) {
-    if (witness === undefined) continue;
-    if (deepest === undefined || deepest.depth < witness.depth) deepest = witness;
-  }
-  return deepest;
+  return pickWitness(witnesses, (w, c) => w.depth > c.depth);
 }
 
-/** Base class for the statement visitors used by witness-aware transforms.
- *  Supplies no-op defaults for every statement kind that neither descends
- *  into bodies nor interacts with embedded expressions under the current
- *  transform family. Subclasses override what they need — typically the
- *  body-descending kinds (`If`/`While`/`For`/`FileInput`) and whichever
- *  expression-bearing statement kinds the transform rewrites. */
+export function shallowestWitness(
+  ...witnesses: ReadonlyArray<Speculation | undefined>
+): Speculation | undefined {
+  return pickWitness(witnesses, (w, c) => w.depth < c.depth);
+}
+
+/** No-op-default statement visitor. Subclasses override whichever kinds they rewrite. */
 export abstract class BaseStmtVisitor implements StmtNS.Visitor<void> {
   abstract visitIfStmt(stmt: StmtNS.If): void;
   abstract visitWhileStmt(stmt: StmtNS.While): void;
   abstract visitForStmt(stmt: StmtNS.For): void;
   abstract visitFileInputStmt(stmt: StmtNS.FileInput): void;
-  // Nested functions: own unit handles them.
   visitFunctionDefStmt(_stmt: StmtNS.FunctionDef): void {}
   visitAssignStmt(_stmt: StmtNS.Assign): void {}
   visitAnnAssignStmt(_stmt: StmtNS.AnnAssign): void {}
@@ -139,10 +114,8 @@ export abstract class BaseStmtVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-/** Statement visitor for expression-rewriting transforms. Descends into every
- *  body-bearing statement kind and applies `rewriteExpr` to each embedded
- *  expression position. Rewrite bookkeeping (the `changed` flag) lives on
- *  the expression-level visitor and is surfaced here unchanged. */
+/** Applies `rewriteExpr` to every embedded expression position in a body-bearing
+ *  statement tree. The `changed` flag lives on the expression-level visitor. */
 export class RewriteStmtVisitor extends BaseStmtVisitor {
   constructor(private readonly rewriteExpr: (e: ExprNS.Expr) => ExprNS.Expr) {
     super();
@@ -185,10 +158,8 @@ export class RewriteStmtVisitor extends BaseStmtVisitor {
   }
 }
 
-/** Descending expression visitor: recurses into every sub-expression but
- *  leaves each node unchanged by default. Subclasses override only the
- *  handful of expression kinds they actually rewrite; Lambda/MultiLambda
- *  bodies are intentionally not descended — they belong to separate units. */
+/** Recurses into every sub-expression, leaving each node unchanged by default.
+ *  Lambda/MultiLambda bodies are not descended — they belong to separate units. */
 export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   rewrite(expr: ExprNS.Expr): ExprNS.Expr {
     return expr.accept(this);
@@ -269,16 +240,14 @@ interface SweepingVisitor {
   sweep(body: StmtNS.Stmt[]): void;
 }
 
-/** Shared outer loop for witness-aware transforms. Sorts `witnesses` by
- *  depth (shallow→deep), forks the body at each witness, and runs a fresh
- *  visitor over it. Returns whether any sweep reported a rewrite. */
+/** For each witness (shallow→deep), fork the body and run a fresh visitor.
+ *  Shallow-first lets deeper forks inherit earlier rewrites in the same sweep. */
 export function runWitnessSweep(
   unit: Unit,
   witnesses: Iterable<Speculation>,
   makeVisitor: (witness: Speculation) => SweepingVisitor,
 ): boolean {
-  const ordered = sortByDepth(witnesses);
-  if (ordered.length === 0) return false;
+  const ordered = Array.from(witnesses).sort((a, b) => a.depth - b.depth);
   let changed = false;
   for (const witness of ordered) {
     const body = forkBody(unit, witness);
@@ -287,15 +256,4 @@ export function runWitnessSweep(
     changed = v.changed || changed;
   }
   return changed;
-}
-
-export function shallowestWitness(
-  ...witnesses: ReadonlyArray<Speculation | undefined>
-): Speculation | undefined {
-  let shallowest: Speculation | undefined;
-  for (const witness of witnesses) {
-    if (witness === undefined) continue;
-    if (shallowest === undefined || shallowest.depth > witness.depth) shallowest = witness;
-  }
-  return shallowest;
 }

@@ -2,22 +2,15 @@ import type { Lattice, JoinSemiLattice } from "./analysis";
 
 /** Lifted per-function slot-map domain over a value lattice `L`.
  *
- *  Shape: partial map `slot -> L`, where slot numbering matches the
- *  SVMLCompiler's frame layout. Missing slots are meaningful: `joinWith` /
- *  `leq` treat absence as the join-side default, while `meetWith` treats an
- *  absent binding on one side as `top` on that side. This is why `MutableEnv`
- *  is more than a mutable helper — it encodes part of the block-analysis
- *  algebra stored in the paired `.env` cell produced by
- *  `makeBlockFixpointAnalysis`.
+ *  Shape: partial map `slot -> L`, where slot numbering matches SVMLCompiler's
+ *  frame layout. Missing slots are meaningful: `joinWith`/`leq` treat absence
+ *  as the join-side default, while `meetWith` treats an absent binding on one
+ *  side as `top` on that side.
  */
 export class MutableEnv<L> {
   private slots: (L | undefined)[];
-  /** Once frozen, every mutator throws. Used by DFA factories that publish a
-   *  shared ⊥ singleton: callers must `snapshot()` before any mutation.
-   *  Forgetting the snapshot used to silently corrupt every unwritten read
-   *  through the analysis's bottom fact; now it throws at the first offending
-   *  write. Frozen flag is copied-false by `snapshot` — the copy is a private,
-   *  mutable working env for the caller. */
+  /** Once frozen, every mutator throws. Used by DFA factories that publish
+   *  a shared ⊥ singleton: callers must `snapshot()` before mutation. */
   private frozen = false;
 
   constructor(initial: (L | undefined)[] = []) {
@@ -33,10 +26,8 @@ export class MutableEnv<L> {
     this.slots[slot] = val;
   }
 
-  /** Remove a slot binding. Present for analyses (liveness) whose "bottom"
-   *  is represented by absence rather than a sentinel value — a kill-then-gen
-   *  cycle in the transfer needs to distinguish "never written here" from
-   *  "written with bottom." */
+  /** Remove a slot binding. Used by analyses (liveness) whose "bottom" is
+   *  represented by absence rather than a sentinel value. */
   clear(slot: number): void {
     this.assertMutable();
     this.slots[slot] = undefined;
@@ -54,8 +45,7 @@ export class MutableEnv<L> {
   }
 
   /** Seal this env. Callers that publish an env as shared read-only state
-   *  (e.g. the DFA bottomFact singleton) must call this; any accidental
-   *  mutation via `set`/`joinWith`/`meetWith` will throw. */
+   *  must call this; any mutation via `set`/`joinWith`/`meetWith` throws. */
   freeze(): this {
     this.frozen = true;
     return this;
@@ -69,8 +59,8 @@ export class MutableEnv<L> {
     }
   }
 
-  /** In-place pointwise join on the lifted slot-map domain; missing slots are
-   *  treated as the join-side default (conceptually ⊥ for may-style merge). */
+  /** In-place pointwise join; missing slots are treated as the join-side
+   *  default (conceptually ⊥ for may-style merge). */
   joinWith(other: MutableEnv<L>, lattice: JoinSemiLattice<L>): void {
     this.assertMutable();
     if (other.slots.length === 0) return;
@@ -90,8 +80,8 @@ export class MutableEnv<L> {
     }
   }
 
-  /** In-place pointwise meet on the lifted slot-map domain; missing slots are
-   *  treated as ⊤ on the side where the binding is absent. */
+  /** In-place pointwise meet; missing slots are treated as ⊤ on the side
+   *  where the binding is absent. */
   meetWith(other: MutableEnv<L>, lattice: Lattice<L>): void {
     this.assertMutable();
     const len = Math.max(this.slots.length, other.slots.length);
@@ -108,12 +98,9 @@ export class MutableEnv<L> {
     }
   }
 
-  /** Pointwise order on the lifted slot-map domain under `lattice.leq`.
-   *  Missing slots are treated as the left-side default: `undefined` on the
+  /** Pointwise order under `lattice.leq`. Missing slots: `undefined` on the
    *  left is trivially ≤ anything, and on the right only if the left is also
-   *  `undefined`. Callers must supply the same lattice they use for
-   *  `join`/`meet` — inconsistent lattices would make the order disagree with
-   *  the combine-induced one. */
+   *  `undefined`. */
   leq(other: MutableEnv<L>, lattice: JoinSemiLattice<L>): boolean {
     if (this.slots.length === 0) return true;
     const len = Math.max(this.slots.length, other.slots.length);

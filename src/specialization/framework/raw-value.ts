@@ -1,7 +1,5 @@
-// Normalizes raw runtime-observed values (from the active observation
-// channels — `runtimeParamChannel`, `runtimeReturnChannel`) into a tagged
-// union that lattice-lifters can dispatch on. Hides the tagged-object
-// shape of CSE stack values so each analysis maps one classification.
+// Normalizes raw runtime-observed values into a tagged union that
+// lattice-lifters can dispatch on.
 
 export type RawKind =
   | { kind: "number"; value: number }
@@ -12,21 +10,14 @@ export type RawKind =
   | { kind: "complex" }
   | { kind: "unknown" };
 
-// Interned no-payload singletons. Observation of `None`, closures, complexes,
-// and unclassifiable values never allocates.
+// Interned no-payload singletons.
 const NONE: RawKind = { kind: "none" };
 const CLOSURE: RawKind = { kind: "closure" };
 const COMPLEX: RawKind = { kind: "complex" };
 const UNKNOWN: RawKind = { kind: "unknown" };
 
-// One-slot last-seen memo. SVML fires observations with raw JS primitives
-// (Smis / floats / interned strings), and the same primitive is re-observed
-// every iteration of a hot loop. Without memoization, each fire allocates a
-// fresh `{kind,value}` wrapper — the wrapper then compares structurally-equal
-// to the stored one and the write no-ops, but the allocation is pure churn.
-// Guarding by `raw === lastRaw` recovers SVML's primitive fast path
-// (zero allocation, single reference check) without leaking engine-specific
-// knowledge into the lattice or the sink.
+// One-slot last-seen memo. SVML re-observes the same primitive every
+// iteration of a hot loop; the memo avoids a fresh wrapper per fire.
 let lastRaw: unknown = Symbol("cache-miss-sentinel");
 let lastKind: RawKind = UNKNOWN;
 

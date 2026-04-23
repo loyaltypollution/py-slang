@@ -1,11 +1,6 @@
-// Algebraic simplification — rewrites Binary/BoolOp/Unary using type facts.
-// Reads the type lattice (kind mask + sign/bool refinement); no new analysis
-// required. Pure wins on identity/annihilator laws.
-//
-// Witness-aware: every actual simplification computes the deepest load-bearing
-// witness among the facts it uses, then publishes at that witness chain.
-// Shallower witness groups are published first so deeper forks inherit them in
-// the same sweep.
+// Algebraic simplification on Binary/BoolOp/Unary using type + const facts.
+// Identity/annihilator laws only. Witness-aware: each rewrite publishes at
+// the deepest witness among the facts it uses.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
@@ -48,31 +43,26 @@ function constInfo(
 }
 
 function pureIntWitness(info: Witnessed<TypeLattice> | undefined): Speculation | undefined {
-  return info !== undefined && info.value.kinds === INT_BIT ? info.witness : undefined;
+  return info?.value.kinds === INT_BIT ? info.witness : undefined;
 }
 
 function boolWitness(info: Witnessed<TypeLattice> | undefined): Speculation | undefined {
-  return info !== undefined && info.value.kinds === BOOL_BIT ? info.witness : undefined;
+  return info?.value.kinds === BOOL_BIT ? info.witness : undefined;
 }
 
 function intZeroWitness(
   type: Witnessed<TypeLattice> | undefined,
   konst: Witnessed<ConstLattice> | undefined,
 ): Speculation | undefined {
-  return shallowestWitness(
-    type !== undefined && type.value.kinds === INT_BIT && type.value.intRef === IntRef.Zero
-      ? type.witness
-      : undefined,
-    konst !== undefined && konst.value.tag === "const" && konst.value.value === 0
-      ? konst.witness
-      : undefined,
-  );
+  const fromType =
+    type?.value.kinds === INT_BIT && type.value.intRef === IntRef.Zero ? type.witness : undefined;
+  const fromConst =
+    konst?.value.tag === "const" && konst.value.value === 0 ? konst.witness : undefined;
+  return shallowestWitness(fromType, fromConst);
 }
 
 function intOneWitness(konst: Witnessed<ConstLattice> | undefined): Speculation | undefined {
-  return konst !== undefined && konst.value.tag === "const" && konst.value.value === 1
-    ? konst.witness
-    : undefined;
+  return konst?.value.tag === "const" && konst.value.value === 1 ? konst.witness : undefined;
 }
 
 function truthWitness(
@@ -88,9 +78,8 @@ function unwrapGrouping(e: ExprNS.Expr): ExprNS.Expr {
   return e;
 }
 
-// `x` is safe to drop (purely readable) if it's a Literal, Variable, None,
-// or BigInt. Calls, subscripts, arithmetic subexpressions etc. may
-// side-effect or throw, so `x * 0 → 0` is unsound against them.
+// `x` is safe to drop (purely readable) if it's a Literal, Variable, None, or
+// BigInt. Calls, subscripts, arithmetic etc. may side-effect or throw.
 function isSafeToDrop(e: ExprNS.Expr): boolean {
   const u = unwrapGrouping(e);
   return (
@@ -102,7 +91,114 @@ function isSafeToDrop(e: ExprNS.Expr): boolean {
 }
 
 function zeroLiteralLike(e: ExprNS.Expr): ExprNS.Literal {
-  return new ExprNS.Literal(e.startToken, e.endToken, 0 as unknown as number);
+  return new ExprNS.Literal(e.startToken, e.endToken, 0);
+}
+
+function planBinary(
+  chain: Speculation,
+  topology: ProgramTopology,
+  expr: ExprNS.Binary,
+): RewritePlan | undefined {
+  const lt = typeInfo(chain, topology, expr.left);
+  const rt = typeInfo(chain, topology, expr.right);
+  const lc = constInfo(chain, topology, expr.left);
+  const rc = constInfo(chain, topology, expr.right);
+
+  const leftPureInt = pureIntWitness(lt);
+  const rightPureInt = pureIntWitness(rt);
+  const rightZero = intZeroWitness(rt, rc);
+  const leftZero = intZeroWitness(lt, lc);
+  const rightOne = intOneWitness(rc);
+  const leftOne = intOneWitness(lc);
+
+  switch (expr.operator.type) {
+    case TokenType.PLUS:
+      if (leftPureInt !== undefined && rightZero !== undefined) {
+        return { witness: deepestWitness(leftPureInt, rightZero)!, replacement: expr.left };
+      }
+      if (leftZero !== undefined && rightPureInt !== undefined) {
+        return { witness: deepestWitness(leftZero, rightPureInt)!, replacement: expr.right };
+      }
+      return undefined;
+    case TokenType.MINUS:
+      if (leftPureInt !== undefined && rightZero !== undefined) {
+        return { witness: deepestWitness(leftPureInt, rightZero)!, replacement: expr.left };
+      }
+      return undefined;
+    case TokenType.STAR:
+      if (leftPureInt !== undefined && rightOne !== undefined) {
+        return { witness: deepestWitness(leftPureInt, rightOne)!, replacement: expr.left };
+      }
+      if (leftOne !== undefined && rightPureInt !== undefined) {
+        return { witness: deepestWitness(leftOne, rightPureInt)!, replacement: expr.right };
+      }
+      // x * 0 → 0 : only when dropped side is side-effect-free AND statically int.
+      if (leftPureInt !== undefined && rightZero !== undefined && isSafeToDrop(expr.left)) {
+        return {
+          witness: deepestWitness(leftPureInt, rightZero)!,
+          replacement: zeroLiteralLike(expr),
+        };
+      }
+      if (leftZero !== undefined && rightPureInt !== undefined && isSafeToDrop(expr.right)) {
+        return {
+          witness: deepestWitness(leftZero, rightPureInt)!,
+          replacement: zeroLiteralLike(expr),
+        };
+      }
+      return undefined;
+    case TokenType.DOUBLESLASH:
+      if (leftPureInt !== undefined && rightOne !== undefined) {
+        return { witness: deepestWitness(leftPureInt, rightOne)!, replacement: expr.left };
+      }
+      return undefined;
+    default:
+      return undefined;
+  }
+}
+
+function planBoolOp(
+  chain: Speculation,
+  topology: ProgramTopology,
+  expr: ExprNS.BoolOp,
+): RewritePlan | undefined {
+  const lt = typeInfo(chain, topology, expr.left);
+  if (expr.operator.type === TokenType.AND) {
+    const falseW = truthWitness(lt, BoolRef.False);
+    if (falseW !== undefined) return { witness: falseW, replacement: expr.left };
+    const trueW = truthWitness(lt, BoolRef.True);
+    if (trueW !== undefined) return { witness: trueW, replacement: expr.right };
+  } else if (expr.operator.type === TokenType.OR) {
+    const trueW = truthWitness(lt, BoolRef.True);
+    if (trueW !== undefined) return { witness: trueW, replacement: expr.left };
+    const falseW = truthWitness(lt, BoolRef.False);
+    if (falseW !== undefined) return { witness: falseW, replacement: expr.right };
+  }
+  return undefined;
+}
+
+function planUnary(
+  chain: Speculation,
+  topology: ProgramTopology,
+  expr: ExprNS.Unary,
+): RewritePlan | undefined {
+  const inner = unwrapGrouping(expr.right);
+  if (
+    expr.operator.type === TokenType.MINUS &&
+    inner instanceof ExprNS.Unary &&
+    inner.operator.type === TokenType.MINUS
+  ) {
+    return { witness: chain, replacement: inner.right };
+  }
+  if (
+    expr.operator.type === TokenType.NOT &&
+    inner instanceof ExprNS.Unary &&
+    inner.operator.type === TokenType.NOT
+  ) {
+    const body = inner.right;
+    const bodyBool = boolWitness(typeInfo(chain, topology, body));
+    if (bodyBool !== undefined) return { witness: bodyBool, replacement: body };
+  }
+  return undefined;
 }
 
 function rewritePlan(
@@ -110,101 +206,9 @@ function rewritePlan(
   topology: ProgramTopology,
   expr: ExprNS.Expr,
 ): RewritePlan | undefined {
-  if (expr instanceof ExprNS.Binary) {
-    const lt = typeInfo(chain, topology, expr.left);
-    const rt = typeInfo(chain, topology, expr.right);
-    const lc = constInfo(chain, topology, expr.left);
-    const rc = constInfo(chain, topology, expr.right);
-
-    const leftPureInt = pureIntWitness(lt);
-    const rightPureInt = pureIntWitness(rt);
-    const rightZero = intZeroWitness(rt, rc);
-    const leftZero = intZeroWitness(lt, lc);
-    const rightOne = intOneWitness(rc);
-    const leftOne = intOneWitness(lc);
-
-    switch (expr.operator.type) {
-      case TokenType.PLUS:
-        if (leftPureInt !== undefined && rightZero !== undefined) {
-          return { witness: deepestWitness(leftPureInt, rightZero)!, replacement: expr.left };
-        }
-        if (leftZero !== undefined && rightPureInt !== undefined) {
-          return { witness: deepestWitness(leftZero, rightPureInt)!, replacement: expr.right };
-        }
-        break;
-      case TokenType.MINUS:
-        if (leftPureInt !== undefined && rightZero !== undefined) {
-          return { witness: deepestWitness(leftPureInt, rightZero)!, replacement: expr.left };
-        }
-        break;
-      case TokenType.STAR:
-        if (leftPureInt !== undefined && rightOne !== undefined) {
-          return { witness: deepestWitness(leftPureInt, rightOne)!, replacement: expr.left };
-        }
-        if (leftOne !== undefined && rightPureInt !== undefined) {
-          return { witness: deepestWitness(leftOne, rightPureInt)!, replacement: expr.right };
-        }
-        // x * 0 → 0 : only when the dropped side is side-effect-free AND
-        // statically integer (float NaN/inf, complex 0j semantics, str*0
-        // all break the rewrite).
-        if (leftPureInt !== undefined && rightZero !== undefined && isSafeToDrop(expr.left)) {
-          return {
-            witness: deepestWitness(leftPureInt, rightZero)!,
-            replacement: zeroLiteralLike(expr),
-          };
-        }
-        if (leftZero !== undefined && rightPureInt !== undefined && isSafeToDrop(expr.right)) {
-          return {
-            witness: deepestWitness(leftZero, rightPureInt)!,
-            replacement: zeroLiteralLike(expr),
-          };
-        }
-        break;
-      case TokenType.DOUBLESLASH:
-        if (leftPureInt !== undefined && rightOne !== undefined) {
-          return { witness: deepestWitness(leftPureInt, rightOne)!, replacement: expr.left };
-        }
-        break;
-    }
-    return undefined;
-  }
-
-  if (expr instanceof ExprNS.BoolOp) {
-    const lt = typeInfo(chain, topology, expr.left);
-    if (expr.operator.type === TokenType.AND) {
-      const falseWitness = truthWitness(lt, BoolRef.False);
-      if (falseWitness !== undefined) return { witness: falseWitness, replacement: expr.left };
-      const trueWitness = truthWitness(lt, BoolRef.True);
-      if (trueWitness !== undefined) return { witness: trueWitness, replacement: expr.right };
-    } else if (expr.operator.type === TokenType.OR) {
-      const trueWitness = truthWitness(lt, BoolRef.True);
-      if (trueWitness !== undefined) return { witness: trueWitness, replacement: expr.left };
-      const falseWitness = truthWitness(lt, BoolRef.False);
-      if (falseWitness !== undefined) return { witness: falseWitness, replacement: expr.right };
-    }
-    return undefined;
-  }
-
-  if (expr instanceof ExprNS.Unary) {
-    const inner = unwrapGrouping(expr.right);
-    if (
-      expr.operator.type === TokenType.MINUS &&
-      inner instanceof ExprNS.Unary &&
-      inner.operator.type === TokenType.MINUS
-    ) {
-      return { witness: chain, replacement: inner.right };
-    }
-    if (
-      expr.operator.type === TokenType.NOT &&
-      inner instanceof ExprNS.Unary &&
-      inner.operator.type === TokenType.NOT
-    ) {
-      const body = inner.right;
-      const bodyBool = boolWitness(typeInfo(chain, topology, body));
-      if (bodyBool !== undefined) return { witness: bodyBool, replacement: body };
-    }
-  }
-
+  if (expr instanceof ExprNS.Binary) return planBinary(chain, topology, expr);
+  if (expr instanceof ExprNS.BoolOp) return planBoolOp(chain, topology, expr);
+  if (expr instanceof ExprNS.Unary) return planUnary(chain, topology, expr);
   return undefined;
 }
 

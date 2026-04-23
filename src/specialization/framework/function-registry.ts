@@ -8,10 +8,8 @@ export type FunctionScopeNode =
   | ExprNS.Lambda
   | ExprNS.MultiLambda;
 
-/** Observes structural events on the registry. The owning Worklist (if any)
- *  attaches itself here so that mint wakes downstream analyses for the
- *  affected unit. Registry does not know about the Worklist lifecycle API;
- *  it only dispatches "what happened to whom". */
+/** Observes structural events on the registry. The owning Worklist (if
+ *  any) attaches itself so that mint wakes downstream analyses. */
 export interface FunctionRegistryListener {
   onMint(node: FunctionScopeNode, slot: number): void;
 }
@@ -19,38 +17,13 @@ export interface FunctionRegistryListener {
 /**
  * Canonical owner of function identity and bytecode slot layout.
  *
- * Identity is `node.id` (stable, readonly, stamped at AST construction).
- * Slots are assigned monotonically at `mint` time and never reused within a
- * registry instance. Callers look up by either the node or the node.id; both
- * resolve to the same slot.
+ * Identity is `node.id` (stable, readonly). Slots are assigned monotonically
+ * at `mint` time and never reused. Structural transforms that add a
+ * FunctionDef/Lambda/MultiLambda MUST call `mint`.
  *
- * ## mint contract
- *
- * Structural transforms that add a FunctionDef/Lambda/MultiLambda MUST call
- * `mint`. Skipping diverges the registry from the worklist/compiler silently
- * and miscompiles. The throw in this class converts the silent-miscompile
- * failure mode into a loud "not registered" at the first slot lookup.
- *
- * The registry's `listener` hook fires onMint for the newly-minted unit.
- * Rebuilding the enclosing unit whose body structurally changed is handled
- * by the worklist's transform sweep: a `TransformRule.sweep` that mutates
- * the enclosing unit returns `true`, and the worklist schedules the rebuild
- * automatically.
- *
- * No retire path exists. Slots are append-only within a registry instance;
- * function retirement would be chain-scoped (a structural rewrite under a
- * non-ROOT chain must not invalidate siblings), and no production transform
- * retires today. If such a transform arrives, the registry has to be made
- * chain-scoped (mirror the per-(Unit, Speculation) body-fork model), since
- * slots and functionIds currently have no chain dimension.
- *
- * ## ROOT-only invariant
- *
- * `mint` requires `chain === ROOT_CONTEXT` and asserts it. The registry is
- * global — slots and functionIds have no chain dimension — so a speculative
- * structural rewrite under a non-ROOT chain would publish a new function
- * that every sibling chain can also observe, violating the isolation that
- * `forkBody` provides for body mutations.
+ * ROOT-only invariant: `mint` requires `chain === ROOT_CONTEXT`. Slots and
+ * functionIds have no chain dimension, so a non-ROOT structural rewrite
+ * would publish a function visible to every sibling chain.
  */
 export class FunctionRegistry {
   private nextSlot = 0;
@@ -58,20 +31,14 @@ export class FunctionRegistry {
   private readonly nodeToFunctionId = new WeakMap<FunctionScopeNode, number>();
   private listener: FunctionRegistryListener | undefined;
 
-  /** Attach the single structural-event listener (the owning Worklist).
-   *  Replaces any prior listener. Analysis `undefined` to detach. */
   setListener(listener: FunctionRegistryListener | undefined): void {
     this.listener = listener;
   }
 
-  /** Allocate and record a slot for `node`. Throws if already registered.
-   *  `chain` must be `ROOT_CONTEXT`; see the class-level "ROOT-only invariant"
-   *  section for the rationale and the fix path if you need non-ROOT minting. */
   mint(node: FunctionScopeNode, chain: Speculation): number {
     if (!isRoot(chain)) {
       throw new Error(
-        `FunctionRegistry.mint: structural rewrites are ROOT-only ` +
-          `(chain depth=${chain.depth}). See class doc "ROOT-only invariant".`,
+        `FunctionRegistry.mint: structural rewrites are ROOT-only (chain depth=${chain.depth}).`,
       );
     }
     if (this.nodeToFunctionId.has(node)) {
@@ -107,9 +74,7 @@ export class FunctionRegistry {
     return out;
   }
 
-  /** Iterate entries in mint order (slot-ascending). Map iteration is
-   *  insertion-order, and `mint` assigns `nextSlot++`, so this matches
-   *  slot order without an explicit sort. */
+  /** Iterate entries in mint order (slot-ascending). */
   *entries(): IterableIterator<{ functionId: number; node: FunctionScopeNode; slot: number }> {
     for (const [functionId, { node, slot }] of this.byFunctionId) yield { functionId, node, slot };
   }
@@ -119,12 +84,7 @@ export class FunctionRegistry {
   }
 }
 
-/**
- * Build a fresh registry by pre-order DFS over `program`: FileInput first,
- * then nested FunctionDef/Lambda/MultiLambda in traversal order. Slot order
- * is byte-identical to the legacy `computeFunctionIndices` analysis, so bytecode
- * layout is preserved during the migration.
- */
+/** Build a fresh registry by pre-order DFS over `program`. */
 export function buildFunctionRegistry(program: StmtNS.FileInput): FunctionRegistry {
   const registry = new FunctionRegistry();
   registry.mint(program, ROOT_CONTEXT);

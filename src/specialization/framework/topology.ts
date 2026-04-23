@@ -1,25 +1,8 @@
-// Single mutable source of truth for program topology.
-//
-// Every node/block/unit/function lookup the framework needs funnels through
-// `ProgramTopology`. The worklist owns the one instance and is the one
-// writer — updates happen only on unit lifecycle transitions (mint,
-// rebuild, retire). Analyses, transforms, DfaQuery, and narrowings receive
-// the `ReadonlyProgramTopology` projection and read, never write.
-//
-// Before this module existed the same indices were scattered: per-unit
-// `blockOfNode` populated inside `wireCFG`, cross-unit `nodeToUnit`
-// rebuilt by the worklist, `unitsByFunctionId` also on the worklist, plus
-// ad-hoc `unit.blockOfNode.get(...)` lookups at every transform/query
-// site. Consolidating them here is what the "topology bridges" refactor
-// was about: one ownership boundary, one rebuild path, one surface.
-//
+// Single mutable source of truth for program topology. Every
+// node/block/unit/function lookup funnels through `ProgramTopology`. The
+// worklist owns the one instance and is the only writer.
 // Units are identified by `FunctionId` — the `.id` of the scope-owning
-// AST node (`FileInput` or `FunctionDef`). The `funcAst` union on `Unit`
-// is an internal AST-shape concern; the topology surface speaks only in
-// `FunctionId` and doesn't leak the AST shape. Lambdas are registered in
-// the `FunctionRegistry` but do not yet own units; when they do, the
-// widening will happen inside `function-unit.ts` without touching this
-// surface.
+// AST node (`FileInput` or `FunctionDef`).
 
 import type { BasicBlock } from "./cfg";
 import type { Unit } from "./function-unit";
@@ -30,39 +13,24 @@ interface NodeLocation {
   readonly block: BasicBlock;
 }
 
-/** Program's cross-unit index state. The worklist constructs exactly one
- *  and exposes it via `Worklist.topology`. Consumers that should not
- *  mutate the topology (analyses, DfaQuery, transforms, narrowings)
- *  receive it typed as `ReadonlyProgramTopology`. */
 export class ProgramTopology {
   private readonly unitsByFunctionId = new Map<FunctionId, Unit>();
   private readonly nodeLocation = new Map<NodeId, NodeLocation>();
   private readonly nodesByUnit = new Map<Unit, Set<NodeId>>();
 
-  /** Register a newly-built unit. `unit.cfg` must already be populated
-   *  (via `wireCFG`) so the node-indexing walk sees real blocks. */
+  /** Register a newly-built unit. `unit.cfg` must already be populated. */
   registerUnit(unit: Unit): void {
     this.unitsByFunctionId.set(unit.funcAst.id, unit);
     this.indexUnitNodes(unit);
   }
 
-  /** Drop all index entries for a retiring unit. */
-  unregisterUnit(unit: Unit): void {
-    this.unitsByFunctionId.delete(unit.funcAst.id);
-    this.dropUnitNodes(unit);
-  }
-
-  /** Called after `wireCFG` rebuilds a unit's CFG (structural transform).
-   *  The unit identity is preserved; only block identities and the
-   *  node→block mapping change. */
+  /** Called after `wireCFG` rebuilds a unit's CFG. Unit identity is
+   *  preserved; block and node→block mappings change. */
   reindexUnit(unit: Unit): void {
     this.dropUnitNodes(unit);
     this.indexUnitNodes(unit);
   }
 
-  /** Every indexed unit, keyed by the `FunctionId` of its scope AST node
-   *  (`.id` of the FunctionDef or FileInput). Iterate via `.values()`;
-   *  look up by function id via `.get(id)`. */
   get units(): ReadonlyMap<FunctionId, Unit> {
     return this.unitsByFunctionId;
   }
@@ -74,12 +42,6 @@ export class ProgramTopology {
   }
   blockOfNode(nodeId: NodeId): BasicBlock | undefined {
     return this.nodeLocation.get(nodeId)?.block;
-  }
-  /** NodeIds currently indexed under `unit`. Used by retirement eviction
-   *  paths that need to walk a unit's fact cells without re-traversing the
-   *  AST. Iteration order is insertion (indexing walk) order. */
-  nodesOfUnit(unit: Unit): Iterable<NodeId> {
-    return this.nodesByUnit.get(unit) ?? EMPTY_IDS;
   }
 
   private indexUnitNodes(unit: Unit): void {
@@ -100,16 +62,12 @@ export class ProgramTopology {
   }
 }
 
-/** Read-only projection of `ProgramTopology` handed to analyses, DfaQuery,
- *  transforms, and narrowings. Excludes the mutators
- *  (`registerUnit` / `unregisterUnit` / `reindexUnit`) — only the worklist
- *  is permitted to call those. */
+/** Read-only projection handed to analyses, DfaQuery, transforms, and
+ *  narrowings. */
 export type ReadonlyProgramTopology = Pick<
   ProgramTopology,
-  "units" | "unitOfFunctionId" | "unitOfNode" | "blockOfNode" | "nodesOfUnit"
+  "units" | "unitOfFunctionId" | "unitOfNode" | "blockOfNode"
 >;
-
-const EMPTY_IDS: ReadonlySet<NodeId> = new Set();
 
 function walkAstNodes(
   node: unknown,

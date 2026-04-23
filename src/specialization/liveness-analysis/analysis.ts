@@ -64,26 +64,17 @@ class ReadCollector implements ExprNS.Visitor<void> {
   visitBigIntLiteralExpr(_expr: ExprNS.BigIntLiteral): void {}
   visitNoneExpr(_expr: ExprNS.None): void {}
   visitComplexExpr(_expr: ExprNS.Complex): void {}
-  // Lambda / MultiLambda bodies are their own scope — their variable names
-  // resolve against a different environment than this unit's `slotLookup`.
-  // Conservative stance: don't walk their bodies here. If a lambda captures
-  // an outer-scope slot, we over-approximate by NOT marking it live, which
-  // could cause DSE to drop a capture. To compensate, DSE's `isPureRhs`
-  // treats Lambda/MultiLambda as pure only when it can prove no captures;
-  // since we don't track captures, the transform must stay conservative on
-  // assignments whose RHS is a lambda (see dead-store.ts).
+  // Lambda / MultiLambda bodies are their own scope; their names resolve
+  // against a different env than this unit's `slotLookup`. We under-approx
+  // here and DSE compensates by refusing to drop lambda-RHS assigns (see
+  // dead-store.ts `isPureRhs`).
   visitLambdaExpr(_expr: ExprNS.Lambda): void {}
   visitMultiLambdaExpr(_expr: ExprNS.MultiLambda): void {}
 }
 
-/** Backward per-statement transfer. Semantics: the env arriving here
- *  represents live-OUT of the statement; after return it is live-IN.
- *
- *  For Assign: kill LHS (remove from live set) before visiting RHS — a
- *  self-assignment `s = s + 1` must leave `s` live on the way in (read
- *  occurs before write in forward execution = read processed after kill
- *  in backward order).
- */
+/** Backward per-statement transfer: env in = live-OUT, env out = live-IN.
+ *  For Assign: kill LHS before visiting RHS so a self-assign `s = s + 1`
+ *  keeps `s` live on the way in. */
 function killLocal(
   env: MutableEnv<LiveVal>,
   slotLookup: SlotLookup,
@@ -105,8 +96,7 @@ function transferStmtBackward(
       if (a.target instanceof ExprNS.Variable) {
         killLocal(env, slotLookup, a.target.name);
       } else {
-        // Non-Variable targets (subscript, tuple, ...): conservative no kill.
-        // Their reads are collected normally.
+        // Non-Variable targets (subscript, tuple, ...): no kill, reads only.
         a.target.accept(visitor);
       }
       a.value.accept(visitor);
@@ -158,8 +148,7 @@ function transferBlock(
   inEnv: MutableEnv<LiveVal>,
   slotLookup: SlotLookup,
 ): BlockPassResult<LiveVal> {
-  // `inEnv` is factory-provided: represents live-OUT of this block.
-  // We mutate it in place into live-IN and publish it as `outEnv`.
+  // `inEnv` is live-OUT; snapshot and mutate into live-IN.
   const outEnv = inEnv.snapshot();
   const visitor = new ReadCollector(outEnv, slotLookup);
   const stmts = block.stmts;
@@ -169,10 +158,8 @@ function transferBlock(
   return { outEnv, exprFacts: new Map() };
 }
 
-/** Backward may-liveness analysis. The stored `outEnv` is the block's
- *  live-IN; a block's live-OUT is the join of CFG-successors' live-INs and
- *  can be reconstructed via `liveOutOf` below.
- */
+/** Backward may-liveness. Stored `outEnv` is the block's live-IN; its
+ *  live-OUT is the join of CFG-successors' live-INs (see `liveOutOf`). */
 export const livenessAnalysis: BlockFixpointAnalysis<LiveVal> =
   makeBlockFixpointAnalysis<LiveVal>({
     direction: "backward",
@@ -184,36 +171,23 @@ export const livenessAnalysis: BlockFixpointAnalysis<LiveVal> =
     refineOnEdge: (env, _edge) => env,
   });
 
-/** Reconstruct live-OUT of `block` under `chain`: join of live-INs (stored
- *  outEnvs) of CFG-successors read at that chain. Terminal blocks have no
- *  successors ⇒ empty.
- *
- *  `chain` is load-bearing: under a speculative context whose forked body
- *  differs from ROOT, successor live-INs differ accordingly. The previous
- *  ROOT-hardcoded read silently miscompiled any non-ROOT consumer. */
+/** Reconstruct live-OUT of `block` under `chain`: join of successors'
+ *  live-INs at that chain. Terminal blocks return empty. `chain` is
+ *  load-bearing — successor live-INs differ across speculative contexts. */
 export function liveOutOf(
   block: BasicBlock,
   chain: Speculation,
 ): MutableEnv<LiveVal> {
   const result = new MutableEnv<LiveVal>();
   for (const edge of block.successorEdges) {
-    // `read` returns the store's bottom (an empty env) for unwritten
-    // cells; iterating its `definedSlots()` is a no-op, matching the
-    // previous `undefined → continue` fast path without the guard.
     const env = livenessAnalysis.env.read(edge.to, chain);
-    for (const slot of env.definedSlots()) {
-      result.set(slot, LIVE);
-    }
+    for (const slot of env.definedSlots()) result.set(slot, LIVE);
   }
   return result;
 }
 
-/** Per-statement backward walk over a block; returns a map from statement
- *  index → live-OUT of that statement (= live-IN of the next). Used by the
- *  dead-store transform to decide per-assignment.
- *
- *  Returned live-outs are fresh sets safe for the caller to inspect; they
- *  do not alias any analysis-store state. */
+/** Per-statement backward walk: returns live-OUT of each stmt (= live-IN of
+ *  the next). Returned sets are fresh, never alias analysis-store state. */
 export function perStatementLiveOut(
   block: BasicBlock,
   slotLookup: SlotLookup,

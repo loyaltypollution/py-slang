@@ -1,23 +1,7 @@
-// Dispatch lane: deciding whether a speculative body can be produced at
-// (unit, s), and producing the body to compile.
-//
-// The two responsibilities are separated so the dispatch-validity check
-// doesn't conflate "speculation buys nothing over the baseline" with
-// "decline to specialize." The old specializedBodyFor overloaded both
-// into a single undefined return, which silently dropped ancestor-
-// published forks whenever the context carried a non-param assumption.
-//
-// Produces a cloned, rewritten function body for speculative compilation.
-// The clone is compile-only data — it must never be inserted into the
-// analysis store, CFG, topology, or any framework structure that treats
-// NodeId as owning mutable program identity. Cloned nodes preserve the
-// original NodeId values as stable references back to the canonical
-// unit's analysis namespace; fact reads continue to use those ids.
-//
-// Rewrite family exposed here: dead branch pruning from speculative
-// type facts. Whether to apply memoization on top of a pruned body is
-// evaluator policy and lives in the evaluator layer. Shared AST is
-// never mutated.
+// Dispatch lane: decides validity of and produces the body for
+// speculative compilation at (unit, s). Bodies are compile-only clones —
+// they are never inserted into analysis store, CFG, or topology. Cloned
+// nodes preserve NodeIds as stable references into the canonical unit.
 
 import { StmtNS } from "../../ast-types";
 import { contextIsEntrySpecializable, directParamEntryGuardsFor } from "../entry-guards";
@@ -53,55 +37,40 @@ function pruneWithFactsAt(
   let changed = false;
   const out: StmtNS.Stmt[] = [];
   for (const stmt of stmts) {
-    if (stmt instanceof StmtNS.If) {
-      const truth = conditionTruth(stmt.condition.id, topology, context);
-      if (truth === true) {
-        changed = true;
-        out.push(...pruneWithFactsAt(stmt.body, context, topology));
-        continue;
-      }
-      if (truth === false) {
-        changed = true;
-        if (stmt.elseBlock) {
-          out.push(...pruneWithFactsAt(stmt.elseBlock, context, topology));
-        }
-        continue;
-      }
-      const newBody = pruneWithFactsAt(stmt.body, context, topology);
-      const newElse = stmt.elseBlock
-        ? pruneWithFactsAt(stmt.elseBlock, context, topology)
-        : stmt.elseBlock;
-      if (newBody !== stmt.body || newElse !== stmt.elseBlock) {
-        changed = true;
-        out.push(shadowNode(stmt, {
-          body: newBody as StmtNS.Stmt[],
-          elseBlock: newElse as StmtNS.Stmt[] | null,
-        }));
-      } else {
-        out.push(stmt);
-      }
+    if (!(stmt instanceof StmtNS.If)) {
+      out.push(stmt);
       continue;
     }
-    out.push(stmt);
+    const truth = conditionTruth(stmt.condition.id, topology, context);
+    if (truth === true) {
+      changed = true;
+      out.push(...pruneWithFactsAt(stmt.body, context, topology));
+      continue;
+    }
+    if (truth === false) {
+      changed = true;
+      if (stmt.elseBlock) out.push(...pruneWithFactsAt(stmt.elseBlock, context, topology));
+      continue;
+    }
+    const newBody = pruneWithFactsAt(stmt.body, context, topology);
+    const newElse = stmt.elseBlock
+      ? pruneWithFactsAt(stmt.elseBlock, context, topology)
+      : stmt.elseBlock;
+    if (newBody !== stmt.body || newElse !== stmt.elseBlock) {
+      changed = true;
+      out.push(shadowNode(stmt, {
+        body: newBody as StmtNS.Stmt[],
+        elseBlock: newElse as StmtNS.Stmt[] | null,
+      }));
+    } else {
+      out.push(stmt);
+    }
   }
   return changed ? out : stmts;
 }
 
 /** Is `(unit, s)` a valid target for speculation-lane dispatch?
- *
- *  Four conjoined checks:
- *   - `unit.funcAst` is a FunctionDef.
- *   - `contextIsEntrySpecializable(unit, s)` — every assumption in `s`
- *     is of a kind the entry-guard machinery can lower.
- *   - `!isRefuted(s)` — the retirement filter has no generator that is
- *     a subset of `s`. Under algebraic `isRefuted` this single query
- *     covers every retired generator transitively.
- *   - `directParamEntryGuardsFor(unit, s) !== undefined` — there are
- *     concrete param-type assumptions to emit guards from.
- *
- *  When `isRefuted` is omitted, retirement is assumed trivial (useful
- *  for unit tests on pure dispatch predicates). Production call sites
- *  supply the worklist's algebraic predicate. */
+ *  When `isRefuted` is omitted, retirement is assumed trivial (tests). */
 export function dispatchValid(
   unit: Unit,
   s: Speculation,
@@ -114,19 +83,10 @@ export function dispatchValid(
   return true;
 }
 
-/** The body to compile at `(unit, s)`. Always returns a body (total
- *  function): starts from the nearest non-retired ancestor fork (or
- *  `unit.body` if none) and layers dead-branch pruning under the
- *  context's type facts. Reference-equality against `unit.body` tells a
- *  caller whether speculation contributed anything:
- *
- *    result === unit.body  → no ancestor fork, pruner was a no-op;
- *                            caller should use baseline compilation.
- *    result !== unit.body  → either an ancestor rewrite, the pruner
- *                            fired, or both; caller compiles the clone.
- *
- *  Preconditions: call `dispatchValid(unit, s, isRefuted)` first. This
- *  function does not re-check admissibility. */
+/** The body to compile at `(unit, s)`: nearest non-retired ancestor fork
+ *  (or `unit.body`) plus dead-branch pruning under the context's type
+ *  facts. Reference equality against `unit.body` tells the caller whether
+ *  speculation contributed anything. Call `dispatchValid` first. */
 export function bodyToCompile(
   unit: Unit,
   s: Speculation,

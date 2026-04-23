@@ -5,31 +5,25 @@ export interface SlotInfo {
   slot: number;
   envLevel: number;
   isPrimitive: boolean;
-  /** Name is declared at module scope (one step inside the outermost
-   *  built-in scope). Module globals can be rebound between calls — purity
-   *  treats their reads as impure, unlike closure captures of an enclosing
-   *  function's locals. */
+  /** Name is declared at module scope (one step inside the built-in
+   *  scope). Module globals can be rebound between calls — their reads
+   *  are impure, unlike closure captures. */
   isModuleGlobal: boolean;
 }
 
 /** Callable: token → SlotInfo. Also carries `slotCount` — the number of
- *  local slots the table was built with (parameters + other locals). Analyses
- *  that need to enumerate every slot at a program point (e.g. forward-must
- *  analyses whose entry seed must initialize every slot to avoid
- *  absent-treated-as-top collisions at CFG merges) read this directly instead
- *  of trying to recover the count from env traversal. */
+ *  local slots (parameters + other locals). Analyses that need to
+ *  enumerate every slot at a program point read this directly. */
 export type SlotLookup = ((token: Token) => SlotInfo) & { readonly slotCount: number };
 
-/** A slot is "local" iff it's a real variable (not a primitive binding) at the
- *  current function's envLevel. Shared across const/type/purity analyses and
- *  block-transfer's assignment-effect filter. */
+/** A slot is "local" iff it's a real variable (not a primitive binding)
+ *  at the current function's envLevel. */
 export function isLocal(info: SlotInfo): boolean {
   return !info.isPrimitive && info.envLevel === 0;
 }
 
-/** A closure-capture slot: resolved in an enclosing function scope, not the
- *  module or builtin scope. Reads of captures depend on the outer frame but
- *  are not themselves side effects. */
+/** A closure-capture slot: resolved in an enclosing function scope, not
+ *  the module or builtin scope. */
 export function isCapture(info: SlotInfo): boolean {
   return !info.isPrimitive && !info.isModuleGlobal && info.envLevel > 0;
 }

@@ -25,15 +25,12 @@ export function liftConst(observed: RawKind): ConstLattice | undefined {
   return observed.kind === "number" ? constOf(observed.value) : undefined;
 }
 
-/** Baseline const facts are semantic-only. There is no chain-extension
- *  narrowing for const under POC: a concrete-value speculation
- *  (`paramConstNarrowing` was the candidate) thrashes recursively — e.g.
- *  `f(x)` calling `f(x-1)` observes a different concrete value per frame
- *  and the chain binding invalidates every call. The type lattice has
- *  finite height and is stable across value variation, so param
+/** Baseline const facts are semantic-only — no chain-extension narrowing.
+ *  Concrete-value param speculation thrashes recursively (e.g. `f(x)`
+ *  calling `f(x-1)` observes a different value per frame), so param
  *  speculation lives on `paramTypeNarrowing` exclusively. `constAnalysis`
- *  remains useful as a static (chain-invariant) pass driving
- *  `constantFoldingRule`, `deadStoreRule`, and `algebraicSimplifyRule`. */
+ *  is a static (chain-invariant) pass driving `constantFoldingRule`,
+ *  `deadStoreRule`, and `algebraicSimplifyRule`. */
 
 function constMeet(a: ConstLattice, b: ConstLattice): ConstLattice {
   if (a.tag === "top") return b;
@@ -202,9 +199,6 @@ export const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
   },
 };
 
-/** Block-level fixpoint analysis for const narrowing. Owned here (at the
- *  dimension's source) so the narrowing's `blockAnalysis` thunk has a
- *  stable local binding. */
 export const constAnalysis: BlockFixpointAnalysis<ConstLattice> =
   makeBlockFixpointAnalysis<ConstLattice>({
     direction: constAnalysisModule.direction,

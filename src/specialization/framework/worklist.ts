@@ -11,11 +11,9 @@ import {
   type UnitResolver,
 } from "./analysis";
 import {
-  storeContexts,
   storeEvict,
   storeWrite,
   type FactChange,
-  type ReadonlyAnalysisStore,
 } from "./analysis-store";
 import {
   ROOT_CONTEXT,
@@ -38,14 +36,11 @@ import {
 import type { FunctionId, NodeId } from "./key-spaces";
 import type { ObservationChannel } from "./observation-channel";
 import { ProgramTopology } from "./topology";
-// `purityBlockAnalysis` is referenced by name in `enqueueNarrowingEntry`
-// (purity is not a narrowing dimension of its own, but witness discovery and
-// memoization need its per-context verdicts re-seeded alongside each
-// narrowing's block analysis). This import is the one residual
-// framework→specific-analysis coupling; every other analysis and all
-// transforms are now supplied by the caller via the constructor.
 import { clearMemoId } from "../../runtime/memo";
 import { directParamEntryGuardsFor, guardKeyFromGuards } from "../entry-guards";
+// `purityBlockAnalysis` is the one residual framework→specific-analysis
+// coupling — its per-context verdicts are re-seeded alongside every
+// narrowing's block analysis in `enqueueNarrowingEntry`.
 import { purityBlockAnalysis } from "../purity-analysis/analysis";
 import { memoIdFor } from "../transforms/memoization";
 import type { RawKind } from "./raw-value";
@@ -66,20 +61,17 @@ class TripleQueue {
     this.contexts.push(context);
   }
 
-  /** Remove and return the head triple via out-params written into `out`.
-   *  Callers read `out.analysis` / `out.key` / `out.context` and must not
-   *  retain the reference — `out` is a shared scratch object. Returns true
-   *  iff an item was dequeued. */
+  /** Dequeue the head triple into `out`. Returns true iff an item was dequeued. */
   pop(out: { analysis: Analysis<any, any>; key: unknown; context: Speculation }): boolean {
     if (this.head >= this.analyses.length) return false;
-    out.analysis = this.analyses[this.head];
-    out.key = this.keys[this.head];
-    out.context = this.contexts[this.head];
-    // Null out references so dequeued entries don't pin GC roots until the
-    // array is reused.
-    this.analyses[this.head] = undefined as unknown as Analysis<any, any>;
-    this.keys[this.head] = undefined;
-    this.contexts[this.head] = undefined as unknown as Speculation;
+    const i = this.head;
+    out.analysis = this.analyses[i];
+    out.key = this.keys[i];
+    out.context = this.contexts[i];
+    // Null out references so dequeued entries don't pin GC roots.
+    this.analyses[i] = undefined as unknown as Analysis<any, any>;
+    this.keys[i] = undefined;
+    this.contexts[i] = undefined as unknown as Speculation;
     this.head++;
     if (this.head >= this.analyses.length) {
       this.analyses.length = 0;
@@ -91,43 +83,8 @@ class TripleQueue {
   }
 }
 
-/** Capability surface handed to evict subscribers (`onFactEvict`,
- *  `onRebuildEvict`). Replaces the recurring
- *  `for (const c of storeContexts(store)) storeEvict(store, key, c)` shape
- *  that every evict-edge `effect` had to spell out by hand.
- *
- *  - `evictAt` evicts a single (key, context) pair — the same operation as
- *    `ctx.evict(analysis, key)` but reachable from evict callbacks that
- *    receive an `EvictHandle` instead of an `AnalysisCtx`.
- *  - `evictAcrossContexts` enumerates every context partition the store has
- *    a cell for and evicts the key in each. Use when a unit's retirement
- *    invalidates a key irrespective of speculation chain (the common case
- *    for unit-scoped facts like purity verdicts and runtime observations). */
-export interface EvictHandle {
-  evictAt<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K, context: Speculation): void;
-  evictAcrossContexts<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K): void;
-}
-
-/** Singleton `EvictHandle` instance. The handle has no per-fire state — its
- *  methods are pure delegations to the framework store helpers — so there is
- *  no behavioral difference between a fresh allocation per dispatch and a
- *  shared frozen object. The dispatcher passes this same reference to every
- *  evict callback. */
-const EVICT_HANDLE: EvictHandle = Object.freeze({
-  evictAt<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K, context: Speculation): void {
-    storeEvict(store, key, context);
-  },
-  evictAcrossContexts<K, V>(store: ReadonlyAnalysisStore<K, V>, key: K): void {
-    for (const context of storeContexts(store)) storeEvict(store, key, context);
-  },
-});
-
-/** Group narrowings by `observationSource`, producing both the per-source
- *  resolver map and the per-source narrowing list in one pass. Asserts each
- *  group agrees on `resolveUnit` — disagreement used to silently resolve to
- *  the first narrowing's value, landing the later narrowing's context
- *  extension on the wrong unit with no error. Throws at construction so the
- *  registration bug surfaces before any observation fires. */
+/** Group narrowings by `observationSource`. Asserts each group agrees on
+ *  `resolveUnit` so registration bugs surface at construction. */
 function indexNarrowingsBySource(
   narrowings: ReadonlyArray<Narrowing<any, any>>,
 ): {
@@ -156,37 +113,24 @@ function indexNarrowingsBySource(
 }
 
 export class Worklist {
-  /** Single source of truth for every cross-unit index — scope-node → unit,
-   *  functionId → unit, nodeId → {unit, block}. Replaces the worklist's old
-   *  `_units`, `unitsByFunctionId`, and `nodeToUnit` maps, and the per-unit
-   *  `blockOfNode` field that used to live on `Unit`. */
   private readonly _topology = new ProgramTopology();
 
   /** Units awaiting CFG rebuild after a transform fire. */
   private readonly pendingRebuilds = new Set<Unit>();
 
-  private readonly changeListeners: Array<(change: FactChange<unknown, unknown>) => void> = [];
-  /** Ordered dispatch list for cross-store sweeps. Registration order is
-   *  observable and must be stable, so this stays an array. The parallel
-   *  `Set` exists solely as an O(1) idempotency guard on `register`. */
-  private readonly registeredAnalyses: Analysis<any, any>[] = [];
-  private readonly registeredAnalysesSet = new Set<Analysis<any, any>>();
-  // Two tier-specific FIFOs in place of a priority queue: the only
-  // previously-enforced order was `tier(runtime) < tier(analysis)` with
-  // FIFO-within-tier. Split queues give us O(1) dequeue without a heap
-  // wrapper per item and let us drop the per-enqueue `seq` field.
+  private readonly registeredAnalyses = new Set<Analysis<any, any>>();
+  // Two tier-specific FIFOs: the only enforced order is
+  // `tier(runtime) < tier(analysis)` with FIFO-within-tier.
   private readonly runtimeQueue = new TripleQueue();
   private readonly analysisQueue = new TripleQueue();
-  /** Scratch object reused by `TripleQueue.pop` — avoids allocating a result
-   *  object per dequeue. Fields are overwritten on every pop. */
+  /** Scratch object reused by `TripleQueue.pop`. */
   private readonly dequeued: { analysis: Analysis<any, any>; key: unknown; context: Speculation } = {
     analysis: undefined as unknown as Analysis<any, any>,
     key: undefined,
     context: undefined as unknown as Speculation,
   };
-  /** Dedup guard: a given (analysis, context, key) enqueued twice before being
-   *  drained is a single item. Context is part of the dedup identity because
-   *  sibling contexts run independent Kildall. */
+  /** Dedup guard: `(analysis, context, key)` enqueued twice before drain is
+   *  a single item. Sibling contexts run independent Kildall. */
   private readonly pendingKeysByAnalysis = new Map<
     Analysis<any, any>,
     Map<Speculation, Set<unknown>>
@@ -199,67 +143,41 @@ export class Worklist {
   private readonly transformsSet = new Set<TransformRule>();
   private readonly transformDirty = new Map<TransformRule, Set<Unit>>();
 
-  /** Reentrancy guard: set while `sweepTransforms` runs. `publish` and `bump`
-   *  throw when this is true — online observation ingress during a transform
-   *  sweep would widen/narrow `futureDispatchChainFor(unit)` under the
-   *  sweep's feet, causing transforms to generate code against a chain that
-   *  has already moved. Today no caller does this (observations fire outside
-   *  drain, driven by the evaluator before/after engine dispatch); the guard
-   *  converts that social invariant into a loud crash the first time someone
-   *  wires mid-sweep observation. */
+  /** Reentrancy guard: set while `sweepTransforms` runs. `publish`/`bump`
+   *  throw when true — observation ingress mid-sweep would shift
+   *  `futureDispatchChainFor(unit)` under the sweep's feet. */
   private inTransformSweep = false;
 
-  /** Per-unit scheduler / future-dispatch speculation context. Updated from
-   *  runtime observations and widen operations so future compiles / dispatches
-   *  have a preferred chain to read from. This is NOT a faithful model of all
-   *  currently executing frames for the unit — evaluators track active-frame
-   *  provenance separately. Unset or ROOT_CONTEXT means future dispatch is
-   *  currently unspecialized for that unit. */
+  /** Per-unit preferred chain for future compiles/dispatches. Unset or
+   *  ROOT_CONTEXT means future dispatch is unspecialized for that unit. */
   private readonly futureDispatchContext: Map<Unit, Speculation> = new Map();
 
-  /** Single fact-change dispatch index. Analyses and transforms both compile
-   *  their fact subscriptions into callbacks here; no per-subscriber-kind
-   *  branching lives in `handleFactChange`. */
+  /** Fact-change, counter-bump, and channel-publish dispatch indices.
+   *  Analyses' and transforms' subscriptions compile into callbacks here. */
   private readonly factSubs = new Map<
     Analysis<any, any>,
     Array<(ctx: AnalysisCtx, key: unknown) => void>
   >();
-  /** Per-counter bump dispatch index. Parallel to `factSubs` but keyed by
-   *  `CounterStore` identity. Counter bumps have no context; subscribers
-   *  receive the ROOT-rooted `passCtx` for topology access. */
   private readonly counterSubs = new Map<
     CounterStore<any>,
     Array<(ctx: AnalysisCtx, key: unknown) => void>
   >();
-  private readonly registeredCounters: CounterStore<any>[] = [];
-  private readonly registeredCountersSet = new Set<CounterStore<any>>();
-  /** Per-channel publish dispatch index. Parallel to `factSubs` but keyed
-   *  by `ObservationChannel` identity. Subscribers fire on
-   *  `Worklist.publish` under the publication chain's `AnalysisCtx`. */
+  private readonly registeredCounters = new Set<CounterStore<any>>();
   private readonly channelSubs = new Map<
     ObservationChannel<any, any>,
     Array<(ctx: AnalysisCtx, key: unknown) => void>
   >();
-  /** Lifecycle dispatch indices, one array per event kind. Analyses' typed
-   *  lifecycle subscriptions and transforms' mint/rebuild auto-dirtying both
-   *  compile into callbacks on these lists. `specRev` is the internal name
-   *  for the public `onSpecRev` event (future-dispatch context revision). */
+  /** Lifecycle dispatch indices, one array per event kind. */
   private readonly mintSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
   private readonly rebuildSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
   private readonly specRevSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
 
-  /** Refutation filter. Stores minimal generators; `contains(c)` is the
-   *  algebraic-membership check `∃ r ∈ R. leq(r, c)`. Correct for
-   *  rebuild-path supersets that parent-walk ancestry would miss.
-   *  Monotone: once a generator is added it stays for the life of the
-   *  worklist. */
+  /** Refutation filter (minimal generators; `contains(c) = ∃ r. leq(r, c)`). */
   private readonly refutations: Refutations = new Refutations();
 
   readonly registry: FunctionRegistry;
   private readonly functionEnvironments: FunctionEnvironments;
 
-  /** Readonly projection of the topology — the surface consumers (DfaQuery,
-   *  transforms outside the worklist, backends, tests) read through. */
   get topology(): ProgramTopology {
     return this._topology;
   }
@@ -268,39 +186,18 @@ export class Worklist {
     return this._topology.units;
   }
 
-  /** The engine's root chain — the "no assumptions" reading position.
-   *  External consumers (backends, ROOT-keyed profile reads) take this from
-   *  the engine instead of importing `ROOT_CONTEXT` directly, so the
-   *  framework stays the only place that names the symbol. */
-  get rootChain(): Speculation {
-    return ROOT_CONTEXT;
-  }
-
-  /** Registered speculation-narrowing dimensions. The observation translator
-   *  iterates this list — adding a new narrowing is a one-line registration
-   *  here, not a framework edit. */
   private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
-
-  /** Per-observation-source unit resolver, derived from `narrowings` at
-   *  construction. All narrowings sharing an `observationSource` must
-   *  agree on `resolveUnit` — the observation translator uses a single
-   *  resolver per source; disagreement used to silently resolve via the
-   *  first narrowing's value, leaving the later narrowing's context
-   *  extension to land on the wrong unit with no error. */
+  /** Per-source unit resolver; all narrowings on a source must agree. */
   private readonly unitResolverBySource: Map<
     ObservationChannel<any, RawKind>,
     UnitResolver<any>
   >;
-
-  /** Index of narrowings by `observationSource`, derived from `narrowings` at
-   *  construction. Replaces O(m) filter on every observation with O(1) lookup. */
   private readonly narrowingsBySource: ReadonlyMap<
     ObservationChannel<any, RawKind>,
     ReadonlyArray<Narrowing<any, any>>
   >;
 
-  private readonly registeredChannels: ObservationChannel<any, any>[] = [];
-  private readonly registeredChannelsSet = new Set<ObservationChannel<any, any>>();
+  private readonly registeredChannels = new Set<ObservationChannel<any, any>>();
 
   constructor(
     ast: StmtNS.FileInput,
@@ -318,8 +215,7 @@ export class Worklist {
     this.narrowingsBySource = indexed.narrowingsBySource;
     this.registry = registry ?? buildFunctionRegistry(ast);
     this.functionEnvironments = functionEnvironments;
-    const built = buildUnits(ast, functionEnvironments, this.registry);
-    for (const [, unit] of built) {
+    for (const [, unit] of buildUnits(ast, functionEnvironments, this.registry)) {
       if (!this.registry.hasNode(unit.funcAst)) {
         throw new Error(
           `[Worklist] unit for functionId=${unit.funcAst.id} missing from FunctionRegistry — registry likely built from a different AST`,
@@ -332,15 +228,6 @@ export class Worklist {
     for (const c of counters) this.registerCounter(c);
     for (const ch of channels) this.registerChannel(ch);
     for (const r of transforms) this.registerTransform(r);
-    // The observation→context translator hooks directly into `observe`, not
-    // via the change-listener list — an eq-gated write short-circuits
-    // repeated same-value writes (the monotone fast path), and count-based
-    // policies need to see every call, not every lattice change.
-
-    // Initial units are seeded lazily: `register` replays onUnitMinted to each
-    // analysis's subscriber, and `registerTransform` populates each rule's dirty
-    // set with the existing units. Subsequent mints (mid-drain) fire
-    // onUnitMinted via `onRegistryMint`.
 
     this.registry.setListener({
       onMint: (node, slot) => this.onRegistryMint(node, slot),
@@ -354,9 +241,6 @@ export class Worklist {
     this.fireMint(unit);
   }
 
-  /** Return `rule`'s dirty set, asserting it exists. `registerTransform` is
-   *  the only site that populates this map; call sites that touch it outside
-   *  that function go through here so the invariant is named. */
   private dirtyFor(rule: TransformRule): Set<Unit> {
     const s = this.transformDirty.get(rule);
     if (s === undefined) {
@@ -375,37 +259,23 @@ export class Worklist {
     for (const sub of this.specRevSubs) sub(this.passCtx, unit);
   }
 
-  /** `c` is refuted iff any generator is an algebraic subset.
-   *  Safe to call with the empty speculation (always false). */
+  /** `c` is refuted iff any generator is an algebraic subset. */
   isRefuted(node: Speculation): boolean {
     return this.refutations.contains(node);
   }
 
-  /** Refute `carrier` for `unit`: add the minimal singleton of the
-   *  carrier's tip binding to the refutation filter, clear the memo
-   *  bucket minted against its direct-param entry guards, and drop
-   *  `futureDispatchContext[unit]` if it now points into the refuted
-   *  subtree (algebraic check — not just pointwise equality). Body
-   *  eviction is lazy: refutation-aware `visibleBody` skips refuted
-   *  ancestors on future reads; stale forks are reclaimed when the unit
-   *  releases. Idempotent. */
+  /** Refute `carrier` for `unit`: add the minimal singleton of the carrier's
+   *  tip binding, clear the memo bucket keyed to its direct-param entry
+   *  guards, and drop `futureDispatchContext[unit]` if it points into the
+   *  refuted subtree. Body eviction is lazy. Idempotent. */
   private refute(unit: Unit, carrier: Speculation): void {
     if (carrier === ROOT_CONTEXT) return;
-    // The refutation filter stores MINIMAL generators: the singleton of
-    // the refuted binding alone. Storing the full carrier chain (which
-    // carries every binding on its canonical parent-path) would under-
-    // refute — sibling chains carrying the same refuted binding under a
-    // different prefix would escape `isRefuted`, because they are not
-    // supersets of the prefix-heavy carrier.
+    // MINIMAL generators: storing the full carrier chain would under-refute
+    // — sibling chains carrying the same refuted binding under a different
+    // prefix would escape `isRefuted`.
     const a = carrier.assumption!;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
     this.refutations.add(minimal);
-    // Memo bucket cleanup stays keyed to the carrier's specific chain:
-    // memoization publishes its memoId off the carrier's full entry-guard
-    // prefix, so the id for the singleton is a different id. Stale memo
-    // buckets at non-carrier supersets become dead data (never re-served
-    // because `visibleBody` skips refuted supersets) rather than
-    // incorrect data; eager sweep across supersets is a follow-up.
     const fd = unit.funcAst;
     if (fd instanceof StmtNS.FunctionDef) {
       clearMemoId(memoIdFor(fd, guardKeyFromGuards(directParamEntryGuardsFor(unit, carrier))));
@@ -416,41 +286,31 @@ export class Worklist {
     }
   }
 
-
-  /** Subscribe `fn` to writes against `upstream`. Called via `register` /
-   *  `registerTransform`; not public API. */
-  private subscribeFact(
-    upstream: Analysis<any, any>,
+  private static addSub<S>(
+    map: Map<S, Array<(ctx: AnalysisCtx, key: unknown) => void>>,
+    source: S,
     fn: (ctx: AnalysisCtx, key: unknown) => void,
   ): void {
-    const list = this.factSubs.get(upstream) ?? [];
-    list.push(fn);
-    this.factSubs.set(upstream, list);
+    const list = map.get(source);
+    if (list === undefined) map.set(source, [fn]);
+    else list.push(fn);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // Typed `on*` subscribe methods. Each (event, kind) is its own method with
-  // mandatory parameters — no Subscription wrapper, no exported Event enum,
-  // no optional-pair fields. Each method appends to `factSubs` / the per-kind
-  // lifecycle lists directly; dispatch is O(1).
-  //
-  //   factWrite  → onFactDirty    + onFactEvict
+  // Typed `on*` subscribe methods.
+  //   factWrite  → onFactDirty
   //   mint       → onMint
   //   rebuild    → onRebuildDirty + onRebuildEvict
   //   specRev    → onSpecRev
   // ─────────────────────────────────────────────────────────────────────────
 
-  /** Subscribe `reader` to dirtied keys yielded when `from` advances at any
-   *  key. `dirtied(ctx, key)` projects the upstream key-change into this
-   *  reader's key space; each yielded key is enqueued for `reader`'s
-   *  transfer.
+  /** Subscribe `reader` to dirtied keys when `from` advances at any key.
+   *  `dirtied(ctx, key)` projects the upstream key-change into the reader's
+   *  key space.
    *
-   *  `opts.enqueueAt` projects the source context into the enqueue context.
-   *  Default: enqueue at the same context the upstream write happened in
-   *  (`ctx.currentContext`). Use `enqueueAt: () => ROOT_CONTEXT` for
-   *  context-blind consumers whose cells exist only at ROOT — waking them
-   *  in a non-ROOT context would write into an orphan cell no reader ever
-   *  consults. */
+   *  `opts.enqueueAt` projects the source context into the enqueue context;
+   *  default is the context the upstream write happened in. Use
+   *  `enqueueAt: () => ROOT_CONTEXT` for context-blind readers. */
   onFactDirty<K>(
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
@@ -458,27 +318,13 @@ export class Worklist {
     opts?: { enqueueAt?: (sourceCtx: Speculation) => Speculation },
   ): void {
     const project = opts?.enqueueAt;
-    this.subscribeFact(from, (ctx, key) => {
+    Worklist.addSub(this.factSubs, from, (ctx, key) => {
       const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
       for (const k of dirtied(ctx, key)) this.enqueue(reader, k, enqueueCtx);
     });
   }
 
-  /** Subscribe an evict callback to writes against `from`. Used by analyses
-   *  whose stored cells must be invalidated (not merely re-dirtied) when an
-   *  upstream fact advances — e.g. block-DFA cells under a stale narrowing
-   *  whose monotone join would absorb the new fact. The handle exposes
-   *  `evictAt` and `evictAcrossContexts` so callers don't reimplement the
-   *  `storeContexts` loop. */
-  onFactEvict(
-    from: Analysis<any, any>,
-    evict: (h: EvictHandle, key: unknown) => void,
-  ): void {
-    this.subscribeFact(from, (_ctx, key) => evict(EVICT_HANDLE, key));
-  }
-
-  /** Subscribe `reader` to mint of any unit. `dirtied(ctx, unit)` yields
-   *  keys for `reader` to enqueue. Fires immediately against every
+  /** Subscribe `reader` to mint of any unit. Fires immediately against every
    *  existing unit at registration so late subscribers pick up the initial
    *  burst. */
   onMint<K>(
@@ -488,17 +334,13 @@ export class Worklist {
     this.mintSubs.push((_ctx, unit) => {
       for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
-    // Replay against existing units so registration order does not determine
-    // seeding.
     for (const unit of this._topology.units.values()) {
       for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     }
   }
 
-  /** Subscribe `reader` to rebuild of any unit. Distinct method (rather than
-   *  shared with mint) because rebuild-time invalidation often needs a paired
-   *  `onRebuildEvict` to drop stale block-keyed cells before the fresh CFG
-   *  is wired — the matrix calls these out as two independent concerns. */
+  /** Subscribe `reader` to rebuild of any unit. Distinct from mint because
+   *  rebuild-time invalidation often needs a paired `onRebuildEvict`. */
   onRebuildDirty<K>(
     reader: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<K>,
@@ -509,17 +351,13 @@ export class Worklist {
   }
 
   /** Subscribe an evict callback to rebuild. Typically used to drop block-
-   *  keyed cells whose `BasicBlock` identities belong to the pre-rebuild
-   *  CFG generation. */
-  onRebuildEvict(evict: (h: EvictHandle, unit: Unit) => void): void {
-    this.rebuildSubs.push((_ctx, unit) => evict(EVICT_HANDLE, unit));
+   *  keyed cells whose `BasicBlock` identities belong to the pre-rebuild CFG. */
+  onRebuildEvict(evict: (unit: Unit) => void): void {
+    this.rebuildSubs.push((_ctx, unit) => evict(unit));
   }
 
   /** Subscribe `reader` to spec-context bumps on any unit. Fires when
-   *  observation-driven extension mutates `futureDispatchContext`. No paired
-   *  evict — a context bump advances no facts, so subscribers whose output
-   *  is gated on `futureDispatchChainFor(unit)` simply re-enqueue their
-   *  key. */
+   *  observation-driven extension mutates `futureDispatchContext`. */
   onSpecRev<K>(
     reader: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<K>,
@@ -529,19 +367,16 @@ export class Worklist {
     });
   }
 
-  /** Register an analysis. Idempotent. Analyses subscribe through `bind` and
-   *  the typed `on*` methods; the legacy declarative edge surface is gone. */
+  /** Register an analysis. Idempotent. */
   register<K, V>(analysis: Analysis<K, V>): void {
     const a = analysis as Analysis<any, any>;
-    if (this.registeredAnalysesSet.has(a)) return;
-    this.registeredAnalysesSet.add(a);
-    this.registeredAnalyses.push(a);
+    if (this.registeredAnalyses.has(a)) return;
+    this.registeredAnalyses.add(a);
     analysis.bind?.(this);
   }
 
-  /** Register a transform rule. Idempotent. Auto-installs mint/rebuild dirtying
-   *  for the rule's own unit (every production transform wants this; no rule
-   *  currently opts out), then lets the rule subscribe via `bind`. */
+  /** Register a transform rule. Idempotent. Auto-installs mint/rebuild
+   *  dirtying for the rule's own unit, then lets the rule subscribe via `bind`. */
   registerTransform(rule: TransformRule): void {
     if (this.transformsSet.has(rule)) return;
     this.transformsSet.add(rule);
@@ -556,55 +391,33 @@ export class Worklist {
     rule.bind?.(this);
   }
 
-  /** Public mutator for a transform's dirty set. The transform is identified
-   *  by reference (the same `TransformRule` value passed to `registerTransform`).
-   *  Used by `bind`-driven subscribers that need to mark a unit dirty without
-   *  reaching into the worklist's private `transformDirty` map. */
+  /** Public mutator for a transform's dirty set. */
   dirtyTransform(rule: TransformRule, unit: Unit): void {
     this.dirtyFor(rule).add(unit);
   }
 
-  /** Subscribe `rule` to writes against `from`. Mirror of `onFactDirty` for
-   *  transforms — `dirtied(ctx, key)` yields units to add to the rule's
-   *  dirty set. Appends to the same `factSubs` index as analysis readers, so
-   *  per-upstream registration order remains observable via
-   *  `handleFactChange` iteration. */
+  /** Mirror of `onFactDirty` for transforms. */
   onTransformFactDirty<K>(
     rule: TransformRule,
     from: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Unit>,
   ): void {
     const dirty = this.dirtyFor(rule);
-    this.subscribeFact(from as Analysis<any, any>, (ctx, key) => {
+    Worklist.addSub(this.factSubs, from as Analysis<any, any>, (ctx, key) => {
       for (const u of dirtied(ctx, key as K)) dirty.add(u);
     });
   }
 
-  /** Register a counter. Idempotent. Counters subscribe through `bind` and
-   *  the typed `onCounter*` methods; mirrors the Analysis registration path. */
+  /** Register a counter. Idempotent. */
   registerCounter<K>(counter: CounterStore<K>): void {
     const c = counter as CounterStore<any>;
-    if (this.registeredCountersSet.has(c)) return;
-    this.registeredCountersSet.add(c);
-    this.registeredCounters.push(c);
+    if (this.registeredCounters.has(c)) return;
+    this.registeredCounters.add(c);
     counter.bind?.(this);
   }
 
-  /** Append a counter-bump subscriber. Private; the typed `onCounter*`
-   *  methods call through here. */
-  private subscribeCounter(
-    counter: CounterStore<any>,
-    fn: (ctx: AnalysisCtx, key: unknown) => void,
-  ): void {
-    const list = this.counterSubs.get(counter) ?? [];
-    list.push(fn);
-    this.counterSubs.set(counter, list);
-  }
-
-  /** Increment `counter[key]` by 1, clamped at `counter.saturation`. Fires
-   *  subscribers on advancing bumps; post-saturation bumps are no-ops (no
-   *  dispatch, no fixpoint drain). Analogous to `publish` for observation
-   *  channels, minus the lattice and narrowing extension. */
+  /** Increment `counter[key]` by 1 (clamped at `counter.saturation`). Fires
+   *  subscribers on advancing bumps; post-saturation bumps are no-ops. */
   bump<K>(counter: CounterStore<K>, key: K): void {
     if (this.inTransformSweep) {
       throw new Error(
@@ -622,74 +435,41 @@ export class Worklist {
     this.processAnalysesToFixpoint();
   }
 
-  /** Subscribe `reader` to bumps on `counter`. `dirtied(ctx, key)` projects
-   *  the counter key into the reader's key space; yielded keys enqueue under
-   *  ROOT_CONTEXT (counters have no context, and reader cells driven by
-   *  profile evidence live at ROOT). */
+  /** Subscribe `reader` to bumps on `counter`. Yielded keys enqueue under
+   *  ROOT_CONTEXT (counters have no context). */
   onCounterBumped<K, K2>(
     counter: CounterStore<K>,
     reader: Analysis<K2, any>,
     dirtied: (ctx: AnalysisCtx, key: K) => Iterable<K2>,
   ): void {
-    this.subscribeCounter(counter as CounterStore<any>, (ctx, key) => {
+    Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (ctx, key) => {
       for (const k of dirtied(ctx, key as K)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
-  /** Mirror of `onCounterBumped` for transforms — `dirtied(ctx, key)` yields
-   *  units to add to the rule's dirty set. */
+  /** Mirror of `onCounterBumped` for transforms. */
   onTransformCounterBumped<K>(
     rule: TransformRule,
     counter: CounterStore<K>,
     dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Unit>,
   ): void {
     const dirty = this.dirtyFor(rule);
-    this.subscribeCounter(counter as CounterStore<any>, (ctx, key) => {
+    Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (ctx, key) => {
       for (const u of dirtied(ctx, key as K)) dirty.add(u);
     });
   }
 
-  /** Public read surface for tests and backends that hold a Worklist but
-   *  not a specific Analysis reference's store. Thin delegation to the
-   *  analysis's canonical read methods. `context` is mandatory on every
-   *  helper: `Context` is the primitive, ROOT is one tree-root position
-   *  inside it, and the worklist does not guess which position a caller
-   *  meant. */
-  read<K, V>(analysis: Analysis<K, V>, key: K, context: Speculation): V {
-    return analysis.read(key, context);
-  }
+  /** Public read surface — thin delegation to the analysis's canonical
+   *  read method. `context` is mandatory: the worklist does not guess which
+   *  chain position a caller meant. */
   tryRead<K, V>(analysis: Analysis<K, V>, key: K, context: Speculation): V | undefined {
     return analysis.tryRead(key, context);
   }
-  readAll<K, V>(analysis: Analysis<K, V>, context: Speculation): ReadonlyMap<K, V> {
-    return analysis.readAll(context);
-  }
-  /** Writes through `analysis.store` AND publishes a `FactChange` to
-   *  every subscriber — the single advancing-write site alongside
-   *  `writeAndDispatch` (which is private, reused by `observe` and
-   *  transfer-result handling). Returns `true` iff the cell advanced. */
-  write<K, V>(
-    analysis: Analysis<K, V>,
-    key: K,
-    value: V,
-    context: Speculation,
-  ): boolean {
-    return this.writeAndDispatch(analysis, key, value, context);
-  }
-  evict<K, V>(analysis: Analysis<K, V>, key: K, context: Speculation): void {
-    storeEvict(analysis.store, key, context);
-  }
 
-  /** Record a runtime observation made under `context`. The caller — typically
-   *  the JIT observation adapter (`makeJitObservers`) — passes the running
-   *  frame's current provenance chain. Top-level observations with no
-   *  enclosing specialized frame pass `ROOT_CONTEXT`.
-   *
-   *  Two side effects:
+  /** Record a runtime observation made under `context`. Two side effects:
    *  1. `channel` shadow-writes `value` at `context` (for dedup).
-   *  2. `handleObservationForSpec` runs, extending or pruning the owning
-   *     unit's speculation context via every narrowing whose
-   *     `observationSource === channel`.
+   *  2. `handleObservationForSpec` extends or prunes the owning unit's
+   *     speculation context via every narrowing on `channel`.
    *
    *  Returns the caller's next frame-local provenance chain (extended or
    *  pruned). The shadow write lands at the incoming `context` regardless. */
@@ -717,30 +497,15 @@ export class Worklist {
     return nextContext;
   }
 
-  /** Register a channel. Idempotent. Mirrors `register` / `registerCounter`. */
+  /** Register a channel. Idempotent. */
   registerChannel<K, V>(channel: ObservationChannel<K, V>): void {
     const c = channel as ObservationChannel<any, any>;
-    if (this.registeredChannelsSet.has(c)) return;
-    this.registeredChannelsSet.add(c);
-    this.registeredChannels.push(c);
+    if (this.registeredChannels.has(c)) return;
+    this.registeredChannels.add(c);
     channel.bind?.(this);
   }
 
-  /** Append a channel-publish subscriber. Private; typed `onChannel*`
-   *  methods go through here. */
-  private subscribeChannel(
-    channel: ObservationChannel<any, any>,
-    fn: (ctx: AnalysisCtx, key: unknown) => void,
-  ): void {
-    const list = this.channelSubs.get(channel) ?? [];
-    list.push(fn);
-    this.channelSubs.set(channel, list);
-  }
-
-  /** Subscribe `reader` to publishes on `channel`. `dirtied(ctx, key)`
-   *  projects the channel key into the reader's key space; yielded keys
-   *  enqueue at the publication chain (or `opts.enqueueAt(chain)` if the
-   *  reader's cells live in a different context tree position). */
+  /** Subscribe `reader` to publishes on `channel`. */
   onChannelPublished<K, K2>(
     channel: ObservationChannel<K, any>,
     reader: Analysis<K2, any>,
@@ -748,7 +513,7 @@ export class Worklist {
     opts?: { enqueueAt?: (sourceCtx: Speculation) => Speculation },
   ): void {
     const project = opts?.enqueueAt;
-    this.subscribeChannel(channel as ObservationChannel<any, any>, (ctx, key) => {
+    Worklist.addSub(this.channelSubs, channel as ObservationChannel<any, any>, (ctx, key) => {
       const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
       for (const k of dirtied(ctx, key as K)) this.enqueue(reader, k, enqueueCtx);
     });
@@ -761,16 +526,9 @@ export class Worklist {
     dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Unit>,
   ): void {
     const dirty = this.dirtyFor(rule);
-    this.subscribeChannel(channel as ObservationChannel<any, any>, (ctx, key) => {
+    Worklist.addSub(this.channelSubs, channel as ObservationChannel<any, any>, (ctx, key) => {
       for (const u of dirtied(ctx, key as K)) dirty.add(u);
     });
-  }
-
-  hasPendingWork(): boolean {
-    if (this.runtimeQueue.size() > 0 || this.analysisQueue.size() > 0) return true;
-    if (this.pendingRebuilds.size > 0) return true;
-    for (const s of this.transformDirty.values()) if (s.size > 0) return true;
-    return false;
   }
 
   enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: Speculation): void {
@@ -791,38 +549,21 @@ export class Worklist {
     q.push(p, key, context);
   }
 
-  /** Drain the analysis PQ to empty. Tier order: runtime < analysis.
-   *  Boundary: after return, every analysis cell is at its current fixed
-   *  point for the enqueued work; transforms have NOT been swept and CFG
-   *  rebuilds have NOT fired. Callers needing transform/rebuild publication
-   *  must invoke `drain()`. */
+  /** Drain both queues to empty. Runtime tier preempts analysis tier. */
   private processAnalysesToFixpoint(): void {
-    // Runtime-tier items preempt analysis-tier items: on every iteration
-    // pull from the runtime queue first, and only fall through to analysis
-    // once it is empty. A fresh runtime enqueue mid-drain (e.g. a transfer
-    // that publishes an observation) is picked up on the next iteration,
-    // matching the old PriorityQueue's preemption semantics.
     const out = this.dequeued;
     while (this.runtimeQueue.size() > 0 || this.analysisQueue.size() > 0) {
-      const dequeued = this.runtimeQueue.size() > 0
-        ? this.runtimeQueue.pop(out)
-        : this.analysisQueue.pop(out);
-      if (!dequeued) break;
-      const analysis = out.analysis;
-      const key = out.key;
-      const context = out.context;
+      const q = this.runtimeQueue.size() > 0 ? this.runtimeQueue : this.analysisQueue;
+      if (!q.pop(out)) break;
+      const { analysis, key, context } = out;
       this.pendingKeysByAnalysis.get(analysis)?.get(context)?.delete(key);
-      const ctx = this.ctxFor(context);
-      const value = analysis.transfer(ctx, key);
-      if (value !== undefined) {
-        this.writeAndDispatch(analysis, key, value, context);
-      }
+      const value = analysis.transfer(this.ctxFor(context), key);
+      if (value !== undefined) this.writeAndDispatch(analysis, key, value, context);
     }
   }
 
-  /** Write via the framework-owned store helper and publish a `FactChange`
-   *  to every listener registered on `factSubs`. This is the single site that
-   *  funnels transfer results into the cell + fans them out to subscribers. */
+  /** The single site funneling transfer results into the store and fanning
+   *  them out to subscribers. Returns true iff the cell advanced. */
   private writeAndDispatch<K, V>(
     analysis: Analysis<K, V>,
     key: K,
@@ -831,12 +572,11 @@ export class Worklist {
   ): boolean {
     const result = storeWrite(analysis.store, key, value, context);
     if (result === null) return false;
-    // Skip the FactChange literal allocation when nobody is listening:
-    // channels with no narrowing reader and counters' paired shadow writes
-    // land here millions of times during a hot loop; the object allocated
-    // only to be read by `handleFactChange`'s early-return is pure churn.
+    // Skip FactChange allocation when nobody is listening — channels with no
+    // reader and counters' paired shadow writes land here millions of times
+    // during a hot loop.
     const subs = this.factSubs.get(analysis as Analysis<any, any>);
-    if (subs === undefined && this.changeListeners.length === 0) return true;
+    if (subs === undefined) return true;
     this.handleFactChange({
       analysis: analysis as Analysis<unknown, unknown>,
       key,
@@ -848,14 +588,11 @@ export class Worklist {
   }
 
   /** Sweep every registered transform over its dirty units once. Units that
-   *  rewrote move to `pendingRebuilds`; CFG rebuild is NOT flushed here —
-   *  that happens in `drain()`'s outer loop or on the next explicit drain.
+   *  rewrote move to `pendingRebuilds`; CFG rebuild is NOT flushed here.
    *
-   *  Public so online participants (notably `jitAnalysis` in the JIT
-   *  evaluator) can run counter-/fact-driven transforms — memoization being
-   *  the canonical case — before emitting new bytecode. The caller is
-   *  responsible for ordering: invoke after the analyses this rule depends
-   *  on have settled at the relevant chain. Returns true iff any rule fired. */
+   *  Public so online participants (e.g. `jitAnalysis`) can run counter-/
+   *  fact-driven transforms before emitting bytecode. Returns true iff any
+   *  rule fired. */
   sweepTransforms(): boolean {
     let anyFired = false;
     this.inTransformSweep = true;
@@ -863,24 +600,12 @@ export class Worklist {
       for (const r of this.transforms) {
         const dirty = this.dirtyFor(r);
         if (dirty.size === 0) continue;
-        // Iterate directly without an `Array.from` snapshot. `dirty` cannot
-        // grow during iteration: `TransformRule.sweep(unit, chain, topology)`
-        // receives no worklist or AnalysisCtx, so no sweep body can reach
-        // `writeAndDispatch` (the only non-guarded path into
-        // `onTransformFactDirty` subscribers). `publish`/`bump` are guarded
-        // by `inTransformSweep`, and mint/rebuild fire outside the sweep.
-        // Iterate, then clear at the end — Set iteration order is insertion
-        // order, so this is equivalent to the previous snapshot-then-clear.
+        // `dirty` cannot grow during iteration: sweep bodies receive no
+        // worklist/AnalysisCtx, and `publish`/`bump` are guarded by
+        // `inTransformSweep`. Iterate, then clear at the end.
         for (const unit of dirty) {
-          // Rules sweep at the unit's future-dispatch chain. Reads go
-          // through the chain directly; publication is `chain.forkBody(unit,
-          // witness)` — under ROOT that resolves to `unit.funcAst.body`
-          // without a copy.
           const chain = this.futureDispatchChainFor(unit);
-          // Refutation guard: fix #2 already prevents `futureDispatchContext`
-          // from pointing to a refuted node, but keep this as defense so
-          // any future path that writes a refuted chain still doesn't
-          // re-authorize speculative rewrites against it.
+          // Refutation guard: defense in case a refuted chain is ever stored.
           if (this.isRefuted(chain)) continue;
           const fired = r.sweep(unit, chain, this._topology);
           if (fired) {
@@ -897,11 +622,9 @@ export class Worklist {
   }
 
   /** Allocate an `AnalysisCtx` bound to `context`. `read`/`tryRead`/`readAll`
-   *  delegate to the analysis's canonical read surface at this context — the
-   *  transfer-level read path. `write`/`evict` go through the worklist's
-   *  dispatch so side-effect writes fan out to subscribers (critical for the
-   *  DFA factory's paired-cell `.facts` write from inside `.env`'s transfer).
-   *  Cross-context reads still go through the analysis directly when needed. */
+   *  delegate to the analysis's canonical read surface at this context;
+   *  `write`/`evict` go through the worklist so side-effect writes fan out
+   *  to subscribers. */
   private makeCtx(context: Speculation): AnalysisCtx {
     const topology = this._topology;
     const worklist = this;
@@ -928,16 +651,11 @@ export class Worklist {
 
   private readonly passCtx: AnalysisCtx = this.makeCtx(ROOT_CONTEXT);
 
-  /** Memoize `AnalysisCtx` per context. Without this, every dequeued item
-   *  and every fan-out in `handleFactChange` allocated a fresh `AnalysisCtx`
-   *  closure wrapper via `makeCtx` even though the returned surface is
-   *  identical for any two calls at the same context. The WeakMap lets the
-   *  cached entry get collected once its chain is no longer reachable (e.g.
-   *  after `releaseChain`), so entries don't pin pruned contexts. */
+  /** Memoize `AnalysisCtx` per context so every dequeue / fan-out doesn't
+   *  allocate a fresh closure wrapper. WeakMap lets entries collect when
+   *  the chain is no longer reachable. */
   private readonly ctxCache: WeakMap<Speculation, AnalysisCtx> = new WeakMap();
 
-  /** Build an `AnalysisCtx` scoped to `context`. The root context reuses
-   *  `passCtx` (hot path); non-root contexts memoize the first-seen wrapper. */
   private ctxFor(context: Speculation): AnalysisCtx {
     if (context === ROOT_CONTEXT) return this.passCtx;
     let ctx = this.ctxCache.get(context);
@@ -948,48 +666,22 @@ export class Worklist {
     return ctx;
   }
 
-  /** Publish a change event. Called by `writeAndDispatch` after the store
-   *  reports an advancing write. Dispatches to every subscriber registered
-   *  against `change.analysis` — analysis reader wake-ups and transform
-   *  dirty-additions compiled into the same list — and also to any
-   *  `onChange` listeners attached at the worklist level (used by poster /
-   *  tracing harnesses).
-   *
-   *  The `ctx` passed to subscribers carries `change.context` as
-   *  `currentContext`, so wake-ups enqueue under the same context the write
-   *  originated in — cross-context ripple doesn't happen without an
-   *  explicit context-crossing edge. */
+  /** Dispatch a change event to every subscriber on `change.analysis`.
+   *  Wake-ups run under `change.context`, so cross-context ripple doesn't
+   *  happen without an explicit context-crossing edge. */
   private handleFactChange(change: FactChange<unknown, unknown>): void {
-    for (const l of this.changeListeners) l(change);
     const subs = this.factSubs.get(change.analysis as Analysis<any, any>);
     if (subs === undefined) return;
     const ctx = this.ctxFor(change.context);
     for (const sub of subs) sub(ctx, change.key);
   }
 
-  /** Subscribe to every fact-advancing write published through this worklist.
-   *  Narrower alternatives exist for specific patterns (analysis/transform
-   *  subscriptions); this list is for cross-cutting consumers like poster
-   *  tracing. Returns a disposer that removes the listener. */
-  onChange(listener: (change: FactChange<unknown, unknown>) => void): () => void {
-    this.changeListeners.push(listener);
-    return () => {
-      const idx = this.changeListeners.indexOf(listener);
-      if (idx !== -1) this.changeListeners.splice(idx, 1);
-    };
-  }
-
   /** Re-seed Kildall for every context-sensitive block analysis at `unit`'s
-   *  entry block under `context`. Today that means every registered
-   *  narrowing's block analysis plus `purityBlockAnalysis`: purity is not a
-   *  narrowing dimension of its own, but witness discovery and memoization do
-   *  need its per-context verdicts to exist at intermediate ancestor
-   *  contexts. */
+   *  entry block under `context`. Covers every registered narrowing plus
+   *  `purityBlockAnalysis`. */
   private enqueueNarrowingEntry(unit: Unit, context: Speculation): void {
     for (const n of this.narrowings) {
       const bfa = n.blockAnalysis();
-      // `.env` is the fixpoint driver; enqueuing the seed block on it
-      // re-runs Kildall and produces paired `.facts` writes as a side effect.
       this.enqueue(bfa.env, bfa.seed(unit), context);
     }
     this.enqueue(purityBlockAnalysis.env, purityBlockAnalysis.seed(unit), context);
@@ -1004,8 +696,6 @@ export class Worklist {
     const applicable = this.narrowingsBySource.get(source);
     if (applicable === undefined || applicable.length === 0) return context;
 
-    // Per-source resolver is validated at construction — all narrowings on
-    // this source agree on the resolver that ran here.
     const resolveUnit = this.unitResolverBySource.get(source) ?? unitOfNodeId;
     const unit = resolveUnit(this.passCtx, key);
     if (unit === undefined) return context;
@@ -1039,9 +729,8 @@ export class Worklist {
       const existing = c?.assumption?.value as unknown;
       if (c !== undefined && n.eq(existing, lifted)) continue;
       if (c !== undefined) {
-        // Assumption violated by a conflicting concrete observation.
-        // Refute the chain node whose tip carries the stale (n, key)
-        // binding before we splice it out.
+        // Refute the chain node carrying the stale (n, key) binding before
+        // splicing it out — a conflicting concrete observation violates it.
         this.refute(unit, c);
       }
       const cleaned = c !== undefined ? without(newCtx, n, key) : newCtx;
@@ -1059,22 +748,18 @@ export class Worklist {
     return newCtx;
   }
 
-  /** Preferred future-dispatch chain for `unit`. Readers choosing which
-   *  specialized facts/body to use for the NEXT compile/dispatch should pass
-   *  this context to the analysis's read surface. This is not active-frame
-   *  runtime provenance. */
+  /** Preferred future-dispatch chain for `unit`. Not active-frame provenance. */
   futureDispatchChainFor(unit: Unit): Speculation {
     return this.futureDispatchContext.get(unit) ?? ROOT_CONTEXT;
   }
 
-  /** Same as `futureDispatchChainFor`, keyed by nodeId. Convenience for
-   *  consumers that only have an AST node id (e.g. the DfaQuery projection). */
+  /** Same as `futureDispatchChainFor`, keyed by nodeId. */
   futureDispatchChainForNode(nodeId: NodeId): Speculation {
     const unit = this._topology.unitOfNode(nodeId);
     return unit === undefined ? ROOT_CONTEXT : this.futureDispatchChainFor(unit);
   }
 
-  /** Rebuild CFG for every pending unit, then fire `onUnitRebuilt`. */
+  /** Rebuild CFG for every pending unit, then fire the rebuild hooks. */
   private flushPendingRebuilds(): Unit[] {
     if (this.pendingRebuilds.size === 0) return [];
     const rebuilt: Unit[] = [];
@@ -1089,52 +774,21 @@ export class Worklist {
     return rebuilt;
   }
 
-  /** Drain to fixed point. Each iteration:
-   *   1. `processAnalysesToFixpoint` — analyses / observations converge.
-   *   2. `sweepTransforms` — imperative AST rewrites on dirty units.
-   *   3. `processAnalysesToFixpoint` — pick up any writes made by transforms (rare, but
-   *      transforms may read analysis state that needs to be settled
-   *      before rebuild for the next iteration's analyses).
-   *   4. `flushPendingRebuilds` — rewire CFGs for units that fired; fires
-   *      `onUnitRebuilt`, which re-enqueues analyses and re-marks transforms
-   *      dirty.
-   *  Terminates when no transform fired and no rebuild occurred.
+  /** Drain to fixed point. Each iteration runs analyses to quiescence,
+   *  sweeps transforms, runs analyses again for transform-emitted writes,
+   *  then rebuilds any mutated CFGs. Terminates when no transform fires
+   *  and no rebuild occurs.
    *
-   *  This is the explicit heavy-weight publication barrier: it runs queued
-   *  analyses to quiescence, sweeps transforms, and rebuilds any mutated CFGs.
-   *  Online observation ingress happens in `observe()` via `processAnalysesToFixpoint()`;
-   *  callers invoke `drain()` when they need transform/rebuild publication.
+   *  **Idempotency.** A redundant call returns an empty set.
    *
-   *  ## Contract
+   *  **Reentrancy guard.** `publish`/`bump` throw if invoked during the
+   *  `sweepTransforms` step.
    *
-   *  **Idempotency.** A second `drain()` call with no intervening observations
-   *  or transform-dirty marks is a no-op that returns an empty set — step 1
-   *  finds nothing queued, step 2 returns false, no rebuilds are pending.
-   *  Callers can safely re-drain after reading state; cost is a single fixpoint
-   *  check.
+   *  **Return value.** The `FileInput | FunctionDef` nodes whose CFGs were
+   *  rewired during this drain.
    *
-   *  **Reentrancy guard.** `publish` and `bump` throw if invoked while step 2
-   *  (`sweepTransforms`) is executing. Transforms may read analysis state
-   *  freely, but must not enqueue new facts mid-sweep — a transform that needs
-   *  to publish should schedule the publication through a rebuild or defer it
-   *  to the next drain. See `ctxGuardSweep` for the mechanism.
-   *
-   *  **Return value.** The set of `FileInput | FunctionDef` AST nodes whose
-   *  CFGs were rewired during this drain (via `flushPendingRebuilds`). Empty
-   *  when the drain reached fixpoint without triggering any transform that
-   *  mutated the AST. Useful for cache invalidation in downstream compilers
-   *  that key on AST identity.
-   *
-   *  **Observation channels.** Drain does not directly trigger the three
-   *  observation channels (`observeScopeCall`, `observeParamEntry`,
-   *  `observeScopeReturn`) — those fire from the evaluator. What drain does
-   *  guarantee is that any observations posted between drains (via `observe`)
-   *  have been absorbed into analysis state by the time it returns, so
-   *  downstream reads are consistent.
-   *
-   *  **Non-termination.** Throws if `limit` CFG rebuilds occur without
-   *  converging; this indicates a transform cascade that does not stabilise
-   *  (typically a pair of transforms that re-dirty each other). */
+   *  **Non-termination.** Throws if `limit` rebuilds occur without
+   *  converging. */
   drain(limit: number = Worklist.DEFAULT_DRAIN_LIMIT): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
     const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     let processed = 0;

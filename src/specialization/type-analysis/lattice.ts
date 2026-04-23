@@ -41,9 +41,11 @@ export function normalizeType(v: TypeLattice): TypeLattice {
   const boolRef = (kinds & BOOL_BIT) !== 0 ? v.boolRef : (0 as BoolRef);
   const floatRef = (kinds & FLOAT_BIT) !== 0 ? v.floatRef : (0 as IntRef);
 
-  if ((kinds & INT_BIT) !== 0 && intRef === IntRef.Bottom) kinds &= ~INT_BIT;
-  if ((kinds & BOOL_BIT) !== 0 && boolRef === BoolRef.Bottom) kinds &= ~BOOL_BIT;
-  if ((kinds & FLOAT_BIT) !== 0 && floatRef === IntRef.Bottom) kinds &= ~FLOAT_BIT;
+  // When INT_BIT is absent, `intRef` is already 0 above, so clearing a bit
+  // not in `kinds` is a no-op — the guards simplify to the conjunct.
+  if (intRef === IntRef.Bottom) kinds &= ~INT_BIT;
+  if (boolRef === BoolRef.Bottom) kinds &= ~BOOL_BIT;
+  if (floatRef === IntRef.Bottom) kinds &= ~FLOAT_BIT;
 
   if (kinds === 0) return BOTTOM;
   if (kinds === INT_BIT) return INT_SINGLETONS[intRef];
@@ -58,7 +60,6 @@ export function normalizeType(v: TypeLattice): TypeLattice {
     return TOP;
   }
 
-  // intRef/boolRef/floatRef were already zeroed above for absent kinds.
   return Object.freeze({ kinds, intRef, boolRef, floatRef });
 }
 
@@ -89,11 +90,8 @@ export function leq(a: TypeLattice, b: TypeLattice): boolean {
   return true;
 }
 
-/** Structural equality: antisymmetric closure of `leq`, with an `a === b`
- *  shortcut that hits often (all narrowed types come from `INT_SINGLETONS`,
- *  `BOOL_SINGLETONS`, `FLOAT_SINGLETONS`, or `TOP`/`BOTTOM` — frozen
- *  singletons). Shared between the type assumption handle's value algebra
- *  and `typeAnalysisModule`. */
+/** Structural equality with identity shortcut — narrowed types are frozen
+ *  singletons, so `a === b` hits often. */
 export const eq = (a: TypeLattice, b: TypeLattice): boolean =>
   a === b || (leq(a, b) && leq(b, a));
 
@@ -106,60 +104,48 @@ function makeSingleton(
   return Object.freeze({ kinds, intRef, boolRef, floatRef });
 }
 
-const INT_SINGLETONS: TypeLattice[] = [];
-for (let r = 0; r < 8; r++) {
-  INT_SINGLETONS[r] = makeSingleton(INT_BIT, r as IntRef, 0 as BoolRef);
-}
-
-const BOOL_SINGLETONS: TypeLattice[] = [];
-for (let r = 0; r < 4; r++) {
-  BOOL_SINGLETONS[r] = makeSingleton(BOOL_BIT, 0 as IntRef, r as BoolRef);
-}
-
-const FLOAT_SINGLETONS: TypeLattice[] = [];
-for (let r = 0; r < 8; r++) {
-  FLOAT_SINGLETONS[r] = makeSingleton(FLOAT_BIT, 0 as IntRef, 0 as BoolRef, r as IntRef);
-}
-
-export const TOP: TypeLattice = makeSingleton(
-  ALL_KINDS_MASK,
-  7 as IntRef,
-  3 as BoolRef,
-  7 as IntRef,
+const INT_SINGLETONS: TypeLattice[] = Array.from({ length: 8 }, (_, r) =>
+  makeSingleton(INT_BIT, r as IntRef, 0 as BoolRef),
 );
+const BOOL_SINGLETONS: TypeLattice[] = Array.from({ length: 4 }, (_, r) =>
+  makeSingleton(BOOL_BIT, 0 as IntRef, r as BoolRef),
+);
+const FLOAT_SINGLETONS: TypeLattice[] = Array.from({ length: 8 }, (_, r) =>
+  makeSingleton(FLOAT_BIT, 0 as IntRef, 0 as BoolRef, r as IntRef),
+);
+
+export const TOP: TypeLattice = makeSingleton(ALL_KINDS_MASK, IntRef.Top, BoolRef.Top, IntRef.Top);
 export const BOTTOM: TypeLattice = makeSingleton(0, 0 as IntRef, 0 as BoolRef);
 
 export function isSatisfiableType(v: TypeLattice): boolean {
   return normalizeType(v) !== BOTTOM;
 }
 
-// Exported frozen singletons (zero allocation at call sites).
 export const STRING: TypeLattice = makeSingleton(STR_BIT, 0 as IntRef, 0 as BoolRef);
 export const NULL: TypeLattice = makeSingleton(NULL_BIT, 0 as IntRef, 0 as BoolRef);
 export const CLOSURE: TypeLattice = makeSingleton(CLOSURE_BIT, 0 as IntRef, 0 as BoolRef);
 export const COMPLEX: TypeLattice = makeSingleton(COMPLEX_BIT, 0 as IntRef, 0 as BoolRef);
 
-export const INT_NEG: TypeLattice = INT_SINGLETONS[1]; // IntRef.Neg
-export const INT_ZERO: TypeLattice = INT_SINGLETONS[2]; // IntRef.Zero
-export const INT_POS: TypeLattice = INT_SINGLETONS[4]; // IntRef.Pos
+export const INT_NEG: TypeLattice = INT_SINGLETONS[IntRef.Neg];
+export const INT_ZERO: TypeLattice = INT_SINGLETONS[IntRef.Zero];
+export const INT_POS: TypeLattice = INT_SINGLETONS[IntRef.Pos];
 
-export const BOOL_TRUE: TypeLattice = BOOL_SINGLETONS[1]; // BoolRef.True
-export const BOOL_FALSE: TypeLattice = BOOL_SINGLETONS[2]; // BoolRef.False
+export const BOOL_TRUE: TypeLattice = BOOL_SINGLETONS[BoolRef.True];
+export const BOOL_FALSE: TypeLattice = BOOL_SINGLETONS[BoolRef.False];
 
-export const FLOAT_NEG: TypeLattice = FLOAT_SINGLETONS[1]; // IntRef.Neg
-export const FLOAT_ZERO: TypeLattice = FLOAT_SINGLETONS[2]; // IntRef.Zero
-export const FLOAT_POS: TypeLattice = FLOAT_SINGLETONS[4]; // IntRef.Pos
+export const FLOAT_NEG: TypeLattice = FLOAT_SINGLETONS[IntRef.Neg];
+export const FLOAT_ZERO: TypeLattice = FLOAT_SINGLETONS[IntRef.Zero];
+export const FLOAT_POS: TypeLattice = FLOAT_SINGLETONS[IntRef.Pos];
 
-// Parameterized constructors retained (take refinement args).
-export function integer(intRef: IntRef = 7 as IntRef): TypeLattice {
+export function integer(intRef: IntRef = IntRef.Top): TypeLattice {
   return intRef === IntRef.Bottom ? BOTTOM : INT_SINGLETONS[intRef];
 }
 
-export function boolValue(ref: BoolRef = 3 as BoolRef): TypeLattice {
+export function boolValue(ref: BoolRef = BoolRef.Top): TypeLattice {
   return ref === BoolRef.Bottom ? BOTTOM : BOOL_SINGLETONS[ref];
 }
 
 /** Default IntRef.Top covers NaN (no meaningful sign). */
-export function floatValue(floatRef: IntRef = 7 as IntRef): TypeLattice {
+export function floatValue(floatRef: IntRef = IntRef.Top): TypeLattice {
   return floatRef === IntRef.Bottom ? BOTTOM : FLOAT_SINGLETONS[floatRef];
 }

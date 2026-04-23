@@ -1,7 +1,6 @@
 // Narrowing registry. Narrowing dimensions are declared in the modules
-// that own their identity / lattice / lift — this file only re-exports
-// them and assembles the DEFAULT_NARROWINGS registry that the worklist
-// and SVML JIT consume.
+// that own their identity/lattice/lift — this file re-exports them and
+// assembles DEFAULT_NARROWINGS for worklist and SVML JIT consumers.
 
 import { constAnalysis } from "../const-analysis/analysis";
 import { typeAnalysis, typeNarrowing } from "../type-analysis/analysis";
@@ -22,19 +21,11 @@ export {
   typeRequirementAnalysis,
 };
 
-/** Default narrowing set. Worklist callers that omit the constructor's
- *  `narrowings` parameter get this list.
- *
- *  **Policy: param-only runtime speculation.** Runtime observations extend
- *  AssumptionChains along the parameter axis (paramTypeNarrowing, sourced
- *  from runtimeParamChannel) and the callee-return-kind axis
- *  (returnKindNarrowing, which reduces back to param-type guards at entry
- *  via requirementAtEntry). Node-keyed dimensions (typeNarrowing /
- *  constNarrowing) exist as fact/static surfaces but are NOT registered
- *  for chain extension: they would blow up chain width by one node per
- *  observed write with no matching dispatch surface (entry guards are
- *  param-keyed). A future backend that wants mid-body speculation can opt
- *  in by passing a richer narrowings list to `new Worklist(...)`. */
+/** Default narrowing set. Policy: param-only runtime speculation — chain
+ *  extension happens along the parameter axis (paramTypeNarrowing) and the
+ *  callee-return-kind axis (returnKindNarrowing, reduced back to param-type
+ *  guards at entry via requirementAtEntry). Node-keyed dimensions exist as
+ *  fact surfaces but are not registered for chain extension. */
 export const DEFAULT_NARROWINGS: ReadonlyArray<Narrowing<any, unknown>> = [
   paramTypeNarrowing,
   returnKindNarrowing,

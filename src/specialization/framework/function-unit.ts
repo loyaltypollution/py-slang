@@ -8,12 +8,7 @@ import { buildSlotTable } from "./slot-table";
 
 /** Per-scope optimization unit. `cfg` and `blockMap` are scheduler-owned
  *  and replaced by `Worklist.flushPendingRebuilds`. `body` is a live getter
- *  onto the AST. `slot` delegates to the shared `FunctionRegistry` so slot
- *  identity is single-sourced.
- *
- *  Node → block resolution does NOT live here. It is owned by
- *  `ProgramTopology` (see `topology.ts`) so cross-unit callers and
- *  per-unit callers hit the same surface. */
+ *  onto the AST. `slot` delegates to the shared `FunctionRegistry`. */
 export interface Unit {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
@@ -25,10 +20,7 @@ export interface Unit {
   generation: number;
 }
 
-/** Build a single Unit for `funcAst` — no recursion into nested
- *  scopes. The initial construction walk (`ScopeDiscoveryVisitor`) drives
- *  recursion itself; mid-run on-mint handling wants exactly one unit per
- *  mint event. */
+/** Build a single Unit for `funcAst` — no recursion into nested scopes. */
 export function buildOneUnit(
   funcAst: StmtNS.FileInput | StmtNS.FunctionDef,
   functionEnvironments: FunctionEnvironments,
@@ -40,7 +32,6 @@ export function buildOneUnit(
   }
   const paramNames =
     funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
-  // blocks hold unit back-pointers; unit owns cfg. Build shell, then wireCFG.
   const unit = {
     funcAst,
     slotLookup: buildSlotTable(env, paramNames),
@@ -82,8 +73,7 @@ function discoverScopes(
 }
 
 /** (Re)build `unit.cfg` and refresh `blockMap`. Node → block indexing is
- *  rebuilt separately by `ProgramTopology.reindexUnit(unit)` — the
- *  worklist sequences both operations so the two views never diverge. */
+ *  rebuilt separately by `ProgramTopology.reindexUnit(unit)`. */
 export function wireCFG(unit: Unit): void {
   unit.cfg = buildCFG(unit.body, unit);
   const blockMap = new Map<BlockId, BasicBlock>();

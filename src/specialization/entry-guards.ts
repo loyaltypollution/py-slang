@@ -1,11 +1,9 @@
 // Entry-guard projection: the subset of (unit, Speculation) assumptions
-// that are checkable at function entry. Under the V2 onion-less JIT the
-// former GUARD_KIND opcode path is gone; what survives is a compact shape
-// used by (a) `speculative-clone` to admit/reject a unit as entry-
-// specializable, and (b) `memoization` to key variant caches by param
-// type observations.
+// that are checkable at function entry. Used by dispatch to admit/reject
+// a unit as entry-specializable, and by `memoization` to key variant
+// caches on param-type observations.
 //
-// v1 projection source: direct function-entry parameter type observations,
+// Projection source: direct function-entry parameter type observations,
 // keyed by `ParamKey`. `returnKindNarrowing` assumptions remain chain-
 // visible and still pass `contextIsEntrySpecializable` because they lower
 // to entry-block type requirements via `requirementAtEntry`.
@@ -59,12 +57,8 @@ export function contextIsEntrySpecializable(unit: Unit, context: Speculation): b
 
 /** Canonical string key over the direct-param entry guards. Used by
  *  memoization to bucket per param-type variant. Returns `undefined` when
- *  no direct-param guards apply (treat as "no variant key").
- *
- *  `directParamEntryGuardsFor` produces guards in ascending `paramIndex`
- *  order, so no sort is needed — the canonical order is already the
- *  iteration order. Single-pass concatenation avoids the intermediate
- *  `.map` array. */
+ *  no direct-param guards apply. Guards are produced in ascending
+ *  `paramIndex` order, so canonical order is the iteration order. */
 export function guardKeyFromGuards(
   guards: readonly EntryGuard[] | undefined,
 ): string | undefined {

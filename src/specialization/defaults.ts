@@ -1,11 +1,7 @@
-// Production composition of the specialization engine.
-//
-// The framework (src/specialization/framework/*) is policy-free: the Worklist
-// scheduler, store, and context interner do not import specific analyses or
-// transforms. This module names the concrete set that wires them into a
-// working pipeline. Tests, alternative backends, or experimental pipelines can
-// skip this module and pass their own analyses / transforms / narrowings into
-// `new Worklist(...)`.
+// Production composition of the specialization engine. The framework
+// (src/specialization/framework/*) is policy-free; this module names the
+// concrete analyses, counters, channels, and transforms that wire it into
+// a working pipeline.
 
 import type { StmtNS } from "../ast-types";
 import type { FunctionEnvironments } from "../resolver";
@@ -34,15 +30,9 @@ import { deadBranchRule } from "./transforms/dead-branch";
 import { deadStoreRule } from "./transforms/dead-store";
 import { memoizationRule } from "./transforms/memoization";
 
-/** Default production analysis set. Tests may use a subset for isolation.
- *  Block DFAs contribute two analyses each — `.env` (the Kildall driver) and
- *  `.facts` (the per-node expr-facts cell populated as a paired side effect).
- *  Both must be registered: `.env` for its transfer + CFG self-wake, `.facts`
- *  for its rebuild/retire eviction subscriptions.
- *
- *  POC admissibility: every runtime observation must bottom out in a
- *  function-entry param-type guard — the only deopt surface the current
- *  backend knows. See `DEFAULT_CHANNELS` / `DEFAULT_COUNTERS`. */
+/** Default production analysis set. Block DFAs contribute `.env` (the
+ *  Kildall driver) and `.facts` (the paired per-node cell); both must be
+ *  registered. */
 export const DEFAULT_PASSES: ReadonlyArray<Analysis<any, any>> = [
   typeAnalysis.env, typeAnalysis.facts,
   constAnalysis.env, constAnalysis.facts,
@@ -57,11 +47,9 @@ export const DEFAULT_COUNTERS: ReadonlyArray<CounterStore<any>> = [
   runtimeCallCounter,
 ];
 
-/** Observation channels registered with the default worklist. Channels are
- *  not analyses (no transfer, no chain-keyed reads) — they live on their
- *  own registration surface so retire hooks fire and narrowings can route
- *  observations. Under POC admissibility only the two param-gated channels
- *  are registered. */
+/** Observation channels registered with the default worklist. Under POC
+ *  admissibility only param-gated channels are registered — every runtime
+ *  observation must bottom out in a function-entry param-type guard. */
 export const DEFAULT_CHANNELS: ReadonlyArray<ObservationChannel<any, any>> = [
   runtimeParamChannel,
   runtimeReturnChannel,
@@ -78,11 +66,8 @@ export const DEFAULT_TRANSFORMS: ReadonlyArray<TransformRule> = [
 export { DEFAULT_NARROWINGS };
 export type { Narrowing, FunctionId, NodeId, ParamKey };
 
-/** Construct a Worklist wired with the default production passes, transforms,
- *  and narrowings. Use when the caller wants the standard specialization
- *  pipeline without restating the composition at every call site. Tests or
- *  backends that need a non-default pipeline call `new Worklist(...)`
- *  directly and pass their own sets. */
+/** Construct a Worklist wired with the default production passes,
+ *  transforms, counters, channels, and narrowings. */
 export function createDefaultWorklist(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
@@ -98,4 +83,3 @@ export function createDefaultWorklist(
     DEFAULT_CHANNELS,
   );
 }
-

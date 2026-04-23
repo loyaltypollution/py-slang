@@ -1,10 +1,6 @@
-// Constant folding. Idempotent: rewriting Binary to Literal removes the
-// "const" fact match.
-//
-// Witness-aware: every actual fold recovers the shallowest chain that proves
-// the expression constant, then publishes that fold at the witness chain.
-// Later witness groups clone from earlier ones, so one sweep can materialize a
-// whole ancestor chain of folds shallow→deep.
+// Constant folding of Binary expressions to Literals. Idempotent (the Literal
+// no longer matches). Witness-aware: each fold publishes at the shallowest
+// chain that proves the expression constant.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { ConstLattice } from "../const-analysis/lattice";

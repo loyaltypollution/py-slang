@@ -6,7 +6,8 @@ import type { Unit } from "./function-unit";
 import type { MutableEnv } from "./mutable-env";
 import { isLocal, type SlotLookup } from "./slot-table";
 
-/** Statement-level transfer; updates `env` in place. If/While/For headers evaluate condition/iter only. */
+/** Statement-level transfer; updates `env` in place. If/While/For headers
+ *  evaluate condition/iter only. */
 function transferStmt<L>(
   stmt: StmtNS.Stmt,
   env: MutableEnv<L>,
@@ -66,22 +67,13 @@ function transferStmt<L>(
   }
 }
 
-// Shared empty facts singleton. Blocks that record zero expr facts (e.g. a
-// stmt block with no interesting expressions under this analysis) return
-// this instead of allocating a fresh Map per transfer. `factsJoin`/`factsLeq`
-// in the DFA factory short-circuit on `size === 0`, so the shared instance
-// is never mutated by the framework. Typed ReadonlyMap; callers that cast
-// away readonly and mutate would corrupt every zero-fact block.
+// Shared empty-facts singleton. `factsJoin`/`factsLeq` short-circuit on
+// size === 0; callers must never mutate it.
 const EMPTY_FACTS: ReadonlyMap<number, unknown> = new Map();
 
-/** Compute OUT env + per-node expr facts for `block`.
- *
- *  Contract: `inEnv` is treated as caller-owned and mutable — this function
- *  writes directly into it via `env.set(...)` in `transferStmt`. The DFA
- *  factory's `inEnvFor` guarantees a fresh/snapshot env on every call; an
- *  extra snapshot here would be redundant allocation per block per fixpoint
- *  pass. If a future caller reuses an env they still hold a live reference
- *  to, they MUST snapshot before passing it in. */
+/** Compute OUT env + per-node expr facts for `block`. `inEnv` is
+ *  caller-owned and mutated in place; callers reusing a live env MUST
+ *  snapshot before passing it in. */
 export function transferBlock<L>(
   block: BasicBlock,
   inEnv: MutableEnv<L>,
@@ -90,9 +82,7 @@ export function transferBlock<L>(
   context: Speculation,
 ): BlockPassResult<L> {
   const outEnv = inEnv;
-  // Lazy fact-map allocation: most blocks don't record per-expr facts under
-  // any given analysis, and the DFA factory's fact lattice treats empty maps
-  // as bottom. Allocate on first recordExprFact, share EMPTY_FACTS otherwise.
+  // Lazy fact-map allocation: most blocks record no per-expr facts.
   let exprFacts: Map<number, L> | undefined;
   const recordExprFact = (nodeId: number, val: L): void => {
     if (exprFacts === undefined) exprFacts = new Map<number, L>();
