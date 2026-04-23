@@ -8,8 +8,8 @@
 // retires the minimal singleton of the refuted binding.
 
 import { StmtNS } from "../../ast-types";
-import { ROOT_CONTEXT } from "../../specialization/framework/assumption-chain";
-import { bindings, extend } from "../../specialization/framework/assumption-algebra";
+import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
+import { bindings, extend } from "../../specialization/lattice/algebra";
 import { paramKey } from "../../specialization/framework/key-spaces";
 import { runtimeParamChannel } from "../../specialization/framework/runtime-analyses";
 import { setupAndDrain } from "./harness/compile-pipelines";

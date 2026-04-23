@@ -1,7 +1,5 @@
-// Four citizen kinds — Analysis, BlockDfaSpec, Narrowing, TransformRule.
-
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
-import type { Speculation } from "./assumption-chain";
+import type { AssumptionChain } from "../lattice/chain";
 import type { BlockFixpointAnalysis } from "./dfa-factory";
 import type { Unit } from "./function-unit";
 import type { RawKind } from "./raw-value";
@@ -54,9 +52,9 @@ export interface Analysis<K, V> {
   /** Read-only cell surface. Internal mutation goes through helpers in
    *  `analysis-store.ts` so listener fan-out stays centralized. */
   readonly store: ReadonlyAnalysisStore<K, V>;
-  read(key: K, context: Speculation): V;
-  tryRead(key: K, context: Speculation): V | undefined;
-  readAll(context: Speculation): ReadonlyMap<K, V>;
+  read(key: K, context: AssumptionChain): V;
+  tryRead(key: K, context: AssumptionChain): V | undefined;
+  readAll(context: AssumptionChain): ReadonlyMap<K, V>;
   /** Priority tier: runtime observations settle before analyses. Mandatory —
    *  no implicit default, to catch priority-sensitive miscompiles. */
   readonly tier: "runtime" | "analysis";
@@ -71,16 +69,16 @@ export interface Analysis<K, V> {
   /** Walk `chain → ROOT`, returning the shallowest ancestor whose written
    *  cell value satisfies `accept`. */
   readMinimal(
-    chain: Speculation,
+    chain: AssumptionChain,
     key: K,
     accept: (value: V) => boolean,
-  ): { value: V; witness: Speculation } | undefined;
+  ): { value: V; witness: AssumptionChain } | undefined;
 
   /** Walk `chain → ROOT`, returning the deepest ancestor with a written cell. */
   readDeepest(
-    chain: Speculation,
+    chain: AssumptionChain,
     key: K,
-  ): { value: V; witness: Speculation } | undefined;
+  ): { value: V; witness: AssumptionChain } | undefined;
 
   /** Optional registration hook. Called by `Worklist.register`. */
   bind?(worklist: Worklist): void;
@@ -103,6 +101,12 @@ export function composeBind(
   };
 }
 
+/** Typed axis for extending a `AssumptionChain` chain. Contributions enter
+ *  INSIDE `blockAnalysis()`'s transfer via `at(ctx, narrowing, key)` — a
+ *  narrowing carries no lattice or store of its own, only the identity that
+ *  lets chain bindings be looked up at transfer time. AnalysisStore cells
+ *  partition per `(key, context)` natively, so refutation of a context
+ *  leaves its cells unreachable without an eviction hook. */
 export interface Narrowing<K = any, V = unknown> {
   eq(a: V, b: V): boolean;
   readonly blockAnalysis: () => BlockFixpointAnalysis<any>;
@@ -113,7 +117,7 @@ export interface Narrowing<K = any, V = unknown> {
 
 export interface AnalysisCtx {
   readonly topology: ProgramTopology;
-  readonly currentContext: Speculation;
+  readonly currentContext: AssumptionChain;
   read<K, V>(analysis: Analysis<K, V>, key: K): V;
   tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined;
   readAll<K, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V>;
@@ -138,7 +142,7 @@ export interface TransformRule {
    *  `chain = futureDispatchChainFor(unit)`. */
   sweep(
     unit: Unit,
-    chain: Speculation,
+    chain: AssumptionChain,
     topology: ProgramTopology,
   ): boolean;
   bind?(worklist: Worklist): void;

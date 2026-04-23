@@ -70,12 +70,19 @@ export const IMPURE_SENTINEL_NODE_ID = -1;
 function absEquals(a: AbsVal, b: AbsVal): boolean {
   if (a === b) return true;
   if (a.kind !== b.kind) return false;
-  if (a.kind === "fresh" && b.kind === "fresh") return a.origin === b.origin;
-  if (a.kind === "param" && b.kind === "param") return a.slot === b.slot;
-  if (a.kind === "closure" && b.kind === "closure") {
-    return a.functionId === b.functionId && a.pure === b.pure;
+  switch (a.kind) {
+    case "fresh":
+      return a.origin === (b as typeof a).origin;
+    case "param":
+      return a.slot === (b as typeof a).slot;
+    case "closure": {
+      const c = b as typeof a;
+      return a.functionId === c.functionId && a.pure === c.pure;
+    }
+    default:
+      // Nullary kinds (bottom, global, impure, unknown): kind match is enough.
+      return true;
   }
-  return true;
 }
 
 export function absLeq(a: AbsVal, b: AbsVal): boolean {

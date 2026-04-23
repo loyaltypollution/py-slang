@@ -1,6 +1,6 @@
 import type { ExprNS } from "../../ast-types";
 import type { BasicBlock, CFGEdge } from "./cfg";
-import type { Speculation } from "./assumption-chain";
+import type { AssumptionChain } from "../lattice/chain";
 import type { Unit } from "./function-unit";
 import type { NodeId } from "./key-spaces";
 import type { SlotLookup } from "./slot-table";
@@ -33,13 +33,13 @@ export interface BlockDfaSpec<L> extends Lattice<L> {
    *
    *  `context` is ROOT_CONTEXT for the unspeculated pass; a non-ROOT
    *  context carries assumption bindings the visitor MAY consult.
-   *  Speculation-oblivious modules ignore it. */
+   *  AssumptionChain-oblivious modules ignore it. */
   makeExprVisitor(
     env: MutableEnv<L>,
     unit: Unit,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: L) => void,
-    context: Speculation,
+    context: AssumptionChain,
   ): ExprNS.Visitor<L>;
 
   /** Per-edge env refinement, applied before a predecessor's OUT env is
@@ -126,10 +126,10 @@ export interface BlockPassResult<L> {
   readonly exprFacts: ReadonlyMap<number, L>;
 }
 
-type DfaDirection = "forward" | "backward";
-
-interface DfaConfigBase<L> {
-  readonly direction: DfaDirection;
+/** May-merge analyses only need `JoinSemiLattice<L>`; must-merge needs
+ *  `Lattice<L>` so the factory can call `meetWith(..., top)`. */
+type DfaConfig<L> = {
+  readonly direction: "forward" | "backward";
   /** IN env → OUT env + per-node exprFacts. Called from `.env`'s transfer. */
   readonly transferBlock: (
     ctx: AnalysisCtx,
@@ -142,11 +142,7 @@ interface DfaConfigBase<L> {
   /** Per-edge env refinement. See `BlockDfaSpec.refineOnEdge`. Mandatory;
    *  analyses that don't narrow return `env` unchanged. */
   readonly refineOnEdge: (env: MutableEnv<L>, edge: CFGEdge) => MutableEnv<L>;
-}
-
-/** May-merge analyses only need `JoinSemiLattice<L>`; must-merge needs
- *  `Lattice<L>` so the factory can call `meetWith(..., top)`. */
-type DfaConfig<L> = DfaConfigBase<L> & (
+} & (
   | { readonly mergeKind: "may"; readonly valueLattice: JoinSemiLattice<L> }
   | { readonly mergeKind: "must"; readonly valueLattice: Lattice<L> }
 );
@@ -216,7 +212,7 @@ export function makeBlockFixpointAnalysis<L>(
   function inEnvFor(
     block: BasicBlock,
     unit: Unit,
-    context: Speculation,
+    context: AssumptionChain,
   ): MutableEnv<L> {
     // Iterate predecessor *edges* so `refineOnEdge` sees the labeled edge.
     // Backward analyses treat CFG successors as predecessors by symmetry.
@@ -292,7 +288,7 @@ export function makeBlockFixpointAnalysis<L>(
   function perExpr(topology: ReadonlyProgramTopology): ReadonlyAnalysisStore<number, L> {
     const cached = perExprCache.get(topology);
     if (cached !== undefined) return cached;
-    const tryReadNode = (nodeId: number, context: Speculation): L | undefined => {
+    const tryReadNode = (nodeId: number, context: AssumptionChain): L | undefined => {
       const block = topology.blockOfNode(nodeId);
       return block === undefined ? undefined : factsAnalysis.store.tryRead(block, context)?.get(nodeId);
     };

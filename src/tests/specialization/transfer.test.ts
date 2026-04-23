@@ -193,17 +193,17 @@ describe("divSigns golden table", () => {
 });
 
 describe("modSigns golden table (Python floor-mod semantics)", () => {
-  const cases: [string, IntRef, IntRef, IntRef][] = [
-    ["pos % pos = nonneg", 4 as IntRef, 4 as IntRef, 6 as IntRef],
-    ["neg % pos = nonneg", 1 as IntRef, 4 as IntRef, 6 as IntRef],
-    ["pos % neg = nonpos", 4 as IntRef, 1 as IntRef, 3 as IntRef],
-    ["neg % neg = nonpos", 1 as IntRef, 1 as IntRef, 3 as IntRef],
-    ["zero % pos = zero", 2 as IntRef, 4 as IntRef, 2 as IntRef],
-    ["zero % neg = zero", 2 as IntRef, 1 as IntRef, 2 as IntRef],
-    ["pos % zero = unknown", 4 as IntRef, 2 as IntRef, 7 as IntRef],
-    ["any % unknown = unknown", 4 as IntRef, 7 as IntRef, 7 as IntRef],
+  const MOD_TABLE: Array<[IntRef, IntRef, IntRef]> = [
+    [IntRef.Pos, IntRef.Pos, IntRef.NonNeg],
+    [IntRef.Neg, IntRef.Pos, IntRef.NonNeg],
+    [IntRef.Pos, IntRef.Neg, IntRef.NonPos],
+    [IntRef.Neg, IntRef.Neg, IntRef.NonPos],
+    [IntRef.Zero, IntRef.Pos, IntRef.Zero],
+    [IntRef.Zero, IntRef.Neg, IntRef.Zero],
+    [IntRef.Pos, IntRef.Zero, IntRef.Top], // mod by zero
+    [IntRef.Pos, IntRef.Top, IntRef.Top],
   ];
-  test.each(cases)("%s", (_, a, b, expected) => {
+  test.each(MOD_TABLE)("modSigns(%s, %s) = %s", (a, b, expected) => {
     expect(modSigns(a, b)).toBe(expected);
   });
 });

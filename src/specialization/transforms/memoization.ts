@@ -6,7 +6,7 @@ import { directParamEntryGuardsFor, guardKeyFromGuards } from "../entry-guards";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfFunctionId, wakeOwningUnit } from "../framework/analysis";
 import { shadowNode } from "../framework/ast-deep-clone";
-import { type Speculation } from "../framework/assumption-chain";
+import { type AssumptionChain } from "../lattice/chain";
 import { forkBody } from "../framework/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 import { RUNTIME_CALL_COUNT_SAT, runtimeCallCounter } from "../framework/runtime-analyses";
@@ -27,6 +27,8 @@ function cloneVars(vars: readonly ExprNS.Variable[]): ExprNS.Variable[] {
   return vars.map(p => new ExprNS.Variable(p.startToken, p.endToken, p.name));
 }
 
+/** Recursively rewrite each `return v` into `return MEMO_PUT(id, ...params, v)`.
+ *  Returns the same array when nothing changed (structural sharing). */
 function rewriteReturnsCloned(
   stmts: readonly StmtNS.Stmt[],
   fd: StmtNS.FunctionDef,
@@ -36,39 +38,41 @@ function rewriteReturnsCloned(
   let changed = false;
   const out: StmtNS.Stmt[] = [];
   for (const s of stmts) {
-    if (s instanceof StmtNS.Return) {
-      if (s.value !== null) {
-        changed = true;
-        const args: ExprNS.Expr[] = [mkStr(fd, id), ...cloneVars(params), s.value];
-        out.push(shadowNode(s, { value: mkCall(fd, MEMO_PUT, args) }));
-      } else {
-        out.push(s);
-      }
-    } else if (s instanceof StmtNS.If) {
-      const body = rewriteReturnsCloned(s.body, fd, id, params);
-      const elseBlock = s.elseBlock ? rewriteReturnsCloned(s.elseBlock, fd, id, params) : s.elseBlock;
-      if (body !== s.body || elseBlock !== s.elseBlock) {
-        changed = true;
-        out.push(shadowNode(s, {
-          body: body as StmtNS.Stmt[],
-          elseBlock: elseBlock as StmtNS.Stmt[] | null,
-        }));
-      } else {
-        out.push(s);
-      }
-    } else if (s instanceof StmtNS.While || s instanceof StmtNS.For) {
-      const body = rewriteReturnsCloned(s.body, fd, id, params);
-      if (body !== s.body) {
-        changed = true;
-        out.push(shadowNode(s, { body: body as StmtNS.Stmt[] }));
-      } else {
-        out.push(s);
-      }
-    } else {
-      out.push(s);
-    }
+    const replacement = rewriteStmtReturns(s, fd, id, params);
+    if (replacement !== s) changed = true;
+    out.push(replacement);
   }
   return changed ? out : stmts;
+}
+
+function rewriteStmtReturns(
+  s: StmtNS.Stmt,
+  fd: StmtNS.FunctionDef,
+  id: string,
+  params: readonly ExprNS.Variable[],
+): StmtNS.Stmt {
+  if (s instanceof StmtNS.Return) {
+    if (s.value === null) return s;
+    const args: ExprNS.Expr[] = [mkStr(fd, id), ...cloneVars(params), s.value];
+    return shadowNode(s, { value: mkCall(fd, MEMO_PUT, args) });
+  }
+  if (s instanceof StmtNS.If) {
+    const body = rewriteReturnsCloned(s.body, fd, id, params);
+    const elseBlock = s.elseBlock
+      ? rewriteReturnsCloned(s.elseBlock, fd, id, params)
+      : s.elseBlock;
+    if (body === s.body && elseBlock === s.elseBlock) return s;
+    return shadowNode(s, {
+      body: body as StmtNS.Stmt[],
+      elseBlock: elseBlock as StmtNS.Stmt[] | null,
+    });
+  }
+  if (s instanceof StmtNS.While || s instanceof StmtNS.For) {
+    const body = rewriteReturnsCloned(s.body, fd, id, params);
+    if (body === s.body) return s;
+    return shadowNode(s, { body: body as StmtNS.Stmt[] });
+  }
+  return s;
 }
 
 function memoWrappedBody(
@@ -94,10 +98,10 @@ function memoWrappedBody(
 
 function memoizationWitnessFor(
   fd: StmtNS.FunctionDef,
-  chain: Speculation,
-): { value: true; witness: Speculation } | undefined {
+  chain: AssumptionChain,
+): { value: true; witness: AssumptionChain } | undefined {
   return purityScopeAnalysis.readMinimal(chain, fd.id, value => value === true) as
-    | { value: true; witness: Speculation }
+    | { value: true; witness: AssumptionChain }
     | undefined;
 }
 
@@ -135,7 +139,7 @@ export const memoizationRule: TransformRule = {
     wl.onTransformCounterBumped(memoizationRule, runtimeCallCounter, wakeUnit);
     wl.onTransformFactDirty(memoizationRule, purityScopeAnalysis, wakeUnit);
   },
-  sweep(unit: Unit, chain: Speculation, _topology: ProgramTopology): boolean {
+  sweep(unit: Unit, chain: AssumptionChain, _topology: ProgramTopology): boolean {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
     if (runtimeCallCounter.at(fd.id) < MEMOIZATION_THRESHOLD) return false;

@@ -1,32 +1,13 @@
-// Interner load-bearing-ness, driven through real Python code and the
-// production narrowings (paramTypeNarrowing / paramConstNarrowing).
-//
-// Two intra-interner invariants that the JIT relies on:
-//
-//   1. Widen-then-reobserve: a hot shape → deopt drops a link → the same
-//      shape returns. Without the interner, the reborn chain is a distinct
-//      object; everything keyed by the old chain (AnalysisStore cells,
-//      forked bodies, compiled IR) orphans on every deopt-retry cycle.
-//
-//   2. Order-independence of `extend`: when an applicable-array yields
-//      narrowings in a different order than last time, canonicalization
-//      must reconverge to the same Speculation node. This is also what
-//      lets a single worklist stay stable across observation reorderings.
-//
-// Cross-parse / cross-worklist chain identity is NOT a contract —
-// `fn.id` is a process-global counter so two parses have disjoint key
-// spaces by construction (see context-interner.ts header).
-
 import { StmtNS } from "../../ast-types";
 import {
   ROOT_CONTEXT,
-  type Speculation,
-} from "../../specialization/framework/assumption-chain";
+  type AssumptionChain,
+} from "../../specialization/lattice/chain";
 import {
   at,
   extend,
   without,
-} from "../../specialization/framework/assumption-algebra";
+} from "../../specialization/lattice/algebra";
 import { paramKey } from "../../specialization/framework/key-spaces";
 import { runtimeParamChannel } from "../../specialization/framework/runtime-analyses";
 import { paramTypeNarrowing } from "../../specialization/framework/param-handles";
@@ -46,15 +27,15 @@ describe("chain reconvergence across widen → re-observe (Python-driven)", () =
     const kx = paramKey(fd.id, 0);
     const ky = paramKey(fd.id, 1);
 
-    // Hot phase. Each publish takes the "active context at observe-time" —
-    // we thread futureDispatchContext back in so the two publishes stack
-    // instead of each starting from ROOT.
-    worklist.publish(runtimeParamChannel, kx, { kind: "number", value: 3 }, ROOT_CONTEXT);
+    // Each publish takes the "active context at observe-time" — thread the
+    // first publish's return value (the extended chain) into the second so
+    // the two publishes stack instead of each starting from ROOT.
+    const afterKx = worklist.publish(
+      runtimeParamChannel, kx, { kind: "number", value: 3 }, ROOT_CONTEXT,
+    );
     worklist.drain();
     worklist.publish(
-      runtimeParamChannel, ky,
-      { kind: "number", value: 4 },
-      worklist.futureDispatchChainFor(unit),
+      runtimeParamChannel, ky, { kind: "number", value: 4 }, afterKx,
     );
     worklist.drain();
 
@@ -83,7 +64,7 @@ describe("chain reconvergence across widen → re-observe (Python-driven)", () =
     // chain identity is not a framework contract. The real invariant is
     // intra-interner: `extend` canonicalizes links so that applying the
     // same (narrowing, key, value) triples in opposite orders reaches the
-    // same Speculation node.
+    // same AssumptionChain node.
     const { ast, worklist } = setupAndDrain(
       "def f(x, y):\n    return x * y\n",
     );
@@ -105,7 +86,7 @@ describe("chain reconvergence across widen → re-observe (Python-driven)", () =
     // Walk chain child-first, then rebuild from ROOT in that (reversed)
     // arrival order. Interner canonicalization makes the result ===.
     const links: Array<{ n: any; k: any; v: any }> = [];
-    for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
+    for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
       if (cur.assumption !== undefined) {
         links.push({
           n: cur.assumption.narrowing,
@@ -114,7 +95,7 @@ describe("chain reconvergence across widen → re-observe (Python-driven)", () =
         });
       }
     }
-    let rebuilt: Speculation = ROOT_CONTEXT;
+    let rebuilt: AssumptionChain = ROOT_CONTEXT;
     for (const l of links) {
       rebuilt = extend(rebuilt, l.n, l.k, l.v);
     }

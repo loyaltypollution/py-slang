@@ -1,4 +1,4 @@
-// Canonicalizing interner for Speculation chains. Invariants:
+// Canonicalizing interner for AssumptionChains. Invariants:
 //   1. Structural equality ⇒ reference equality.
 //   2. Assumption-set identity ⇒ chain identity, regardless of arrival order
 //      (chains are built in canonical order: per-interner narrowing ordinal,
@@ -7,9 +7,9 @@
 // linearly via `narrowing.eq` (so e.g. structurally-equal const(v)s from
 // separate liftConst calls converge).
 
-import { type Narrowing } from "./analysis";
-import type { Assumption, Speculation } from "./assumption-chain";
-import { ROOT_CONTEXT } from "./assumption-chain";
+import { type Narrowing } from "../framework/analysis";
+import type { Assumption, AssumptionChain } from "./chain";
+import { ROOT_CONTEXT } from "./chain";
 
 function compareKey(a: unknown, b: unknown): number {
   if (typeof a === "number" && typeof b === "number") return a - b;
@@ -20,16 +20,16 @@ function compareKey(a: unknown, b: unknown): number {
 
 interface ValueEntry {
   readonly value: unknown;
-  readonly node: Speculation;
+  readonly node: AssumptionChain;
 }
 
 const CONFLICT_MSG =
-  "assumption-algebra: extend conflicts with existing binding at same (narrowing, key). " +
+  "lattice/algebra: extend conflicts with existing binding at same (narrowing, key). " +
   "Use without(s, narrowing, key) first if the old value is being replaced.";
 
-export class ContextInterner {
+export class ChainInterner {
   private readonly children: Map<
-    Speculation,
+    AssumptionChain,
     Map<Narrowing<any, any>, Map<unknown, ValueEntry[]>>
   > = new Map();
 
@@ -60,11 +60,11 @@ export class ContextInterner {
   /** Extend `parent` with `(narrowing, key, value)`. Idempotent when equal
    *  under `narrowing.eq`; throws on conflict. */
   extend<K, V>(
-    parent: Speculation,
+    parent: AssumptionChain,
     narrowing: Narrowing<K, V>,
     key: K,
     value: V,
-  ): Speculation {
+  ): AssumptionChain {
     const parentAssumption = parent.assumption;
     if (parentAssumption === undefined) {
       return this.internChild(parent, narrowing, key, value);
@@ -83,11 +83,11 @@ export class ContextInterner {
 
   /** Remove the link at `(narrowing, key)` from `ctx`; identity-return
    *  when absent. */
-  exclude<K>(ctx: Speculation, narrowing: Narrowing<K, any>, key: K): Speculation {
+  exclude<K>(ctx: AssumptionChain, narrowing: Narrowing<K, any>, key: K): AssumptionChain {
     // Walk child-first; reverse-iterate to rebuild root-to-child.
     const links: Assumption[] = [];
     let found = false;
-    for (let cur: Speculation | undefined = ctx; cur !== undefined; cur = cur.parent) {
+    for (let cur: AssumptionChain | undefined = ctx; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
       if (a === undefined) continue;
       if (a.narrowing === narrowing && a.key === key) {
@@ -97,36 +97,12 @@ export class ContextInterner {
       links.push(a);
     }
     if (!found) return ctx;
-    let result: Speculation = ROOT_CONTEXT;
+    let result: AssumptionChain = ROOT_CONTEXT;
     for (let i = links.length - 1; i >= 0; i--) {
       const a = links[i];
       result = this.internChild(result, a.narrowing, a.key as never, a.value as never);
     }
     return result;
-  }
-
-  /** Remove `ctx` from the trie. Does not walk ancestors (they may be
-   *  retained by siblings or other units). Callers must ensure `ctx` is
-   *  unreferenced before release. */
-  release(ctx: Speculation): void {
-    const a = ctx.assumption;
-    if (a === undefined) return;
-    const parent = ctx.parent;
-    if (parent === undefined) return;
-    const byNarrowing = this.children.get(parent);
-    if (byNarrowing === undefined) return;
-    const byKey = byNarrowing.get(a.narrowing);
-    if (byKey === undefined) return;
-    const bucket = byKey.get(a.key);
-    if (bucket === undefined) return;
-    const idx = bucket.findIndex(entry => entry.node === ctx);
-    if (idx === -1) return;
-    bucket.splice(idx, 1);
-    if (bucket.length > 0) return;
-    byKey.delete(a.key);
-    if (byKey.size > 0) return;
-    byNarrowing.delete(a.narrowing);
-    if (byNarrowing.size === 0) this.children.delete(parent);
   }
 
   /** Diagnostic: number of non-root interned nodes. */
@@ -143,11 +119,11 @@ export class ContextInterner {
   }
 
   private internChild<K, V>(
-    parent: Speculation,
+    parent: AssumptionChain,
     narrowing: Narrowing<K, V>,
     key: K,
     value: V,
-  ): Speculation {
+  ): AssumptionChain {
     let byNarrowing = this.children.get(parent);
     if (byNarrowing === undefined) {
       byNarrowing = new Map();
@@ -180,7 +156,7 @@ export class ContextInterner {
       : new Map();
     inner.set(key, assumption);
     bindings.set(narrowing, inner);
-    const node: Speculation = Object.freeze({
+    const node: AssumptionChain = Object.freeze({
       parent,
       assumption,
       depth: parent.depth + 1,
@@ -193,13 +169,13 @@ export class ContextInterner {
   /** Flatten, sort canonically, and re-intern. Called when the new
    *  assumption sorts before parent's tip. */
   private rebuildWith<K, V>(
-    parent: Speculation,
+    parent: AssumptionChain,
     narrowing: Narrowing<K, V>,
     key: K,
     value: V,
-  ): Speculation {
+  ): AssumptionChain {
     const links: Assumption[] = [];
-    for (let cur: Speculation | undefined = parent; cur !== undefined; cur = cur.parent) {
+    for (let cur: AssumptionChain | undefined = parent; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
       if (a === undefined) continue;
       if (a.narrowing === narrowing && a.key === key) {
@@ -214,7 +190,7 @@ export class ContextInterner {
       value: value as unknown,
     });
     links.sort((a, b) => this.compareByAxis(a.narrowing, a.key, b.narrowing, b.key));
-    let cur: Speculation = ROOT_CONTEXT;
+    let cur: AssumptionChain = ROOT_CONTEXT;
     for (const a of links) {
       cur = this.internChild(cur, a.narrowing, a.key, a.value);
     }
@@ -222,4 +198,4 @@ export class ContextInterner {
   }
 }
 
-export const defaultInterner = new ContextInterner();
+export const defaultInterner = new ChainInterner();

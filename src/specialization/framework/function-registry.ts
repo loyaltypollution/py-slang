@@ -1,6 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { traverseAST } from "../../validator/traverse";
-import { Speculation, ROOT_CONTEXT, isRoot } from "./assumption-chain";
+import { AssumptionChain, ROOT_CONTEXT, isRoot } from "../lattice/chain";
 
 export type FunctionScopeNode =
   | StmtNS.FileInput
@@ -35,7 +35,7 @@ export class FunctionRegistry {
     this.listener = listener;
   }
 
-  mint(node: FunctionScopeNode, chain: Speculation): number {
+  mint(node: FunctionScopeNode, chain: AssumptionChain): number {
     if (!isRoot(chain)) {
       throw new Error(
         `FunctionRegistry.mint: structural rewrites are ROOT-only (chain depth=${chain.depth}).`,

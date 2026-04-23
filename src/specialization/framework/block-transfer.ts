@@ -1,6 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { BasicBlock } from "./cfg";
-import type { Speculation } from "./assumption-chain";
+import type { AssumptionChain } from "../lattice/chain";
 import type { BlockDfaSpec, BlockPassResult } from "./dfa-factory";
 import type { Unit } from "./function-unit";
 import type { MutableEnv } from "./mutable-env";
@@ -79,7 +79,7 @@ export function transferBlock<L>(
   inEnv: MutableEnv<L>,
   module: BlockDfaSpec<L>,
   unit: Unit,
-  context: Speculation,
+  context: AssumptionChain,
 ): BlockPassResult<L> {
   const outEnv = inEnv;
   // Lazy fact-map allocation: most blocks record no per-expr facts.

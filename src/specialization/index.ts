@@ -9,4 +9,4 @@ export {
   type StaticDfaQuery,
 } from "./dfa-query";
 export { makeJitObservers } from "./framework/runtime-analyses";
-export { bodyToCompile, dispatchValid } from "./framework/dispatch";
+export { makeJitDispatch, type DispatchOutcome, type JitDispatch } from "./framework/jit-dispatch";

@@ -1,6 +1,19 @@
-// Intraprocedural purity analysis with freshness/escape tracking.
-// Nested FunctionDef bodies are analyzed as their own Unit and read back via
-// purityScopeAnalysis; Lambda / MultiLambda stay sticky-impure for now.
+// Intraprocedural purity analysis. Axes the block transfer decomposes over:
+//   - arithmetic / local assignment   — pure by default.
+//   - whitelisted builtins            — `range`, `len`, … stay pure despite
+//                                       being calls.
+//   - subscript read vs store         — read is pure; store is impure unless
+//                                       the target is a fresh (locally-
+//                                       allocated, non-escaped) container.
+//   - nested FunctionDef              — analyzed as its own Unit and read
+//                                       back via `purityScopeAnalysis`.
+//                                       Lambda / MultiLambda: sticky-impure.
+//   - speculation composition         — branches pruned by a chain's param
+//                                       narrowings drop their impurity
+//                                       contributors at the specialized
+//                                       context.
+//   - capture reads                   — a nested fn reading an outer local
+//                                       is a dependency, not an effect.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import { constAnalysis } from "../const-analysis/analysis";
@@ -10,8 +23,8 @@ import type {
   SemanticAnalysis
 } from "../framework/analysis";
 import { composeBind, defineAnalysis } from "../framework/analysis";
-import type { BasicBlock, CFGEdge } from "../framework/cfg";
-import { type Speculation } from "../framework/assumption-chain";
+import type { BasicBlock } from "../framework/cfg";
+import { type AssumptionChain } from "../lattice/chain";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
@@ -45,13 +58,13 @@ class BlockState {
   env!: MutableEnv<AbsVal>;
   slotLookup!: SlotLookup;
   selfName: string | undefined;
-  chain!: Speculation;
+  chain!: AssumptionChain;
 
   reset(
     env: MutableEnv<AbsVal>,
     slotLookup: SlotLookup,
     selfName: string | undefined,
-    chain: Speculation,
+    chain: AssumptionChain,
   ): this {
     this.impure = false;
     this.env = env;
@@ -85,15 +98,18 @@ class PurityExprVisitor implements ExprNS.Visitor<AbsVal> {
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): AbsVal {
-    expr.left.accept(this); expr.right.accept(this);
+    expr.left.accept(this);
+    expr.right.accept(this);
     return UNKNOWN;
   }
   visitCompareExpr(expr: ExprNS.Compare): AbsVal {
-    expr.left.accept(this); expr.right.accept(this);
+    expr.left.accept(this);
+    expr.right.accept(this);
     return UNKNOWN;
   }
   visitBoolOpExpr(expr: ExprNS.BoolOp): AbsVal {
-    expr.left.accept(this); expr.right.accept(this);
+    expr.left.accept(this);
+    expr.right.accept(this);
     return UNKNOWN;
   }
   visitUnaryExpr(expr: ExprNS.Unary): AbsVal {
@@ -107,7 +123,8 @@ class PurityExprVisitor implements ExprNS.Visitor<AbsVal> {
     return UNKNOWN;
   }
   visitSubscriptExpr(expr: ExprNS.Subscript): AbsVal {
-    expr.value.accept(this); expr.index.accept(this);
+    expr.value.accept(this);
+    expr.index.accept(this);
     return UNKNOWN;
   }
 
@@ -132,22 +149,22 @@ class PurityExprVisitor implements ExprNS.Visitor<AbsVal> {
     // Closure.pure: true = resolved pure, false = resolved impure, undefined =
     // not a closure call OR inner not yet analyzed (pending defers impurity
     // to stay monotone).
-    const closurePure = calleeAbs?.kind === "closure" ? calleeAbs.pure : undefined;
-    const isPureClosureCall = closurePure === true;
-    const isPendingClosureCall = calleeAbs?.kind === "closure" && closurePure === undefined;
+    const closurePure =
+      calleeAbs?.kind === "closure" ? calleeAbs.pure : undefined;
+    const isClosureCallee = calleeAbs?.kind === "closure";
+    const isPureClosureCall = isClosureCallee && closurePure === true;
+    const isPendingClosureCall = isClosureCallee && closurePure === undefined;
+    const isImpureClosureCall = isClosureCallee && closurePure === false;
     const isWhitelistedBuiltin =
       calleeName !== undefined && WHITELISTED_BUILTINS.has(calleeName);
     const isSelfRecursion = calleeName !== undefined && calleeName === state.selfName;
+    // A named call is assumed impure unless it's a builtin, self-recursion, or
+    // a closure we've either resolved-pure or not yet analyzed (pending is
+    // monotone-deferred). An indirect callee already tainted `impure` above.
+    const isKnownSafeNamedCall =
+      isWhitelistedBuiltin || isSelfRecursion || isPureClosureCall || isPendingClosureCall;
 
-    if (closurePure === false) {
-      state.impure = true;
-    } else if (
-      calleeName !== undefined &&
-      !isWhitelistedBuiltin &&
-      !isSelfRecursion &&
-      !isPureClosureCall &&
-      !isPendingClosureCall
-    ) {
+    if (isImpureClosureCall || (calleeName !== undefined && !isKnownSafeNamedCall)) {
       state.impure = true;
     }
 
@@ -376,7 +393,7 @@ export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> 
 function reachableBlocks(
   unit: Unit,
   topology: ProgramTopology,
-  context: Speculation,
+  context: AssumptionChain,
 ): Set<BasicBlock> {
   const reached = new Set<BasicBlock>([unit.cfg.entry]);
   const queue: BasicBlock[] = [unit.cfg.entry];
@@ -385,7 +402,11 @@ function reachableBlocks(
   while (head < queue.length) {
     const block = queue[head++];
     for (const edge of block.successorEdges) {
-      if (edgeIsDead(edge, topology, context)) continue;
+      if (edge.kind !== "unconditional") {
+        const truth = conditionTruth(edge.condition.id, topology, context);
+        if (truth !== undefined
+          && (edge.kind === "branch-true" ? truth === false : truth === true)) continue;
+      }
       if (!reached.has(edge.to)) {
         reached.add(edge.to);
         queue.push(edge.to);
@@ -395,24 +416,13 @@ function reachableBlocks(
   return reached;
 }
 
-function edgeIsDead(
-  edge: CFGEdge,
-  topology: ProgramTopology,
-  context: Speculation,
-): boolean {
-  if (edge.kind === "unconditional") return false;
-  const truth = conditionTruth(edge.condition.id, topology, context);
-  if (truth === undefined) return false;
-  return edge.kind === "branch-true" ? truth === false : truth === true;
-}
-
 // constAnalysis covers `if True:` literals; typeAnalysis covers predicates
 // like `x <= 0` that fold to BOOL_FALSE under a sign-narrowed param.
 // Surfaces must agree or be absent; disagreement stays conservative.
 function conditionTruth(
   nodeId: number,
   topology: ProgramTopology,
-  context: Speculation,
+  context: AssumptionChain,
 ): boolean | undefined {
   const cVal = constAnalysis.perExpr(topology).readDeepest(context, nodeId)?.value;
   if (cVal?.tag === "const" && typeof cVal.value === "boolean") return cVal.value;

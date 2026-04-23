@@ -1,26 +1,8 @@
-// Cascading-transform termination: const-fold → dead-branch → enables more
-// const-fold, across multiple levels. Verifies `drain()` converges and does
-// not hit the iteration cap.
-
 import { StmtNS } from "../../ast-types";
 import { parse } from "../../parser/parser-adapter";
 import { Worklist } from "../../specialization/framework/worklist";
+import { countNodes } from "./harness/ast-stats";
 import { setup, setupAndDrain } from "./harness/compile-pipelines";
-
-function countNodes(stmts: readonly StmtNS.Stmt[]): number {
-  let n = 0;
-  const walk = (v: unknown): void => {
-    if (v === null || typeof v !== "object") return;
-    if (typeof (v as { id?: unknown }).id === "number") n++;
-    for (const k of Object.keys(v as object)) {
-      const child = (v as Record<string, unknown>)[k];
-      if (Array.isArray(child)) for (const c of child) walk(c);
-      else if (typeof child === "object") walk(child);
-    }
-  };
-  for (const s of stmts) walk(s);
-  return n;
-}
 
 describe("cascading transform termination", () => {
   test("nested dead-branch cascade converges via multi-level rebuild", () => {

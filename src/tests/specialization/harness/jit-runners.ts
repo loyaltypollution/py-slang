@@ -5,9 +5,9 @@ import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import math from "../../../stdlib/math";
 import memo from "../../../stdlib/memo";
 import misc from "../../../stdlib/misc";
-import { makeDfaQuery, makeJitObservers } from "../../../specialization";
+import { makeDfaQuery } from "../../../specialization";
 import { DEFAULT_PASSES, DEFAULT_TRANSFORMS } from "../../../specialization/defaults";
-import { bodyToCompile, dispatchValid } from "../../../specialization/framework/dispatch";
+import { makeJitDispatch } from "../../../specialization/framework/jit-dispatch";
 import { Worklist } from "../../../specialization/framework/worklist";
 import { memoizationRule } from "../../../specialization/transforms/memoization";
 import { parse } from "../../../parser/parser-adapter";
@@ -40,23 +40,18 @@ export async function runSvmlJit(code: string): Promise<string[]> {
   const program = compiler.compileProgram(ast);
 
   const captured: string[] = [];
-  const observers = makeJitObservers(worklist);
+  const dispatch = makeJitDispatch(worklist);
   const interpreter = new SVMLInterpreter(program, {
     sendOutput: msg => captured.push(msg),
+    // Mirrors PySvmlJitEvaluator: always recompile via compileFunction,
+    // passing the speculative body only when dispatch actually specialized.
     dispatchCall: (scopeId, args) => {
-      observers.observeScopeCall(scopeId);
-      const unit = worklist.topology.unitOfFunctionId(scopeId);
-      if (unit === undefined) return undefined;
-      for (let i = 0; i < args.length; i++) observers.observeParamEntry(scopeId, i, args[i]);
-      worklist.sweepTransforms();
-      const chain = observers.currentChainFor(scopeId);
-      const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
-      if (!dispatchValid(unit, chain, isRefuted)) return undefined;
-      const body = bodyToCompile(unit, chain, worklist.topology, isRefuted);
-      if (body === unit.body) return undefined;
-      return compiler.compileFunction(unit, body);
+      const r = dispatch.onCall(scopeId, args);
+      if (r === undefined) return undefined;
+      const body = r.kind === "specialized" ? r.body : undefined;
+      return compiler.compileFunction(r.unit, body);
     },
-    dispatchReturn: (scopeId, value) => observers.observeScopeReturn(scopeId, value),
+    dispatchReturn: dispatch.onReturn,
   });
   await interpreter.execute();
   return captured;
@@ -106,21 +101,14 @@ export async function runCseJit(code: string): Promise<string[]> {
   const worklist = new Worklist(ast, environments, DEFAULT_PASSES, undefined, CSE_JIT_TRANSFORMS);
   worklist.drain();
 
-  const observers = makeJitObservers(worklist);
+  const dispatch = makeJitDispatch(worklist);
   const jitHooks: JitHooks = {
     rootScope: ast,
     dispatchCall: (scopeId, args) => {
-      observers.observeScopeCall(scopeId);
-      const unit = worklist.topology.unitOfFunctionId(scopeId);
-      if (unit === undefined) return undefined;
-      for (let i = 0; i < args.length; i++) observers.observeParamEntry(scopeId, i, args[i]);
-      const chain = observers.currentChainFor(scopeId);
-      const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
-      if (!dispatchValid(unit, chain, isRefuted)) return undefined;
-      const body = bodyToCompile(unit, chain, worklist.topology, isRefuted);
-      return body === unit.body ? undefined : body;
+      const r = dispatch.onCall(scopeId, args);
+      return r?.kind === "specialized" ? r.body : undefined;
     },
-    dispatchReturn: (scopeId, value) => observers.observeScopeReturn(scopeId, value),
+    dispatchReturn: dispatch.onReturn,
   };
 
   const captured: string[] = [];

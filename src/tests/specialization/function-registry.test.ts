@@ -4,7 +4,7 @@ import {
   FunctionRegistry,
   buildFunctionRegistry,
 } from "../../specialization/framework/function-registry";
-import { ROOT_CONTEXT } from "../../specialization/framework/assumption-chain";
+import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
 
 function parseProgram(code: string): StmtNS.FileInput {
   return parse(code + "\n");

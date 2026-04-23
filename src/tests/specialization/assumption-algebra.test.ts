@@ -11,7 +11,7 @@ import {
   extend,
   leq,
   without,
-} from "../../specialization/framework/assumption-algebra";
+} from "../../specialization/lattice/algebra";
 
 function mkN<K, V>(eq: (a: V, b: V) => boolean = (a, b) => a === b): Narrowing<K, V> {
   return {

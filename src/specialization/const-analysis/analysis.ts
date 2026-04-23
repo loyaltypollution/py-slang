@@ -1,6 +1,6 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
-import type { Speculation } from "../framework/assumption-chain";
+import type { AssumptionChain } from "../lattice/chain";
 import { transferBlock } from "../framework/block-transfer";
 import {
   makeBlockFixpointAnalysis,
@@ -39,6 +39,41 @@ function constMeet(a: ConstLattice, b: ConstLattice): ConstLattice {
   return a.value === b.value ? a : CONST_BOTTOM;
 }
 
+function foldBinary(op: TokenType, left: ConstLattice, right: ConstLattice): ConstLattice {
+  if (left.tag !== "const" || right.tag !== "const") return CONST_TOP;
+  const lv = left.value;
+  const rv = right.value;
+  switch (op) {
+    case TokenType.PLUS:
+      return constOf(lv + rv);
+    case TokenType.MINUS:
+      return constOf(lv - rv);
+    case TokenType.STAR:
+      return constOf(lv * rv);
+    case TokenType.SLASH:
+      return rv === 0 ? CONST_TOP : constOf(lv / rv);
+    case TokenType.DOUBLESLASH:
+      return rv === 0 ? CONST_TOP : constOf(Math.floor(lv / rv));
+    case TokenType.PERCENT:
+      // Python modulo: result has same sign as divisor.
+      return rv === 0 ? CONST_TOP : constOf(lv - Math.floor(lv / rv) * rv);
+    default:
+      return CONST_TOP;
+  }
+}
+
+function foldUnary(op: TokenType, operand: ConstLattice): ConstLattice {
+  if (operand.tag !== "const") return CONST_TOP;
+  switch (op) {
+    case TokenType.MINUS:
+      return constOf(-operand.value);
+    case TokenType.PLUS:
+      return constOf(+operand.value);
+    default:
+      return CONST_TOP;
+  }
+}
+
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
     private readonly constEnv: MutableEnv<ConstLattice>,
@@ -49,6 +84,12 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   private annotate(node: ExprNS.Expr, val: ConstLattice): ConstLattice {
     this.recordExprFact(node.id, val);
     return val;
+  }
+
+  /** Recurse into children for side effects (fact recording) but yield TOP. */
+  private visitChildrenAsTop(node: ExprNS.Expr, children: ExprNS.Expr[]): ConstLattice {
+    for (const child of children) child.accept(this);
+    return this.annotate(node, CONST_TOP);
   }
 
   visitLiteralExpr(expr: ExprNS.Literal): ConstLattice {
@@ -72,56 +113,43 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     return this.annotate(expr, foldBinary(expr.operator.type, left, right));
   }
 
-  // Compare produces a boolean; boolean facts live in TypeAnalysis (BoolRef).
-  visitCompareExpr(expr: ExprNS.Compare): ConstLattice {
-    expr.left.accept(this);
-    expr.right.accept(this);
-    return this.annotate(expr, CONST_TOP);
-  }
-
   visitUnaryExpr(expr: ExprNS.Unary): ConstLattice {
     const operand = expr.right.accept(this);
     return this.annotate(expr, foldUnary(expr.operator.type, operand));
-  }
-
-  // `and`/`or` truthiness reasoning lives in TypeAnalysis's BoolRef transfer.
-  visitBoolOpExpr(expr: ExprNS.BoolOp): ConstLattice {
-    expr.left.accept(this);
-    expr.right.accept(this);
-    return this.annotate(expr, CONST_TOP);
   }
 
   visitGroupingExpr(expr: ExprNS.Grouping): ConstLattice {
     return this.annotate(expr, expr.expression.accept(this));
   }
 
+  // Compare produces a boolean; boolean facts live in TypeAnalysis (BoolRef).
+  visitCompareExpr(expr: ExprNS.Compare): ConstLattice {
+    return this.visitChildrenAsTop(expr, [expr.left, expr.right]);
+  }
+
+  // `and`/`or` truthiness reasoning lives in TypeAnalysis's BoolRef transfer.
+  visitBoolOpExpr(expr: ExprNS.BoolOp): ConstLattice {
+    return this.visitChildrenAsTop(expr, [expr.left, expr.right]);
+  }
+
   visitTernaryExpr(expr: ExprNS.Ternary): ConstLattice {
-    expr.predicate.accept(this);
-    expr.consequent.accept(this);
-    expr.alternative.accept(this);
-    return this.annotate(expr, CONST_TOP);
+    return this.visitChildrenAsTop(expr, [expr.predicate, expr.consequent, expr.alternative]);
   }
 
   visitCallExpr(expr: ExprNS.Call): ConstLattice {
-    expr.callee.accept(this);
-    for (const arg of expr.args) arg.accept(this);
-    return this.annotate(expr, CONST_TOP);
+    return this.visitChildrenAsTop(expr, [expr.callee, ...expr.args]);
   }
 
   visitListExpr(expr: ExprNS.List): ConstLattice {
-    for (const el of expr.elements) el.accept(this);
-    return this.annotate(expr, CONST_TOP);
+    return this.visitChildrenAsTop(expr, expr.elements);
   }
 
   visitSubscriptExpr(expr: ExprNS.Subscript): ConstLattice {
-    expr.value.accept(this);
-    expr.index.accept(this);
-    return this.annotate(expr, CONST_TOP);
+    return this.visitChildrenAsTop(expr, [expr.value, expr.index]);
   }
 
   visitStarredExpr(expr: ExprNS.Starred): ConstLattice {
-    expr.value.accept(this);
-    return this.annotate(expr, CONST_TOP);
+    return this.visitChildrenAsTop(expr, [expr.value]);
   }
 
   visitNoneExpr(expr: ExprNS.None): ConstLattice {
@@ -141,42 +169,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 }
 
-function foldBinary(op: TokenType, left: ConstLattice, right: ConstLattice): ConstLattice {
-  if (left.tag !== "const" || right.tag !== "const") return CONST_TOP;
-  const lv = left.value;
-  const rv = right.value;
-  switch (op) {
-    case TokenType.PLUS:
-      return constOf(lv + rv);
-    case TokenType.MINUS:
-      return constOf(lv - rv);
-    case TokenType.STAR:
-      return constOf(lv * rv);
-    case TokenType.SLASH:
-      return rv === 0 ? CONST_TOP : constOf(lv / rv);
-    case TokenType.DOUBLESLASH:
-      return rv === 0 ? CONST_TOP : constOf(Math.floor(lv / rv));
-    case TokenType.PERCENT:
-      // Python modulo: result has same sign as divisor
-      return rv === 0 ? CONST_TOP : constOf(lv - Math.floor(lv / rv) * rv);
-    default:
-      return CONST_TOP;
-  }
-}
-
-function foldUnary(op: TokenType, operand: ConstLattice): ConstLattice {
-  if (operand.tag !== "const") return CONST_TOP;
-  switch (op) {
-    case TokenType.MINUS:
-      return constOf(-operand.value);
-    case TokenType.PLUS:
-      return constOf(+operand.value);
-    default:
-      return CONST_TOP;
-  }
-}
-
-export const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
+const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
   mergeKind: "may",
   direction: "forward",
   bottom: CONST_BOTTOM,
@@ -190,7 +183,7 @@ export const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
     _unit,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: ConstLattice) => void,
-    _context: Speculation,
+    _context: AssumptionChain,
   ): ExprNS.Visitor<ConstLattice> {
     return new ConstAnalysisVisitor(env, slotLookup, recordExprFact);
   },
@@ -207,5 +200,5 @@ export const constAnalysis: BlockFixpointAnalysis<ConstLattice> =
     seedEnv: () => new MutableEnv<ConstLattice>(),
     transferBlock: (ctx, block, inEnv, unit) =>
       transferBlock(block, inEnv, constAnalysisModule, unit, ctx.currentContext),
-    refineOnEdge: (env, edge) => constAnalysisModule.refineOnEdge(env, edge),
+    refineOnEdge: constAnalysisModule.refineOnEdge,
   });

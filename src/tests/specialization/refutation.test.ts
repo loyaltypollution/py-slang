@@ -8,8 +8,8 @@ import type { Narrowing } from "../../specialization/framework/analysis";
 import {
   empty,
   extend,
-} from "../../specialization/framework/assumption-algebra";
-import { Refutations } from "../../specialization/framework/refutation";
+} from "../../specialization/lattice/algebra";
+import { Refutations } from "../../specialization/lattice/refutation";
 
 function mkN<K, V>(): Narrowing<K, V> {
   return {

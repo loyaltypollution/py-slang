@@ -5,7 +5,7 @@
 
 import { StmtNS } from "../../ast-types";
 import { contextIsEntrySpecializable, directParamEntryGuardsFor } from "../entry-guards";
-import type { Speculation } from "./assumption-chain";
+import type { AssumptionChain } from "../lattice/chain";
 import { visibleBody } from "./assumption-bodies";
 import { shadowNode } from "./ast-deep-clone";
 import { typeAnalysis } from "./dfa-analyses";
@@ -16,7 +16,7 @@ import { BOOL_BIT, BoolRef } from "../type-analysis/lattice";
 function conditionTruth(
   condId: number,
   topology: ReadonlyProgramTopology,
-  context: Speculation,
+  context: AssumptionChain,
 ): boolean | undefined {
   const fact = typeAnalysis.perExpr(topology).tryRead(condId, context);
   if (fact === undefined || fact.kinds !== BOOL_BIT) return undefined;
@@ -31,7 +31,7 @@ function conditionTruth(
  *  original array when no rewrite was needed. */
 function pruneWithFactsAt(
   stmts: readonly StmtNS.Stmt[],
-  context: Speculation,
+  context: AssumptionChain,
   topology: ReadonlyProgramTopology,
 ): readonly StmtNS.Stmt[] {
   let changed = false;
@@ -73,8 +73,8 @@ function pruneWithFactsAt(
  *  When `isRefuted` is omitted, retirement is assumed trivial (tests). */
 export function dispatchValid(
   unit: Unit,
-  s: Speculation,
-  isRefuted?: (s: Speculation) => boolean,
+  s: AssumptionChain,
+  isRefuted?: (s: AssumptionChain) => boolean,
 ): boolean {
   if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return false;
   if (!contextIsEntrySpecializable(unit, s)) return false;
@@ -86,13 +86,20 @@ export function dispatchValid(
 /** The body to compile at `(unit, s)`: nearest non-retired ancestor fork
  *  (or `unit.body`) plus dead-branch pruning under the context's type
  *  facts. Reference equality against `unit.body` tells the caller whether
- *  speculation contributed anything. Call `dispatchValid` first. */
+ *  speculation contributed anything. Precondition: `dispatchValid(unit, s,
+ *  isRefuted)` holds — asserted below. */
 export function bodyToCompile(
   unit: Unit,
-  s: Speculation,
+  s: AssumptionChain,
   topology: ReadonlyProgramTopology,
-  isRefuted?: (s: Speculation) => boolean,
+  isRefuted?: (s: AssumptionChain) => boolean,
 ): readonly StmtNS.Stmt[] {
+  if (!dispatchValid(unit, s, isRefuted)) {
+    throw new Error(
+      "[bodyToCompile] precondition violated: dispatchValid(unit, s, isRefuted) must hold. " +
+      "Gate the call site, or use visibleBody directly if you genuinely need an ungated read.",
+    );
+  }
   const source = visibleBody(unit, s, isRefuted);
   return pruneWithFactsAt(source, s, topology);
 }

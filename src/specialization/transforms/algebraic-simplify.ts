@@ -7,7 +7,7 @@ import { TokenType } from "../../tokenizer";
 import type { ConstLattice } from "../const-analysis/lattice";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
-import type { Speculation } from "../framework/assumption-chain";
+import type { AssumptionChain } from "../lattice/chain";
 import { visibleBody } from "../framework/assumption-bodies";
 import { constAnalysis, typeAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
@@ -17,17 +17,17 @@ import { truthiness } from "../type-analysis/transfer";
 import {
   deepestWitness,
   DescendingExprVisitor,
-  RewriteStmtVisitor,
+  ExprDrivenStmtVisitor,
   runWitnessSweep,
   shallowestWitness,
   walkExprs,
 } from "./witness-utils";
 
-type Witnessed<T> = { value: T; witness: Speculation };
-type RewritePlan = { witness: Speculation; replacement: ExprNS.Expr };
+type Witnessed<T> = { value: T; witness: AssumptionChain };
+type RewritePlan = { witness: AssumptionChain; replacement: ExprNS.Expr };
 
 function typeInfo(
-  chain: Speculation,
+  chain: AssumptionChain,
   topology: ProgramTopology,
   node: ExprNS.Expr,
 ): Witnessed<TypeLattice> | undefined {
@@ -35,25 +35,25 @@ function typeInfo(
 }
 
 function constInfo(
-  chain: Speculation,
+  chain: AssumptionChain,
   topology: ProgramTopology,
   node: ExprNS.Expr,
 ): Witnessed<ConstLattice> | undefined {
   return constAnalysis.perExpr(topology).readMinimal(chain, node.id, () => true);
 }
 
-function pureIntWitness(info: Witnessed<TypeLattice> | undefined): Speculation | undefined {
+function pureIntWitness(info: Witnessed<TypeLattice> | undefined): AssumptionChain | undefined {
   return info?.value.kinds === INT_BIT ? info.witness : undefined;
 }
 
-function boolWitness(info: Witnessed<TypeLattice> | undefined): Speculation | undefined {
+function boolWitness(info: Witnessed<TypeLattice> | undefined): AssumptionChain | undefined {
   return info?.value.kinds === BOOL_BIT ? info.witness : undefined;
 }
 
 function intZeroWitness(
   type: Witnessed<TypeLattice> | undefined,
   konst: Witnessed<ConstLattice> | undefined,
-): Speculation | undefined {
+): AssumptionChain | undefined {
   const fromType =
     type?.value.kinds === INT_BIT && type.value.intRef === IntRef.Zero ? type.witness : undefined;
   const fromConst =
@@ -61,14 +61,14 @@ function intZeroWitness(
   return shallowestWitness(fromType, fromConst);
 }
 
-function intOneWitness(konst: Witnessed<ConstLattice> | undefined): Speculation | undefined {
+function intOneWitness(konst: Witnessed<ConstLattice> | undefined): AssumptionChain | undefined {
   return konst?.value.tag === "const" && konst.value.value === 1 ? konst.witness : undefined;
 }
 
 function truthWitness(
   type: Witnessed<TypeLattice> | undefined,
   wanted: BoolRef,
-): Speculation | undefined {
+): AssumptionChain | undefined {
   if (type === undefined) return undefined;
   return truthiness(type.value) === wanted ? type.witness : undefined;
 }
@@ -90,12 +90,17 @@ function isSafeToDrop(e: ExprNS.Expr): boolean {
   );
 }
 
-function zeroLiteralLike(e: ExprNS.Expr): ExprNS.Literal {
-  return new ExprNS.Literal(e.startToken, e.endToken, 0);
+function planWhen(
+  a: AssumptionChain | undefined,
+  b: AssumptionChain | undefined,
+  replacement: ExprNS.Expr,
+): RewritePlan | undefined {
+  if (a === undefined || b === undefined) return undefined;
+  return { witness: deepestWitness(a, b)!, replacement };
 }
 
 function planBinary(
-  chain: Speculation,
+  chain: AssumptionChain,
   topology: ProgramTopology,
   expr: ExprNS.Binary,
 ): RewritePlan | undefined {
@@ -106,58 +111,49 @@ function planBinary(
 
   const leftPureInt = pureIntWitness(lt);
   const rightPureInt = pureIntWitness(rt);
-  const rightZero = intZeroWitness(rt, rc);
   const leftZero = intZeroWitness(lt, lc);
-  const rightOne = intOneWitness(rc);
+  const rightZero = intZeroWitness(rt, rc);
   const leftOne = intOneWitness(lc);
+  const rightOne = intOneWitness(rc);
 
   switch (expr.operator.type) {
     case TokenType.PLUS:
-      if (leftPureInt !== undefined && rightZero !== undefined) {
-        return { witness: deepestWitness(leftPureInt, rightZero)!, replacement: expr.left };
-      }
-      if (leftZero !== undefined && rightPureInt !== undefined) {
-        return { witness: deepestWitness(leftZero, rightPureInt)!, replacement: expr.right };
-      }
-      return undefined;
+      // x + 0 → x ; 0 + x → x
+      return (
+        planWhen(leftPureInt, rightZero, expr.left) ??
+        planWhen(leftZero, rightPureInt, expr.right)
+      );
     case TokenType.MINUS:
-      if (leftPureInt !== undefined && rightZero !== undefined) {
-        return { witness: deepestWitness(leftPureInt, rightZero)!, replacement: expr.left };
+      // x - 0 → x
+      return planWhen(leftPureInt, rightZero, expr.left);
+    case TokenType.STAR: {
+      // x * 1 → x ; 1 * x → x
+      const oneIdent =
+        planWhen(leftPureInt, rightOne, expr.left) ??
+        planWhen(leftOne, rightPureInt, expr.right);
+      if (oneIdent !== undefined) return oneIdent;
+      // x * 0 → 0 : only when the dropped side is side-effect-free AND statically int.
+      const zero = new ExprNS.Literal(expr.startToken, expr.endToken, 0);
+      if (isSafeToDrop(expr.left)) {
+        const plan = planWhen(leftPureInt, rightZero, zero);
+        if (plan !== undefined) return plan;
+      }
+      if (isSafeToDrop(expr.right)) {
+        const plan = planWhen(leftZero, rightPureInt, zero);
+        if (plan !== undefined) return plan;
       }
       return undefined;
-    case TokenType.STAR:
-      if (leftPureInt !== undefined && rightOne !== undefined) {
-        return { witness: deepestWitness(leftPureInt, rightOne)!, replacement: expr.left };
-      }
-      if (leftOne !== undefined && rightPureInt !== undefined) {
-        return { witness: deepestWitness(leftOne, rightPureInt)!, replacement: expr.right };
-      }
-      // x * 0 → 0 : only when dropped side is side-effect-free AND statically int.
-      if (leftPureInt !== undefined && rightZero !== undefined && isSafeToDrop(expr.left)) {
-        return {
-          witness: deepestWitness(leftPureInt, rightZero)!,
-          replacement: zeroLiteralLike(expr),
-        };
-      }
-      if (leftZero !== undefined && rightPureInt !== undefined && isSafeToDrop(expr.right)) {
-        return {
-          witness: deepestWitness(leftZero, rightPureInt)!,
-          replacement: zeroLiteralLike(expr),
-        };
-      }
-      return undefined;
+    }
     case TokenType.DOUBLESLASH:
-      if (leftPureInt !== undefined && rightOne !== undefined) {
-        return { witness: deepestWitness(leftPureInt, rightOne)!, replacement: expr.left };
-      }
-      return undefined;
+      // x // 1 → x
+      return planWhen(leftPureInt, rightOne, expr.left);
     default:
       return undefined;
   }
 }
 
 function planBoolOp(
-  chain: Speculation,
+  chain: AssumptionChain,
   topology: ProgramTopology,
   expr: ExprNS.BoolOp,
 ): RewritePlan | undefined {
@@ -177,7 +173,7 @@ function planBoolOp(
 }
 
 function planUnary(
-  chain: Speculation,
+  chain: AssumptionChain,
   topology: ProgramTopology,
   expr: ExprNS.Unary,
 ): RewritePlan | undefined {
@@ -202,7 +198,7 @@ function planUnary(
 }
 
 function rewritePlan(
-  chain: Speculation,
+  chain: AssumptionChain,
   topology: ProgramTopology,
   expr: ExprNS.Expr,
 ): RewritePlan | undefined {
@@ -213,10 +209,10 @@ function rewritePlan(
 }
 
 function collectWitnesses(
-  chain: Speculation,
+  chain: AssumptionChain,
   topology: ProgramTopology,
   stmts: readonly StmtNS.Stmt[],
-  out: Set<Speculation>,
+  out: Set<AssumptionChain>,
 ): void {
   walkExprs(stmts, (expr) => {
     const plan = rewritePlan(chain, topology, expr);
@@ -227,7 +223,7 @@ function collectWitnesses(
 class AlgebraicSimplifyVisitor extends DescendingExprVisitor {
   changed = false;
   constructor(
-    private readonly chain: Speculation,
+    private readonly chain: AssumptionChain,
     private readonly topology: ProgramTopology,
   ) {
     super();
@@ -258,20 +254,6 @@ class AlgebraicSimplifyVisitor extends DescendingExprVisitor {
   }
 }
 
-class AlgebraicSimplifyStmtVisitor extends RewriteStmtVisitor {
-  private readonly exprVisitor: AlgebraicSimplifyVisitor;
-
-  constructor(chain: Speculation, topology: ProgramTopology) {
-    const exprVisitor = new AlgebraicSimplifyVisitor(chain, topology);
-    super((e) => exprVisitor.rewrite(e));
-    this.exprVisitor = exprVisitor;
-  }
-
-  get changed(): boolean {
-    return this.exprVisitor.changed;
-  }
-}
-
 export const algebraicSimplifyRule: TransformRule = {
   bind(wl) {
     wl.onTransformFactDirty(
@@ -280,13 +262,13 @@ export const algebraicSimplifyRule: TransformRule = {
       wakeOwningUnit(unitOfBlock),
     );
   },
-  sweep(unit: Unit, chain: Speculation, topology: ProgramTopology): boolean {
-    const witnesses = new Set<Speculation>();
+  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
+    const witnesses = new Set<AssumptionChain>();
     collectWitnesses(chain, topology, visibleBody(unit, chain), witnesses);
     return runWitnessSweep(
       unit,
       witnesses,
-      (witness) => new AlgebraicSimplifyStmtVisitor(witness, topology),
+      (witness) => new ExprDrivenStmtVisitor(new AlgebraicSimplifyVisitor(witness, topology)),
     );
   },
 };

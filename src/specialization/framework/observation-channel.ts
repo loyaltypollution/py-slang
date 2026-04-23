@@ -8,7 +8,7 @@
 
 import { AnalysisStore } from "./analysis-store";
 import type { JoinSemiLattice } from "./analysis";
-import type { Speculation } from "./assumption-chain";
+import type { AssumptionChain } from "../lattice/chain";
 import type { Worklist } from "./worklist";
 
 export interface ObservationChannelSpec<V> {
@@ -29,13 +29,7 @@ export class ObservationChannel<K, V> {
   }
 
   /** Package-private. Called only by `Worklist.publish`. */
-  _writeShadow(chain: Speculation, key: K, value: V): void {
+  _writeShadow(chain: AssumptionChain, key: K, value: V): void {
     this.shadow.write(key, value, chain);
   }
-}
-
-export function defineObservationChannel<K, V>(
-  spec: ObservationChannelSpec<V>,
-): ObservationChannel<K, V> {
-  return new ObservationChannel<K, V>(spec);
 }

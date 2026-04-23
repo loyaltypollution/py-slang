@@ -17,10 +17,10 @@ import {
 } from "./analysis-store";
 import {
   ROOT_CONTEXT,
-  type Speculation
-} from "./assumption-chain";
-import { carrier as carrierOf, extend, without } from "./assumption-algebra";
-import { Refutations } from "./refutation";
+  type AssumptionChain
+} from "../lattice/chain";
+import { carrier as carrierOf, extend, without } from "../lattice/algebra";
+import { Refutations } from "../lattice/refutation";
 import type { CounterStore } from "./counter-store";
 import {
   buildFunctionRegistry,
@@ -48,21 +48,21 @@ import type { RawKind } from "./raw-value";
 class TripleQueue {
   private readonly analyses: Array<Analysis<any, any>> = [];
   private readonly keys: unknown[] = [];
-  private readonly contexts: Speculation[] = [];
+  private readonly contexts: AssumptionChain[] = [];
   private head = 0;
 
   size(): number {
     return this.analyses.length - this.head;
   }
 
-  push(analysis: Analysis<any, any>, key: unknown, context: Speculation): void {
+  push(analysis: Analysis<any, any>, key: unknown, context: AssumptionChain): void {
     this.analyses.push(analysis);
     this.keys.push(key);
     this.contexts.push(context);
   }
 
   /** Dequeue the head triple into `out`. Returns true iff an item was dequeued. */
-  pop(out: { analysis: Analysis<any, any>; key: unknown; context: Speculation }): boolean {
+  pop(out: { analysis: Analysis<any, any>; key: unknown; context: AssumptionChain }): boolean {
     if (this.head >= this.analyses.length) return false;
     const i = this.head;
     out.analysis = this.analyses[i];
@@ -71,7 +71,7 @@ class TripleQueue {
     // Null out references so dequeued entries don't pin GC roots.
     this.analyses[i] = undefined as unknown as Analysis<any, any>;
     this.keys[i] = undefined;
-    this.contexts[i] = undefined as unknown as Speculation;
+    this.contexts[i] = undefined as unknown as AssumptionChain;
     this.head++;
     if (this.head >= this.analyses.length) {
       this.analyses.length = 0;
@@ -124,16 +124,16 @@ export class Worklist {
   private readonly runtimeQueue = new TripleQueue();
   private readonly analysisQueue = new TripleQueue();
   /** Scratch object reused by `TripleQueue.pop`. */
-  private readonly dequeued: { analysis: Analysis<any, any>; key: unknown; context: Speculation } = {
+  private readonly dequeued: { analysis: Analysis<any, any>; key: unknown; context: AssumptionChain } = {
     analysis: undefined as unknown as Analysis<any, any>,
     key: undefined,
-    context: undefined as unknown as Speculation,
+    context: undefined as unknown as AssumptionChain,
   };
   /** Dedup guard: `(analysis, context, key)` enqueued twice before drain is
    *  a single item. Sibling contexts run independent Kildall. */
   private readonly pendingKeysByAnalysis = new Map<
     Analysis<any, any>,
-    Map<Speculation, Set<unknown>>
+    Map<AssumptionChain, Set<unknown>>
   >();
 
   /** Registered transforms and their dirty sets. A unit enters the dirty set
@@ -150,7 +150,7 @@ export class Worklist {
 
   /** Per-unit preferred chain for future compiles/dispatches. Unset or
    *  ROOT_CONTEXT means future dispatch is unspecialized for that unit. */
-  private readonly futureDispatchContext: Map<Unit, Speculation> = new Map();
+  private readonly futureDispatchContext: Map<Unit, AssumptionChain> = new Map();
 
   /** Fact-change, counter-bump, and channel-publish dispatch indices.
    *  Analyses' and transforms' subscriptions compile into callbacks here. */
@@ -238,7 +238,7 @@ export class Worklist {
     if (!(node instanceof StmtNS.FunctionDef)) return;
     const unit = buildOneUnit(node, this.functionEnvironments, this.registry);
     this._topology.registerUnit(unit);
-    this.fireMint(unit);
+    for (const sub of this.mintSubs) sub(this.passCtx, unit);
   }
 
   private dirtyFor(rule: TransformRule): Set<Unit> {
@@ -249,18 +249,12 @@ export class Worklist {
     return s;
   }
 
-  private fireMint(unit: Unit): void {
-    for (const sub of this.mintSubs) sub(this.passCtx, unit);
-  }
-  private fireRebuild(unit: Unit): void {
-    for (const sub of this.rebuildSubs) sub(this.passCtx, unit);
-  }
   private fireSpecRev(unit: Unit): void {
     for (const sub of this.specRevSubs) sub(this.passCtx, unit);
   }
 
   /** `c` is refuted iff any generator is an algebraic subset. */
-  isRefuted(node: Speculation): boolean {
+  isRefuted(node: AssumptionChain): boolean {
     return this.refutations.contains(node);
   }
 
@@ -268,7 +262,7 @@ export class Worklist {
    *  tip binding, clear the memo bucket keyed to its direct-param entry
    *  guards, and drop `futureDispatchContext[unit]` if it points into the
    *  refuted subtree. Body eviction is lazy. Idempotent. */
-  private refute(unit: Unit, carrier: Speculation): void {
+  private refute(unit: Unit, carrier: AssumptionChain): void {
     if (carrier === ROOT_CONTEXT) return;
     // MINIMAL generators: storing the full carrier chain would under-refute
     // — sibling chains carrying the same refuted binding under a different
@@ -315,7 +309,7 @@ export class Worklist {
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, key: unknown) => Iterable<K>,
-    opts?: { enqueueAt?: (sourceCtx: Speculation) => Speculation },
+    opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
   ): void {
     const project = opts?.enqueueAt;
     Worklist.addSub(this.factSubs, from, (ctx, key) => {
@@ -378,6 +372,12 @@ export class Worklist {
   /** Register a transform rule. Idempotent. Auto-installs mint/rebuild
    *  dirtying for the rule's own unit, then lets the rule subscribe via `bind`. */
   registerTransform(rule: TransformRule): void {
+    if ("polarity" in (rule as object)) {
+      throw new Error(
+        "[Worklist.registerTransform] rule carries `polarity` — polarity is an Analysis-only field. " +
+        "If this rule really is an Analysis, register it via `register`; otherwise drop the field.",
+      );
+    }
     if (this.transformsSet.has(rule)) return;
     this.transformsSet.add(rule);
     this.transforms.push(rule);
@@ -410,6 +410,12 @@ export class Worklist {
 
   /** Register a counter. Idempotent. */
   registerCounter<K>(counter: CounterStore<K>): void {
+    if ("polarity" in (counter as object)) {
+      throw new Error(
+        "[Worklist.registerCounter] counter carries `polarity` — polarity is an Analysis-only field. " +
+        "Counters are monotonic, not fixpoint-iterated; they have no merge polarity.",
+      );
+    }
     const c = counter as CounterStore<any>;
     if (this.registeredCounters.has(c)) return;
     this.registeredCounters.add(c);
@@ -462,7 +468,7 @@ export class Worklist {
   /** Public read surface — thin delegation to the analysis's canonical
    *  read method. `context` is mandatory: the worklist does not guess which
    *  chain position a caller meant. */
-  tryRead<K, V>(analysis: Analysis<K, V>, key: K, context: Speculation): V | undefined {
+  tryRead<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): V | undefined {
     return analysis.tryRead(key, context);
   }
 
@@ -477,8 +483,8 @@ export class Worklist {
     channel: ObservationChannel<K, RawKind>,
     key: K,
     value: RawKind,
-    context: Speculation,
-  ): Speculation {
+    context: AssumptionChain,
+  ): AssumptionChain {
     if (this.inTransformSweep) {
       throw new Error(
         `[Worklist.publish] called during transform sweep. ` +
@@ -499,6 +505,12 @@ export class Worklist {
 
   /** Register a channel. Idempotent. */
   registerChannel<K, V>(channel: ObservationChannel<K, V>): void {
+    if ("polarity" in (channel as object)) {
+      throw new Error(
+        "[Worklist.registerChannel] channel carries `polarity` — polarity is an Analysis-only field. " +
+        "Channels are observation sinks, not facts; they have no merge polarity.",
+      );
+    }
     const c = channel as ObservationChannel<any, any>;
     if (this.registeredChannels.has(c)) return;
     this.registeredChannels.add(c);
@@ -510,7 +522,7 @@ export class Worklist {
     channel: ObservationChannel<K, any>,
     reader: Analysis<K2, any>,
     dirtied: (ctx: AnalysisCtx, key: K) => Iterable<K2>,
-    opts?: { enqueueAt?: (sourceCtx: Speculation) => Speculation },
+    opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
   ): void {
     const project = opts?.enqueueAt;
     Worklist.addSub(this.channelSubs, channel as ObservationChannel<any, any>, (ctx, key) => {
@@ -531,7 +543,7 @@ export class Worklist {
     });
   }
 
-  enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: Speculation): void {
+  enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): void {
     const p = analysis as Analysis<any, any>;
     let byContext = this.pendingKeysByAnalysis.get(p);
     if (byContext === undefined) {
@@ -568,7 +580,7 @@ export class Worklist {
     analysis: Analysis<K, V>,
     key: K,
     value: V,
-    context: Speculation,
+    context: AssumptionChain,
   ): boolean {
     const result = storeWrite(analysis.store, key, value, context);
     if (result === null) return false;
@@ -625,7 +637,7 @@ export class Worklist {
    *  delegate to the analysis's canonical read surface at this context;
    *  `write`/`evict` go through the worklist so side-effect writes fan out
    *  to subscribers. */
-  private makeCtx(context: Speculation): AnalysisCtx {
+  private makeCtx(context: AssumptionChain): AnalysisCtx {
     const topology = this._topology;
     const worklist = this;
     return {
@@ -654,9 +666,9 @@ export class Worklist {
   /** Memoize `AnalysisCtx` per context so every dequeue / fan-out doesn't
    *  allocate a fresh closure wrapper. WeakMap lets entries collect when
    *  the chain is no longer reachable. */
-  private readonly ctxCache: WeakMap<Speculation, AnalysisCtx> = new WeakMap();
+  private readonly ctxCache: WeakMap<AssumptionChain, AnalysisCtx> = new WeakMap();
 
-  private ctxFor(context: Speculation): AnalysisCtx {
+  private ctxFor(context: AssumptionChain): AnalysisCtx {
     if (context === ROOT_CONTEXT) return this.passCtx;
     let ctx = this.ctxCache.get(context);
     if (ctx === undefined) {
@@ -679,7 +691,7 @@ export class Worklist {
   /** Re-seed Kildall for every context-sensitive block analysis at `unit`'s
    *  entry block under `context`. Covers every registered narrowing plus
    *  `purityBlockAnalysis`. */
-  private enqueueNarrowingEntry(unit: Unit, context: Speculation): void {
+  private enqueueNarrowingEntry(unit: Unit, context: AssumptionChain): void {
     for (const n of this.narrowings) {
       const bfa = n.blockAnalysis();
       this.enqueue(bfa.env, bfa.seed(unit), context);
@@ -691,8 +703,8 @@ export class Worklist {
     source: ObservationChannel<any, RawKind>,
     key: any,
     observed: RawKind,
-    context: Speculation,
-  ): Speculation {
+    context: AssumptionChain,
+  ): AssumptionChain {
     const applicable = this.narrowingsBySource.get(source);
     if (applicable === undefined || applicable.length === 0) return context;
 
@@ -749,12 +761,12 @@ export class Worklist {
   }
 
   /** Preferred future-dispatch chain for `unit`. Not active-frame provenance. */
-  futureDispatchChainFor(unit: Unit): Speculation {
+  futureDispatchChainFor(unit: Unit): AssumptionChain {
     return this.futureDispatchContext.get(unit) ?? ROOT_CONTEXT;
   }
 
   /** Same as `futureDispatchChainFor`, keyed by nodeId. */
-  futureDispatchChainForNode(nodeId: NodeId): Speculation {
+  futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
     const unit = this._topology.unitOfNode(nodeId);
     return unit === undefined ? ROOT_CONTEXT : this.futureDispatchChainFor(unit);
   }
@@ -770,7 +782,9 @@ export class Worklist {
       rebuilt.push(unit);
     }
     this.pendingRebuilds.clear();
-    for (const unit of rebuilt) this.fireRebuild(unit);
+    for (const unit of rebuilt) {
+      for (const sub of this.rebuildSubs) sub(this.passCtx, unit);
+    }
     return rebuilt;
   }
 

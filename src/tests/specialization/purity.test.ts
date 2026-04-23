@@ -7,7 +7,7 @@ import { StmtNS } from "../../ast-types";
 import { purityScopeAnalysis } from "../../specialization/purity-analysis/analysis";
 import { runtimeParamChannel } from "../../specialization/framework/runtime-analyses";
 import { paramKey } from "../../specialization/framework/key-spaces";
-import { ROOT_CONTEXT } from "../../specialization/framework/assumption-chain";
+import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 function purityOf(code: string, fnName: string): boolean | undefined {
@@ -28,8 +28,7 @@ function runCases(cases: Case[]): void {
   });
 }
 
-// Parity with the prior syntactic fold.
-describe("PurityScopeAnalysis — parity", () => {
+describe("PurityScopeAnalysis — arithmetic, locals, and common impurities", () => {
   runCases([
     ["pure arithmetic body", "def f(x):\n    return x + 1", "f", true],
     ["pure local assign + return", "def f(x):\n    y = x * 2\n    return y", "f", true],
@@ -108,8 +107,7 @@ describe("PurityScopeAnalysis — CFG joins", () => {
   ]);
 });
 
-// Whitelisted builtins + subscript-read relaxation.
-describe("PurityScopeAnalysis — capability gains", () => {
+describe("PurityScopeAnalysis — whitelisted builtins and subscript reads", () => {
   runCases([
     [
       "whitelisted range in for-iter",

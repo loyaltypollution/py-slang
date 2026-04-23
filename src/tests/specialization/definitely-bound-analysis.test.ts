@@ -14,7 +14,7 @@
 //   6. Loop iterator slots become bound inside / after the loop body.
 
 import { StmtNS } from "../../ast-types";
-import { ROOT_CONTEXT } from "../../specialization/framework/assumption-chain";
+import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
 import { definitelyBoundAnalysis } from "../../specialization/definitely-bound-analysis/analysis";
 import { BOUND, UNBOUND } from "../../specialization/definitely-bound-analysis/lattice";
 import { DEFAULT_PASSES } from "../../specialization/defaults";

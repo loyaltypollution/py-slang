@@ -1,5 +1,5 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { Speculation } from "../framework/assumption-chain";
+import type { AssumptionChain } from "../lattice/chain";
 import { forkBody } from "../framework/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 
@@ -62,35 +62,35 @@ export function walkExpr(e: ExprNS.Expr, onExpr: (expr: ExprNS.Expr) => void): v
   }
 }
 
-export function lineageTo(chain: Speculation): Speculation[] {
-  const out: Speculation[] = [];
-  for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
+export function lineageTo(chain: AssumptionChain): AssumptionChain[] {
+  const out: AssumptionChain[] = [];
+  for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
     out.push(cur);
   }
   return out.reverse();
 }
 
 function pickWitness(
-  witnesses: ReadonlyArray<Speculation | undefined>,
-  better: (candidate: Speculation, current: Speculation) => boolean,
-): Speculation | undefined {
-  let chosen: Speculation | undefined;
+  witnesses: ReadonlyArray<AssumptionChain | undefined>,
+  preferCandidate: (candidate: AssumptionChain, current: AssumptionChain) => boolean,
+): AssumptionChain | undefined {
+  let chosen: AssumptionChain | undefined;
   for (const w of witnesses) {
     if (w === undefined) continue;
-    if (chosen === undefined || better(w, chosen)) chosen = w;
+    if (chosen === undefined || preferCandidate(w, chosen)) chosen = w;
   }
   return chosen;
 }
 
 export function deepestWitness(
-  ...witnesses: ReadonlyArray<Speculation | undefined>
-): Speculation | undefined {
+  ...witnesses: ReadonlyArray<AssumptionChain | undefined>
+): AssumptionChain | undefined {
   return pickWitness(witnesses, (w, c) => w.depth > c.depth);
 }
 
 export function shallowestWitness(
-  ...witnesses: ReadonlyArray<Speculation | undefined>
-): Speculation | undefined {
+  ...witnesses: ReadonlyArray<AssumptionChain | undefined>
+): AssumptionChain | undefined {
   return pickWitness(witnesses, (w, c) => w.depth < c.depth);
 }
 
@@ -165,20 +165,24 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     return expr.accept(this);
   }
 
-  visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
+  private descendLeftRight(expr: ExprNS.Binary | ExprNS.Compare | ExprNS.BoolOp): ExprNS.Expr {
     expr.left = expr.left.accept(this);
     expr.right = expr.right.accept(this);
     return expr;
+  }
+
+  private descendArray(exprs: ExprNS.Expr[]): void {
+    for (let i = 0; i < exprs.length; i++) exprs[i] = exprs[i].accept(this);
+  }
+
+  visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
+    return this.descendLeftRight(expr);
   }
   visitCompareExpr(expr: ExprNS.Compare): ExprNS.Expr {
-    expr.left = expr.left.accept(this);
-    expr.right = expr.right.accept(this);
-    return expr;
+    return this.descendLeftRight(expr);
   }
   visitBoolOpExpr(expr: ExprNS.BoolOp): ExprNS.Expr {
-    expr.left = expr.left.accept(this);
-    expr.right = expr.right.accept(this);
-    return expr;
+    return this.descendLeftRight(expr);
   }
   visitUnaryExpr(expr: ExprNS.Unary): ExprNS.Expr {
     expr.right = expr.right.accept(this);
@@ -192,11 +196,11 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   }
   visitCallExpr(expr: ExprNS.Call): ExprNS.Expr {
     expr.callee = expr.callee.accept(this);
-    for (let i = 0; i < expr.args.length; i++) expr.args[i] = expr.args[i].accept(this);
+    this.descendArray(expr.args);
     return expr;
   }
   visitListExpr(expr: ExprNS.List): ExprNS.Expr {
-    for (let i = 0; i < expr.elements.length; i++) expr.elements[i] = expr.elements[i].accept(this);
+    this.descendArray(expr.elements);
     return expr;
   }
   visitSubscriptExpr(expr: ExprNS.Subscript): ExprNS.Expr {
@@ -212,27 +216,14 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     expr.value = expr.value.accept(this);
     return expr;
   }
-  visitLambdaExpr(expr: ExprNS.Lambda): ExprNS.Expr {
-    return expr;
-  }
-  visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExprNS.Expr {
-    return expr;
-  }
-  visitLiteralExpr(expr: ExprNS.Literal): ExprNS.Expr {
-    return expr;
-  }
-  visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ExprNS.Expr {
-    return expr;
-  }
-  visitComplexExpr(expr: ExprNS.Complex): ExprNS.Expr {
-    return expr;
-  }
-  visitVariableExpr(expr: ExprNS.Variable): ExprNS.Expr {
-    return expr;
-  }
-  visitNoneExpr(expr: ExprNS.None): ExprNS.Expr {
-    return expr;
-  }
+  // Leaf-like nodes: no descent required.
+  visitLambdaExpr(expr: ExprNS.Lambda): ExprNS.Expr { return expr; }
+  visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExprNS.Expr { return expr; }
+  visitLiteralExpr(expr: ExprNS.Literal): ExprNS.Expr { return expr; }
+  visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ExprNS.Expr { return expr; }
+  visitComplexExpr(expr: ExprNS.Complex): ExprNS.Expr { return expr; }
+  visitVariableExpr(expr: ExprNS.Variable): ExprNS.Expr { return expr; }
+  visitNoneExpr(expr: ExprNS.None): ExprNS.Expr { return expr; }
 }
 
 interface SweepingVisitor {
@@ -244,8 +235,8 @@ interface SweepingVisitor {
  *  Shallow-first lets deeper forks inherit earlier rewrites in the same sweep. */
 export function runWitnessSweep(
   unit: Unit,
-  witnesses: Iterable<Speculation>,
-  makeVisitor: (witness: Speculation) => SweepingVisitor,
+  witnesses: Iterable<AssumptionChain>,
+  makeVisitor: (witness: AssumptionChain) => SweepingVisitor,
 ): boolean {
   const ordered = Array.from(witnesses).sort((a, b) => a.depth - b.depth);
   let changed = false;
@@ -256,4 +247,19 @@ export function runWitnessSweep(
     changed = v.changed || changed;
   }
   return changed;
+}
+
+/** `RewriteStmtVisitor` wrapper that delegates to an expression visitor and
+ *  forwards its `changed` flag. Used by transforms that only rewrite at the
+ *  expression level. */
+export class ExprDrivenStmtVisitor<V extends DescendingExprVisitor & { changed: boolean }>
+  extends RewriteStmtVisitor
+{
+  constructor(readonly exprVisitor: V) {
+    super((e) => exprVisitor.rewrite(e));
+  }
+
+  get changed(): boolean {
+    return this.exprVisitor.changed;
+  }
 }

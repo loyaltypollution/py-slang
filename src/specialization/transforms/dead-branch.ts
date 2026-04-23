@@ -5,7 +5,7 @@
 import { StmtNS } from "../../ast-types";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
-import type { Speculation } from "../framework/assumption-chain";
+import type { AssumptionChain } from "../lattice/chain";
 import { visibleBody } from "../framework/assumption-bodies";
 import { typeAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
@@ -13,7 +13,7 @@ import type { ProgramTopology } from "../framework/topology";
 import { BOOL_BIT, BoolRef, TypeLattice } from "../type-analysis/lattice";
 import { BaseStmtVisitor, runWitnessSweep } from "./witness-utils";
 
-function boolCondition(chain: Speculation, topology: ProgramTopology, nodeId: number) {
+function boolCondition(chain: AssumptionChain, topology: ProgramTopology, nodeId: number) {
   return typeAnalysis
     .perExpr(topology)
     .readMinimal(
@@ -24,40 +24,30 @@ function boolCondition(chain: Speculation, topology: ProgramTopology, nodeId: nu
     );
 }
 
-class SeedFinderVisitor extends BaseStmtVisitor {
-  readonly witnesses = new Set<Speculation>();
-  constructor(
-    private readonly chain: Speculation,
-    private readonly topology: ProgramTopology,
-  ) {
-    super();
-  }
-
-  walk(stmts: readonly StmtNS.Stmt[]): void {
-    for (const s of stmts) s.accept(this);
-  }
-
-  visitIfStmt(stmt: StmtNS.If): void {
-    const r = boolCondition(this.chain, this.topology, stmt.condition.id);
-    if (r !== undefined) this.witnesses.add(r.witness);
-    this.walk(stmt.body);
-    if (stmt.elseBlock) this.walk(stmt.elseBlock);
-  }
-  visitWhileStmt(stmt: StmtNS.While): void {
-    this.walk(stmt.body);
-  }
-  visitForStmt(stmt: StmtNS.For): void {
-    this.walk(stmt.body);
-  }
-  visitFileInputStmt(stmt: StmtNS.FileInput): void {
-    this.walk(stmt.statements);
+function collectConstCondWitnesses(
+  stmts: readonly StmtNS.Stmt[],
+  chain: AssumptionChain,
+  topology: ProgramTopology,
+  out: Set<AssumptionChain>,
+): void {
+  for (const s of stmts) {
+    if (s instanceof StmtNS.If) {
+      const r = boolCondition(chain, topology, s.condition.id);
+      if (r !== undefined) out.add(r.witness);
+      collectConstCondWitnesses(s.body, chain, topology, out);
+      if (s.elseBlock) collectConstCondWitnesses(s.elseBlock, chain, topology, out);
+    } else if (s instanceof StmtNS.While || s instanceof StmtNS.For) {
+      collectConstCondWitnesses(s.body, chain, topology, out);
+    } else if (s instanceof StmtNS.FileInput) {
+      collectConstCondWitnesses(s.statements, chain, topology, out);
+    }
   }
 }
 
 class DeadBranchVisitor extends BaseStmtVisitor {
   changed = false;
   constructor(
-    private readonly chain: Speculation,
+    private readonly chain: AssumptionChain,
     private readonly topology: ProgramTopology,
   ) {
     super();
@@ -102,12 +92,12 @@ class DeadBranchVisitor extends BaseStmtVisitor {
 }
 
 export const deadBranchRule: TransformRule = {
-  sweep(unit: Unit, chain: Speculation, topology: ProgramTopology): boolean {
-    const finder = new SeedFinderVisitor(chain, topology);
-    finder.walk(visibleBody(unit, chain));
+  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
+    const witnesses = new Set<AssumptionChain>();
+    collectConstCondWitnesses(visibleBody(unit, chain), chain, topology, witnesses);
     return runWitnessSweep(
       unit,
-      finder.witnesses,
+      witnesses,
       (witness) => new DeadBranchVisitor(witness, topology),
     );
   },

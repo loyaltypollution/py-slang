@@ -8,8 +8,8 @@
  */
 import { AnalysisStore } from "../../specialization/framework/analysis-store";
 import type { JoinSemiLattice, Narrowing } from "../../specialization/framework/analysis";
-import { ROOT_CONTEXT } from "../../specialization/framework/assumption-chain";
-import { extend } from "../../specialization/framework/assumption-algebra";
+import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
+import { extend } from "../../specialization/lattice/algebra";
 
 const intMaxLattice: JoinSemiLattice<number> = {
   bottom: 0,

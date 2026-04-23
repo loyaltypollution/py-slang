@@ -1,42 +1,31 @@
-import type {
-  JoinSemiLattice,
-  Narrowing,
-} from "../../specialization/framework/analysis";
+import type { JoinSemiLattice } from "../../specialization/framework/analysis";
 import { AnalysisStore } from "../../specialization/framework/analysis-store";
-import { ROOT_CONTEXT } from "../../specialization/framework/assumption-chain";
+import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
 import {
   at,
   extend as extendAlg,
   without,
-} from "../../specialization/framework/assumption-algebra";
+} from "../../specialization/lattice/algebra";
 import {
-  ContextInterner,
-} from "../../specialization/framework/assumption-chain-interner";
+  ChainInterner,
+} from "../../specialization/lattice/interner";
+import {
+  box,
+  boxedEq,
+  makeNarrowing as makeAnalysis,
+  type Boxed,
+} from "./harness/lattice-doubles";
 
-function makeAnalysis<K, V>(eq: (a: V, b: V) => boolean): Narrowing<K, V> {
-  return {
-    eq,
-    blockAnalysis: () => ({} as any),
-    lift: () => undefined,
-  };
-}
-
-// Structural value type used to exercise value dedup: fresh objects per
-// allocation, compared via handle `eq`. Mirrors ConstLattice's shape.
-interface Boxed { readonly v: number; }
-const box = (v: number): Boxed => ({ v });
-const boxedEq = (a: Boxed, b: Boxed): boolean => a === b || a.v === b.v;
-
-describe("ContextInterner", () => {
+describe("ChainInterner", () => {
   it("root is stable: extending from ROOT_CONTEXT never mints a new root", () => {
-    const interner = new ContextInterner();
+    const interner = new ChainInterner();
     const p = makeAnalysis<number, number>((a, b) => a === b);
     const c1 = interner.extend(ROOT_CONTEXT, p, 1, 10);
     expect(c1.parent).toBe(ROOT_CONTEXT);
   });
 
   it("same observation is idempotent: repeated extend returns ===", () => {
-    const interner = new ContextInterner();
+    const interner = new ChainInterner();
     const p = makeAnalysis<number, number>((a, b) => a === b);
     const a = interner.extend(ROOT_CONTEXT, p, 1, 10);
     const b = interner.extend(ROOT_CONTEXT, p, 1, 10);
@@ -44,17 +33,15 @@ describe("ContextInterner", () => {
   });
 
   it("structurally-equal values dedup via lattice.eq", () => {
-    const interner = new ContextInterner();
+    const interner = new ChainInterner();
     const h = makeAnalysis<number, Boxed>(boxedEq);
-    // Fresh box objects: ref-different but algebra-equal (same .v).
-    // boxedLattice.eq handles the structural comparison.
     const a = interner.extend(ROOT_CONTEXT, h, 1, box(42));
     const b = interner.extend(ROOT_CONTEXT, h, 1, box(42));
     expect(a).toBe(b);
   });
 
   it("order-independence: same assumption set → same canonical chain", () => {
-    const interner = new ContextInterner();
+    const interner = new ChainInterner();
     const p = makeAnalysis<number, number>((a, b) => a === b);
     const q = makeAnalysis<number, number>((a, b) => a === b);
     // Build "forward": p@1 then q@2.
@@ -71,7 +58,7 @@ describe("ContextInterner", () => {
   });
 
   it("exclude returns pre-built sibling (the chain→tree payoff)", () => {
-    const interner = new ContextInterner();
+    const interner = new ChainInterner();
     const p = makeAnalysis<number, number>((a, b) => a === b);
     const q = makeAnalysis<number, number>((a, b) => a === b);
     const r = makeAnalysis<number, number>((a, b) => a === b);
@@ -96,7 +83,7 @@ describe("ContextInterner", () => {
   });
 
   it("replacement at same (handle, key): extend throws; use exclude+extend instead", () => {
-    const interner = new ContextInterner();
+    const interner = new ChainInterner();
     const p = makeAnalysis<number, number>((a, b) => a === b);
     const first = interner.extend(ROOT_CONTEXT, p, 7, 10);
 
@@ -118,7 +105,7 @@ describe("ContextInterner", () => {
     // is structurally equal to a trie entry under a DIFFERENT parent path
     // must use lattice.eq, not ref-equality. Otherwise two arrival orders
     // reaching the same canonical chain would fork the trie.
-    const interner = new ContextInterner();
+    const interner = new ChainInterner();
     const ha = makeAnalysis<number, Boxed>(boxedEq);
     const hb = makeAnalysis<number, Boxed>(boxedEq);
 
@@ -139,7 +126,7 @@ describe("ContextInterner", () => {
   });
 
   it("exclude on ctx with no match returns ctx unchanged (ref-equal)", () => {
-    const interner = new ContextInterner();
+    const interner = new ChainInterner();
     const p = makeAnalysis<number, number>((a, b) => a === b);
     const q = makeAnalysis<number, number>((a, b) => a === b);
     const c = interner.extend(ROOT_CONTEXT, p, 1, 10);
@@ -148,7 +135,7 @@ describe("ContextInterner", () => {
   });
 
   it("interned nodes are frozen", () => {
-    const interner = new ContextInterner();
+    const interner = new ChainInterner();
     const p = makeAnalysis<number, number>((a, b) => a === b);
     const c = interner.extend(ROOT_CONTEXT, p, 1, 10);
     expect(Object.isFrozen(c)).toBe(true);
@@ -156,8 +143,8 @@ describe("ContextInterner", () => {
   });
 
   it("interner instances are isolated (no cross-instance sharing)", () => {
-    const a = new ContextInterner();
-    const b = new ContextInterner();
+    const a = new ChainInterner();
+    const b = new ChainInterner();
     const p = makeAnalysis<number, number>((a, b) => a === b);
     const ca = a.extend(ROOT_CONTEXT, p, 1, 10);
     const cb = b.extend(ROOT_CONTEXT, p, 1, 10);
@@ -166,7 +153,7 @@ describe("ContextInterner", () => {
   });
 
   it("debugNodeCount reflects interned chain count, not call count", () => {
-    const interner = new ContextInterner();
+    const interner = new ChainInterner();
     const p = makeAnalysis<number, number>((a, b) => a === b);
     interner.extend(ROOT_CONTEXT, p, 1, 10);
     interner.extend(ROOT_CONTEXT, p, 1, 10); // dedup
@@ -206,7 +193,7 @@ describe("default interner via free functions", () => {
 
 // Downstream-payoff tests. The interner's value proposition is that
 // structurally-equal chains reach reference-equality, so downstream
-// `Map<Speculation, _>` consumers (here: AnalysisStore's cellsByContext)
+// `Map<AssumptionChain, _>` consumers (here: AnalysisStore's cellsByContext)
 // see the chain reconverge across widen → re-extend. Without the interner,
 // step-3's chain would be a fresh object and the fact written at step-1
 // would be unreachable — a silent fact-cache orphan on every successful

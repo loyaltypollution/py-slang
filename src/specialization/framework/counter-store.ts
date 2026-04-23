@@ -48,11 +48,3 @@ export class CounterStore<K> implements CounterSpec {
     return { prev, next };
   }
 }
-
-export function defineCounterStore<K>(
-  spec: CounterSpec & { bind?: (this: CounterStore<K>, worklist: Worklist) => void },
-): CounterStore<K> {
-  const c = new CounterStore<K>(spec);
-  if (spec.bind !== undefined) c.bind = spec.bind.bind(c);
-  return c;
-}

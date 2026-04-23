@@ -11,9 +11,8 @@ import {
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { makeJitObservers } from "../specialization";
 import { DEFAULT_PASSES, DEFAULT_TRANSFORMS } from "../specialization/defaults";
-import { bodyToCompile, dispatchValid } from "../specialization/framework/dispatch";
+import { makeJitDispatch } from "../specialization/framework/jit-dispatch";
 import { Worklist } from "../specialization/framework/worklist";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
@@ -53,35 +52,16 @@ abstract class PyCseJitEvaluatorBase extends PyCseEvaluatorBase {
       const worklist = new Worklist(ast, environments, DEFAULT_PASSES, undefined, DEFAULT_TRANSFORMS);
       worklist.drain();
 
-      const observers = makeJitObservers(worklist);
-      // CSE's specialization is live-per-call: body selection re-derives
-      // pruning at the current (post-param-observation) chain each call.
+      const dispatch = makeJitDispatch(worklist);
+      // CSE policy: short-circuit to the source body when dispatch yields
+      // no specialization contribution; only `specialized` returns a body.
       const jitHooks: JitHooks = {
         rootScope: ast,
         dispatchCall: (scopeId, args) => {
-          observers.observeScopeCall(scopeId);
-          const unit = worklist.topology.unitOfFunctionId(scopeId);
-          if (unit === undefined) return undefined;
-          for (let i = 0; i < args.length; i++) {
-            observers.observeParamEntry(scopeId, i, args[i]);
-          }
-          // Fire transforms before reading the body: `Worklist.bump` and
-          // `publish` drive analyses to fixpoint but deliberately skip the
-          // transform sweep (see `bump` guard). Without this call, the
-          // memoization rule (and other runtime-counter- or purity-gated
-          // transforms) stays dirty-but-unrun until the post-evaluate drain,
-          // meaning the CSE interpreter would re-walk the unrewritten body
-          // on every recursive call. Symmetric with SVML JIT's dispatchCall.
-          worklist.sweepTransforms();
-          const chain = observers.currentChainFor(scopeId);
-          const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
-          if (!dispatchValid(unit, chain, isRefuted)) return undefined;
-          const body = bodyToCompile(unit, chain, worklist.topology, isRefuted);
-          return body === unit.body ? undefined : body;
+          const r = dispatch.onCall(scopeId, args);
+          return r?.kind === "specialized" ? r.body : undefined;
         },
-        dispatchReturn: (scopeId, value) => {
-          observers.observeScopeReturn(scopeId, value);
-        },
+        dispatchReturn: dispatch.onReturn,
       };
       this.context.jitHooks = jitHooks;
 

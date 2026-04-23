@@ -1,8 +1,8 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
 import type { Narrowing } from "../framework/analysis";
-import { isRoot, type Speculation } from "../framework/assumption-chain";
-import { at } from "../framework/assumption-algebra";
+import { isRoot, type AssumptionChain } from "../lattice/chain";
+import { at } from "../lattice/algebra";
 import { MutableEnv } from "../framework/mutable-env";
 import { paramTypeNarrowing } from "../framework/param-handles";
 import type { BlockDfaSpec } from "../framework/dfa-factory";
@@ -69,9 +69,13 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
   [TokenType.NOTEQUAL, "!="],
 ]);
 
-/** Node-keyed type-narrowing fact-surface identity. Not used as a chain-
- *  extension namespace in production (no `observationSource`); retained as
- *  an identity handle for synthetic test chain extensions. */
+/** Node-keyed type-narrowing fact-surface identity. A
+ *  `(typeNarrowing, nodeId, lattice)` binding in a non-ROOT context is met
+ *  into `typeAnalysis`'s per-node fact at that `nodeId` via
+ *  `TypeAnalysisVisitor.annotate` — no separate store, no parallel analysis.
+ *  Production has no driver on this axis today (no `observationSource`);
+ *  production narrowings live in `framework/param-handles.ts` and
+ *  `type-requirement-analysis/analysis.ts`. */
 export const typeNarrowing: Narrowing<NodeId, TypeLattice> = {
   eq,
   blockAnalysis: () => typeAnalysis,
@@ -84,7 +88,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   private paramKeys!: readonly ParamKey[];
   private slotLookup!: SlotLookup;
   private recordExprFact!: (nodeId: NodeId, val: TypeLattice) => void;
-  private context!: Speculation;
+  private context!: AssumptionChain;
   private rootContext = true;
 
   reset(
@@ -92,7 +96,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     paramKeys: readonly ParamKey[],
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: TypeLattice) => void,
-    context: Speculation,
+    context: AssumptionChain,
   ): this {
     this.slotTypes = slotTypes;
     this.paramKeys = paramKeys;
@@ -118,12 +122,17 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     // `ExprNS.Literal` with typeof "number" is always a Python float — int
     // literals parse to `ExprNS.BigIntLiteral`.
     const value = expr.value;
+    let result: TypeLattice;
     if (typeof value === "number") {
-      return this.annotate(expr, Number.isNaN(value) ? floatValue() : signedFloat(value));
+      result = Number.isNaN(value) ? floatValue() : signedFloat(value);
+    } else if (typeof value === "boolean") {
+      result = value ? BOOL_TRUE : BOOL_FALSE;
+    } else if (typeof value === "string") {
+      result = STRING;
+    } else {
+      result = TOP;
     }
-    if (typeof value === "boolean") return this.annotate(expr, value ? BOOL_TRUE : BOOL_FALSE);
-    if (typeof value === "string") return this.annotate(expr, STRING);
-    return this.annotate(expr, TOP);
+    return this.annotate(expr, result);
   }
 
   visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): TypeLattice {
@@ -184,34 +193,34 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
     const left = expr.left.accept(this);
     const right = expr.right.accept(this);
     const truth = truthiness(left);
+    const opType = expr.operator.type;
 
-    switch (expr.operator.type) {
-      case TokenType.AND:
-        if (truth === BoolRef.False) return this.annotate(expr, left);
-        if (truth === BoolRef.True) return this.annotate(expr, right);
-        return this.annotate(expr, join(left, right));
-      case TokenType.OR:
-        if (truth === BoolRef.True) return this.annotate(expr, left);
-        if (truth === BoolRef.False) return this.annotate(expr, right);
-        return this.annotate(expr, join(left, right));
-      default:
-        return this.annotate(expr, TOP);
+    let result: TypeLattice;
+    if (opType === TokenType.AND) {
+      if (truth === BoolRef.False) result = left;
+      else if (truth === BoolRef.True) result = right;
+      else result = join(left, right);
+    } else if (opType === TokenType.OR) {
+      if (truth === BoolRef.True) result = left;
+      else if (truth === BoolRef.False) result = right;
+      else result = join(left, right);
+    } else {
+      result = TOP;
     }
+    return this.annotate(expr, result);
   }
 
   visitUnaryExpr(expr: ExprNS.Unary): TypeLattice {
     const operand = expr.right.accept(this);
 
+    let result: TypeLattice;
     switch (expr.operator.type) {
-      case TokenType.MINUS:
-        return this.annotate(expr, transferUnaryNeg(operand));
-      case TokenType.NOT:
-        return this.annotate(expr, transferNot(operand));
-      case TokenType.PLUS:
-        return this.annotate(expr, operand);
-      default:
-        return this.annotate(expr, TOP);
+      case TokenType.MINUS: result = transferUnaryNeg(operand); break;
+      case TokenType.NOT:   result = transferNot(operand); break;
+      case TokenType.PLUS:  result = operand; break;
+      default:              result = TOP;
     }
+    return this.annotate(expr, result);
   }
 
   visitTernaryExpr(expr: ExprNS.Ternary): TypeLattice {
@@ -287,7 +296,7 @@ const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
     unit,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: TypeLattice) => void,
-    context: Speculation,
+    context: AssumptionChain,
   ): ExprNS.Visitor<TypeLattice> {
     const paramCount = unit.funcAst instanceof StmtNS.FunctionDef
       ? unit.funcAst.parameters.length
@@ -321,7 +330,7 @@ export const typeAnalysis: BlockFixpointAnalysis<TypeLattice> =
     seedEnv: () => new MutableEnv<TypeLattice>(),
     transferBlock: (ctx, block, inEnv, unit) =>
       transferBlock(block, inEnv, typeAnalysisModule, unit, ctx.currentContext),
-    refineOnEdge: (env, edge) => typeAnalysisModule.refineOnEdge(env, edge),
+    refineOnEdge: typeAnalysisModule.refineOnEdge,
   });
 
 // ---- Predicate narrowing helpers ----
@@ -349,8 +358,9 @@ function signOf(value: number): IntRef {
 function numericRefinement(ref: IntRef): TypeLattice {
   const hasTruthy = (ref & (IntRef.Neg | IntRef.Pos)) !== 0;
   const hasFalsy = (ref & IntRef.Zero) !== 0;
-  const boolRef = (((hasTruthy ? BoolRef.True : 0) |
-    (hasFalsy ? BoolRef.False : 0)) as BoolRef);
+  let boolRef: BoolRef = BoolRef.Bottom;
+  if (hasTruthy) boolRef = (boolRef | BoolRef.True) as BoolRef;
+  if (hasFalsy) boolRef = (boolRef | BoolRef.False) as BoolRef;
   return {
     kinds: INT_BIT | FLOAT_BIT | BOOL_BIT,
     intRef: ref,
@@ -443,14 +453,7 @@ function applyPredicate(
 
   // Bare-variable predicate `if x:` — narrow x by full-kind truthiness mask.
   if (cond instanceof ExprNS.Variable) {
-    const info = slotLookup(cond.name);
-    if (!isLocal(info)) return env;
-    const existing = env.get(info.slot) ?? TOP;
-    const refined = meet(existing, truth ? TRUTHY_MASK : FALSY_MASK);
-    if (refined === existing) return env;
-    const out = env.snapshot();
-    out.set(info.slot, refined);
-    return out;
+    return refineSlot(env, cond, truth ? TRUTHY_MASK : FALSY_MASK, slotLookup);
   }
 
   if (!(cond instanceof ExprNS.Compare)) return env;
@@ -461,7 +464,7 @@ function applyPredicate(
   // predicate as directly asserted. Then normalize to `slot OP literal` form.
   const effectiveOp = truth ? opStr : negateOp(opStr);
   let slotVar: ExprNS.Variable;
-  let litValue: number | undefined;
+  let litValue: number;
   let normalizedOp: string;
   const leftLit = readNumericLiteral(cond.left);
   const rightLit = readNumericLiteral(cond.right);
@@ -477,16 +480,26 @@ function applyPredicate(
     return env;
   }
 
-  const info = slotLookup(slotVar.name);
-  if (!isLocal(info)) return env;
-
   const ref = leftSlotRefinement(normalizedOp, litValue);
   if (ref === undefined) return env;
 
-  const existing = env.get(info.slot) ?? TOP;
-  const refined = meet(existing, numericRefinement(ref));
-  if (refined === existing) return env;
+  return refineSlot(env, slotVar, numericRefinement(ref), slotLookup);
+}
 
+/** Meet-refine a slot's env entry by `mask`; snapshot only when the value
+ *  changes. Returns `env` unchanged when the slot is non-local or the meet
+ *  is a no-op. */
+function refineSlot(
+  env: MutableEnv<TypeLattice>,
+  slotVar: ExprNS.Variable,
+  mask: TypeLattice,
+  slotLookup: SlotLookup,
+): MutableEnv<TypeLattice> {
+  const info = slotLookup(slotVar.name);
+  if (!isLocal(info)) return env;
+  const existing = env.get(info.slot) ?? TOP;
+  const refined = meet(existing, mask);
+  if (refined === existing) return env;
   const out = env.snapshot();
   out.set(info.slot, refined);
   return out;

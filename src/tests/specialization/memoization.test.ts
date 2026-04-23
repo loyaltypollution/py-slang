@@ -12,20 +12,11 @@ import {
 } from "../../runtime/memo";
 import { runtimeCallCounter } from "../../specialization/framework/runtime-analyses";
 import type { Unit } from "../../specialization/framework/function-unit";
-import type { Worklist } from "../../specialization/framework/worklist";
 import { setup } from "./harness/compile-pipelines";
+import { findFunctionDef, observeCallsTo } from "./harness/function-observe";
 
-function findFunctionDef(ast: StmtNS.FileInput, name: string): StmtNS.FunctionDef {
-  for (const s of ast.statements) {
-    if (s instanceof StmtNS.FunctionDef && s.name.lexeme === name) return s;
-  }
-  throw new Error(`FunctionDef ${name} not found`);
-}
-
-function observeCallsTo(wl: Worklist, fd: StmtNS.FunctionDef, n: number): void {
-  for (let i = 0; i < n; i++) wl.bump(runtimeCallCounter, fd.id);
-}
-
+// TODO(plan.md §1): replace with `memoization.didFireOn(unit)` once the
+// transform exposes a public tag; this helper pins the wrapper's private shape.
 function memoFired(unit: Unit): boolean {
   const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return false;
@@ -151,8 +142,6 @@ describe("memoization: purity gate", () => {
   });
 });
 
-// Runtime side-table contract: memoLookup/memoPut, type-tagged arg keys,
-// zero-arg key collapses to empty string.
 describe("memoization: runtime cache contract", () => {
   beforeEach(clearMemoCache);
 
@@ -191,8 +180,6 @@ describe("memoization: runtime cache contract", () => {
   });
 });
 
-// SVML integration: resolver seeds __memo_* names, compiler routes to
-// primitives, interpreter dispatches to the shared runtime.
 describe("memoization: SVML wiring", () => {
   beforeEach(clearMemoCache);
 
@@ -236,8 +223,6 @@ f(5)
     );
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
 
-    // Two calls with identical args → one cache hit on the second; bucket
-    // has exactly one entry.
     const fBuckets = Array.from(memoCacheSnapshot().entries()).filter(([k]) => k.startsWith("f@"));
     expect(fBuckets).toHaveLength(1);
     const [, bucket] = fBuckets[0];

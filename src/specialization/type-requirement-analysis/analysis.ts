@@ -11,19 +11,17 @@
 // Bypasses `BlockDfaSpec` (like liveness) because the backward visitor pushes
 // target requirements *down* into operand slots, which doesn't fit
 // `ExprNS.Visitor<L>`. At each `Return e` the transfer reads
-// `findAssumption(ctx.currentContext, returnKindNarrowing, functionId)`; a
-// missing assumption leaves all requirements at TOP (sound no-op).
+// `at(ctx.currentContext, returnKindNarrowing, functionId)`; a missing
+// assumption leaves all requirements at TOP (sound no-op).
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
 import { unitOfFunctionId, type Narrowing } from "../framework/analysis";
-import { at } from "../framework/assumption-algebra";
-import { ROOT_CONTEXT, type Speculation } from "../framework/assumption-chain";
-import type { BasicBlock } from "../framework/cfg";
+import { at } from "../lattice/algebra";
+import { ROOT_CONTEXT, type AssumptionChain } from "../lattice/chain";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
-  type BlockPassResult,
 } from "../framework/dfa-factory";
 import type { Unit } from "../framework/function-unit";
 import type { FunctionId } from "../framework/key-spaces";
@@ -79,8 +77,7 @@ function propagateRequirement(
     if (!isLocal(info)) return;
     const existing = env.get(info.slot) ?? TOP;
     const refined = meet(existing, target);
-    if (refined === existing) return;
-    env.set(info.slot, refined);
+    if (refined !== existing) env.set(info.slot, refined);
     return;
   }
 
@@ -90,32 +87,28 @@ function propagateRequirement(
   }
 
   if (expr instanceof ExprNS.Unary) {
-    if (expr.operator.type === TokenType.PLUS) {
+    const op = expr.operator.type;
+    if (op === TokenType.PLUS) {
       propagateRequirement(expr.right, target, env, slotLookup);
-    } else if (
-      expr.operator.type === TokenType.MINUS &&
-      target.kinds === INT_BIT
-    ) {
+    } else if (op === TokenType.MINUS && target.kinds === INT_BIT) {
       propagateRequirement(expr.right, INT_ANY, env, slotLookup);
     }
     return;
   }
 
-  if (expr instanceof ExprNS.Binary) {
-    if (
-      target.kinds === INT_BIT &&
-      INT_CLOSED_BINOPS.has(expr.operator.type)
-    ) {
-      propagateRequirement(expr.left, INT_ANY, env, slotLookup);
-      propagateRequirement(expr.right, INT_ANY, env, slotLookup);
-    }
+  if (
+    expr instanceof ExprNS.Binary &&
+    target.kinds === INT_BIT &&
+    INT_CLOSED_BINOPS.has(expr.operator.type)
+  ) {
+    propagateRequirement(expr.left, INT_ANY, env, slotLookup);
+    propagateRequirement(expr.right, INT_ANY, env, slotLookup);
     return;
   }
 
   if (expr instanceof ExprNS.Ternary) {
     propagateRequirement(expr.consequent, target, env, slotLookup);
     propagateRequirement(expr.alternative, target, env, slotLookup);
-    return;
   }
 }
 
@@ -169,20 +162,6 @@ function transferStmtBackward(
   }
 }
 
-function transferBlockBackward(
-  block: BasicBlock,
-  inEnv: MutableEnv<TypeLattice>,
-  slotLookup: SlotLookup,
-  returnRequirement: TypeLattice | undefined,
-): BlockPassResult<TypeLattice> {
-  const outEnv = inEnv.snapshot();
-  const stmts = block.stmts;
-  for (let i = stmts.length - 1; i >= 0; i--) {
-    transferStmtBackward(stmts[i], outEnv, slotLookup, returnRequirement);
-  }
-  return { outEnv, exprFacts: new Map() };
-}
-
 /** Backward must-merge analysis. Stored `outEnv` is the block's
  *  requirement-IN (pre-first-statement point). At `unit.cfg.entry` this is
  *  the function's pre-body requirement — parameter-type constraints that, if
@@ -198,7 +177,12 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
       const required = fd instanceof StmtNS.FunctionDef
         ? at(ctx.currentContext, returnKindNarrowing, fd.id)
         : undefined;
-      return transferBlockBackward(block, inEnv, unit.slotLookup, required);
+      const outEnv = inEnv.snapshot();
+      const stmts = block.stmts;
+      for (let i = stmts.length - 1; i >= 0; i--) {
+        transferStmtBackward(stmts[i], outEnv, unit.slotLookup, required);
+      }
+      return { outEnv, exprFacts: new Map() };
     },
     refineOnEdge: (env, _edge) => env,
   });
@@ -235,7 +219,7 @@ export interface EntryRequirement {
  *  return-kind assumption). */
 export function requirementAtEntry(
   unit: Unit,
-  context: Speculation = ROOT_CONTEXT,
+  context: AssumptionChain = ROOT_CONTEXT,
 ): EntryRequirement {
   const provable = new Map<number, TypeLattice>();
   const unprovable = new Set<number>();

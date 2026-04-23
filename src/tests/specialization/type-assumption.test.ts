@@ -1,13 +1,6 @@
-// Proves the narrowing-via-assumption mechanic that replaces
-// `speculativeTypeAnalysis`: running `typeAnalysis` under a non-ROOT
-// Context with a `typeNarrowing` assumption meets the computed static
-// fact with the bound value, yielding the same narrowed per-node fact the
-// old speculative twin produced — without a parallel analysis, without
-// overwrite-mode cells, without an eviction-on-observation hook.
-
 import { ExprNS, StmtNS } from "../../ast-types";
-import { ROOT_CONTEXT } from "../../specialization/framework/assumption-chain";
-import { extend } from "../../specialization/framework/assumption-algebra";
+import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
+import { extend } from "../../specialization/lattice/algebra";
 import { typeAnalysis } from "../../specialization/framework/dfa-analyses";
 import { typeNarrowing } from "../../specialization/type-analysis/analysis";
 import { INT_BIT, INT_POS, TOP } from "../../specialization/type-analysis/lattice";

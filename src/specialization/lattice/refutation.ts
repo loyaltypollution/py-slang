@@ -1,18 +1,18 @@
-// Refutations as an upward-closed filter over Speculations. When a
+// Refutations as an upward-closed filter over AssumptionChains. When a
 // runtime observation contradicts a stored assumption, every superset of
 // the carrying chain becomes refuted. Stores only the minimal generators
 // (an antichain) and answers membership via algebraic `leq`.
 
-import type { Speculation } from "./assumption-algebra";
-import { leq } from "./assumption-algebra";
+import type { AssumptionChain } from "./algebra";
+import { leq } from "./algebra";
 
 export class Refutations {
-  private readonly generators: Set<Speculation> = new Set();
+  private readonly generators: Set<AssumptionChain> = new Set();
 
   /** Record `s` as a refutation event. Empty is never refuted. Maintains
    *  `generators` as an antichain: skip when already covered, drop any
    *  existing generator superseded by the new smaller one. */
-  add(s: Speculation): void {
+  add(s: AssumptionChain): void {
     if (s.parent === undefined) return;
     for (const r of this.generators) {
       if (leq(r, s)) return;
@@ -24,7 +24,7 @@ export class Refutations {
   }
 
   /** `c` is refuted iff some stored generator `r` satisfies `leq(r, c)`. */
-  contains(c: Speculation): boolean {
+  contains(c: AssumptionChain): boolean {
     for (const r of this.generators) {
       if (leq(r, c)) return true;
     }

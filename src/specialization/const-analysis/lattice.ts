@@ -1,16 +1,14 @@
-export type ConstValue = number;
-
 // Constant-propagation lattice: BOTTOM ≤ const(v) ≤ TOP. Join of disagreeing
 // constants is TOP. mergeKind = "may".
 export type ConstLattice =
   | { readonly tag: "bottom" }
-  | { readonly tag: "const"; readonly value: ConstValue }
+  | { readonly tag: "const"; readonly value: number }
   | { readonly tag: "top" };
 
 export const CONST_BOTTOM: ConstLattice = Object.freeze({ tag: "bottom" as const });
 export const CONST_TOP: ConstLattice = Object.freeze({ tag: "top" as const });
 
-export function constOf(value: ConstValue): ConstLattice {
+export function constOf(value: number): ConstLattice {
   return { tag: "const", value };
 }
 
@@ -29,9 +27,10 @@ export function constLeq(a: ConstLattice, b: ConstLattice): boolean {
   return a.value === b.value;
 }
 
-/** Structural equality: antisymmetric closure of `constLeq` plus an
- *  `a === b` shortcut. Shared between the const assumption handle's value
- *  algebra and `constAnalysisModule`. */
+/** Structural equality on the const lattice. Shared between the const
+ *  assumption handle's value algebra and the const analysis module. */
 export function constEq(a: ConstLattice, b: ConstLattice): boolean {
-  return a === b || (constLeq(a, b) && constLeq(b, a));
+  if (a === b) return true;
+  if (a.tag !== b.tag) return false;
+  return a.tag !== "const" || a.value === (b as { value: number }).value;
 }

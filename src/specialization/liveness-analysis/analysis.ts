@@ -1,10 +1,10 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { Speculation } from "../framework/assumption-chain";
+import type { Token } from "../../tokenizer";
+import type { AssumptionChain } from "../lattice/chain";
 import type { BasicBlock } from "../framework/cfg";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
-  type BlockPassResult,
 } from "../framework/dfa-factory";
 import { MutableEnv } from "../framework/mutable-env";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
@@ -72,90 +72,62 @@ class ReadCollector implements ExprNS.Visitor<void> {
   visitMultiLambdaExpr(_expr: ExprNS.MultiLambda): void {}
 }
 
-/** Backward per-statement transfer: env in = live-OUT, env out = live-IN.
- *  For Assign: kill LHS before visiting RHS so a self-assign `s = s + 1`
- *  keeps `s` live on the way in. */
 function killLocal(
   env: MutableEnv<LiveVal>,
   slotLookup: SlotLookup,
-  name: Parameters<SlotLookup>[0],
+  name: Token,
 ): void {
   const info = slotLookup(name);
   if (isLocal(info)) env.clear(info.slot);
 }
 
+/** Backward per-statement transfer: env in = live-OUT, env out = live-IN.
+ *  For Assign: kill LHS before visiting RHS so a self-assign `s = s + 1`
+ *  keeps `s` live on the way in. */
 function transferStmtBackward(
   stmt: StmtNS.Stmt,
   env: MutableEnv<LiveVal>,
   visitor: ReadCollector,
   slotLookup: SlotLookup,
 ): void {
-  switch (stmt.kind) {
-    case "Assign": {
-      const a = stmt as StmtNS.Assign;
-      if (a.target instanceof ExprNS.Variable) {
-        killLocal(env, slotLookup, a.target.name);
-      } else {
-        // Non-Variable targets (subscript, tuple, ...): no kill, reads only.
-        a.target.accept(visitor);
-      }
-      a.value.accept(visitor);
-      return;
+  if (stmt instanceof StmtNS.Assign) {
+    if (stmt.target instanceof ExprNS.Variable) {
+      killLocal(env, slotLookup, stmt.target.name);
+    } else {
+      // Non-Variable targets (subscript, tuple, ...): no kill, reads only.
+      stmt.target.accept(visitor);
     }
-    case "AnnAssign": {
-      const a = stmt as StmtNS.AnnAssign;
-      killLocal(env, slotLookup, a.target.name);
-      a.value.accept(visitor);
-      return;
-    }
-    case "If":
-      (stmt as StmtNS.If).condition.accept(visitor);
-      return;
-    case "While":
-      (stmt as StmtNS.While).condition.accept(visitor);
-      return;
-    case "For": {
-      const f = stmt as StmtNS.For;
-      killLocal(env, slotLookup, f.target);
-      f.iter.accept(visitor);
-      return;
-    }
-    case "Return": {
-      const r = stmt as StmtNS.Return;
-      if (r.value) r.value.accept(visitor);
-      return;
-    }
-    case "SimpleExpr":
-      (stmt as StmtNS.SimpleExpr).expression.accept(visitor);
-      return;
-    case "Assert":
-      (stmt as StmtNS.Assert).value.accept(visitor);
-      return;
-    case "FunctionDef":
-    case "Pass":
-    case "Break":
-    case "Continue":
-    case "Global":
-    case "NonLocal":
-    case "FromImport":
-    case "FileInput":
-      return;
+    stmt.value.accept(visitor);
+    return;
   }
-}
-
-function transferBlock(
-  block: BasicBlock,
-  inEnv: MutableEnv<LiveVal>,
-  slotLookup: SlotLookup,
-): BlockPassResult<LiveVal> {
-  // `inEnv` is live-OUT; snapshot and mutate into live-IN.
-  const outEnv = inEnv.snapshot();
-  const visitor = new ReadCollector(outEnv, slotLookup);
-  const stmts = block.stmts;
-  for (let i = stmts.length - 1; i >= 0; i--) {
-    transferStmtBackward(stmts[i], outEnv, visitor, slotLookup);
+  if (stmt instanceof StmtNS.AnnAssign) {
+    killLocal(env, slotLookup, stmt.target.name);
+    stmt.value.accept(visitor);
+    return;
   }
-  return { outEnv, exprFacts: new Map() };
+  if (stmt instanceof StmtNS.If || stmt instanceof StmtNS.While) {
+    stmt.condition.accept(visitor);
+    return;
+  }
+  if (stmt instanceof StmtNS.For) {
+    killLocal(env, slotLookup, stmt.target);
+    stmt.iter.accept(visitor);
+    return;
+  }
+  if (stmt instanceof StmtNS.Return) {
+    if (stmt.value) stmt.value.accept(visitor);
+    return;
+  }
+  if (stmt instanceof StmtNS.SimpleExpr) {
+    stmt.expression.accept(visitor);
+    return;
+  }
+  if (stmt instanceof StmtNS.Assert) {
+    stmt.value.accept(visitor);
+    return;
+  }
+  // FunctionDef, Pass, Break, Continue, Global, NonLocal, FromImport,
+  // FileInput: no reads, no kills.
 }
 
 /** Backward may-liveness. Stored `outEnv` is the block's live-IN; its
@@ -166,8 +138,17 @@ export const livenessAnalysis: BlockFixpointAnalysis<LiveVal> =
     mergeKind: "may",
     valueLattice: livenessLattice,
     seedEnv: () => new MutableEnv<LiveVal>(),
-    transferBlock: (_ctx, block, inEnv, unit) =>
-      transferBlock(block, inEnv, unit.slotLookup),
+    transferBlock: (_ctx, block, inEnv, unit) => {
+      // `inEnv` is live-OUT; snapshot and mutate into live-IN.
+      const outEnv = inEnv.snapshot();
+      const { slotLookup } = unit;
+      const visitor = new ReadCollector(outEnv, slotLookup);
+      const stmts = block.stmts;
+      for (let i = stmts.length - 1; i >= 0; i--) {
+        transferStmtBackward(stmts[i], outEnv, visitor, slotLookup);
+      }
+      return { outEnv, exprFacts: new Map() };
+    },
     refineOnEdge: (env, _edge) => env,
   });
 
@@ -176,7 +157,7 @@ export const livenessAnalysis: BlockFixpointAnalysis<LiveVal> =
  *  load-bearing — successor live-INs differ across speculative contexts. */
 export function liveOutOf(
   block: BasicBlock,
-  chain: Speculation,
+  chain: AssumptionChain,
 ): MutableEnv<LiveVal> {
   const result = new MutableEnv<LiveVal>();
   for (const edge of block.successorEdges) {
@@ -191,7 +172,7 @@ export function liveOutOf(
 export function perStatementLiveOut(
   block: BasicBlock,
   slotLookup: SlotLookup,
-  chain: Speculation,
+  chain: AssumptionChain,
 ): ReadonlyArray<ReadonlySet<number>> {
   const stmts = block.stmts;
   const liveOuts: Set<number>[] = new Array(stmts.length);
@@ -203,4 +184,3 @@ export function perStatementLiveOut(
   }
   return liveOuts;
 }
-

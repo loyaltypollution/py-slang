@@ -6,22 +6,22 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { ConstLattice } from "../const-analysis/lattice";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
-import type { Speculation } from "../framework/assumption-chain";
+import type { AssumptionChain } from "../lattice/chain";
 import { visibleBody } from "../framework/assumption-bodies";
 import { constAnalysis } from "../framework/dfa-analyses";
 import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
 import {
   DescendingExprVisitor,
-  RewriteStmtVisitor,
+  ExprDrivenStmtVisitor,
   runWitnessSweep,
   walkExprs,
 } from "./witness-utils";
 
-type ConstWitness = { value: Extract<ConstLattice, { tag: "const" }>; witness: Speculation };
+type ConstWitness = { value: Extract<ConstLattice, { tag: "const" }>; witness: AssumptionChain };
 
 function constInfo(
-  chain: Speculation,
+  chain: AssumptionChain,
   topology: ProgramTopology,
   nodeId: number,
 ): ConstWitness | undefined {
@@ -33,10 +33,10 @@ function constInfo(
 }
 
 function collectWitnesses(
-  chain: Speculation,
+  chain: AssumptionChain,
   topology: ProgramTopology,
   stmts: readonly StmtNS.Stmt[],
-  out: Set<Speculation>,
+  out: Set<AssumptionChain>,
 ): void {
   walkExprs(stmts, (e) => {
     if (!(e instanceof ExprNS.Binary)) return;
@@ -49,7 +49,7 @@ class ConstFoldExprVisitor extends DescendingExprVisitor {
   changed = false;
 
   constructor(
-    private readonly chain: Speculation,
+    private readonly chain: AssumptionChain,
     private readonly topology: ProgramTopology,
   ) {
     super();
@@ -65,28 +65,14 @@ class ConstFoldExprVisitor extends DescendingExprVisitor {
   }
 }
 
-class ConstFoldStmtVisitor extends RewriteStmtVisitor {
-  private readonly exprVisitor: ConstFoldExprVisitor;
-
-  constructor(chain: Speculation, topology: ProgramTopology) {
-    const exprVisitor = new ConstFoldExprVisitor(chain, topology);
-    super((e) => exprVisitor.rewrite(e));
-    this.exprVisitor = exprVisitor;
-  }
-
-  get changed(): boolean {
-    return this.exprVisitor.changed;
-  }
-}
-
 export const constantFoldingRule: TransformRule = {
-  sweep(unit: Unit, chain: Speculation, topology: ProgramTopology): boolean {
-    const witnesses = new Set<Speculation>();
+  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
+    const witnesses = new Set<AssumptionChain>();
     collectWitnesses(chain, topology, visibleBody(unit, chain), witnesses);
     return runWitnessSweep(
       unit,
       witnesses,
-      (witness) => new ConstFoldStmtVisitor(witness, topology),
+      (witness) => new ExprDrivenStmtVisitor(new ConstFoldExprVisitor(witness, topology)),
     );
   },
   bind(wl) {

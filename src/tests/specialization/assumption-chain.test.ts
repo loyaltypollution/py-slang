@@ -1,24 +1,20 @@
 import {
   ROOT_CONTEXT,
   isRoot,
-} from "../../specialization/framework/assumption-chain";
+} from "../../specialization/lattice/chain";
 import {
   at,
   extend,
   leq,
   without,
-} from "../../specialization/framework/assumption-algebra";
-import type { Narrowing } from "../../specialization/framework/analysis";
+} from "../../specialization/lattice/algebra";
+import { makeNarrowing } from "./harness/lattice-doubles";
 
-function makeAnalysis<K, V>(_name: string): Narrowing<K, V> {
-  return {
-    eq: (a, b) => a === b,
-    blockAnalysis: () => ({} as any),
-    lift: () => undefined,
-  };
+function makeAnalysis<K, V>(_name: string) {
+  return makeNarrowing<K, V>();
 }
 
-describe("Speculation", () => {
+describe("AssumptionChain", () => {
   it("ROOT_CONTEXT is root and has depth 0", () => {
     expect(isRoot(ROOT_CONTEXT)).toBe(true);
     expect(ROOT_CONTEXT.depth).toBe(0);

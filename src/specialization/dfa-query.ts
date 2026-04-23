@@ -7,7 +7,7 @@
 import type { Unit } from "./framework/function-unit";
 import type { FunctionId, NodeId } from "./framework/key-spaces";
 import type { ProgramTopology } from "./framework/topology";
-import { ROOT_CONTEXT, type Speculation } from "./framework/assumption-chain";
+import { ROOT_CONTEXT, type AssumptionChain } from "./lattice/chain";
 import { constAnalysis, typeAnalysis } from "./framework/dfa-analyses";
 import { purityScopeAnalysis } from "./purity-analysis/analysis";
 import type { TypeLattice } from "./type-analysis/lattice";
@@ -52,10 +52,10 @@ export function makeDfaQuery(
   topology: ProgramTopology,
   /** Future-dispatch chain for a node's owning unit, or ROOT_CONTEXT if
    *  nothing has been speculated yet. */
-  futureDispatchChainForNode: (nodeId: NodeId) => Speculation = () => ROOT_CONTEXT,
+  futureDispatchChainForNode: (nodeId: NodeId) => AssumptionChain = () => ROOT_CONTEXT,
   /** Future-dispatch chain for a unit. Defaults to ROOT for callers that
    *  do not participate in speculative compilation. */
-  futureDispatchChainForUnit: (unit: Unit) => Speculation = () => ROOT_CONTEXT,
+  futureDispatchChainForUnit: (unit: Unit) => AssumptionChain = () => ROOT_CONTEXT,
 ): DfaQuery {
   const typeStore = typeAnalysis.perExpr(topology);
   const constStore = constAnalysis.perExpr(topology);

@@ -1,7 +1,3 @@
-// JIT dispatch correctness under speculation chains: the compiled body served
-// to a runtime call must match the chain inferred from that call's arguments,
-// not a stale chain from prior hot-loop observations.
-
 import { clearMemoCache } from "../../runtime/memo";
 import { runCseJit, runSvmlJit } from "./harness/jit-runners";
 
@@ -23,10 +19,6 @@ const BACKENDS = [
   ["cse", runCseJit],
 ] as const;
 
-// Hot-looping `f(0, 1)` extends the chain with x:INT_ZERO, y:INT_POS. A naive
-// compile-once strategy emits a pruned body guarded only by is-a-number, so a
-// later `f(5, 1)` slips through and returns 5 instead of 3. Fix: dispatchCall
-// compiles live against the post-observation chain.
 describe.each(BACKENDS)("%s JIT: sign-refined speculation", (_name, run) => {
   test("f(5,1) after f(0,1) hot loop -> 3", async () => {
     const out = await run(SIGN_REFINED + "print(f(5, 1))\n");

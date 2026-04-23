@@ -3,9 +3,9 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { makeDfaQuery, makeJitObservers } from "../specialization";
+import { makeDfaQuery } from "../specialization";
 import { createDefaultWorklist } from "../specialization/defaults";
-import { bodyToCompile, dispatchValid } from "../specialization/framework/dispatch";
+import { makeJitDispatch } from "../specialization/framework/jit-dispatch";
 import { EvaluatorError } from "./errors";
 
 /**
@@ -44,34 +44,19 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       );
       const program = compiler.compileProgram(ast);
 
-      const observers = makeJitObservers(worklist);
+      const dispatch = makeJitDispatch(worklist);
       const interpreter = new SVMLInterpreter(program, {
         sendOutput: msg => this.conductor.sendOutput(msg),
+        // SVML policy is "always recompile": baseline and skip both re-lower
+        // from `unit.funcAst.body`, because transforms may have mutated it
+        // in place post-load. Only `specialized` passes a speculative body.
         dispatchCall: (scopeId, args) => {
-          observers.observeScopeCall(scopeId);
-          const unit = worklist.topology.unitOfFunctionId(scopeId);
-          if (unit === undefined) return undefined;
-          for (let i = 0; i < args.length; i++) {
-            observers.observeParamEntry(scopeId, i, args[i]);
-          }
-          // Memoization and other transforms must fire before we read the
-          // body they might have rewritten. Live sweep before each compile
-          // keeps the bytecode consistent with transform publication.
-          worklist.sweepTransforms();
-          const chain = observers.currentChainFor(scopeId);
-          const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
-          // SVML policy is "always recompile": even when dispatch is
-          // invalid we re-lower the baseline body, because transforms
-          // (memoization, dead-branch, etc.) may have mutated
-          // unit.funcAst.body in place post-load. The explicit
-          // dispatchValid branch surfaces the policy asymmetry that
-          // was previously hidden inside an `undefined` overload.
-          const body = dispatchValid(unit, chain, isRefuted)
-            ? bodyToCompile(unit, chain, worklist.topology, isRefuted)
-            : undefined;
-          return compiler.compileFunction(unit, body);
+          const r = dispatch.onCall(scopeId, args);
+          if (r === undefined) return undefined;
+          const body = r.kind === "specialized" ? r.body : undefined;
+          return compiler.compileFunction(r.unit, body);
         },
-        dispatchReturn: (scopeId, value) => observers.observeScopeReturn(scopeId, value),
+        dispatchReturn: dispatch.onReturn,
       });
 
       const returnValue = interpreter.execute();

@@ -13,17 +13,14 @@
 
 import { StmtNS } from "../../ast-types";
 import type { JoinSemiLattice } from "./analysis";
-import { ROOT_CONTEXT, type Speculation } from "./assumption-chain";
-import { defineCounterStore, type CounterStore } from "./counter-store";
+import { ROOT_CONTEXT, type AssumptionChain } from "../lattice/chain";
+import { CounterStore } from "./counter-store";
 import {
   paramKey,
   type FunctionId,
   type ParamKey,
 } from "./key-spaces";
-import {
-  defineObservationChannel,
-  type ObservationChannel,
-} from "./observation-channel";
+import { ObservationChannel } from "./observation-channel";
 import { classifyRawValue, type RawKind } from "./raw-value";
 import type { Worklist } from "./worklist";
 
@@ -61,23 +58,18 @@ const rawValueLattice: JoinSemiLattice<RawKind> = {
 /** Per-parameter entry-value observations. Key = ParamKey. Feeds
  *  paramKey-scoped narrowings (entry specialization on param types). */
 export const runtimeParamChannel: ObservationChannel<ParamKey, RawKind> =
-  defineObservationChannel<ParamKey, RawKind>({
-    lattice: rawValueLattice,
-  });
+  new ObservationChannel<ParamKey, RawKind>({ lattice: rawValueLattice });
 
 /** Per-function return-kind observations. Key = FunctionId. Feeds the
  *  return-kind narrowing — keyed by functionId (not Return nodeId)
  *  because the narrowing summarizes across all return paths. */
 export const runtimeReturnChannel: ObservationChannel<FunctionId, RawKind> =
-  defineObservationChannel<FunctionId, RawKind>({
-    lattice: rawValueLattice,
-  });
+  new ObservationChannel<FunctionId, RawKind>({ lattice: rawValueLattice });
 
 /** Runtime call-count counter, keyed by FunctionDef.id. Saturates at
  *  `RUNTIME_CALL_COUNT_SAT`. */
-export const runtimeCallCounter: CounterStore<FunctionId> = defineCounterStore<FunctionId>({
-  saturation: RUNTIME_CALL_COUNT_SAT,
-});
+export const runtimeCallCounter: CounterStore<FunctionId> =
+  new CounterStore<FunctionId>({ saturation: RUNTIME_CALL_COUNT_SAT });
 
 /** Builds the runtime-observation callbacks used by every JIT evaluator.
  *
@@ -99,12 +91,12 @@ export function makeJitObservers(
   observeParamEntry: (scopeId: FunctionId, paramIndex: number, value: unknown) => void;
   /** Top-of-stack provenance for the currently-executing `scopeId`.
    *  Returns `ROOT_CONTEXT` when stack top is not this `scopeId`. */
-  currentChainFor: (scopeId: FunctionId) => Speculation;
+  currentChainFor: (scopeId: FunctionId) => AssumptionChain;
 } {
   // Parallel arrays instead of {scopeId, chain} wrappers — per-call
   // allocation would churn young-gen on the hot path.
   const scopeIds: FunctionId[] = [];
-  const chains: Speculation[] = [];
+  const chains: AssumptionChain[] = [];
 
   const topIsScope = (scopeId: FunctionId): boolean =>
     scopeIds.length > 0 && scopeIds[scopeIds.length - 1] === scopeId;
