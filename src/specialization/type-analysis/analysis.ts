@@ -137,7 +137,10 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
       // float at the Python level, and typing it as INT would let the
       // F-specializer (which requires FLOAT_BIT) drop out incorrectly.
       if (Number.isNaN(value)) return this.annotate(expr, floatValue());
-      const info = value > 0 ? FLOAT_POS : value < 0 ? FLOAT_NEG : FLOAT_ZERO;
+      let info: TypeLattice;
+      if (value > 0) info = FLOAT_POS;
+      else if (value < 0) info = FLOAT_NEG;
+      else info = FLOAT_ZERO;
       return this.annotate(expr, info);
     } else if (typeof value === "boolean") {
       return this.annotate(expr, value ? BOOL_TRUE : BOOL_FALSE);
@@ -149,7 +152,10 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 
   visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): TypeLattice {
     const n = Number(expr.value);
-    const info = n > 0 ? INT_POS : n < 0 ? INT_NEG : INT_ZERO;
+    let info: TypeLattice;
+    if (n > 0) info = INT_POS;
+    else if (n < 0) info = INT_NEG;
+    else info = INT_ZERO;
     return this.annotate(expr, info);
   }
 
@@ -529,16 +535,18 @@ function applyPredicate(
   // operator as if the predicate were directly asserted.
   const effectiveOp = truth ? opStr : negateOp(opStr);
 
-  // Find the (slot, literal) pair, whichever side each lives on.
-  let slotSide: "left" | "right";
+  // Find the (slot, literal) pair, whichever side each lives on. Normalize
+  // to the `slot OP literal` form so `leftSlotRefinement` always sees the
+  // slot on the left.
   let slotVar: ExprNS.Variable;
   let litValue: number | undefined;
+  let normalizedOp: string;
   if (cond.left instanceof ExprNS.Variable && (litValue = readNumericLiteral(cond.right)) !== undefined) {
-    slotSide = "left";
     slotVar = cond.left;
+    normalizedOp = effectiveOp;
   } else if (cond.right instanceof ExprNS.Variable && (litValue = readNumericLiteral(cond.left)) !== undefined) {
-    slotSide = "right";
     slotVar = cond.right;
+    normalizedOp = swapOp(effectiveOp);
   } else {
     return env;
   }
@@ -546,7 +554,6 @@ function applyPredicate(
   const info = slotLookup(slotVar.name);
   if (!isLocal(info)) return env;
 
-  const normalizedOp = slotSide === "left" ? effectiveOp : swapOp(effectiveOp);
   const ref = leftSlotRefinement(normalizedOp, litValue);
   if (ref === undefined) return env;
 
@@ -564,10 +571,14 @@ export function liftType(rawKind: RawKind): TypeLattice | undefined {
     case "number": {
       const v = rawKind.value;
       if (Number.isInteger(v) && Number.isFinite(v)) {
-        return v > 0 ? INT_POS : v < 0 ? INT_NEG : INT_ZERO;
+        if (v > 0) return INT_POS;
+        if (v < 0) return INT_NEG;
+        return INT_ZERO;
       }
       if (Number.isNaN(v)) return floatValue();
-      return v > 0 ? FLOAT_POS : v < 0 ? FLOAT_NEG : FLOAT_ZERO;
+      if (v > 0) return FLOAT_POS;
+      if (v < 0) return FLOAT_NEG;
+      return FLOAT_ZERO;
     }
     case "bool":
       return rawKind.value ? BOOL_TRUE : BOOL_FALSE;

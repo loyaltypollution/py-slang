@@ -60,9 +60,7 @@ export function at<K, V>(
   narrowing: Narrowing<K, V>,
   key: K,
 ): V | undefined {
-  const inner = s.bindings.get(narrowing as Narrowing<any, any>);
-  if (inner === undefined) return undefined;
-  return inner.get(key)?.value as V | undefined;
+  return s.bindings.get(narrowing)?.get(key)?.value as V | undefined;
 }
 
 /** The chain node on `s`'s canonical parent-path whose tip binds
@@ -77,10 +75,9 @@ export function carrier<K>(
   key: K,
 ): Speculation | undefined {
   if (at(s, narrowing, key) === undefined) return undefined;
-  const target = narrowing as Narrowing<unknown, unknown>;
   for (let cur: Speculation | undefined = s; cur !== undefined; cur = cur.parent) {
     const a = cur.assumption;
-    if (a !== undefined && a.narrowing === target && a.key === key) return cur;
+    if (a !== undefined && a.narrowing === narrowing && a.key === key) return cur;
   }
   return undefined;
 }
@@ -90,7 +87,6 @@ export function carrier<K>(
  *  anc-first (opposite of the prior `hasAncestor(ctx, anc)` spelling). */
 export function leq(x: Speculation, y: Speculation): boolean {
   if (x === y) return true;
-  if (x === ROOT_CONTEXT) return true;
   if (x.depth > y.depth) return false;
   for (const [narrowing, inner] of x.bindings) {
     const yInner = y.bindings.get(narrowing);

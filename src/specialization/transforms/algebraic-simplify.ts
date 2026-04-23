@@ -19,7 +19,14 @@ import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
 import { BOOL_BIT, BoolRef, INT_BIT, IntRef, type TypeLattice } from "../type-analysis/lattice";
 import { truthiness } from "../type-analysis/transfer";
-import { BaseStmtVisitor, deepestWitness, runWitnessSweep, shallowestWitness, walkExprs } from "./witness-utils";
+import {
+  deepestWitness,
+  DescendingExprVisitor,
+  RewriteStmtVisitor,
+  runWitnessSweep,
+  shallowestWitness,
+  walkExprs,
+} from "./witness-utils";
 
 type Witnessed<T> = { value: T; witness: Speculation };
 type RewritePlan = { witness: Speculation; replacement: ExprNS.Expr };
@@ -213,15 +220,13 @@ function collectWitnesses(
   });
 }
 
-class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
+class AlgebraicSimplifyVisitor extends DescendingExprVisitor {
   changed = false;
   constructor(
     private readonly chain: Speculation,
     private readonly topology: ProgramTopology,
-  ) {}
-
-  rewrite(expr: ExprNS.Expr): ExprNS.Expr {
-    return expr.accept(this);
+  ) {
+    super();
   }
 
   private maybeRewrite(expr: ExprNS.Expr): ExprNS.Expr {
@@ -247,114 +252,19 @@ class AlgebraicSimplifyVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     expr.right = expr.right.accept(this);
     return this.maybeRewrite(expr);
   }
-
-  // Descent-only visitors (same pattern as const-folding.ts):
-  visitCompareExpr(expr: ExprNS.Compare): ExprNS.Expr {
-    expr.left = expr.left.accept(this);
-    expr.right = expr.right.accept(this);
-    return expr;
-  }
-  visitTernaryExpr(expr: ExprNS.Ternary): ExprNS.Expr {
-    expr.predicate = expr.predicate.accept(this);
-    expr.consequent = expr.consequent.accept(this);
-    expr.alternative = expr.alternative.accept(this);
-    return expr;
-  }
-  visitCallExpr(expr: ExprNS.Call): ExprNS.Expr {
-    expr.callee = expr.callee.accept(this);
-    for (let i = 0; i < expr.args.length; i++) expr.args[i] = expr.args[i].accept(this);
-    return expr;
-  }
-  visitListExpr(expr: ExprNS.List): ExprNS.Expr {
-    for (let i = 0; i < expr.elements.length; i++) expr.elements[i] = expr.elements[i].accept(this);
-    return expr;
-  }
-  visitSubscriptExpr(expr: ExprNS.Subscript): ExprNS.Expr {
-    expr.value = expr.value.accept(this);
-    expr.index = expr.index.accept(this);
-    return expr;
-  }
-  visitGroupingExpr(expr: ExprNS.Grouping): ExprNS.Expr {
-    expr.expression = expr.expression.accept(this);
-    return expr;
-  }
-  visitStarredExpr(expr: ExprNS.Starred): ExprNS.Expr {
-    expr.value = expr.value.accept(this);
-    return expr;
-  }
-  visitLambdaExpr(expr: ExprNS.Lambda): ExprNS.Expr {
-    return expr;
-  }
-  visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExprNS.Expr {
-    return expr;
-  }
-  visitLiteralExpr(expr: ExprNS.Literal): ExprNS.Expr {
-    return expr;
-  }
-  visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ExprNS.Expr {
-    return expr;
-  }
-  visitComplexExpr(expr: ExprNS.Complex): ExprNS.Expr {
-    return expr;
-  }
-  visitVariableExpr(expr: ExprNS.Variable): ExprNS.Expr {
-    return expr;
-  }
-  visitNoneExpr(expr: ExprNS.None): ExprNS.Expr {
-    return expr;
-  }
 }
 
-class AlgebraicSimplifyStmtVisitor extends BaseStmtVisitor {
+class AlgebraicSimplifyStmtVisitor extends RewriteStmtVisitor {
   private readonly exprVisitor: AlgebraicSimplifyVisitor;
 
   constructor(chain: Speculation, topology: ProgramTopology) {
-    super();
-    this.exprVisitor = new AlgebraicSimplifyVisitor(chain, topology);
+    const exprVisitor = new AlgebraicSimplifyVisitor(chain, topology);
+    super((e) => exprVisitor.rewrite(e));
+    this.exprVisitor = exprVisitor;
   }
 
   get changed(): boolean {
     return this.exprVisitor.changed;
-  }
-
-  private rewriteExpr(expr: ExprNS.Expr): ExprNS.Expr {
-    return this.exprVisitor.rewrite(expr);
-  }
-
-  sweep(stmts: StmtNS.Stmt[]): void {
-    for (const stmt of stmts) stmt.accept(this);
-  }
-
-  visitAssignStmt(stmt: StmtNS.Assign): void {
-    stmt.value = this.rewriteExpr(stmt.value);
-  }
-  visitAnnAssignStmt(stmt: StmtNS.AnnAssign): void {
-    stmt.value = this.rewriteExpr(stmt.value);
-  }
-  visitIfStmt(stmt: StmtNS.If): void {
-    stmt.condition = this.rewriteExpr(stmt.condition);
-    this.sweep(stmt.body);
-    if (stmt.elseBlock) this.sweep(stmt.elseBlock);
-  }
-  visitWhileStmt(stmt: StmtNS.While): void {
-    stmt.condition = this.rewriteExpr(stmt.condition);
-    this.sweep(stmt.body);
-  }
-  visitForStmt(stmt: StmtNS.For): void {
-    stmt.iter = this.rewriteExpr(stmt.iter);
-    this.sweep(stmt.body);
-  }
-  visitReturnStmt(stmt: StmtNS.Return): void {
-    if (stmt.value) stmt.value = this.rewriteExpr(stmt.value);
-  }
-  visitSimpleExprStmt(stmt: StmtNS.SimpleExpr): void {
-    stmt.expression = this.rewriteExpr(stmt.expression);
-  }
-  visitAssertStmt(stmt: StmtNS.Assert): void {
-    stmt.value = this.rewriteExpr(stmt.value);
-  }
-  visitFileInputStmt(stmt: StmtNS.FileInput): void {
-    this.sweep(stmt.statements);
   }
 }
 

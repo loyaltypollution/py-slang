@@ -64,16 +64,19 @@ function discoverScopes(
   functionEnvironments: FunctionEnvironments,
   registry: FunctionRegistry,
 ): void {
+  const recurse = (inner: ReadonlyArray<StmtNS.Stmt>): void =>
+    discoverScopes(inner, units, functionEnvironments, registry);
+
   for (const stmt of stmts) {
     if (stmt instanceof StmtNS.FunctionDef) {
       const unit = buildOneUnit(stmt, functionEnvironments, registry);
       units.set(stmt, unit);
-      discoverScopes(unit.body, units, functionEnvironments, registry);
+      recurse(unit.body);
     } else if (stmt instanceof StmtNS.If) {
-      discoverScopes(stmt.body, units, functionEnvironments, registry);
-      if (stmt.elseBlock) discoverScopes(stmt.elseBlock, units, functionEnvironments, registry);
+      recurse(stmt.body);
+      if (stmt.elseBlock) recurse(stmt.elseBlock);
     } else if (stmt instanceof StmtNS.While || stmt instanceof StmtNS.For) {
-      discoverScopes(stmt.body, units, functionEnvironments, registry);
+      recurse(stmt.body);
     }
   }
 }

@@ -139,6 +139,131 @@ export abstract class BaseStmtVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
+/** Statement visitor for expression-rewriting transforms. Descends into every
+ *  body-bearing statement kind and applies `rewriteExpr` to each embedded
+ *  expression position. Rewrite bookkeeping (the `changed` flag) lives on
+ *  the expression-level visitor and is surfaced here unchanged. */
+export class RewriteStmtVisitor extends BaseStmtVisitor {
+  constructor(private readonly rewriteExpr: (e: ExprNS.Expr) => ExprNS.Expr) {
+    super();
+  }
+
+  sweep(stmts: StmtNS.Stmt[]): void {
+    for (const stmt of stmts) stmt.accept(this);
+  }
+
+  visitAssignStmt(stmt: StmtNS.Assign): void {
+    stmt.value = this.rewriteExpr(stmt.value);
+  }
+  visitAnnAssignStmt(stmt: StmtNS.AnnAssign): void {
+    stmt.value = this.rewriteExpr(stmt.value);
+  }
+  visitIfStmt(stmt: StmtNS.If): void {
+    stmt.condition = this.rewriteExpr(stmt.condition);
+    this.sweep(stmt.body);
+    if (stmt.elseBlock) this.sweep(stmt.elseBlock);
+  }
+  visitWhileStmt(stmt: StmtNS.While): void {
+    stmt.condition = this.rewriteExpr(stmt.condition);
+    this.sweep(stmt.body);
+  }
+  visitForStmt(stmt: StmtNS.For): void {
+    stmt.iter = this.rewriteExpr(stmt.iter);
+    this.sweep(stmt.body);
+  }
+  visitReturnStmt(stmt: StmtNS.Return): void {
+    if (stmt.value) stmt.value = this.rewriteExpr(stmt.value);
+  }
+  visitSimpleExprStmt(stmt: StmtNS.SimpleExpr): void {
+    stmt.expression = this.rewriteExpr(stmt.expression);
+  }
+  visitAssertStmt(stmt: StmtNS.Assert): void {
+    stmt.value = this.rewriteExpr(stmt.value);
+  }
+  visitFileInputStmt(stmt: StmtNS.FileInput): void {
+    this.sweep(stmt.statements);
+  }
+}
+
+/** Descending expression visitor: recurses into every sub-expression but
+ *  leaves each node unchanged by default. Subclasses override only the
+ *  handful of expression kinds they actually rewrite; Lambda/MultiLambda
+ *  bodies are intentionally not descended — they belong to separate units. */
+export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
+  rewrite(expr: ExprNS.Expr): ExprNS.Expr {
+    return expr.accept(this);
+  }
+
+  visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
+    expr.left = expr.left.accept(this);
+    expr.right = expr.right.accept(this);
+    return expr;
+  }
+  visitCompareExpr(expr: ExprNS.Compare): ExprNS.Expr {
+    expr.left = expr.left.accept(this);
+    expr.right = expr.right.accept(this);
+    return expr;
+  }
+  visitBoolOpExpr(expr: ExprNS.BoolOp): ExprNS.Expr {
+    expr.left = expr.left.accept(this);
+    expr.right = expr.right.accept(this);
+    return expr;
+  }
+  visitUnaryExpr(expr: ExprNS.Unary): ExprNS.Expr {
+    expr.right = expr.right.accept(this);
+    return expr;
+  }
+  visitTernaryExpr(expr: ExprNS.Ternary): ExprNS.Expr {
+    expr.predicate = expr.predicate.accept(this);
+    expr.consequent = expr.consequent.accept(this);
+    expr.alternative = expr.alternative.accept(this);
+    return expr;
+  }
+  visitCallExpr(expr: ExprNS.Call): ExprNS.Expr {
+    expr.callee = expr.callee.accept(this);
+    for (let i = 0; i < expr.args.length; i++) expr.args[i] = expr.args[i].accept(this);
+    return expr;
+  }
+  visitListExpr(expr: ExprNS.List): ExprNS.Expr {
+    for (let i = 0; i < expr.elements.length; i++) expr.elements[i] = expr.elements[i].accept(this);
+    return expr;
+  }
+  visitSubscriptExpr(expr: ExprNS.Subscript): ExprNS.Expr {
+    expr.value = expr.value.accept(this);
+    expr.index = expr.index.accept(this);
+    return expr;
+  }
+  visitGroupingExpr(expr: ExprNS.Grouping): ExprNS.Expr {
+    expr.expression = expr.expression.accept(this);
+    return expr;
+  }
+  visitStarredExpr(expr: ExprNS.Starred): ExprNS.Expr {
+    expr.value = expr.value.accept(this);
+    return expr;
+  }
+  visitLambdaExpr(expr: ExprNS.Lambda): ExprNS.Expr {
+    return expr;
+  }
+  visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExprNS.Expr {
+    return expr;
+  }
+  visitLiteralExpr(expr: ExprNS.Literal): ExprNS.Expr {
+    return expr;
+  }
+  visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ExprNS.Expr {
+    return expr;
+  }
+  visitComplexExpr(expr: ExprNS.Complex): ExprNS.Expr {
+    return expr;
+  }
+  visitVariableExpr(expr: ExprNS.Variable): ExprNS.Expr {
+    return expr;
+  }
+  visitNoneExpr(expr: ExprNS.None): ExprNS.Expr {
+    return expr;
+  }
+}
+
 interface SweepingVisitor {
   readonly changed: boolean;
   sweep(body: StmtNS.Stmt[]): void;

@@ -14,7 +14,12 @@ import type {
 } from "./analysis";
 import { defineAnalysis } from "./analysis";
 import type { ReadonlyAnalysisStore } from "./analysis-store";
-import { storeContexts, storeEvict } from "./analysis-store";
+import {
+  storeContexts,
+  storeEvict,
+  walkChainDeepest,
+  walkChainMinimal,
+} from "./analysis-store";
 import type { ProgramTopology, ReadonlyProgramTopology } from "./topology";
 
 /** Expression-level DFA module for block-fixpoint analyses. Extends
@@ -128,22 +133,6 @@ function evictStaleBlockCells(
  *  used to wake every CFG successor even though no successor's OUT env
  *  could shift. With the split, successor wake fires only on `.env` changes;
  *  per-node-fact consumers wake only on `.facts` changes. */
-
-/** Edge projector: map a node-keyed upstream key to its containing block.
- *  Exported so callers of `makeBlockFixpointAnalysis` declare node-fact
- *  upstreams in their own `bind` by composing with `bfa.env.bind` and calling
- *  `wl.onFactDirty(upstream, bfa.env, nodeIdToBlock)`
- *  rather than a dedicated factory-level `reads` channel. Returns an empty
- *  iterable when the key isn't a number or the node isn't indexed in the
- *  program topology. */
-export const nodeIdToBlock = (
-  ctx: AnalysisCtx,
-  key: unknown,
-): Iterable<BasicBlock> => {
-  if (typeof key !== "number") return [];
-  const block = ctx.topology.blockOfNode(key);
-  return block === undefined ? [] : [block];
-};
 
 /** Paired block-DFA analyses produced by `makeBlockFixpointAnalysis`.
  *
@@ -389,18 +378,16 @@ export function makeBlockFixpointAnalysis<L>(
   function perExpr(topology: ReadonlyProgramTopology): ReadonlyAnalysisStore<number, L> {
     const cached = perExprCache.get(topology);
     if (cached !== undefined) return cached;
+    const tryReadNode = (nodeId: number, context: Speculation): L | undefined => {
+      const block = topology.blockOfNode(nodeId);
+      if (block === undefined) return undefined;
+      return factsAnalysis.store.tryRead(block, context)?.get(nodeId);
+    };
     const store: ReadonlyAnalysisStore<number, L> = {
       read(nodeId, context) {
-        const block = topology.blockOfNode(nodeId);
-        if (block === undefined) return config.valueLattice.bottom;
-        return factsAnalysis.store.tryRead(block, context)?.get(nodeId)
-          ?? config.valueLattice.bottom;
+        return tryReadNode(nodeId, context) ?? config.valueLattice.bottom;
       },
-      tryRead(nodeId, context) {
-        const block = topology.blockOfNode(nodeId);
-        if (block === undefined) return undefined;
-        return factsAnalysis.store.tryRead(block, context)?.get(nodeId);
-      },
+      tryRead: tryReadNode,
       readAll(context) {
         const flat = new Map<number, L>();
         for (const blockMap of factsAnalysis.store.readAll(context).values()) {
@@ -409,21 +396,11 @@ export function makeBlockFixpointAnalysis<L>(
         return flat;
       },
       readMinimal(chain, key, accept) {
-        let match: { value: L; witness: Speculation } | undefined;
-        for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
-          const value = this.tryRead(key, cur);
-          if (value === undefined || !accept(value)) continue;
-          match = { value, witness: cur };
-        }
-        return match;
+        return walkChainMinimal(chain, key, tryReadNode, accept);
       },
       readDeepest(chain, key) {
-        for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
-          const value = this.tryRead(key, cur);
-          if (value !== undefined) return { value, witness: cur };
-        }
-        return undefined;
-      }
+        return walkChainDeepest(chain, key, tryReadNode);
+      },
     };
     perExprCache.set(topology, store);
     return store;

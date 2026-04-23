@@ -30,7 +30,7 @@
 
 import { type Narrowing } from "./analysis";
 import type { Assumption, Speculation } from "./assumption-chain";
-import { CHAIN_PROTO, ROOT_CONTEXT } from "./assumption-chain";
+import { ROOT_CONTEXT } from "./assumption-chain";
 
 function compareKey(a: unknown, b: unknown): number {
   if (typeof a === "number" && typeof b === "number") return a - b;
@@ -67,10 +67,19 @@ export class ContextInterner {
   }
 
   private compareAssumption(a: Assumption, b: Assumption): number {
-    const oa = this.ordinalOf(a.narrowing);
-    const ob = this.ordinalOf(b.narrowing);
+    return this.compareByAxis(a.narrowing, a.key, b.narrowing, b.key);
+  }
+
+  private compareByAxis(
+    na: Narrowing<any, any>,
+    ka: unknown,
+    nb: Narrowing<any, any>,
+    kb: unknown,
+  ): number {
+    const oa = this.ordinalOf(na);
+    const ob = this.ordinalOf(nb);
     if (oa !== ob) return oa - ob;
-    return compareKey(a.key, b.key);
+    return compareKey(ka, kb);
   }
 
   /** Extend `parent` with `(narrowing, key, value)`, returning a canonical
@@ -93,27 +102,21 @@ export class ContextInterner {
     if (parentAssumption === undefined) {
       return this.internChild(parent, narrowing, key, value);
     }
-    const newLink: Assumption = {
-      narrowing: narrowing as Narrowing<unknown, unknown>,
-      key: key as unknown,
-      value: value as unknown,
-    };
-    const cmp = this.compareAssumption(newLink, parentAssumption);
-    if (cmp > 0) {
-      return this.internChild(parent, narrowing, key, value);
-    }
+    const cmp = this.compareByAxis(
+      narrowing,
+      key,
+      parentAssumption.narrowing,
+      parentAssumption.key,
+    );
+    if (cmp > 0) return this.internChild(parent, narrowing, key, value);
+    if (cmp < 0) return this.rebuildWith(parent, narrowing, key, value);
     // cmp === 0: new link matches parent's tip on (narrowing, key). Either
     // the value agrees (idempotent — return parent) or it conflicts.
-    if (cmp === 0) {
-      if (narrowing.eq(parentAssumption.value as V, value)) return parent;
-      throw new Error(
-        "assumption-algebra: extend conflicts with existing binding at same (narrowing, key). " +
-          "Use without(s, narrowing, key) first if the old value is being replaced.",
-      );
-    }
-    // cmp < 0: sorts earlier than parent's tip — must rebuild. Mid-chain
-    // conflicts are detected in rebuildWith.
-    return this.rebuildWith(parent, narrowing, key, value);
+    if (narrowing.eq(parentAssumption.value as V, value)) return parent;
+    throw new Error(
+      "assumption-algebra: extend conflicts with existing binding at same (narrowing, key). " +
+        "Use without(s, narrowing, key) first if the old value is being replaced.",
+    );
   }
 
   /** Remove every link at `(narrowing, key)` from `ctx`. Identity-returns
@@ -122,21 +125,20 @@ export class ContextInterner {
    *  (collisions at the same `(narrowing, key)` are replaced at
    *  extend-time, not layered). */
   exclude<K>(ctx: Speculation, narrowing: Narrowing<K, any>, key: K): Speculation {
-    const narrowingAsKey = narrowing as unknown as Narrowing<unknown, unknown>;
+    // Links are collected child-first; walking backward builds root-to-child
+    // without an extra reverse.
     const links: Assumption[] = [];
     let found = false;
     for (let cur: Speculation | undefined = ctx; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
       if (a === undefined) continue;
-      if (a.narrowing === narrowingAsKey && a.key === key) {
+      if (a.narrowing === narrowing && a.key === key) {
         found = true;
         continue;
       }
       links.push(a);
     }
     if (!found) return ctx;
-    // Links are collected child-first. Build the interned chain from root to
-    // child by walking backward — avoids Array.reverse() + internList allocation.
     let result: Speculation = ROOT_CONTEXT;
     for (let i = links.length - 1; i >= 0; i--) {
       const a = links[i];
@@ -201,16 +203,15 @@ export class ContextInterner {
     key: K,
     value: V,
   ): Speculation {
-    const narrowingAsKey = narrowing as unknown as Narrowing<any, any>;
     let byNarrowing = this.children.get(parent);
     if (byNarrowing === undefined) {
       byNarrowing = new Map();
       this.children.set(parent, byNarrowing);
     }
-    let byKey = byNarrowing.get(narrowingAsKey);
+    let byKey = byNarrowing.get(narrowing);
     if (byKey === undefined) {
       byKey = new Map();
-      byNarrowing.set(narrowingAsKey, byKey);
+      byNarrowing.set(narrowing, byKey);
     }
     let bucket = byKey.get(key);
     if (bucket === undefined) {
@@ -220,7 +221,7 @@ export class ContextInterner {
     for (const entry of bucket) {
       if (narrowing.eq(entry.value as V, value)) return entry.node;
     }
-    const assumption = Object.freeze({
+    const assumption: Assumption = Object.freeze({
       narrowing: narrowing as Narrowing<unknown, unknown>,
       key: key as unknown,
       value: value as unknown,
@@ -229,18 +230,18 @@ export class ContextInterner {
     // with the new tip. Clone only the outer Map and the inner Map under
     // `narrowing`; other inner Maps are shared read-only.
     const bindings = new Map(parent.bindings);
-    const parentInner = parent.bindings.get(narrowingAsKey);
-    const inner = parentInner !== undefined ? new Map(parentInner) : new Map();
-    inner.set(key as unknown, assumption);
-    bindings.set(narrowingAsKey, inner);
-    const node: Speculation = Object.freeze(
-      Object.assign(Object.create(CHAIN_PROTO), {
-        parent,
-        assumption,
-        depth: parent.depth + 1,
-        bindings,
-      }) as Speculation,
-    );
+    const parentInner = parent.bindings.get(narrowing);
+    const inner: Map<unknown, Assumption> = parentInner !== undefined
+      ? new Map(parentInner)
+      : new Map();
+    inner.set(key, assumption);
+    bindings.set(narrowing, inner);
+    const node: Speculation = Object.freeze({
+      parent,
+      assumption,
+      depth: parent.depth + 1,
+      bindings,
+    });
     bucket.push({ value, node });
     return node;
   }
@@ -259,11 +260,10 @@ export class ContextInterner {
     value: V,
   ): Speculation {
     const links: Assumption[] = [];
-    const narrowingAsKey = narrowing as unknown as Narrowing<unknown, unknown>;
     for (let cur: Speculation | undefined = parent; cur !== undefined; cur = cur.parent) {
       const a = cur.assumption;
       if (a === undefined) continue;
-      if (a.narrowing === narrowingAsKey && a.key === key) {
+      if (a.narrowing === narrowing && a.key === key) {
         if (narrowing.eq(a.value as V, value)) continue;
         throw new Error(
           "assumption-algebra: extend conflicts with existing binding mid-chain at same (narrowing, key). " +
@@ -273,17 +273,13 @@ export class ContextInterner {
       links.push(a);
     }
     links.push({
-      narrowing: narrowingAsKey,
+      narrowing: narrowing as Narrowing<unknown, unknown>,
       key: key as unknown,
       value: value as unknown,
     });
     links.sort((a, b) => this.compareAssumption(a, b));
-    return this.internList(links);
-  }
-
-  private internList(sorted: ReadonlyArray<Assumption>): Speculation {
     let cur: Speculation = ROOT_CONTEXT;
-    for (const a of sorted) {
+    for (const a of links) {
       cur = this.internChild(cur, a.narrowing, a.key, a.value);
     }
     return cur;

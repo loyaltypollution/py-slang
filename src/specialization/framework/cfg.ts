@@ -81,10 +81,9 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Unit): CFG {
     let edge: CFGEdge;
     if (kind === "unconditional") {
       edge = { kind, from, to };
+    } else if (condition === undefined) {
+      throw new Error(`linkBlocks: ${kind} edge requires a condition`);
     } else {
-      if (condition === undefined) {
-        throw new Error(`linkBlocks: ${kind} edge requires a condition`);
-      }
       edge = { kind, from, to, condition };
     }
     from.successorEdges.push(edge);

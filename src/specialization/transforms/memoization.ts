@@ -22,6 +22,13 @@ export function memoIdFor(fd: StmtNS.FunctionDef, variant?: string): string {
   return variant === undefined ? base : `${base}#${variant}`;
 }
 
+/** Clone each Variable so every call-site gets a distinct AST node.
+ *  Sharing a single Variable across multiple call arguments would violate
+ *  the invariant that each AST node has one parent / one position. */
+function cloneVars(vars: readonly ExprNS.Variable[]): ExprNS.Variable[] {
+  return vars.map(p => new ExprNS.Variable(p.startToken, p.endToken, p.name));
+}
+
 function rewriteReturnsCloned(
   stmts: readonly StmtNS.Stmt[],
   fd: StmtNS.FunctionDef,
@@ -34,11 +41,7 @@ function rewriteReturnsCloned(
     if (s instanceof StmtNS.Return) {
       if (s.value !== null) {
         changed = true;
-        const args: ExprNS.Expr[] = [
-          mkStr(fd, id),
-          ...params.map(p => new ExprNS.Variable(p.startToken, p.endToken, p.name)),
-          s.value,
-        ];
+        const args: ExprNS.Expr[] = [mkStr(fd, id), ...cloneVars(params), s.value];
         out.push(shadowNode(s, { value: mkCall(fd, MEMO_PUT, args) }));
       } else {
         out.push(s);
@@ -79,7 +82,7 @@ function memoWrappedBody(
   const params = fd.parameters.map(p => mkVar(fd, p.lexeme));
 
   const hasCall = mkCall(fd, MEMO_HAS, [mkStr(fd, id), ...params]);
-  const getCall = mkCall(fd, MEMO_GET, [mkStr(fd, id), ...params.map(p => new ExprNS.Variable(p.startToken, p.endToken, p.name))]);
+  const getCall = mkCall(fd, MEMO_GET, [mkStr(fd, id), ...cloneVars(params)]);
   const prelude = new StmtNS.If(
     fd.startToken,
     fd.endToken,

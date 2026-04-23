@@ -58,12 +58,8 @@ export function normalizeType(v: TypeLattice): TypeLattice {
     return TOP;
   }
 
-  return Object.freeze({
-    kinds,
-    intRef: (kinds & INT_BIT) !== 0 ? intRef : (0 as IntRef),
-    boolRef: (kinds & BOOL_BIT) !== 0 ? boolRef : (0 as BoolRef),
-    floatRef: (kinds & FLOAT_BIT) !== 0 ? floatRef : (0 as IntRef),
-  });
+  // intRef/boolRef/floatRef were already zeroed above for absent kinds.
+  return Object.freeze({ kinds, intRef, boolRef, floatRef });
 }
 
 export function join(a: TypeLattice, b: TypeLattice): TypeLattice {

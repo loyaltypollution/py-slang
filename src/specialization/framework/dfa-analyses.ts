@@ -11,11 +11,6 @@ import {
   typeRequirementAnalysis,
 } from "../type-requirement-analysis/analysis";
 import type { Narrowing } from "./analysis";
-import {
-  type FunctionId,
-  type NodeId,
-  type ParamKey,
-} from "./key-spaces";
 
 export {
   typeAnalysis,

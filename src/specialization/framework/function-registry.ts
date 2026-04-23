@@ -96,18 +96,6 @@ export class FunctionRegistry {
     return this.slotOf(node.id);
   }
 
-  nodeOf(functionId: number): FunctionScopeNode {
-    const entry = this.byFunctionId.get(functionId);
-    if (!entry) {
-      throw new Error(`FunctionRegistry: functionId=${functionId} not registered`);
-    }
-    return entry.node;
-  }
-
-  has(functionId: number): boolean {
-    return this.byFunctionId.has(functionId);
-  }
-
   hasNode(node: FunctionScopeNode): boolean {
     return this.nodeToFunctionId.has(node);
   }
@@ -115,7 +103,7 @@ export class FunctionRegistry {
   /** Snapshot of `functionId → slot` for tests and debugging. */
   snapshot(): ReadonlyMap<number, number> {
     const out = new Map<number, number>();
-    for (const [functionId, entry] of this.byFunctionId) out.set(functionId, entry.slot);
+    for (const [functionId, { slot }] of this.byFunctionId) out.set(functionId, slot);
     return out;
   }
 

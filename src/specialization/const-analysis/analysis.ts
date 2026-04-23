@@ -1,30 +1,28 @@
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
 import type { Speculation } from "../framework/assumption-chain";
-import type { BlockDfaSpec } from "../framework/dfa-factory";
+import { transferBlock } from "../framework/block-transfer";
+import {
+  makeBlockFixpointAnalysis,
+  type BlockDfaSpec,
+  type BlockFixpointAnalysis,
+} from "../framework/dfa-factory";
+import { type NodeId } from "../framework/key-spaces";
 import { MutableEnv } from "../framework/mutable-env";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
-import { type NodeId } from "../framework/key-spaces";
-import { transferBlock } from "../framework/block-transfer";
-import { makeBlockFixpointAnalysis, type BlockFixpointAnalysis } from "../framework/dfa-factory";
 import {
-  type ConstLattice,
   CONST_BOTTOM,
   CONST_TOP,
+  constEq,
   constJoin,
   constLeq,
-  constEq,
   constOf,
+  type ConstLattice,
 } from "./lattice";
 
 export function liftConst(observed: RawKind): ConstLattice | undefined {
-  switch (observed.kind) {
-    case "number":
-      return constOf(observed.value);
-    default:
-      return undefined;
-  }
+  return observed.kind === "number" ? constOf(observed.value) : undefined;
 }
 
 /** Baseline const facts are semantic-only. There is no chain-extension
@@ -37,12 +35,12 @@ export function liftConst(observed: RawKind): ConstLattice | undefined {
  *  remains useful as a static (chain-invariant) pass driving
  *  `constantFoldingRule`, `deadStoreRule`, and `algebraicSimplifyRule`. */
 
-const constMeet = (a: ConstLattice, b: ConstLattice): ConstLattice => {
+function constMeet(a: ConstLattice, b: ConstLattice): ConstLattice {
   if (a.tag === "top") return b;
   if (b.tag === "top") return a;
   if (a.tag === "bottom" || b.tag === "bottom") return CONST_BOTTOM;
   return a.value === b.value ? a : CONST_BOTTOM;
-};
+}
 
 class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   constructor(
@@ -57,10 +55,8 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 
   visitLiteralExpr(expr: ExprNS.Literal): ConstLattice {
-    if (typeof expr.value === "number") {
-      return this.annotate(expr, constOf(expr.value));
-    }
-    return this.annotate(expr, CONST_TOP);
+    const val = typeof expr.value === "number" ? constOf(expr.value) : CONST_TOP;
+    return this.annotate(expr, val);
   }
 
   visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ConstLattice {
@@ -69,42 +65,14 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
 
   visitVariableExpr(expr: ExprNS.Variable): ConstLattice {
     const info = this.slotLookup(expr.name);
-    if (!isLocal(info)) return this.annotate(expr, CONST_TOP);
-    return this.annotate(expr, this.constEnv.get(info.slot) ?? CONST_TOP);
+    const val = isLocal(info) ? this.constEnv.get(info.slot) ?? CONST_TOP : CONST_TOP;
+    return this.annotate(expr, val);
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ConstLattice {
     const left = expr.left.accept(this);
     const right = expr.right.accept(this);
-
-    if (left.tag !== "const" || right.tag !== "const") {
-      return this.annotate(expr, CONST_TOP);
-    }
-
-    const lv = left.value;
-    const rv = right.value;
-
-    switch (expr.operator.type) {
-      case TokenType.PLUS:
-        return this.annotate(expr, constOf(lv + rv));
-      case TokenType.MINUS:
-        return this.annotate(expr, constOf(lv - rv));
-      case TokenType.STAR:
-        return this.annotate(expr, constOf(lv * rv));
-      case TokenType.SLASH:
-        if (rv === 0) return this.annotate(expr, CONST_TOP);
-        return this.annotate(expr, constOf(lv / rv));
-      case TokenType.DOUBLESLASH:
-        if (rv === 0) return this.annotate(expr, CONST_TOP);
-        return this.annotate(expr, constOf(Math.floor(lv / rv)));
-      case TokenType.PERCENT: {
-        if (rv === 0) return this.annotate(expr, CONST_TOP);
-        // Python modulo: result has same sign as divisor
-        return this.annotate(expr, constOf(lv - Math.floor(lv / rv) * rv));
-      }
-    }
-
-    return this.annotate(expr, CONST_TOP);
+    return this.annotate(expr, foldBinary(expr.operator.type, left, right));
   }
 
   // Compare produces a boolean; boolean facts live in TypeAnalysis (BoolRef).
@@ -116,14 +84,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
 
   visitUnaryExpr(expr: ExprNS.Unary): ConstLattice {
     const operand = expr.right.accept(this);
-    if (operand.tag !== "const") return this.annotate(expr, CONST_TOP);
-    switch (expr.operator.type) {
-      case TokenType.MINUS:
-        return this.annotate(expr, constOf(-operand.value));
-      case TokenType.PLUS:
-        return this.annotate(expr, constOf(+operand.value));
-    }
-    return this.annotate(expr, CONST_TOP);
+    return this.annotate(expr, foldUnary(expr.operator.type, operand));
   }
 
   // `and`/`or` truthiness reasoning lives in TypeAnalysis's BoolRef transfer.
@@ -134,8 +95,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
   }
 
   visitGroupingExpr(expr: ExprNS.Grouping): ConstLattice {
-    const val = expr.expression.accept(this);
-    return this.annotate(expr, val);
+    return this.annotate(expr, expr.expression.accept(this));
   }
 
   visitTernaryExpr(expr: ExprNS.Ternary): ConstLattice {
@@ -181,6 +141,41 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
 
   visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ConstLattice {
     return this.annotate(expr, CONST_TOP);
+  }
+}
+
+function foldBinary(op: TokenType, left: ConstLattice, right: ConstLattice): ConstLattice {
+  if (left.tag !== "const" || right.tag !== "const") return CONST_TOP;
+  const lv = left.value;
+  const rv = right.value;
+  switch (op) {
+    case TokenType.PLUS:
+      return constOf(lv + rv);
+    case TokenType.MINUS:
+      return constOf(lv - rv);
+    case TokenType.STAR:
+      return constOf(lv * rv);
+    case TokenType.SLASH:
+      return rv === 0 ? CONST_TOP : constOf(lv / rv);
+    case TokenType.DOUBLESLASH:
+      return rv === 0 ? CONST_TOP : constOf(Math.floor(lv / rv));
+    case TokenType.PERCENT:
+      // Python modulo: result has same sign as divisor
+      return rv === 0 ? CONST_TOP : constOf(lv - Math.floor(lv / rv) * rv);
+    default:
+      return CONST_TOP;
+  }
+}
+
+function foldUnary(op: TokenType, operand: ConstLattice): ConstLattice {
+  if (operand.tag !== "const") return CONST_TOP;
+  switch (op) {
+    case TokenType.MINUS:
+      return constOf(-operand.value);
+    case TokenType.PLUS:
+      return constOf(+operand.value);
+    default:
+      return CONST_TOP;
   }
 }
 

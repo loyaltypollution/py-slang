@@ -31,21 +31,12 @@ export interface Speculation {
   readonly bindings: BindingsByNarrowing;
 }
 
-/** Shared prototype for all interned chain instances. Kept as a stable
- *  object so `Object.create(CHAIN_PROTO)` identifies interner-produced
- *  chains; has no methods (body storage is a free-function module now). */
-export const CHAIN_PROTO: object = Object.freeze({});
-
-const EMPTY_BINDINGS: BindingsByNarrowing = new Map();
-
-export const ROOT_CONTEXT: Speculation = Object.freeze(
-  Object.assign(Object.create(CHAIN_PROTO), {
-    parent: undefined,
-    assumption: undefined,
-    depth: 0,
-    bindings: EMPTY_BINDINGS,
-  }) as Speculation,
-);
+export const ROOT_CONTEXT: Speculation = Object.freeze({
+  parent: undefined,
+  assumption: undefined,
+  depth: 0,
+  bindings: new Map() as BindingsByNarrowing,
+});
 
 export function isRoot(ctx: Speculation): boolean {
   return ctx.parent === undefined;

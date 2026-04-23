@@ -134,8 +134,7 @@ export function modSigns(a: IntRef, b: IntRef): IntRef {
 }
 
 export function notBoolRef(t: BoolRef): BoolRef {
-  if (t === 0) return 0 as BoolRef; // bottom
-  // Swap True (bit 0) and False (bit 1)
+  // Swap True (bit 0) and False (bit 1). Bottom (0) maps to itself.
   return (((t & 1) << 1) | ((t & 2) >> 1)) as BoolRef;
 }
 
@@ -163,6 +162,18 @@ export function neqSigns(l: IntRef, r: IntRef): BoolRef {
 
 // Top-level transfer functions operating on TypeLattice.
 
+/** Apply a sign-arithmetic operator; returns `undefined` for unknown ops. */
+function applySignOp(op: string, lRef: IntRef, rRef: IntRef): IntRef | undefined {
+  switch (op) {
+    case "+": return addSigns(lRef, rRef);
+    case "-": return subSigns(lRef, rRef);
+    case "*": return mulSigns(lRef, rRef);
+    case "//": return divSigns(lRef, rRef);
+    case "%": return modSigns(lRef, rRef);
+    default: return undefined;
+  }
+}
+
 export function transferBinaryOp(op: string, left: TypeLattice, right: TypeLattice): TypeLattice {
   const lk = left.kinds;
   const rk = right.kinds;
@@ -182,73 +193,20 @@ export function transferBinaryOp(op: string, left: TypeLattice, right: TypeLatti
   const lIsInt = lk === INT_BIT;
   const rIsInt = rk === INT_BIT;
 
-  // True division always returns float (per spec)
-  if (op === "/") {
-    if (lIsInt && rIsInt) {
-      return floatValue(divSigns(left.intRef, right.intRef));
-    }
-    if ((lIsInt || lIsFloat) && (rIsInt || rIsFloat)) {
-      const lRef = lIsFloat ? left.floatRef : left.intRef;
-      const rRef = rIsFloat ? right.floatRef : right.intRef;
-      return floatValue(divSigns(lRef, rRef));
-    }
-    return TOP;
-  }
+  // Only pure numeric (int/float) kinds participate in sign-tracked arithmetic.
+  if (!(lIsInt || lIsFloat) || !(rIsInt || rIsFloat)) return TOP;
 
-  // Float + int or float + float → float result
-  if ((lIsFloat && rIsInt) || (lIsInt && rIsFloat) || (lIsFloat && rIsFloat)) {
-    const lRef = lIsFloat ? left.floatRef : left.intRef;
-    const rRef = rIsFloat ? right.floatRef : right.intRef;
-    let resultRef: IntRef;
-    switch (op) {
-      case "+":
-        resultRef = addSigns(lRef, rRef);
-        break;
-      case "-":
-        resultRef = subSigns(lRef, rRef);
-        break;
-      case "*":
-        resultRef = mulSigns(lRef, rRef);
-        break;
-      case "//":
-        resultRef = divSigns(lRef, rRef);
-        break;
-      case "%":
-        resultRef = modSigns(lRef, rRef);
-        break;
-      default:
-        return TOP;
-    }
-    return floatValue(resultRef);
-  }
+  const lRef = lIsFloat ? left.floatRef : left.intRef;
+  const rRef = rIsFloat ? right.floatRef : right.intRef;
 
-  // Pure int op int
-  if (!lIsInt || !rIsInt) return TOP;
+  // True division always returns float (per spec).
+  if (op === "/") return floatValue(divSigns(lRef, rRef));
 
-  const lRef = left.intRef;
-  const rRef = right.intRef;
+  const resultRef = applySignOp(op, lRef, rRef);
+  if (resultRef === undefined) return TOP;
 
-  let resultRef: IntRef;
-  switch (op) {
-    case "+":
-      resultRef = addSigns(lRef, rRef);
-      break;
-    case "-":
-      resultRef = subSigns(lRef, rRef);
-      break;
-    case "*":
-      resultRef = mulSigns(lRef, rRef);
-      break;
-    case "//":
-      resultRef = divSigns(lRef, rRef);
-      break;
-    case "%":
-      resultRef = modSigns(lRef, rRef);
-      break;
-    default:
-      return TOP;
-  }
-  return integer(resultRef);
+  // Float result whenever either operand is float; otherwise pure int.
+  return lIsFloat || rIsFloat ? floatValue(resultRef) : integer(resultRef);
 }
 
 export function transferCompare(op: string, left: TypeLattice, right: TypeLattice): TypeLattice {
@@ -287,24 +245,12 @@ export function transferCompare(op: string, left: TypeLattice, right: TypeLattic
   if ((lk === INT_BIT || lk === FLOAT_BIT) && (rk === INT_BIT || rk === FLOAT_BIT)) {
     const lRef = lk === FLOAT_BIT ? left.floatRef : left.intRef;
     const rRef = rk === FLOAT_BIT ? right.floatRef : right.intRef;
-    let resultRef: BoolRef;
     switch (op) {
-      case ">":
-        resultRef = gtSigns(lRef, rRef);
-        break;
-      case "<":
-        resultRef = ltSigns(lRef, rRef);
-        break;
-      case ">=":
-        resultRef = geSigns(lRef, rRef);
-        break;
-      case "<=":
-        resultRef = leSigns(lRef, rRef);
-        break;
-      default:
-        return boolValue(BoolRef.Top);
+      case ">": return boolValue(gtSigns(lRef, rRef));
+      case "<": return boolValue(ltSigns(lRef, rRef));
+      case ">=": return boolValue(geSigns(lRef, rRef));
+      case "<=": return boolValue(leSigns(lRef, rRef));
     }
-    return boolValue(resultRef);
   }
 
   return boolValue(BoolRef.Top);
@@ -348,7 +294,6 @@ export function truthiness(t: TypeLattice): BoolRef {
 }
 
 export function transferNot(operand: TypeLattice): TypeLattice {
-  const t = truthiness(operand);
-  if (t === BoolRef.Bottom) return boolValue(BoolRef.Bottom);
-  return boolValue(notBoolRef(t));
+  // notBoolRef(Bottom) === Bottom, so no Bottom guard needed.
+  return boolValue(notBoolRef(truthiness(operand)));
 }

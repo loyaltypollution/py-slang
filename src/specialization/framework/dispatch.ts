@@ -36,9 +36,11 @@ function conditionTruth(
 ): boolean | undefined {
   const fact = typeAnalysis.perExpr(topology).tryRead(condId, context);
   if (fact === undefined || fact.kinds !== BOOL_BIT) return undefined;
-  if (fact.boolRef === BoolRef.True) return true;
-  if (fact.boolRef === BoolRef.False) return false;
-  return undefined;
+  switch (fact.boolRef) {
+    case BoolRef.True: return true;
+    case BoolRef.False: return false;
+    default: return undefined;
+  }
 }
 
 /** Prune dead branches under the type facts at `context`. Returns the

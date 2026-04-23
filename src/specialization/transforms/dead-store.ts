@@ -27,23 +27,22 @@ import { lineageTo } from "./witness-utils";
  *  slot target is dead. Calls, subscripts, lambdas (capture semantics are
  *  not tracked by liveness here), and list literals are excluded. */
 function isPureRhs(expr: ExprNS.Expr, slotLookup: SlotLookup): boolean {
-  if (expr instanceof ExprNS.Literal) return true;
-  if (expr instanceof ExprNS.BigIntLiteral) return true;
-  if (expr instanceof ExprNS.None) return true;
-  if (expr instanceof ExprNS.Complex) return true;
-  if (expr instanceof ExprNS.Variable) {
-    const info = slotLookup(expr.name);
-    return isLocal(info);
+  if (
+    expr instanceof ExprNS.Literal ||
+    expr instanceof ExprNS.BigIntLiteral ||
+    expr instanceof ExprNS.None ||
+    expr instanceof ExprNS.Complex
+  ) {
+    return true;
   }
+  if (expr instanceof ExprNS.Variable) return isLocal(slotLookup(expr.name));
   if (expr instanceof ExprNS.Grouping) return isPureRhs(expr.expression, slotLookup);
   if (expr instanceof ExprNS.Unary) return isPureRhs(expr.right, slotLookup);
-  if (expr instanceof ExprNS.Binary) {
-    return isPureRhs(expr.left, slotLookup) && isPureRhs(expr.right, slotLookup);
-  }
-  if (expr instanceof ExprNS.Compare) {
-    return isPureRhs(expr.left, slotLookup) && isPureRhs(expr.right, slotLookup);
-  }
-  if (expr instanceof ExprNS.BoolOp) {
+  if (
+    expr instanceof ExprNS.Binary ||
+    expr instanceof ExprNS.Compare ||
+    expr instanceof ExprNS.BoolOp
+  ) {
     return isPureRhs(expr.left, slotLookup) && isPureRhs(expr.right, slotLookup);
   }
   if (expr instanceof ExprNS.Ternary) {

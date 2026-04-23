@@ -31,7 +31,7 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 
 export function cloneStmts(stmts: readonly StmtNS.Stmt[]): StmtNS.Stmt[] {
-  return stmts.map(cloneStmt);
+  return stmts.map(s => cloneNode(s) as StmtNS.Stmt);
 }
 
 /** Prototype-preserving shallow copy with field overrides. `instanceof` keeps
@@ -44,14 +44,6 @@ export function shadowNode<T extends object>(orig: T, patch: Partial<T>): T {
   return shadow;
 }
 
-function cloneStmt(s: StmtNS.Stmt): StmtNS.Stmt {
-  return cloneNode(s) as StmtNS.Stmt;
-}
-
-function cloneExpr(e: ExprNS.Expr): ExprNS.Expr {
-  return cloneNode(e) as ExprNS.Expr;
-}
-
 function cloneNode(node: object): object {
   const out = Object.create(Object.getPrototypeOf(node));
   for (const key of Object.keys(node)) {
@@ -62,8 +54,7 @@ function cloneNode(node: object): object {
 }
 
 function arrayHoldsTreeNodes(arr: readonly unknown[]): boolean {
-  for (let i = 0; i < arr.length; i++) {
-    const el = arr[i];
+  for (const el of arr) {
     if (el instanceof StmtNS.Stmt || el instanceof ExprNS.Expr) return true;
     if (Array.isArray(el) && arrayHoldsTreeNodes(el)) return true;
   }
@@ -79,8 +70,7 @@ function cloneValue(v: unknown): unknown {
     // compounded over every node of every forked body.
     return arrayHoldsTreeNodes(v) ? v.map(cloneValue) : v;
   }
-  if (v instanceof StmtNS.Stmt) return cloneStmt(v);
-  if (v instanceof ExprNS.Expr) return cloneExpr(v);
+  if (v instanceof StmtNS.Stmt || v instanceof ExprNS.Expr) return cloneNode(v);
   // Tokens, primitives, PyComplexNumber: shared by reference. These are
   // value-typed from the tree's perspective; mutation of them by a
   // transform would be a bug regardless of fork semantics.

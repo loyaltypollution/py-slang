@@ -29,26 +29,20 @@
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
-import type { BasicBlock } from "../framework/cfg";
-import type { Unit } from "../framework/function-unit";
-import {
-  ROOT_CONTEXT,
-  type Speculation,
-} from "../framework/assumption-chain";
+import { unitOfFunctionId, type Narrowing } from "../framework/analysis";
 import { at } from "../framework/assumption-algebra";
-import {
-  type Narrowing,
-} from "../framework/analysis";
+import { ROOT_CONTEXT, type Speculation } from "../framework/assumption-chain";
+import type { BasicBlock } from "../framework/cfg";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
   type BlockPassResult,
 } from "../framework/dfa-factory";
+import type { Unit } from "../framework/function-unit";
+import type { FunctionId } from "../framework/key-spaces";
 import { MutableEnv } from "../framework/mutable-env";
 import { runtimeReturnChannel } from "../framework/runtime-analyses";
-import { unitOfFunctionId } from "../framework/analysis";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
-import type { FunctionId } from "../framework/key-spaces";
 import { liftType } from "../type-analysis/analysis";
 import {
   BOTTOM,
@@ -170,15 +164,8 @@ function transferStmtBackward(
     case "Assign":
     case "AnnAssign": {
       const a = stmt as StmtNS.Assign | StmtNS.AnnAssign;
-      let targetName;
-      if (a.kind === "AnnAssign") {
-        targetName = a.target.name;
-      } else if (a.target instanceof ExprNS.Variable) {
-        targetName = a.target.name;
-      } else {
-        return;
-      }
-      const info = slotLookup(targetName);
+      if (!(a.target instanceof ExprNS.Variable)) return;
+      const info = slotLookup(a.target.name);
       if (!isLocal(info)) return;
       const after = env.get(info.slot) ?? TOP;
       env.clear(info.slot);

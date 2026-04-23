@@ -1,15 +1,14 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { BasicBlock } from "../framework/cfg";
 import type { Speculation } from "../framework/assumption-chain";
+import type { BasicBlock } from "../framework/cfg";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
   type BlockPassResult,
 } from "../framework/dfa-factory";
-import type { Unit } from "../framework/function-unit";
 import { MutableEnv } from "../framework/mutable-env";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
-import { LIVE, type LiveVal, livenessLattice } from "./lattice";
+import { LIVE, livenessLattice, type LiveVal } from "./lattice";
 
 /** Marks every `Variable` read as live in the shared env. All other visit
  *  methods just recurse into children; return value is ignored. */
@@ -85,6 +84,15 @@ class ReadCollector implements ExprNS.Visitor<void> {
  *  occurs before write in forward execution = read processed after kill
  *  in backward order).
  */
+function killLocal(
+  env: MutableEnv<LiveVal>,
+  slotLookup: SlotLookup,
+  name: Parameters<SlotLookup>[0],
+): void {
+  const info = slotLookup(name);
+  if (isLocal(info)) env.clear(info.slot);
+}
+
 function transferStmtBackward(
   stmt: StmtNS.Stmt,
   env: MutableEnv<LiveVal>,
@@ -95,8 +103,7 @@ function transferStmtBackward(
     case "Assign": {
       const a = stmt as StmtNS.Assign;
       if (a.target instanceof ExprNS.Variable) {
-        const info = slotLookup(a.target.name);
-        if (isLocal(info)) env.clear(info.slot);
+        killLocal(env, slotLookup, a.target.name);
       } else {
         // Non-Variable targets (subscript, tuple, ...): conservative no kill.
         // Their reads are collected normally.
@@ -107,8 +114,7 @@ function transferStmtBackward(
     }
     case "AnnAssign": {
       const a = stmt as StmtNS.AnnAssign;
-      const info = slotLookup(a.target.name);
-      if (isLocal(info)) env.clear(info.slot);
+      killLocal(env, slotLookup, a.target.name);
       a.value.accept(visitor);
       return;
     }
@@ -120,8 +126,7 @@ function transferStmtBackward(
       return;
     case "For": {
       const f = stmt as StmtNS.For;
-      const info = slotLookup(f.target);
-      if (isLocal(info)) env.clear(info.slot);
+      killLocal(env, slotLookup, f.target);
       f.iter.accept(visitor);
       return;
     }
@@ -225,5 +230,3 @@ export function perStatementLiveOut(
   return liveOuts;
 }
 
-// Re-export for consumers that need the unit-level context.
-export type { Unit };

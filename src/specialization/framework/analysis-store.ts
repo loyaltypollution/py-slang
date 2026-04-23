@@ -54,6 +54,39 @@ export interface FactChange<K, V> {
 
 const EMPTY_MAP: ReadonlyMap<unknown, unknown> = new Map();
 
+/** Walk `chain → ROOT`, returning the shallowest ancestor whose `tryRead`
+ *  hit satisfies `accept`. Shared between `AnalysisStore` and synthetic
+ *  store adapters (e.g. the DFA factory's `perExpr` node-keyed view) so the
+ *  speculation-chain walk is named in one place. */
+export function walkChainMinimal<K, V>(
+  chain: Speculation,
+  key: K,
+  tryRead: (key: K, context: Speculation) => V | undefined,
+  accept: (value: V) => boolean,
+): { value: V; witness: Speculation } | undefined {
+  let match: { value: V; witness: Speculation } | undefined;
+  for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
+    const value = tryRead(key, cur);
+    if (value === undefined || !accept(value)) continue;
+    match = { value, witness: cur };
+  }
+  return match;
+}
+
+/** Walk `chain → ROOT`, returning the deepest ancestor with a `tryRead` hit.
+ *  See `walkChainMinimal` for rationale. */
+export function walkChainDeepest<K, V>(
+  chain: Speculation,
+  key: K,
+  tryRead: (key: K, context: Speculation) => V | undefined,
+): { value: V; witness: Speculation } | undefined {
+  for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
+    const value = tryRead(key, cur);
+    if (value !== undefined) return { value, witness: cur };
+  }
+  return undefined;
+}
+
 export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
   private readonly cellsByContext = new Map<Speculation, Map<K, V>>();
 
@@ -99,24 +132,14 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
     key: K,
     accept: (value: V) => boolean,
   ): { value: V; witness: Speculation } | undefined {
-    let match: { value: V; witness: Speculation } | undefined;
-    for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
-      const value = this.tryRead(key, cur);
-      if (value === undefined || !accept(value)) continue;
-      match = { value, witness: cur };
-    }
-    return match;
+    return walkChainMinimal(chain, key, (k, c) => this.tryRead(k, c), accept);
   }
 
   readDeepest(
     chain: Speculation,
     key: K,
   ): { value: V; witness: Speculation } | undefined {
-    for (let cur: Speculation | undefined = chain; cur !== undefined; cur = cur.parent) {
-      const value = this.tryRead(key, cur);
-      if (value !== undefined) return { value, witness: cur };
-    }
-    return undefined;
+    return walkChainDeepest(chain, key, (k, c) => this.tryRead(k, c));
   }
 
   /** Combine `value` with the existing cell via `algebra.join` and store

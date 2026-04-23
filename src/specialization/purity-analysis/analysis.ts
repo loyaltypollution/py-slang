@@ -133,24 +133,24 @@ class PurityExprVisitor implements ExprNS.Visitor<AbsVal> {
       calleeName !== undefined && WHITELISTED_BUILTINS.has(calleeName);
     const isSelfRecursion =
       calleeName !== undefined && calleeName === state.selfName;
-    const isClosureCall = calleeAbs !== undefined && calleeAbs.kind === "closure";
-    const closurePure = isClosureCall
-      ? (calleeAbs as { pure: boolean | undefined }).pure
-      : undefined;
-    const isPureClosureCall = isClosureCall && closurePure === true;
-    const isImpureClosureCall = isClosureCall && closurePure === false;
-    // Pending: inner not yet analyzed. Marking impure here would lock this
-    // block's summary under monotone-join; defer until scope-analysis refines.
-    const isPendingClosureCall = isClosureCall && closurePure === undefined;
+    // Closure sub-state: `true` = resolved pure, `false` = resolved impure,
+    // `undefined` = either not a closure call, or inner not yet analyzed.
+    // Pending (not yet analyzed) defers: marking impure here would lock this
+    // block's summary under monotone-join; wait for scope-analysis to refine.
+    const closurePure =
+      calleeAbs?.kind === "closure" ? calleeAbs.pure : undefined;
+    const isPureClosureCall = closurePure === true;
+    const isPendingClosureCall =
+      calleeAbs?.kind === "closure" && closurePure === undefined;
 
-    if (isImpureClosureCall) {
+    if (closurePure === false) {
       state.impure = true;
     } else if (
+      calleeName !== undefined &&
       !isWhitelistedBuiltin &&
       !isSelfRecursion &&
       !isPureClosureCall &&
-      !isPendingClosureCall &&
-      calleeName !== undefined
+      !isPendingClosureCall
     ) {
       state.impure = true;
     }

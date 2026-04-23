@@ -60,10 +60,6 @@ export function wakeOwningUnit<K>(resolveUnit: UnitResolver<K>) {
 }
 
 export type SemanticAnalysis<K, V> = Analysis<K, V> & { polarity: "may" | "must" };
-export type SemanticBlockFixpointAnalysis<L> = BlockFixpointAnalysis<L> & {
-  readonly env: SemanticAnalysis<any, any>;
-  readonly facts: SemanticAnalysis<any, ReadonlyMap<number, L>>;
-};
 
 /** Algebra over one stored value space `V`. `AnalysisStore` uses this
  *  surface for three store-level jobs: default value for unwritten
