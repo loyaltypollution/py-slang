@@ -11,7 +11,7 @@ import { StmtNS } from "../../ast-types";
 import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
 import { bindings, extend } from "../../specialization/lattice/algebra";
 import { paramKey } from "../../specialization/framework/key-spaces";
-import { runtimeParamChannel } from "../../specialization/framework/runtime-analyses";
+import { runtimeParamChannel } from "../../specialization/assumption/runtime-analyses";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 describe("refutation filter: worklist integration", () => {

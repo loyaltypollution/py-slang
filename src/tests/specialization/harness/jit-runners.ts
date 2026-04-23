@@ -7,7 +7,7 @@ import memo from "../../../stdlib/memo";
 import misc from "../../../stdlib/misc";
 import { makeDfaQuery } from "../../../specialization";
 import { DEFAULT_PASSES, DEFAULT_TRANSFORMS } from "../../../specialization/defaults";
-import { makeJitDispatch } from "../../../specialization/framework/jit-dispatch";
+import { makeJitDispatch } from "../../../specialization/assumption/jit-dispatch";
 import { Worklist } from "../../../specialization/framework/worklist";
 import { memoizationRule } from "../../../specialization/transforms/memoization";
 import { parse } from "../../../parser/parser-adapter";

@@ -4,7 +4,7 @@
 
 import { constAnalysis } from "../const-analysis/analysis";
 import { typeAnalysis, typeNarrowing } from "../type-analysis/analysis";
-import { paramConstNarrowing, paramTypeNarrowing } from "./param-handles";
+import { paramConstNarrowing, paramTypeNarrowing } from "../assumption/param-handles";
 import {
   returnKindNarrowing,
   typeRequirementAnalysis,

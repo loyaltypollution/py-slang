@@ -8,7 +8,7 @@ import type { Unit } from "./framework/function-unit";
 import type { FunctionId, NodeId } from "./framework/key-spaces";
 import type { ProgramTopology } from "./framework/topology";
 import { ROOT_CONTEXT, type AssumptionChain } from "./lattice/chain";
-import { constAnalysis, typeAnalysis } from "./framework/dfa-analyses";
+import { constAnalysis, typeAnalysis } from "./framework/narrowing-registry";
 import { purityScopeAnalysis } from "./purity-analysis/analysis";
 import type { TypeLattice } from "./type-analysis/lattice";
 import type { ConstLattice } from "./const-analysis/lattice";

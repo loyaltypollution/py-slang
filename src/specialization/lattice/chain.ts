@@ -1,6 +1,6 @@
 // AssumptionChain: canonical finite partial map (Narrowing, Key) ⇀ Value,
 // interned into a trie by the default interner. Algebra is in `./algebra`;
-// per-chain body storage in `../framework/assumption-bodies`.
+// per-chain body storage in `../assumption/assumption-bodies`.
 
 import type { Narrowing } from "../framework/analysis";
 

@@ -26,7 +26,7 @@ import {
 import type { Unit } from "../framework/function-unit";
 import type { FunctionId } from "../framework/key-spaces";
 import { MutableEnv } from "../framework/mutable-env";
-import { runtimeReturnChannel } from "../framework/runtime-analyses";
+import { runtimeReturnChannel } from "../assumption/runtime-analyses";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import { liftType } from "../type-analysis/analysis";
 import {

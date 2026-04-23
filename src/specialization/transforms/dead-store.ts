@@ -7,7 +7,7 @@
 
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../lattice/chain";
-import { forkBody, visibleBody } from "../framework/assumption-bodies";
+import { forkBody, visibleBody } from "../assumption/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
 import { isLocal, type SlotLookup } from "../framework/slot-table";

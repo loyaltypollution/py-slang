@@ -4,7 +4,7 @@ import type { Narrowing } from "../framework/analysis";
 import { isRoot, type AssumptionChain } from "../lattice/chain";
 import { at } from "../lattice/algebra";
 import { MutableEnv } from "../framework/mutable-env";
-import { paramTypeNarrowing } from "../framework/param-handles";
+import { paramTypeNarrowing } from "../assumption/param-handles";
 import type { BlockDfaSpec } from "../framework/dfa-factory";
 import type { RawKind } from "../framework/raw-value";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
@@ -74,7 +74,7 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
  *  into `typeAnalysis`'s per-node fact at that `nodeId` via
  *  `TypeAnalysisVisitor.annotate` — no separate store, no parallel analysis.
  *  Production has no driver on this axis today (no `observationSource`);
- *  production narrowings live in `framework/param-handles.ts` and
+ *  production narrowings live in `assumption/param-handles.ts` and
  *  `type-requirement-analysis/analysis.ts`. */
 export const typeNarrowing: Narrowing<NodeId, TypeLattice> = {
   eq,

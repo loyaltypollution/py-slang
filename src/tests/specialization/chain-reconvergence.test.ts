@@ -9,8 +9,8 @@ import {
   without,
 } from "../../specialization/lattice/algebra";
 import { paramKey } from "../../specialization/framework/key-spaces";
-import { runtimeParamChannel } from "../../specialization/framework/runtime-analyses";
-import { paramTypeNarrowing } from "../../specialization/framework/param-handles";
+import { runtimeParamChannel } from "../../specialization/assumption/runtime-analyses";
+import { paramTypeNarrowing } from "../../specialization/assumption/param-handles";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 describe("chain reconvergence across widen → re-observe (Python-driven)", () => {

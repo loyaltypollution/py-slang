@@ -1,7 +1,7 @@
 // Per-Analysis, context-partitioned storage. Public `analysis.store` is the
 // readonly surface; framework-owned writes go through `storeWrite(...)`.
 
-import type { Analysis, JoinSemiLattice } from "./analysis";
+import type { JoinSemiLattice } from "./analysis";
 import type { AssumptionChain } from "../lattice/chain";
 
 export interface ReadonlyAnalysisStore<K, V> {
@@ -23,16 +23,6 @@ export interface ReadonlyAnalysisStore<K, V> {
 export interface StoreWriteResult<V> {
   readonly prev: V | undefined;
   readonly next: V;
-}
-
-/** Fired on value-changing writes. `oldValue` is `undefined` if the cell
- *  was empty. `context` identifies the speculation-assumption chain. */
-export interface FactChange<K, V> {
-  readonly analysis: Analysis<K, V>;
-  readonly key: K;
-  readonly context: AssumptionChain;
-  readonly oldValue: V | undefined;
-  readonly newValue: V;
 }
 
 const EMPTY_MAP: ReadonlyMap<unknown, unknown> = new Map();

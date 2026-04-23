@@ -2,14 +2,14 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokenizer";
-import { directParamEntryGuardsFor, guardKeyFromGuards } from "../entry-guards";
+import { directParamEntryGuardsFor, guardKeyFromGuards } from "../assumption/entry-guards";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfFunctionId, wakeOwningUnit } from "../framework/analysis";
 import { shadowNode } from "../framework/ast-deep-clone";
 import { type AssumptionChain } from "../lattice/chain";
-import { forkBody } from "../framework/assumption-bodies";
+import { forkBody } from "../assumption/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
-import { RUNTIME_CALL_COUNT_SAT, runtimeCallCounter } from "../framework/runtime-analyses";
+import { RUNTIME_CALL_COUNT_SAT, runtimeCallCounter } from "../assumption/runtime-analyses";
 import type { ProgramTopology } from "../framework/topology";
 import { purityScopeAnalysis } from "../purity-analysis/analysis";
 

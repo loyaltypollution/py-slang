@@ -4,13 +4,13 @@
 // nodes preserve NodeIds as stable references into the canonical unit.
 
 import { StmtNS } from "../../ast-types";
-import { contextIsEntrySpecializable, directParamEntryGuardsFor } from "../entry-guards";
+import { contextIsEntrySpecializable, directParamEntryGuardsFor } from "./entry-guards";
 import type { AssumptionChain } from "../lattice/chain";
 import { visibleBody } from "./assumption-bodies";
-import { shadowNode } from "./ast-deep-clone";
-import { typeAnalysis } from "./dfa-analyses";
-import type { Unit } from "./function-unit";
-import type { ReadonlyProgramTopology } from "./topology";
+import { shadowNode } from "../framework/ast-deep-clone";
+import { typeAnalysis } from "../framework/narrowing-registry";
+import type { Unit } from "../framework/function-unit";
+import type { ReadonlyProgramTopology } from "../framework/topology";
 import { BOOL_BIT, BoolRef } from "../type-analysis/lattice";
 
 function conditionTruth(
@@ -20,11 +20,9 @@ function conditionTruth(
 ): boolean | undefined {
   const fact = typeAnalysis.perExpr(topology).tryRead(condId, context);
   if (fact === undefined || fact.kinds !== BOOL_BIT) return undefined;
-  switch (fact.boolRef) {
-    case BoolRef.True: return true;
-    case BoolRef.False: return false;
-    default: return undefined;
-  }
+  if (fact.boolRef === BoolRef.True) return true;
+  if (fact.boolRef === BoolRef.False) return false;
+  return undefined;
 }
 
 /** Prune dead branches under the type facts at `context`. Returns the

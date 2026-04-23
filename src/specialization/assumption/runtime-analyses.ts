@@ -12,17 +12,17 @@
 // not semantic speculation.
 
 import { StmtNS } from "../../ast-types";
-import type { JoinSemiLattice } from "./analysis";
+import type { JoinSemiLattice } from "../framework/analysis";
 import { ROOT_CONTEXT, type AssumptionChain } from "../lattice/chain";
 import { CounterStore } from "./counter-store";
 import {
   paramKey,
   type FunctionId,
   type ParamKey,
-} from "./key-spaces";
+} from "../framework/key-spaces";
 import { ObservationChannel } from "./observation-channel";
-import { classifyRawValue, type RawKind } from "./raw-value";
-import type { Worklist } from "./worklist";
+import { classifyRawValue, type RawKind } from "../framework/raw-value";
+import type { Worklist } from "../framework/worklist";
 
 // Saturation ceiling; post-saturation writes compare equal and suppress cascade.
 export const RUNTIME_CALL_COUNT_SAT = 11;
@@ -58,18 +58,18 @@ const rawValueLattice: JoinSemiLattice<RawKind> = {
 /** Per-parameter entry-value observations. Key = ParamKey. Feeds
  *  paramKey-scoped narrowings (entry specialization on param types). */
 export const runtimeParamChannel: ObservationChannel<ParamKey, RawKind> =
-  new ObservationChannel<ParamKey, RawKind>({ lattice: rawValueLattice });
+  new ObservationChannel<ParamKey, RawKind>(rawValueLattice);
 
 /** Per-function return-kind observations. Key = FunctionId. Feeds the
  *  return-kind narrowing — keyed by functionId (not Return nodeId)
  *  because the narrowing summarizes across all return paths. */
 export const runtimeReturnChannel: ObservationChannel<FunctionId, RawKind> =
-  new ObservationChannel<FunctionId, RawKind>({ lattice: rawValueLattice });
+  new ObservationChannel<FunctionId, RawKind>(rawValueLattice);
 
 /** Runtime call-count counter, keyed by FunctionDef.id. Saturates at
  *  `RUNTIME_CALL_COUNT_SAT`. */
 export const runtimeCallCounter: CounterStore<FunctionId> =
-  new CounterStore<FunctionId>({ saturation: RUNTIME_CALL_COUNT_SAT });
+  new CounterStore<FunctionId>(RUNTIME_CALL_COUNT_SAT);
 
 /** Builds the runtime-observation callbacks used by every JIT evaluator.
  *
@@ -98,11 +98,16 @@ export function makeJitObservers(
   const scopeIds: FunctionId[] = [];
   const chains: AssumptionChain[] = [];
 
-  const topIsScope = (scopeId: FunctionId): boolean =>
-    scopeIds.length > 0 && scopeIds[scopeIds.length - 1] === scopeId;
-
-  const topIdOrEmpty = (): FunctionId | "empty" =>
-    scopeIds.length > 0 ? scopeIds[scopeIds.length - 1] : "empty";
+  // Asserts the stack top is `scopeId` and returns its index. The length
+  // check also guards subsequent `[top]` indexing.
+  function requireTop(scopeId: FunctionId, op: string): number {
+    const top = scopeIds.length - 1;
+    if (top < 0 || scopeIds[top] !== scopeId) {
+      const actual = top < 0 ? "empty" : scopeIds[top];
+      throw new Error(`[makeJitObservers] ${op}(${scopeId}) but stack top is ${actual} — call/return pairing violated`);
+    }
+    return top;
+  }
 
   return {
     observeScopeCall: (scopeId) => {
@@ -114,28 +119,20 @@ export function makeJitObservers(
     },
     observeScopeReturn: (scopeId, value) => {
       // Pop AFTER observing so the return attributes to the unwinding call.
-      if (!topIsScope(scopeId)) {
-        throw new Error(
-          `[makeJitObservers] observeScopeReturn(${scopeId}) but stack top is ${topIdOrEmpty()} — call/return pairing violated`,
-        );
-      }
-      const chain = chains[chains.length - 1];
+      const top = requireTop(scopeId, "observeScopeReturn");
       // Publish's updated chain would be discarded by the imminent pop.
-      worklist.publish(runtimeReturnChannel, scopeId, classifyRawValue(value), chain);
+      worklist.publish(runtimeReturnChannel, scopeId, classifyRawValue(value), chains[top]);
       scopeIds.pop();
       chains.pop();
     },
     observeParamEntry: (scopeId, paramIndex, value) => {
-      if (!topIsScope(scopeId)) {
-        throw new Error(
-          `[makeJitObservers] observeParamEntry(${scopeId}, ${paramIndex}) but stack top is ${topIdOrEmpty()} — callee scope must be pushed first`,
-        );
-      }
-      const top = chains.length - 1;
+      const top = requireTop(scopeId, "observeParamEntry");
       const key = paramKey(scopeId, paramIndex);
       chains[top] = worklist.publish(runtimeParamChannel, key, classifyRawValue(value), chains[top]);
     },
-    currentChainFor: (scopeId) =>
-      topIsScope(scopeId) ? chains[chains.length - 1] : ROOT_CONTEXT,
+    currentChainFor: (scopeId) => {
+      const top = scopeIds.length - 1;
+      return top >= 0 && scopeIds[top] === scopeId ? chains[top] : ROOT_CONTEXT;
+    },
   };
 }

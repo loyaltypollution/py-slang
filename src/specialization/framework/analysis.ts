@@ -4,7 +4,7 @@ import type { BlockFixpointAnalysis } from "./dfa-factory";
 import type { Unit } from "./function-unit";
 import type { RawKind } from "./raw-value";
 import type { ProgramTopology } from "./topology";
-import type { ObservationChannel } from "./observation-channel";
+import type { ObservationChannel } from "../assumption/observation-channel";
 import type { Worklist } from "./worklist";
 import type { BasicBlock } from "./cfg";
 import type { FunctionId, NodeId } from "./key-spaces";

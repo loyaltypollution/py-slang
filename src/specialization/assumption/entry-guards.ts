@@ -8,18 +8,18 @@
 // visible and still pass `contextIsEntrySpecializable` because they lower
 // to entry-block type requirements via `requirementAtEntry`.
 
-import { StmtNS } from "../ast-types";
-import { isRoot, type AssumptionChain } from "./lattice/chain";
-import { at } from "./lattice/algebra";
-import type { Unit } from "./framework/function-unit";
+import { StmtNS } from "../../ast-types";
+import { isRoot, type AssumptionChain } from "../lattice/chain";
+import { at } from "../lattice/algebra";
+import type { Unit } from "../framework/function-unit";
 import {
   paramKey,
   paramKeyIndex,
   type ParamKey,
-} from "./framework/key-spaces";
-import { paramTypeNarrowing } from "./framework/param-handles";
-import type { TypeLattice } from "./type-analysis/lattice";
-import { returnKindNarrowing } from "./type-requirement-analysis/analysis";
+} from "../framework/key-spaces";
+import { paramTypeNarrowing } from "./param-handles";
+import type { TypeLattice } from "../type-analysis/lattice";
+import { returnKindNarrowing } from "../type-requirement-analysis/analysis";
 
 export type EntryGuard = { paramIndex: number; ty: TypeLattice };
 

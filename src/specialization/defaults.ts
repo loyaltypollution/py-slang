@@ -7,20 +7,20 @@ import type { StmtNS } from "../ast-types";
 import type { FunctionEnvironments } from "../resolver";
 import { definitelyBoundAnalysis } from "./definitely-bound-analysis/analysis";
 import type { Analysis, Narrowing, TransformRule } from "./framework/analysis";
-import type { CounterStore } from "./framework/counter-store";
+import type { CounterStore } from "./assumption/counter-store";
 import {
   constAnalysis,
   DEFAULT_NARROWINGS,
   typeAnalysis,
   typeRequirementAnalysis,
-} from "./framework/dfa-analyses";
+} from "./framework/narrowing-registry";
 import type { FunctionId, NodeId, ParamKey } from "./framework/key-spaces";
-import type { ObservationChannel } from "./framework/observation-channel";
+import type { ObservationChannel } from "./assumption/observation-channel";
 import {
   runtimeCallCounter,
   runtimeParamChannel,
   runtimeReturnChannel,
-} from "./framework/runtime-analyses";
+} from "./assumption/runtime-analyses";
 import { Worklist } from "./framework/worklist";
 import { livenessAnalysis } from "./liveness-analysis/analysis";
 import { purityBlockAnalysis, purityScopeAnalysis } from "./purity-analysis/analysis";
@@ -81,5 +81,6 @@ export function createDefaultWorklist(
     DEFAULT_NARROWINGS,
     DEFAULT_COUNTERS,
     DEFAULT_CHANNELS,
+    [purityBlockAnalysis],
   );
 }

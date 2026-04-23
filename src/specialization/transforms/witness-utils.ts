@@ -1,6 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../lattice/chain";
-import { forkBody } from "../framework/assumption-bodies";
+import { forkBody } from "../assumption/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 
 /** Invoke `onExpr` on every expression (and sub-expression) inside `stmts`.
@@ -114,50 +114,6 @@ export abstract class BaseStmtVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-/** Applies `rewriteExpr` to every embedded expression position in a body-bearing
- *  statement tree. The `changed` flag lives on the expression-level visitor. */
-export class RewriteStmtVisitor extends BaseStmtVisitor {
-  constructor(private readonly rewriteExpr: (e: ExprNS.Expr) => ExprNS.Expr) {
-    super();
-  }
-
-  sweep(stmts: StmtNS.Stmt[]): void {
-    for (const stmt of stmts) stmt.accept(this);
-  }
-
-  visitAssignStmt(stmt: StmtNS.Assign): void {
-    stmt.value = this.rewriteExpr(stmt.value);
-  }
-  visitAnnAssignStmt(stmt: StmtNS.AnnAssign): void {
-    stmt.value = this.rewriteExpr(stmt.value);
-  }
-  visitIfStmt(stmt: StmtNS.If): void {
-    stmt.condition = this.rewriteExpr(stmt.condition);
-    this.sweep(stmt.body);
-    if (stmt.elseBlock) this.sweep(stmt.elseBlock);
-  }
-  visitWhileStmt(stmt: StmtNS.While): void {
-    stmt.condition = this.rewriteExpr(stmt.condition);
-    this.sweep(stmt.body);
-  }
-  visitForStmt(stmt: StmtNS.For): void {
-    stmt.iter = this.rewriteExpr(stmt.iter);
-    this.sweep(stmt.body);
-  }
-  visitReturnStmt(stmt: StmtNS.Return): void {
-    if (stmt.value) stmt.value = this.rewriteExpr(stmt.value);
-  }
-  visitSimpleExprStmt(stmt: StmtNS.SimpleExpr): void {
-    stmt.expression = this.rewriteExpr(stmt.expression);
-  }
-  visitAssertStmt(stmt: StmtNS.Assert): void {
-    stmt.value = this.rewriteExpr(stmt.value);
-  }
-  visitFileInputStmt(stmt: StmtNS.FileInput): void {
-    this.sweep(stmt.statements);
-  }
-}
-
 /** Recurses into every sub-expression, leaving each node unchanged by default.
  *  Lambda/MultiLambda bodies are not descended — they belong to separate units. */
 export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
@@ -249,17 +205,57 @@ export function runWitnessSweep(
   return changed;
 }
 
-/** `RewriteStmtVisitor` wrapper that delegates to an expression visitor and
- *  forwards its `changed` flag. Used by transforms that only rewrite at the
- *  expression level. */
+/** Applies an expression visitor to every embedded expression position in a
+ *  body-bearing statement tree, forwarding the visitor's `changed` flag. Used
+ *  by transforms that only rewrite at the expression level. */
 export class ExprDrivenStmtVisitor<V extends DescendingExprVisitor & { changed: boolean }>
-  extends RewriteStmtVisitor
+  extends BaseStmtVisitor
 {
   constructor(readonly exprVisitor: V) {
-    super((e) => exprVisitor.rewrite(e));
+    super();
   }
 
   get changed(): boolean {
     return this.exprVisitor.changed;
+  }
+
+  sweep(stmts: StmtNS.Stmt[]): void {
+    for (const stmt of stmts) stmt.accept(this);
+  }
+
+  private rewrite(e: ExprNS.Expr): ExprNS.Expr {
+    return this.exprVisitor.rewrite(e);
+  }
+
+  visitAssignStmt(stmt: StmtNS.Assign): void {
+    stmt.value = this.rewrite(stmt.value);
+  }
+  visitAnnAssignStmt(stmt: StmtNS.AnnAssign): void {
+    stmt.value = this.rewrite(stmt.value);
+  }
+  visitIfStmt(stmt: StmtNS.If): void {
+    stmt.condition = this.rewrite(stmt.condition);
+    this.sweep(stmt.body);
+    if (stmt.elseBlock) this.sweep(stmt.elseBlock);
+  }
+  visitWhileStmt(stmt: StmtNS.While): void {
+    stmt.condition = this.rewrite(stmt.condition);
+    this.sweep(stmt.body);
+  }
+  visitForStmt(stmt: StmtNS.For): void {
+    stmt.iter = this.rewrite(stmt.iter);
+    this.sweep(stmt.body);
+  }
+  visitReturnStmt(stmt: StmtNS.Return): void {
+    if (stmt.value) stmt.value = this.rewrite(stmt.value);
+  }
+  visitSimpleExprStmt(stmt: StmtNS.SimpleExpr): void {
+    stmt.expression = this.rewrite(stmt.expression);
+  }
+  visitAssertStmt(stmt: StmtNS.Assert): void {
+    stmt.value = this.rewrite(stmt.value);
+  }
+  visitFileInputStmt(stmt: StmtNS.FileInput): void {
+    this.sweep(stmt.statements);
   }
 }

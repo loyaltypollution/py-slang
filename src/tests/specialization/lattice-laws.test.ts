@@ -18,7 +18,7 @@ import {
 import {
   runtimeParamChannel,
   runtimeReturnChannel,
-} from "../../specialization/framework/runtime-analyses";
+} from "../../specialization/assumption/runtime-analyses";
 import type { RawKind } from "../../specialization/framework/raw-value";
 import {
   BOOL_FALSE,

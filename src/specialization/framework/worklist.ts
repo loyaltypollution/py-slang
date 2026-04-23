@@ -13,7 +13,6 @@ import {
 import {
   storeEvict,
   storeWrite,
-  type FactChange,
 } from "./analysis-store";
 import {
   ROOT_CONTEXT,
@@ -21,7 +20,7 @@ import {
 } from "../lattice/chain";
 import { carrier as carrierOf, extend, without } from "../lattice/algebra";
 import { Refutations } from "../lattice/refutation";
-import type { CounterStore } from "./counter-store";
+import type { CounterStore } from "../assumption/counter-store";
 import {
   buildFunctionRegistry,
   FunctionRegistry,
@@ -34,14 +33,11 @@ import {
   type Unit,
 } from "./function-unit";
 import type { FunctionId, NodeId } from "./key-spaces";
-import type { ObservationChannel } from "./observation-channel";
+import type { ObservationChannel } from "../assumption/observation-channel";
 import { ProgramTopology } from "./topology";
 import { clearMemoId } from "../../runtime/memo";
-import { directParamEntryGuardsFor, guardKeyFromGuards } from "../entry-guards";
-// `purityBlockAnalysis` is the one residual framework→specific-analysis
-// coupling — its per-context verdicts are re-seeded alongside every
-// narrowing's block analysis in `enqueueNarrowingEntry`.
-import { purityBlockAnalysis } from "../purity-analysis/analysis";
+import { directParamEntryGuardsFor, guardKeyFromGuards } from "../assumption/entry-guards";
+import type { BlockFixpointAnalysis } from "./dfa-factory";
 import { memoIdFor } from "../transforms/memoization";
 import type { RawKind } from "./raw-value";
 
@@ -81,35 +77,6 @@ class TripleQueue {
     }
     return true;
   }
-}
-
-/** Group narrowings by `observationSource`. Asserts each group agrees on
- *  `resolveUnit` so registration bugs surface at construction. */
-function indexNarrowingsBySource(
-  narrowings: ReadonlyArray<Narrowing<any, any>>,
-): {
-  unitResolverBySource: Map<ObservationChannel<any, RawKind>, UnitResolver<any>>;
-  narrowingsBySource: Map<ObservationChannel<any, RawKind>, Narrowing<any, any>[]>;
-} {
-  const unitResolverBySource = new Map<ObservationChannel<any, RawKind>, UnitResolver<any>>();
-  const narrowingsBySource = new Map<ObservationChannel<any, RawKind>, Narrowing<any, any>[]>();
-  for (const n of narrowings) {
-    const source = n.observationSource;
-    if (source === undefined) continue;
-    const resolver: UnitResolver<any> = n.resolveUnit ?? unitOfNodeId;
-    const existing = unitResolverBySource.get(source);
-    if (existing === undefined) {
-      unitResolverBySource.set(source, resolver);
-    } else if (existing !== resolver) {
-      throw new Error(
-        `[Worklist] narrowings sharing an observationSource disagree on resolveUnit — all narrowings on one source must resolve to the same unit.`,
-      );
-    }
-    const group = narrowingsBySource.get(source);
-    if (group === undefined) narrowingsBySource.set(source, [n]);
-    else group.push(n);
-  }
-  return { unitResolverBySource, narrowingsBySource };
 }
 
 export class Worklist {
@@ -163,10 +130,6 @@ export class Worklist {
     Array<(ctx: AnalysisCtx, key: unknown) => void>
   >();
   private readonly registeredCounters = new Set<CounterStore<any>>();
-  private readonly channelSubs = new Map<
-    ObservationChannel<any, any>,
-    Array<(ctx: AnalysisCtx, key: unknown) => void>
-  >();
   /** Lifecycle dispatch indices, one array per event kind. */
   private readonly mintSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
   private readonly rebuildSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
@@ -187,6 +150,11 @@ export class Worklist {
   }
 
   private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
+  /** Context-sensitive block analyses re-seeded at every narrowing-entry
+   *  alongside each narrowing's own `blockAnalysis()`. Carries verdicts
+   *  (e.g. purity) that must track each specialization context but whose
+   *  analyses aren't themselves narrowings. Policy-owned by the caller. */
+  private readonly extraEntryBlockAnalyses: ReadonlyArray<BlockFixpointAnalysis<any>>;
   /** Per-source unit resolver; all narrowings on a source must agree. */
   private readonly unitResolverBySource: Map<
     ObservationChannel<any, RawKind>,
@@ -208,11 +176,32 @@ export class Worklist {
     narrowings: ReadonlyArray<Narrowing<any, any>> = [],
     counters: ReadonlyArray<CounterStore<any>> = [],
     channels: ReadonlyArray<ObservationChannel<any, any>> = [],
+    extraEntryBlockAnalyses: ReadonlyArray<BlockFixpointAnalysis<any>> = [],
   ) {
     this.narrowings = narrowings;
-    const indexed = indexNarrowingsBySource(narrowings);
-    this.unitResolverBySource = indexed.unitResolverBySource;
-    this.narrowingsBySource = indexed.narrowingsBySource;
+    this.extraEntryBlockAnalyses = extraEntryBlockAnalyses;
+    // Group narrowings by `observationSource`. Each group must agree on
+    // `resolveUnit` so registration bugs surface at construction.
+    const unitResolverBySource = new Map<ObservationChannel<any, RawKind>, UnitResolver<any>>();
+    const narrowingsBySource = new Map<ObservationChannel<any, RawKind>, Narrowing<any, any>[]>();
+    for (const n of narrowings) {
+      const source = n.observationSource;
+      if (source === undefined) continue;
+      const resolver: UnitResolver<any> = n.resolveUnit ?? unitOfNodeId;
+      const existing = unitResolverBySource.get(source);
+      if (existing === undefined) {
+        unitResolverBySource.set(source, resolver);
+      } else if (existing !== resolver) {
+        throw new Error(
+          `[Worklist] narrowings sharing an observationSource disagree on resolveUnit — all narrowings on one source must resolve to the same unit.`,
+        );
+      }
+      const group = narrowingsBySource.get(source);
+      if (group === undefined) narrowingsBySource.set(source, [n]);
+      else group.push(n);
+    }
+    this.unitResolverBySource = unitResolverBySource;
+    this.narrowingsBySource = narrowingsBySource;
     this.registry = registry ?? buildFunctionRegistry(ast);
     this.functionEnvironments = functionEnvironments;
     for (const [, unit] of buildUnits(ast, functionEnvironments, this.registry)) {
@@ -229,12 +218,10 @@ export class Worklist {
     for (const ch of channels) this.registerChannel(ch);
     for (const r of transforms) this.registerTransform(r);
 
-    this.registry.setListener({
-      onMint: (node, slot) => this.onRegistryMint(node, slot),
-    });
+    this.registry.setMintListener(node => this.onRegistryMint(node));
   }
 
-  private onRegistryMint(node: FunctionScopeNode, _slot: number): void {
+  private onRegistryMint(node: FunctionScopeNode): void {
     if (!(node instanceof StmtNS.FunctionDef)) return;
     const unit = buildOneUnit(node, this.functionEnvironments, this.registry);
     this._topology.registerUnit(unit);
@@ -247,10 +234,6 @@ export class Worklist {
       throw new Error(`[Worklist] transform has no dirty set — missed registerTransform?`);
     }
     return s;
-  }
-
-  private fireSpecRev(unit: Unit): void {
-    for (const sub of this.specRevSubs) sub(this.passCtx, unit);
   }
 
   /** `c` is refuted iff any generator is an algebraic subset. */
@@ -441,19 +424,7 @@ export class Worklist {
     this.processAnalysesToFixpoint();
   }
 
-  /** Subscribe `reader` to bumps on `counter`. Yielded keys enqueue under
-   *  ROOT_CONTEXT (counters have no context). */
-  onCounterBumped<K, K2>(
-    counter: CounterStore<K>,
-    reader: Analysis<K2, any>,
-    dirtied: (ctx: AnalysisCtx, key: K) => Iterable<K2>,
-  ): void {
-    Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (ctx, key) => {
-      for (const k of dirtied(ctx, key as K)) this.enqueue(reader, k, ROOT_CONTEXT);
-    });
-  }
-
-  /** Mirror of `onCounterBumped` for transforms. */
+  /** Subscribe a transform to counter bumps. */
   onTransformCounterBumped<K>(
     rule: TransformRule,
     counter: CounterStore<K>,
@@ -493,11 +464,6 @@ export class Worklist {
       );
     }
     channel._writeShadow(context, key, value);
-    const subs = this.channelSubs.get(channel as ObservationChannel<any, any>);
-    if (subs !== undefined) {
-      const publishCtx = this.ctxFor(context);
-      for (const s of subs) s(publishCtx, key);
-    }
     const nextContext = this.handleObservationForSpec(channel, key, value, context);
     this.processAnalysesToFixpoint();
     return nextContext;
@@ -515,32 +481,6 @@ export class Worklist {
     if (this.registeredChannels.has(c)) return;
     this.registeredChannels.add(c);
     channel.bind?.(this);
-  }
-
-  /** Subscribe `reader` to publishes on `channel`. */
-  onChannelPublished<K, K2>(
-    channel: ObservationChannel<K, any>,
-    reader: Analysis<K2, any>,
-    dirtied: (ctx: AnalysisCtx, key: K) => Iterable<K2>,
-    opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
-  ): void {
-    const project = opts?.enqueueAt;
-    Worklist.addSub(this.channelSubs, channel as ObservationChannel<any, any>, (ctx, key) => {
-      const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
-      for (const k of dirtied(ctx, key as K)) this.enqueue(reader, k, enqueueCtx);
-    });
-  }
-
-  /** Mirror of `onChannelPublished` for transforms. */
-  onTransformChannelPublished<K>(
-    rule: TransformRule,
-    channel: ObservationChannel<K, any>,
-    dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Unit>,
-  ): void {
-    const dirty = this.dirtyFor(rule);
-    Worklist.addSub(this.channelSubs, channel as ObservationChannel<any, any>, (ctx, key) => {
-      for (const u of dirtied(ctx, key as K)) dirty.add(u);
-    });
   }
 
   enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): void {
@@ -584,18 +524,10 @@ export class Worklist {
   ): boolean {
     const result = storeWrite(analysis.store, key, value, context);
     if (result === null) return false;
-    // Skip FactChange allocation when nobody is listening — channels with no
-    // reader and counters' paired shadow writes land here millions of times
-    // during a hot loop.
     const subs = this.factSubs.get(analysis as Analysis<any, any>);
     if (subs === undefined) return true;
-    this.handleFactChange({
-      analysis: analysis as Analysis<unknown, unknown>,
-      key,
-      context,
-      oldValue: result.prev,
-      newValue: result.next,
-    });
+    const ctx = this.ctxFor(context);
+    for (const sub of subs) sub(ctx, key);
     return true;
   }
 
@@ -678,25 +610,17 @@ export class Worklist {
     return ctx;
   }
 
-  /** Dispatch a change event to every subscriber on `change.analysis`.
-   *  Wake-ups run under `change.context`, so cross-context ripple doesn't
-   *  happen without an explicit context-crossing edge. */
-  private handleFactChange(change: FactChange<unknown, unknown>): void {
-    const subs = this.factSubs.get(change.analysis as Analysis<any, any>);
-    if (subs === undefined) return;
-    const ctx = this.ctxFor(change.context);
-    for (const sub of subs) sub(ctx, change.key);
-  }
-
   /** Re-seed Kildall for every context-sensitive block analysis at `unit`'s
-   *  entry block under `context`. Covers every registered narrowing plus
-   *  `purityBlockAnalysis`. */
+   *  entry block under `context`. Covers every registered narrowing plus any
+   *  `extraEntryBlockAnalyses` passed in by the caller. */
   private enqueueNarrowingEntry(unit: Unit, context: AssumptionChain): void {
     for (const n of this.narrowings) {
       const bfa = n.blockAnalysis();
       this.enqueue(bfa.env, bfa.seed(unit), context);
     }
-    this.enqueue(purityBlockAnalysis.env, purityBlockAnalysis.seed(unit), context);
+    for (const bfa of this.extraEntryBlockAnalyses) {
+      this.enqueue(bfa.env, bfa.seed(unit), context);
+    }
   }
 
   private handleObservationForSpec(
@@ -729,7 +653,7 @@ export class Worklist {
       if (pruned === ROOT_CONTEXT) this.futureDispatchContext.delete(unit);
       else this.futureDispatchContext.set(unit, pruned);
       this.enqueueNarrowingEntry(unit, pruned);
-      this.fireSpecRev(unit);
+      for (const sub of this.specRevSubs) sub(this.passCtx, unit);
       return pruned;
     }
 
@@ -756,7 +680,7 @@ export class Worklist {
     }
     this.futureDispatchContext.set(unit, newCtx);
     this.enqueueNarrowingEntry(unit, newCtx);
-    this.fireSpecRev(unit);
+    for (const sub of this.specRevSubs) sub(this.passCtx, unit);
     return newCtx;
   }
 

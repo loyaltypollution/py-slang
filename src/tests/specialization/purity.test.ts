@@ -5,7 +5,7 @@
 
 import { StmtNS } from "../../ast-types";
 import { purityScopeAnalysis } from "../../specialization/purity-analysis/analysis";
-import { runtimeParamChannel } from "../../specialization/framework/runtime-analyses";
+import { runtimeParamChannel } from "../../specialization/assumption/runtime-analyses";
 import { paramKey } from "../../specialization/framework/key-spaces";
 import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
 import { setupAndDrain } from "./harness/compile-pipelines";

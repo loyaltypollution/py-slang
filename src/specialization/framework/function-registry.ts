@@ -8,12 +8,6 @@ export type FunctionScopeNode =
   | ExprNS.Lambda
   | ExprNS.MultiLambda;
 
-/** Observes structural events on the registry. The owning Worklist (if
- *  any) attaches itself so that mint wakes downstream analyses. */
-export interface FunctionRegistryListener {
-  onMint(node: FunctionScopeNode, slot: number): void;
-}
-
 /**
  * Canonical owner of function identity and bytecode slot layout.
  *
@@ -29,10 +23,10 @@ export class FunctionRegistry {
   private nextSlot = 0;
   private readonly byFunctionId = new Map<number, { node: FunctionScopeNode; slot: number }>();
   private readonly nodeToFunctionId = new WeakMap<FunctionScopeNode, number>();
-  private listener: FunctionRegistryListener | undefined;
+  private onMint: ((node: FunctionScopeNode) => void) | undefined;
 
-  setListener(listener: FunctionRegistryListener | undefined): void {
-    this.listener = listener;
+  setMintListener(onMint: ((node: FunctionScopeNode) => void) | undefined): void {
+    this.onMint = onMint;
   }
 
   mint(node: FunctionScopeNode, chain: AssumptionChain): number {
@@ -47,7 +41,7 @@ export class FunctionRegistry {
     const slot = this.nextSlot++;
     this.byFunctionId.set(node.id, { node, slot });
     this.nodeToFunctionId.set(node, node.id);
-    this.listener?.onMint(node, slot);
+    this.onMint?.(node);
     return slot;
   }
 

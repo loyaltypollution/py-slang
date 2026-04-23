@@ -76,7 +76,5 @@ export function leq(x: AssumptionChain, y: AssumptionChain): boolean {
 
 /** Iterate every binding in `s`. Order is implementation-defined. */
 export function* bindings(s: AssumptionChain): Generator<Assumption> {
-  for (const inner of s.bindings.values()) {
-    for (const a of inner.values()) yield a;
-  }
+  for (const inner of s.bindings.values()) yield* inner.values();
 }

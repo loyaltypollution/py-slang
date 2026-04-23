@@ -3,10 +3,10 @@
 // back to `unit.body`. `forkBody` publishes a rewrite at `s`.
 
 import type { StmtNS } from "../../ast-types";
-import { cloneStmts } from "./ast-deep-clone";
-import type { AssumptionChain } from "../lattice/algebra";
+import { cloneStmts } from "../framework/ast-deep-clone";
+import type { AssumptionChain } from "../lattice/chain";
 import { leq } from "../lattice/algebra";
-import type { Unit } from "./function-unit";
+import type { Unit } from "../framework/function-unit";
 
 const bodies: WeakMap<Unit, Map<AssumptionChain, StmtNS.Stmt[]>> = new WeakMap();
 

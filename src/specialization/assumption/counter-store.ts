@@ -5,24 +5,18 @@
 // Dispatch: `Worklist.bump(counter, key)` advances the count (clamped at
 // `saturation`) and fires subscribers. Post-saturation bumps are no-ops.
 
-import type { Worklist } from "./worklist";
+import type { Worklist } from "../framework/worklist";
 
-export interface CounterSpec {
-  /** Inclusive ceiling. Reaching this value freezes the cell. */
-  readonly saturation: number;
-}
-
-export class CounterStore<K> implements CounterSpec {
-  readonly saturation: number;
+export class CounterStore<K> {
   private readonly counts = new Map<K, number>();
 
-  constructor(spec: CounterSpec) {
-    if (!Number.isInteger(spec.saturation) || spec.saturation <= 0) {
+  /** `saturation` is an inclusive ceiling; reaching it freezes the cell. */
+  constructor(readonly saturation: number) {
+    if (!Number.isInteger(saturation) || saturation <= 0) {
       throw new Error(
-        `[CounterStore] saturation must be a positive integer, got ${spec.saturation}`,
+        `[CounterStore] saturation must be a positive integer, got ${saturation}`,
       );
     }
-    this.saturation = spec.saturation;
   }
 
   /** Current count at `key`. Unwritten keys read as 0. */

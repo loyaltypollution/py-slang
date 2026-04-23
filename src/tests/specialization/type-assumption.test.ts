@@ -1,7 +1,7 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
 import { extend } from "../../specialization/lattice/algebra";
-import { typeAnalysis } from "../../specialization/framework/dfa-analyses";
+import { typeAnalysis } from "../../specialization/framework/narrowing-registry";
 import { typeNarrowing } from "../../specialization/type-analysis/analysis";
 import { INT_BIT, INT_POS, TOP } from "../../specialization/type-analysis/lattice";
 import { setupAndDrain } from "./harness/compile-pipelines";

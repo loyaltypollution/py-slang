@@ -49,28 +49,6 @@ export function buildOneUnit(
 }
 
 // Lambda bodies are separate scopes and not analyzed here.
-function discoverScopes(
-  stmts: ReadonlyArray<StmtNS.Stmt>,
-  units: Map<StmtNS.FileInput | StmtNS.FunctionDef, Unit>,
-  functionEnvironments: FunctionEnvironments,
-  registry: FunctionRegistry,
-): void {
-  const recurse = (inner: ReadonlyArray<StmtNS.Stmt>): void =>
-    discoverScopes(inner, units, functionEnvironments, registry);
-
-  for (const stmt of stmts) {
-    if (stmt instanceof StmtNS.FunctionDef) {
-      const unit = buildOneUnit(stmt, functionEnvironments, registry);
-      units.set(stmt, unit);
-      recurse(unit.body);
-    } else if (stmt instanceof StmtNS.If) {
-      recurse(stmt.body);
-      if (stmt.elseBlock) recurse(stmt.elseBlock);
-    } else if (stmt instanceof StmtNS.While || stmt instanceof StmtNS.For) {
-      recurse(stmt.body);
-    }
-  }
-}
 
 /** (Re)build `unit.cfg` and refresh `blockMap`. Node → block indexing is
  *  rebuilt separately by `ProgramTopology.reindexUnit(unit)`. */
@@ -91,6 +69,21 @@ export function buildUnits(
   const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, Unit>();
   const rootUnit = buildOneUnit(ast, functionEnvironments, registry);
   units.set(ast, rootUnit);
-  discoverScopes(rootUnit.body, units, functionEnvironments, registry);
+
+  const visit = (stmts: ReadonlyArray<StmtNS.Stmt>): void => {
+    for (const stmt of stmts) {
+      if (stmt instanceof StmtNS.FunctionDef) {
+        const unit = buildOneUnit(stmt, functionEnvironments, registry);
+        units.set(stmt, unit);
+        visit(unit.body);
+      } else if (stmt instanceof StmtNS.If) {
+        visit(stmt.body);
+        if (stmt.elseBlock) visit(stmt.elseBlock);
+      } else if (stmt instanceof StmtNS.While || stmt instanceof StmtNS.For) {
+        visit(stmt.body);
+      }
+    }
+  };
+  visit(rootUnit.body);
   return units;
 }

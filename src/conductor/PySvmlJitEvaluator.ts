@@ -5,7 +5,7 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { makeDfaQuery } from "../specialization";
 import { createDefaultWorklist } from "../specialization/defaults";
-import { makeJitDispatch } from "../specialization/framework/jit-dispatch";
+import { makeJitDispatch } from "../specialization/assumption/jit-dispatch";
 import { EvaluatorError } from "./errors";
 
 /**

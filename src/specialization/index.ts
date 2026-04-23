@@ -8,5 +8,5 @@ export {
   type DfaQuery,
   type StaticDfaQuery,
 } from "./dfa-query";
-export { makeJitObservers } from "./framework/runtime-analyses";
-export { makeJitDispatch, type DispatchOutcome, type JitDispatch } from "./framework/jit-dispatch";
+export { makeJitObservers } from "./assumption/runtime-analyses";
+export { makeJitDispatch, type DispatchOutcome, type JitDispatch } from "./assumption/jit-dispatch";

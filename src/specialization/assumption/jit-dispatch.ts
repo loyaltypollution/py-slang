@@ -6,10 +6,11 @@
 
 import type { StmtNS } from "../../ast-types";
 import { bodyToCompile, dispatchValid } from "./dispatch";
-import type { FunctionId } from "./key-spaces";
-import type { Unit } from "./function-unit";
+import type { FunctionId } from "../framework/key-spaces";
+import type { Unit } from "../framework/function-unit";
+import type { AssumptionChain } from "../lattice/chain";
 import { makeJitObservers } from "./runtime-analyses";
-import type { Worklist } from "./worklist";
+import type { Worklist } from "../framework/worklist";
 
 /** Outcome of one dispatched CALL. `undefined` from `onCall` means the
  *  scope has no Unit in topology (no compilation to perform). */
@@ -39,7 +40,7 @@ export function makeJitDispatch(worklist: Worklist): JitDispatch {
       // would lower the unrewritten AST.
       worklist.sweepTransforms();
       const chain = observers.currentChainFor(scopeId);
-      const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
+      const isRefuted = (n: AssumptionChain) => worklist.isRefuted(n);
       if (!dispatchValid(unit, chain, isRefuted)) return { kind: "skip", unit };
       const body = bodyToCompile(unit, chain, worklist.topology, isRefuted);
       if (body === unit.body) return { kind: "baseline", unit };

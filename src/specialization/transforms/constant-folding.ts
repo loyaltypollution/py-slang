@@ -7,8 +7,8 @@ import type { ConstLattice } from "../const-analysis/lattice";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
 import type { AssumptionChain } from "../lattice/chain";
-import { visibleBody } from "../framework/assumption-bodies";
-import { constAnalysis } from "../framework/dfa-analyses";
+import { visibleBody } from "../assumption/assumption-bodies";
+import { constAnalysis } from "../framework/narrowing-registry";
 import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
 import {

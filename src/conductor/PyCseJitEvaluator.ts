@@ -12,7 +12,7 @@ import {
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import { DEFAULT_PASSES, DEFAULT_TRANSFORMS } from "../specialization/defaults";
-import { makeJitDispatch } from "../specialization/framework/jit-dispatch";
+import { makeJitDispatch } from "../specialization/assumption/jit-dispatch";
 import { Worklist } from "../specialization/framework/worklist";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
