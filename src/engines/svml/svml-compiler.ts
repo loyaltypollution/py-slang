@@ -1,16 +1,43 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
+import type { ConstLattice } from "../../specialization/const-analysis/lattice";
+import type { TypeLattice } from "../../specialization/type-analysis/lattice";
+import type { Unit } from "../../specialization/framework/function-unit";
+import type { DfaQuery } from "../../specialization/dfa-query";
+import {
+  BOOL_BIT,
+  FLOAT_BIT,
+} from "../../specialization/type-analysis/lattice";
 import math from "../../stdlib/math";
+import memo from "../../stdlib/memo";
 import misc from "../../stdlib/misc";
 import { Token, TokenType } from "../../tokenizer";
 import { SVMLIRBuilder } from "./SVMLIRBuilder";
 import { PRIMITIVE_FUNCTIONS } from "./builtins";
 import OpCodes from "./opcodes";
-import { SVMLProgram } from "./types";
+import { SVMLIR, SVMLProgram } from "./types";
+import {
+  FunctionRegistry,
+  buildFunctionRegistry,
+} from "../../specialization/framework/function-registry";
 
 /** Signed 32-bit integer bounds used to decide LGCI vs LGCF64 encoding. */
 const I32_MIN = -2_147_483_648;
 const I32_MAX = 2_147_483_647;
+
+/**
+ * A hint is "concrete" when the static analysis already pinned both the type
+ * kind (exactly one bit set) and a known constant value — runtime observation
+ * cannot refine it further. Used to elide observation-site recording on
+ * trivially monomorphic stores.
+ */
+function isConcrete(type: TypeLattice | undefined, constVal: ConstLattice | undefined): boolean {
+  if (!type || !constVal) return false;
+  // Singleton kind: exactly one bit set.
+  const kinds = type.kinds;
+  if (kinds === 0 || (kinds & (kinds - 1)) !== 0) return false;
+  return constVal.tag === "const";
+}
 
 interface CompilerAnnotation {
   slot: number;
@@ -30,6 +57,17 @@ export class SVMLCompiler
   private currentEnvironment: Environment;
   private functionEnvironments: FunctionEnvironments;
   private isTailCall: boolean;
+  private dfaQuery: DfaQuery | undefined;
+  /**
+   * Shared canonical registry of function identity and slot layout. Built
+   * once at top-level compiler construction from the AST (or supplied by the
+   * caller so Worklist and compiler observe the same identity), inherited by
+   * child compilers through `fromFunctionNode`. Transforms that structurally
+   * add or remove function scopes must `mint`/`retire` through it — a missing
+   * entry here throws at slot lookup, converting silent miscompiles into
+   * loud failures.
+   */
+  private registry!: FunctionRegistry;
 
   private tokenAnnotations = new WeakMap<Token, CompilerAnnotation>();
   private envSlotCounters = new WeakMap<Environment, number>();
@@ -46,32 +84,97 @@ export class SVMLCompiler
     currentEnvironment: Environment,
     functionEnvironments: FunctionEnvironments,
     builder: SVMLIRBuilder,
+    dfaQuery?: DfaQuery,
   ) {
     this.builder = builder;
     this.currentEnvironment = currentEnvironment;
     this.functionEnvironments = functionEnvironments;
     this.isTailCall = false;
+    this.dfaQuery = dfaQuery;
   }
+
+  private getType(node: ExprNS.Expr | StmtNS.Stmt): TypeLattice | undefined {
+    return this.dfaQuery?.typeOf(node.id);
+  }
+
+  private getConst(node: ExprNS.Expr | StmtNS.Stmt): ConstLattice | undefined {
+    return this.dfaQuery?.constOf(node.id);
+  }
+
+  /** Pure-FLOAT mask used to decide F-opcode specialization. F-variants read
+   *  operands as JS `number`; INT values at runtime are JS `bigint`, which
+   *  would crash. This predicate gates specialization on provably-float
+   *  operands only — int-numeric goes through the G-path which dispatches
+   *  on typeof. (Pre-refactor this mask included INT_BIT because int and
+   *  float both lived in JS number; that collapse is what the refactor
+   *  removed.) */
+  private static readonly FLOAT_KIND_MASK = FLOAT_BIT;
+
+  private isStaticallyNumeric(node: ExprNS.Expr): boolean {
+    const k = this.getType(node)?.kinds;
+    return k !== undefined && k !== 0 && (k & ~SVMLCompiler.FLOAT_KIND_MASK) === 0;
+  }
+
+  /** Per-operand specialization decision. `"static"` = proven numeric by
+   *  static analysis (emits F-opcode, no guard); `"none"` = generic opcode.
+   *  V2 drops the "entry-guarded" path: under live-chain dispatch there's
+   *  no deopt mechanism, and F-variants read bigint values as float (crash),
+   *  so speculative numeric narrowing needs a guard or it's unsound.
+   *  Static-only keeps F-specialization where the type is proven at ROOT. */
+  private numericMode(node: ExprNS.Expr): "static" | "none" {
+    return this.isStaticallyNumeric(node) ? "static" : "none";
+  }
+
+  /** Slot key → expected const value, populated when visitAssignStmt emits
+   *  a peek-guard verifying the RHS's speculative const. Reads of a slot
+   *  tracked here are GUARANTEED to hold the recorded value at runtime,
+   *  so any expression whose speculative const flows from these slots is
+   *  const-pinned and can skip runtime evaluation entirely. This is the
+   *  anchor that lets visitIfStmt drop the cond eval and dead arm. */
+  private constGuardedSlots = new Map<string, number>();
 
   /**
    * Create SVMLCompiler from program AST.
-   * Pass pre-computed environments (from analyzeWithEnvironments) to avoid a second resolver run.
+   * Analysis pre-computed environments (from analyzeWithEnvironments) to avoid a second resolver run.
+   * Analysis `registry` when sharing identity with a Worklist (JIT pipelines); omit to build one internally.
    */
   static fromProgram(
     program: StmtNS.FileInput,
     functionEnvironments?: FunctionEnvironments,
+    registry?: FunctionRegistry,
   ): SVMLCompiler {
     if (!functionEnvironments) {
-      const resolver = new Resolver("", program, [], [misc, math]);
+      const resolver = new Resolver("", program, [], [misc, math, memo]);
       functionEnvironments = resolver.resolveEnvironments(program);
     }
     const mainEnv = functionEnvironments.get(program);
     if (!mainEnv) {
       throw new Error("Main program environment not found");
     }
-    SVMLIRBuilder.resetIndex();
-    const builder = new SVMLIRBuilder(0);
-    return new SVMLCompiler(mainEnv, functionEnvironments, builder);
+    const reg = registry ?? buildFunctionRegistry(program);
+    const builder = new SVMLIRBuilder(0, reg.slotOfNode(program));
+    builder.setScopeKey(program);
+    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder);
+    compiler.registry = reg;
+    return compiler;
+  }
+
+  static fromProgramUnit(
+    program: StmtNS.FileInput,
+    functionEnvironments: FunctionEnvironments,
+    dfaQuery?: DfaQuery,
+    registry?: FunctionRegistry,
+  ): SVMLCompiler {
+    const mainEnv = functionEnvironments.get(program);
+    if (!mainEnv) {
+      throw new Error("Main program environment not found");
+    }
+    const reg = registry ?? buildFunctionRegistry(program);
+    const builder = new SVMLIRBuilder(0, reg.slotOfNode(program));
+    builder.setScopeKey(program);
+    const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, dfaQuery);
+    compiler.registry = reg;
+    return compiler;
   }
 
   fromFunctionNode(node: StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda): SVMLCompiler {
@@ -83,10 +186,20 @@ export class SVMLCompiler
       nextEnvironment.lookupNameCurrentEnvWithError(param);
     }
     const numArgs = node.parameters.length;
-    const builder = this.builder.createChildBuilder(numArgs);
+    const childIndex = this.registry.slotOfNode(node);
+    const builder = this.builder.createChildBuilder(numArgs, childIndex);
+    // Only FunctionDef bodies are ScopeKeys; Lambda/MultiLambda are not DFA units.
+    if (node instanceof StmtNS.FunctionDef) {
+      builder.setScopeKey(node);
+    }
 
-    const compiler = new SVMLCompiler(nextEnvironment, this.functionEnvironments, builder);
-
+    const compiler = new SVMLCompiler(
+      nextEnvironment,
+      this.functionEnvironments,
+      builder,
+      this.dfaQuery,
+    );
+    compiler.registry = this.registry;
     const slotMap = new Map<string, number>();
     compiler.envSlotMaps.set(nextEnvironment, slotMap);
 
@@ -100,6 +213,9 @@ export class SVMLCompiler
     return compiler;
   }
 
+  /**
+   * Compile entire program and return an immutable SVMLProgram.
+   */
   compileProgram(program: StmtNS.FileInput): SVMLProgram {
     this.compile(program);
 
@@ -107,6 +223,107 @@ export class SVMLCompiler
     const functions = allBuilders.map(b => b.build());
 
     return new SVMLProgram(0, functions);
+  }
+
+  /**
+   * Lookup the stable function index for a scope. Safe to call after
+   * construction (indices are pre-assigned); does not depend on compilation
+   * having run.
+   */
+  indexOf(scope: StmtNS.FileInput | StmtNS.FunctionDef): number | undefined {
+    return this.registry.hasNode(scope) ? this.registry.slotOfNode(scope) : undefined;
+  }
+
+  /**
+   * Recompile a single `Unit`'s body into fresh SVMLIR, without
+   * touching any sibling builder. The returned IR's function index matches
+   * what `compileProgram` would have assigned, so callers can splice it
+   * into an existing `SVMLProgram` via `withSpecializedFunction(index, ir)`
+   * and every `NEWC <index>` operand in unaffected siblings remains valid.
+   *
+   * Only `FunctionDef` bodies are supported (matches `Unit.funcAst`
+   * excluding `FileInput`, which is the entry-point program and is rebuilt
+   * via `compileProgram`). Lambdas are never `Unit` keys.
+   */
+  private emitLiteralGuardValue(value: unknown): boolean {
+    if (value === null) {
+      this.builder.emitNullary(OpCodes.LGCN);
+      return true;
+    }
+    switch (typeof value) {
+      case "boolean":
+        this.builder.emitNullary(value ? OpCodes.LGCB1 : OpCodes.LGCB0);
+        return true;
+      case "bigint":
+        if (value >= BigInt(I32_MIN) && value <= BigInt(I32_MAX)) {
+          this.builder.emitUnary(OpCodes.LGCI, Number(value));
+          return true;
+        }
+        // Fall back to float encoding — matches visitBigIntLiteralExpr's
+        // known-lossy path. Guards on out-of-i32 int constants are rare.
+        this.builder.emitUnary(OpCodes.LGCF64, Number(value));
+        return true;
+      case "number":
+        // Python float constant — always LGCF64.
+        this.builder.emitUnary(OpCodes.LGCF64, value);
+        return true;
+      case "string":
+        this.builder.emitUnary(OpCodes.LGCS, value);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  /** Compile a single FunctionDef unit.
+   *  `specializedBody` — when provided, compiled in place of `funcAst.body`.
+   *  The caller is responsible for ensuring the body is a valid speculative
+   *  clone (NodeId-shadow policy, no topology insertion). */
+  compileFunction(
+    unit: Unit,
+    specializedBody?: ReadonlyArray<StmtNS.Stmt>,
+  ): SVMLIR {
+    const funcAst = unit.funcAst;
+    if (!(funcAst instanceof StmtNS.FunctionDef)) {
+      throw new Error(
+        "compileFunction only supports FunctionDef units; use compileProgram for FileInput",
+      );
+    }
+    const nextEnvironment = this.functionEnvironments.get(funcAst);
+    if (!nextEnvironment) {
+      throw new Error("Function environment not found");
+    }
+    for (const param of funcAst.parameters) {
+      nextEnvironment.lookupNameCurrentEnvWithError(param);
+    }
+    const index = this.registry.slotOfNode(funcAst);
+
+    // Fresh standalone builder — NOT attached as a child of `this.builder`.
+    // That keeps compileProgram idempotent and leaves sibling builders
+    // untouched so their IR stays byte-identical.
+    const numArgs = funcAst.parameters.length;
+    const builder = new SVMLIRBuilder(numArgs, index);
+    builder.setScopeKey(funcAst);
+
+    const subCompiler = new SVMLCompiler(
+      nextEnvironment,
+      this.functionEnvironments,
+      builder,
+      this.dfaQuery,
+    );
+    subCompiler.registry = this.registry;
+
+    const slotMap = new Map<string, number>();
+    subCompiler.envSlotMaps.set(nextEnvironment, slotMap);
+    for (let i = 0; i < funcAst.parameters.length; i++) {
+      slotMap.set(funcAst.parameters[i].lexeme, i);
+    }
+    subCompiler.envSlotCounters.set(nextEnvironment, numArgs);
+
+    subCompiler.compileStatements((specializedBody ?? funcAst.body) as StmtNS.Stmt[]);
+    builder.emitNullary(OpCodes.RETG);
+
+    return builder.build();
   }
 
   compile(node: StmtNS.Stmt | ExprNS.Expr): ExpressionResult {
@@ -203,6 +420,11 @@ export class SVMLCompiler
       const primitiveOpcode = this.isTailCall ? OpCodes.CALLTP : OpCodes.CALLP;
       this.builder.emitPrimitiveCall(primitiveOpcode, annotation.primitiveIndex!, numArgs);
     } else {
+      // Record a call observation site at the CALL/CALLT pc. Primitives have
+      // no scopeKey and are skipped. Call sites are always recorded: the
+      // callee identity comes from the closure on the stack, not a hint on
+      // the call expression, so a static hint can't pre-refine it.
+      this.builder.recordCallSite();
       const userOpcode = this.isTailCall ? OpCodes.CALLT : OpCodes.CALL;
       this.builder.emitCall(userOpcode, numArgs);
     }
@@ -219,11 +441,9 @@ export class SVMLCompiler
           this.builder.emitNullary(value ? OpCodes.LGCB1 : OpCodes.LGCB0);
           break;
         case "number":
-          if (Number.isInteger(value) && I32_MIN <= value && value <= I32_MAX) {
-            this.builder.emitUnary(OpCodes.LGCI, value);
-          } else {
-            this.builder.emitUnary(OpCodes.LGCF64, value);
-          }
+          // Python float literal — always emit LGCF64 regardless of whether
+          // the value is integer-valued (1.0 is a float, not an int).
+          this.builder.emitUnary(OpCodes.LGCF64, value);
           break;
         case "string":
           this.builder.emitUnary(OpCodes.LGCS, value);
@@ -241,11 +461,16 @@ export class SVMLCompiler
   }
 
   visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ExpressionResult {
-    const numValue = Number(expr.value);
-    if (Number.isInteger(numValue) && I32_MIN <= numValue && numValue <= I32_MAX) {
-      this.builder.emitUnary(OpCodes.LGCI, numValue);
+    // Python int literal. Parse as bigint so i32-overflow is detected from
+    // the source value rather than from its lossy Number() cast.
+    const big = BigInt(expr.value);
+    if (big >= BigInt(I32_MIN) && big <= BigInt(I32_MAX)) {
+      this.builder.emitUnary(OpCodes.LGCI, Number(big));
     } else {
-      this.builder.emitUnary(OpCodes.LGCF64, numValue);
+      // TODO: add a bigints pool + LGCBI opcode for out-of-i32 ints. For now
+      // fall back to float encoding, which loses precision above 2^53 and
+      // collapses int-ness at runtime (same as pre-refactor behavior).
+      this.builder.emitUnary(OpCodes.LGCF64, Number(big));
     }
 
     return { maxStackSize: 1 };
@@ -292,103 +517,103 @@ export class SVMLCompiler
     return { maxStackSize: 1 };
   }
 
-  private getBinaryOpCode(operator: Token): number {
-    switch (operator.type) {
-      case TokenType.PLUS:
-        return OpCodes.ADDG;
-      case TokenType.MINUS:
-        return OpCodes.SUBG;
-      case TokenType.STAR:
-        return OpCodes.MULG;
-      case TokenType.SLASH:
-        return OpCodes.DIVG;
-      case TokenType.PERCENT:
-        return OpCodes.MODG;
-      case TokenType.DOUBLESLASH:
-        return OpCodes.FLOORDIVG;
-      default:
-        throw new Error(`Unsupported binary operator: ${operator.lexeme}`);
-    }
+  // [generic, specialized] opcode pairs, indexed by token type
+  private static readonly BINARY_OPCODES = new Map<TokenType, [number, number]>([
+    [TokenType.PLUS, [OpCodes.ADDG, OpCodes.ADDF]],
+    [TokenType.MINUS, [OpCodes.SUBG, OpCodes.SUBF]],
+    [TokenType.STAR, [OpCodes.MULG, OpCodes.MULF]],
+    [TokenType.SLASH, [OpCodes.DIVG, OpCodes.DIVF]],
+    [TokenType.PERCENT, [OpCodes.MODG, OpCodes.MODF]],
+    [TokenType.DOUBLESLASH, [OpCodes.FLOORDIVG, OpCodes.FLOORDIVF]],
+  ]);
+
+  private static readonly COMPARE_OPCODES = new Map<TokenType, [number, number]>([
+    [TokenType.LESS, [OpCodes.LTG, OpCodes.LTF]],
+    [TokenType.GREATER, [OpCodes.GTG, OpCodes.GTF]],
+    [TokenType.LESSEQUAL, [OpCodes.LEG, OpCodes.LEF]],
+    [TokenType.GREATEREQUAL, [OpCodes.GEG, OpCodes.GEF]],
+    [TokenType.DOUBLEEQUAL, [OpCodes.EQG, OpCodes.EQF]],
+    [TokenType.NOTEQUAL, [OpCodes.NEQG, OpCodes.NEQF]],
+  ]);
+
+  private getBinaryOpCode(operator: Token, specialized = false): number {
+    const pair = SVMLCompiler.BINARY_OPCODES.get(operator.type);
+    if (!pair) throw new Error(`Unsupported binary operator: ${operator.lexeme}`);
+    return pair[specialized ? 1 : 0];
   }
 
-  private getCompareOpCode(operator: Token): number {
-    switch (operator.type) {
-      case TokenType.LESS:
-        return OpCodes.LTG;
-      case TokenType.GREATER:
-        return OpCodes.GTG;
-      case TokenType.LESSEQUAL:
-        return OpCodes.LEG;
-      case TokenType.GREATEREQUAL:
-        return OpCodes.GEG;
-      case TokenType.DOUBLEEQUAL:
-        return OpCodes.EQG;
-      case TokenType.NOTEQUAL:
-        return OpCodes.NEQG;
-      default:
-        throw new Error(`Unsupported comparison operator: ${operator.lexeme}`);
-    }
-  }
-
-  private compileBinOp(left: ExprNS.Expr, right: ExprNS.Expr, opcode: number): ExpressionResult {
-    const leftResult = this.compile(left);
-    const rightResult = this.compile(right);
-    this.builder.emitNullary(opcode);
-    return {
-      maxStackSize: Math.max(leftResult.maxStackSize, 1 + rightResult.maxStackSize),
-    };
+  private getCompareOpCode(operator: Token, specialized = false): number {
+    const pair = SVMLCompiler.COMPARE_OPCODES.get(operator.type);
+    if (!pair) throw new Error(`Unsupported comparison operator: ${operator.lexeme}`);
+    return pair[specialized ? 1 : 0];
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExpressionResult {
-    return this.compileBinOp(expr.left, expr.right, this.getBinaryOpCode(expr.operator));
+    const lMode = this.numericMode(expr.left);
+    const rMode = this.numericMode(expr.right);
+    const useSpecialized = lMode !== "none" && rMode !== "none";
+    const opcode = this.getBinaryOpCode(expr.operator, useSpecialized);
+    const leftResult = this.compile(expr.left);
+    const rightResult = this.compile(expr.right);
+    this.builder.emitNullary(opcode);
+    return { maxStackSize: Math.max(leftResult.maxStackSize, 1 + rightResult.maxStackSize) };
   }
 
   visitCompareExpr(expr: ExprNS.Compare): ExpressionResult {
-    return this.compileBinOp(expr.left, expr.right, this.getCompareOpCode(expr.operator));
+    const lMode = this.numericMode(expr.left);
+    const rMode = this.numericMode(expr.right);
+    const useSpecialized = lMode !== "none" && rMode !== "none";
+    const opcode = this.getCompareOpCode(expr.operator, useSpecialized);
+    const leftResult = this.compile(expr.left);
+    const rightResult = this.compile(expr.right);
+    this.builder.emitNullary(opcode);
+    return { maxStackSize: Math.max(leftResult.maxStackSize, 1 + rightResult.maxStackSize) };
   }
 
   visitBoolOpExpr(expr: ExprNS.BoolOp): ExpressionResult {
+    // Python and/or return the short-circuit operand, not a boolean literal.
+    // Save left to a temp slot so it can be returned when it is the result.
+    // BRF/BRT use Python truthiness (see SVMLInterpreter.isTruthy).
+    const tmpSlot = this.getOrAssignSlot(
+      this.currentEnvironment,
+      `__boolop_tmp_${this.tmpCounter++}`,
+    );
+
     if (expr.operator.type === TokenType.AND) {
-      // left && right -> left ? right : false
-      const testResult = this.compile(expr.left);
-      const elseLabel = this.builder.emitJump(OpCodes.BRF);
+      // x and y → x if not truthy(x) else y
+      const leftResult = this.compile(expr.left);
+      this.builder.emitUnary(OpCodes.STLG, tmpSlot); // save x
+      this.builder.emitUnary(OpCodes.LDLG, tmpSlot); // reload for branch
+      const elseLabel = this.builder.emitJump(OpCodes.BRF); // if falsy, return x
 
       const conseqResult = this.compile(expr.right);
       const endLabel = this.builder.emitJump(OpCodes.BR);
 
       this.builder.markLabel(elseLabel);
-      this.builder.emitNullary(OpCodes.LGCB0);
-      const altResult = { maxStackSize: 1 };
+      this.builder.emitUnary(OpCodes.LDLG, tmpSlot);
 
       this.builder.markLabel(endLabel);
 
       return {
-        maxStackSize: Math.max(
-          testResult.maxStackSize,
-          conseqResult.maxStackSize,
-          altResult.maxStackSize,
-        ),
+        maxStackSize: Math.max(leftResult.maxStackSize, conseqResult.maxStackSize, 1),
       };
     } else if (expr.operator.type === TokenType.OR) {
-      // left || right -> left ? true : right
-      const testResult = this.compile(expr.left);
-      const elseLabel = this.builder.emitJump(OpCodes.BRF);
+      // x or y → x if truthy(x) else y
+      const leftResult = this.compile(expr.left);
+      this.builder.emitUnary(OpCodes.STLG, tmpSlot); // save x
+      this.builder.emitUnary(OpCodes.LDLG, tmpSlot); // reload for branch
+      const elseLabel = this.builder.emitJump(OpCodes.BRT); // if truthy, return x
 
-      this.builder.emitNullary(OpCodes.LGCB1);
-      const conseqResult = { maxStackSize: 1 };
+      const altResult = this.compile(expr.right);
       const endLabel = this.builder.emitJump(OpCodes.BR);
 
       this.builder.markLabel(elseLabel);
-      const altResult = this.compile(expr.right);
+      this.builder.emitUnary(OpCodes.LDLG, tmpSlot); // return x (the truthy value)
 
       this.builder.markLabel(endLabel);
 
       return {
-        maxStackSize: Math.max(
-          testResult.maxStackSize,
-          conseqResult.maxStackSize,
-          altResult.maxStackSize,
-        ),
+        maxStackSize: Math.max(leftResult.maxStackSize, altResult.maxStackSize, 1),
       };
     }
     throw new Error(`Unsupported boolean operator: ${expr.operator.lexeme}`);
@@ -398,12 +623,19 @@ export class SVMLCompiler
     let opcode: number;
 
     switch (expr.operator.type) {
-      case TokenType.NOT:
-        opcode = OpCodes.NOTG;
+      case TokenType.NOT: {
+        opcode = this.getType(expr.right)?.kinds === BOOL_BIT ? OpCodes.NOTB : OpCodes.NOTG;
         break;
-      case TokenType.MINUS:
-        opcode = OpCodes.NEGG;
+      }
+      case TokenType.MINUS: {
+        const k = this.getType(expr.right)?.kinds;
+        // Pure FLOAT only: NEGF does `-(x as number)` which crashes on
+        // bigint. Int and bool go through NEGG, which dispatches on typeof.
+        opcode = k !== undefined && k !== 0 && (k & ~FLOAT_BIT) === 0
+          ? OpCodes.NEGF
+          : OpCodes.NEGG;
         break;
+      }
       case TokenType.PLUS:
         return this.compile(expr.right);
       default:
@@ -507,9 +739,24 @@ export class SVMLCompiler
   }
 
   visitAssignStmt(stmt: StmtNS.Assign): ExpressionResult {
-    const initResult = this.compile(stmt.value);
+    if (stmt.target instanceof ExprNS.Subscript) {
+      const objResult = this.compile(stmt.target.value);
+      const idxResult = this.compile(stmt.target.index);
+      const valResult = this.compile(stmt.value);
+      this.builder.emitNullary(OpCodes.STAG);
+      this.builder.emitNullary(OpCodes.LGCU);
+      return {
+        maxStackSize: Math.max(
+          objResult.maxStackSize,
+          1 + idxResult.maxStackSize,
+          2 + valResult.maxStackSize,
+          1,
+        ),
+      };
+    }
 
-    this.emitStoreSymbol((stmt.target as ExprNS.Variable).name);
+    const initResult = this.compile(stmt.value);
+    this.emitStoreSymbol(stmt.target.name);
 
     this.builder.emitNullary(OpCodes.LGCU);
     return initResult;

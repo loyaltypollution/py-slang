@@ -287,7 +287,7 @@ export function disassemble(p: Uint8Array): SVMLProgram {
     throw new Error("Malformed SVML binary: no function section");
   }
 
-  // First pass: discover function start offsets by parsing from known starts.
+  // First analysis: discover function start offsets by parsing from known starts.
   // Using getInstructionSize to advance prevents matching NEWC inside immediates.
   const functionOffsetSet = new Set<number>([entrypointOffset]);
   const worklist: number[] = [entrypointOffset];
@@ -328,7 +328,7 @@ export function disassemble(p: Uint8Array): SVMLProgram {
     instructions: Instruction[];
   }
 
-  // Second pass: parse each function into mutable raw data
+  // Second analysis: parse each function into mutable raw data
   const rawFunctions: RawFunction[] = [];
   const offsetToIndex = new Map<number, number>();
   const closureFixups: Array<{ fnIndex: number; instrIndex: number; targetOffset: number }> = [];

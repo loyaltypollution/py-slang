@@ -1,7 +1,7 @@
 import { pythonMod } from "../cse/utils";
-import { executePrimitive } from "./builtins";
 import { UnsupportedOperandTypeError, ZeroDivisionError } from "./errors";
 import OpCodes from "./opcodes";
+import { executePrimitive } from "./builtins";
 import {
   getSVMLType,
   isSVMLObject,
@@ -14,10 +14,36 @@ import {
   SVMLProgram,
   SVMLType,
 } from "./types";
+import { StmtNS } from "../../ast-types";
 
 const __DEBUG__ =
   typeof (globalThis as Record<string, unknown>).__DEBUG__ !== "undefined" &&
   (globalThis as Record<string, unknown>).__DEBUG__;
+
+/** A Python-numeric runtime value: int (bigint) or float (number). */
+function isNumeric(v: SVMLBoxType): v is number | bigint {
+  return typeof v === "number" || typeof v === "bigint";
+}
+
+/** Coerce a numeric to JS number, losing precision for bigint > 2^53. Used
+ *  on the mixed-operand path where Python coerces int → float. */
+function toNumber(v: number | bigint): number {
+  return typeof v === "bigint" ? Number(v) : v;
+}
+
+/** Python `==`: values equal if equal by Python semantics. For ints/floats
+ *  this crosses type boundaries (1 == 1.0 → True). JS `==` does the right
+ *  thing for number/bigint pairs (1n == 1 → true), but we avoid loose `==`
+ *  elsewhere to prevent NaN or string coercion surprises. */
+function pythonEqual(left: SVMLBoxType, right: SVMLBoxType): boolean {
+  if (isNumeric(left) && isNumeric(right)) {
+    // number vs bigint: JS `==` coerces correctly. bigint vs bigint: JS
+    // `===` works. number vs number: NaN-aware via `===`.
+    if (typeof left === typeof right) return left === right;
+    return left == right;
+  }
+  return left === right;
+}
 const debug: (msg: string) => void = __DEBUG__ ? (msg: string) => console.log(msg) : () => {};
 
 /**
@@ -56,6 +82,28 @@ export class SVMLInterpreter {
   private instructionCount: number = 0;
   private maxInstructionLimit: number = 1000000;
 
+  /**
+   * JIT dispatch hooks. Symmetric with CSE's `JitHooks.dispatchCall` /
+   * `dispatchReturn` surface.
+   *
+   * `dispatchCall` is atomic at CALL entry: the hook publishes runtime
+   * observations (hotness, param kinds), derives a specialized body under
+   * the resulting chain, compiles it to fresh SVMLIR, and returns that IR —
+   * or `undefined` to signal "use the canonical IR unchanged." The
+   * interpreter uses the returned IR directly for this invocation; it does
+   * NOT mutate the function table. No caching: compile-per-call.
+   *
+   * `dispatchReturn` feeds `runtimeReturnChannel` against the chain this
+   * call was dispatched under (B1 attribution is automatic because the
+   * `dispatchCall` hook's LIFO already pushed the post-observation chain).
+   *
+   * Defaults are no-ops for standalone bytecode execution (no JIT).
+   */
+  private dispatchCall:
+    | ((scopeId: number, args: readonly SVMLBoxType[]) => SVMLIR | undefined)
+    | undefined = undefined;
+  private dispatchReturn: (scopeId: number, value: unknown) => void = () => {};
+
   constructor(
     program: SVMLProgram,
     options?: {
@@ -63,6 +111,8 @@ export class SVMLInterpreter {
       maxCallDepth?: number;
       maxInstructions?: number;
       sendOutput?: (msg: string) => void;
+      dispatchCall?: (scopeId: number, args: readonly SVMLBoxType[]) => SVMLIR | undefined;
+      dispatchReturn?: (scopeId: number, value: unknown) => void;
     },
   ) {
     this.program = program;
@@ -75,7 +125,38 @@ export class SVMLInterpreter {
       if (options.maxStackSize) this.maxStackSize = options.maxStackSize;
       if (options.maxCallDepth) this.maxCallDepth = options.maxCallDepth;
       if (options.maxInstructions) this.maxInstructionLimit = options.maxInstructions;
+      if (options.dispatchCall) this.dispatchCall = options.dispatchCall;
+      if (options.dispatchReturn) this.dispatchReturn = options.dispatchReturn;
     }
+  }
+
+  /**
+   * Replace the program between executions (e.g., after JIT recompilation).
+   * Throws if called while the interpreter is mid-execution.
+   */
+  replaceProgram(newProgram: SVMLProgram): void {
+    if (this.currentFrame !== null) {
+      throw new Error("Cannot replace program while interpreter is executing");
+    }
+    this.program = newProgram;
+  }
+
+  /**
+   * Return the currently installed IR for `index`, or `undefined` if the
+   * slot is missing.
+   */
+  functionAt(index: number): SVMLIR | undefined {
+    return this.program.functions[index];
+  }
+
+  /**
+   * Swap function `index`'s IR. Caller must hold the direct-IR-ref
+   * invariant: no `CallFrame.ir` outlives this reassignment, because frames
+   * capture IR at CALL time. Expected caller: the evaluator's JIT publish
+   * hook after deciding the IR has actually changed.
+   */
+  patchFunction(index: number, ir: SVMLIR): void {
+    this.program = this.program.withSpecializedFunction(index, ir);
   }
 
   /**
@@ -117,6 +198,16 @@ export class SVMLInterpreter {
    * Main interpreter loop — dispatch from typed arrays
    */
   private run(): SVMLBoxType {
+    try {
+      return this.runInner();
+    } finally {
+      // Clear execution state so replaceProgram() can be called between runs,
+      // even if runInner threw.
+      this.currentFrame = null;
+    }
+  }
+
+  private runInner(): SVMLBoxType {
     while (!this.halted && this.currentFrame) {
       // Safety check
       if (this.instructionCount >= this.maxInstructionLimit) {
@@ -147,7 +238,9 @@ export class SVMLInterpreter {
         // Load constant instructions
         case OpCodes.LGCI:
         case OpCodes.LDCI:
-          this.push(a1);
+          // Python int → JS bigint. arg1s stores the i32 value; BigInt() the
+          // value (not the pool index) lifts it into the Python int domain.
+          this.push(BigInt(a1));
           break;
 
         case OpCodes.LGCF32:
@@ -193,18 +286,27 @@ export class SVMLInterpreter {
         }
 
         // Arithmetic operations
+        //
+        // G-variants dispatch on operand kind. Python semantics:
+        //   int  op int  → int   (bigint)
+        //   float op *   → float (number, mixed operands coerce bigint→number)
+        //   `/` is true division and always produces float
+        //   `//` and `%` preserve intness only for (int, int)
+        //
+        // F-variants assume both operands are float. They are emitted by
+        // specialized codegen when the type lattice proves FLOAT_BIT on both
+        // sides; do not add int logic to them.
         case OpCodes.ADDG: {
           const right = this.pop();
           const left = this.pop();
-          const leftType = getSVMLType(left);
-          const rightType = getSVMLType(right);
-
-          if (leftType === SVMLType.NUMBER && rightType === SVMLType.NUMBER) {
-            this.push((left as number) + (right as number));
-          } else if (leftType === SVMLType.STRING && rightType === SVMLType.STRING) {
-            this.push((left as string) + (right as string));
+          if (typeof left === "bigint" && typeof right === "bigint") {
+            this.push(left + right);
+          } else if (isNumeric(left) && isNumeric(right)) {
+            this.push(toNumber(left) + toNumber(right));
+          } else if (typeof left === "string" && typeof right === "string") {
+            this.push(left + right);
           } else {
-            throw new UnsupportedOperandTypeError("+", leftType, rightType);
+            throw new UnsupportedOperandTypeError("+", getSVMLType(left), getSVMLType(right));
           }
           break;
         }
@@ -217,13 +319,12 @@ export class SVMLInterpreter {
         case OpCodes.SUBG: {
           const right = this.pop();
           const left = this.pop();
-          const leftType = getSVMLType(left);
-          const rightType = getSVMLType(right);
-
-          if (leftType === SVMLType.NUMBER && rightType === SVMLType.NUMBER) {
-            this.push((left as number) - (right as number));
+          if (typeof left === "bigint" && typeof right === "bigint") {
+            this.push(left - right);
+          } else if (isNumeric(left) && isNumeric(right)) {
+            this.push(toNumber(left) - toNumber(right));
           } else {
-            throw new UnsupportedOperandTypeError("-", leftType, rightType);
+            throw new UnsupportedOperandTypeError("-", getSVMLType(left), getSVMLType(right));
           }
           break;
         }
@@ -236,13 +337,12 @@ export class SVMLInterpreter {
         case OpCodes.MULG: {
           const right = this.pop();
           const left = this.pop();
-          const leftType = getSVMLType(left);
-          const rightType = getSVMLType(right);
-
-          if (leftType === SVMLType.NUMBER && rightType === SVMLType.NUMBER) {
-            this.push((left as number) * (right as number));
+          if (typeof left === "bigint" && typeof right === "bigint") {
+            this.push(left * right);
+          } else if (isNumeric(left) && isNumeric(right)) {
+            this.push(toNumber(left) * toNumber(right));
           } else {
-            throw new UnsupportedOperandTypeError("*", leftType, rightType);
+            throw new UnsupportedOperandTypeError("*", getSVMLType(left), getSVMLType(right));
           }
           break;
         }
@@ -253,17 +353,15 @@ export class SVMLInterpreter {
           break;
         }
         case OpCodes.DIVG: {
+          // Python `/` is true division: result is always float.
           const right = this.pop();
           const left = this.pop();
-          const leftType = getSVMLType(left);
-          const rightType = getSVMLType(right);
-
-          if (leftType === SVMLType.NUMBER && rightType === SVMLType.NUMBER) {
-            if ((right as number) === 0) throw new ZeroDivisionError("division by zero");
-            this.push((left as number) / (right as number));
-          } else {
-            throw new UnsupportedOperandTypeError("/", leftType, rightType);
+          if (!isNumeric(left) || !isNumeric(right)) {
+            throw new UnsupportedOperandTypeError("/", getSVMLType(left), getSVMLType(right));
           }
+          const r = toNumber(right);
+          if (r === 0) throw new ZeroDivisionError("division by zero");
+          this.push(toNumber(left) / r);
           break;
         }
         case OpCodes.DIVF: {
@@ -276,14 +374,18 @@ export class SVMLInterpreter {
         case OpCodes.FLOORDIVG: {
           const right = this.pop();
           const left = this.pop();
-          const leftType = getSVMLType(left);
-          const rightType = getSVMLType(right);
-
-          if (leftType === SVMLType.NUMBER && rightType === SVMLType.NUMBER) {
-            if ((right as number) === 0) throw new ZeroDivisionError("division by zero");
-            this.push(Math.floor((left as number) / (right as number)));
+          if (typeof left === "bigint" && typeof right === "bigint") {
+            if (right === 0n) throw new ZeroDivisionError("integer division or modulo by zero");
+            // Python floor-div for bigint: truncate then adjust for negative remainder
+            const q = left / right;
+            const adjusted = left % right !== 0n && ((left < 0n) !== (right < 0n)) ? q - 1n : q;
+            this.push(adjusted);
+          } else if (isNumeric(left) && isNumeric(right)) {
+            const r = toNumber(right);
+            if (r === 0) throw new ZeroDivisionError("integer division or modulo by zero");
+            this.push(Math.floor(toNumber(left) / r));
           } else {
-            throw new UnsupportedOperandTypeError("//", leftType, rightType);
+            throw new UnsupportedOperandTypeError("//", getSVMLType(left), getSVMLType(right));
           }
           break;
         }
@@ -297,15 +399,15 @@ export class SVMLInterpreter {
         case OpCodes.MODG: {
           const right = this.pop();
           const left = this.pop();
-          const leftType = getSVMLType(left);
-          const rightType = getSVMLType(right);
-          if (leftType === SVMLType.NUMBER && rightType === SVMLType.NUMBER) {
-            const a = left as number;
-            const b = right as number;
-            if (b === 0) throw new ZeroDivisionError("integer modulo by zero");
-            this.push(pythonMod(a, b));
+          if (typeof left === "bigint" && typeof right === "bigint") {
+            if (right === 0n) throw new ZeroDivisionError("integer modulo by zero");
+            this.push(pythonMod(left, right) as bigint);
+          } else if (isNumeric(left) && isNumeric(right)) {
+            const r = toNumber(right);
+            if (r === 0) throw new ZeroDivisionError("integer modulo by zero");
+            this.push(pythonMod(toNumber(left), r) as number);
           } else {
-            throw new UnsupportedOperandTypeError("%", leftType, rightType);
+            throw new UnsupportedOperandTypeError("%", getSVMLType(left), getSVMLType(right));
           }
           break;
         }
@@ -313,17 +415,18 @@ export class SVMLInterpreter {
           const right = this.pop() as number;
           const left = this.pop() as number;
           if (right === 0) throw new ZeroDivisionError("integer modulo by zero");
-          this.push(pythonMod(left, right));
+          this.push(pythonMod(left, right) as number);
           break;
         }
         // Unary operations
         case OpCodes.NEGG: {
           const operand = this.pop();
-          const operandType = getSVMLType(operand);
-          if (operandType === SVMLType.NUMBER) {
-            this.push(-(operand as number));
+          if (typeof operand === "bigint") {
+            this.push(-operand);
+          } else if (typeof operand === "number") {
+            this.push(-operand);
           } else {
-            throw new UnsupportedOperandTypeError("-", operandType);
+            throw new UnsupportedOperandTypeError("-", getSVMLType(operand));
           }
           break;
         }
@@ -429,11 +532,11 @@ export class SVMLInterpreter {
           break;
 
         case OpCodes.CALL:
-          this.call(a1, false);
+          this.call(a1, false, pc);
           break;
 
         case OpCodes.CALLT:
-          this.call(a1, true);
+          this.call(a1, true, pc);
           break;
 
         case OpCodes.CALLP:
@@ -503,10 +606,11 @@ export class SVMLInterpreter {
           let nextValue: SVMLBoxType = undefined;
 
           if (iter.kind === "range") {
-            const going = iter.step! > 0 ? iter.current! < iter.stop! : iter.current! > iter.stop!;
+            const going =
+              iter.step! > 0n ? iter.current! < iter.stop! : iter.current! > iter.stop!;
             if (going) {
               nextValue = iter.current!;
-              iter.current! += iter.step!;
+              iter.current = iter.current! + iter.step!;
             } else {
               done = true;
             }
@@ -546,7 +650,6 @@ export class SVMLInterpreter {
       }
     }
 
-    // Return top of stack or undefined
     return this.currentFrame && this.currentFrame.stack.length > 0
       ? this.currentFrame.stack[this.currentFrame.stack.length - 1]
       : undefined;
@@ -627,13 +730,13 @@ export class SVMLInterpreter {
   private strictEqual(): void {
     const right = this.pop();
     const left = this.pop();
-    this.push(left === right);
+    this.push(pythonEqual(left, right));
   }
 
   private strictNotEqual(): void {
     const right = this.pop();
     const left = this.pop();
-    this.push(left !== right);
+    this.push(!pythonEqual(left, right));
   }
 
   private genericOrderedComparison(op: "<" | ">" | "<=" | ">="): void {
@@ -642,14 +745,17 @@ export class SVMLInterpreter {
     const leftType = getSVMLType(left);
     const rightType = getSVMLType(right);
 
-    const bothNumbers = leftType === SVMLType.NUMBER && rightType === SVMLType.NUMBER;
+    // Numeric compare is cross-type (int/float). JS's <,>,<=,>= natively
+    // compare bigint against number by value, so no explicit coercion is
+    // needed here — typeof filtering is sufficient.
+    const bothNumbers = isNumeric(left) && isNumeric(right);
     const bothStrings = leftType === SVMLType.STRING && rightType === SVMLType.STRING;
     if (!bothNumbers && !bothStrings) {
       throw new UnsupportedOperandTypeError(op, leftType, rightType);
     }
 
-    const l = left as number | string;
-    const r = right as number | string;
+    const l = left as number | bigint | string;
+    const r = right as number | bigint | string;
     if (op === "<") this.push(l < r);
     else if (op === ">") this.push(l > r);
     else if (op === "<=") this.push(l <= r);
@@ -702,6 +808,16 @@ export class SVMLInterpreter {
     parentEnv.set(slot, value);
   }
 
+  /** Emit a per-function return observation for user-defined functions only.
+   *  FileInput returns are ignored: return-kind speculation is keyed by
+   *  FunctionDef.id and only narrows function units. */
+  private dispatchReturnSite(value: SVMLBoxType): void {
+    if (!this.currentFrame) return;
+    const scopeKey = this.currentFrame.ir.scopeKey;
+    if (!(scopeKey instanceof StmtNS.FunctionDef)) return;
+    this.dispatchReturn(scopeKey.id, value);
+  }
+
   // ========================================================================
   // Control Flow
   // ========================================================================
@@ -713,22 +829,29 @@ export class SVMLInterpreter {
     this.currentFrame.pc += offset - 1;
   }
 
+  /** Python truthiness: mirrors bool(x) semantics. */
+  private isTruthy(value: SVMLBoxType): boolean {
+    if (value === null || value === undefined || value === false) return false;
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "string") return value.length > 0;
+    if (typeof value === "boolean") return value; // true
+    if (typeof value === "object" && value !== null) {
+      if ((value as SVMLArray).type === "array") return (value as SVMLArray).elements.length > 0;
+      return true; // closures and iterators are always truthy
+    }
+    return true;
+  }
+
   private branchIfTrue(offset: number): void {
     const condition = this.pop();
-    if (typeof condition !== "boolean") {
-      throw new UnsupportedOperandTypeError("branch", getSVMLType(condition));
-    }
-    if (condition) {
+    if (this.isTruthy(condition)) {
       this.branch(offset);
     }
   }
 
   private branchIfFalse(offset: number): void {
     const condition = this.pop();
-    if (typeof condition !== "boolean") {
-      throw new UnsupportedOperandTypeError("branch", getSVMLType(condition));
-    }
-    if (!condition) {
+    if (!this.isTruthy(condition)) {
       this.branch(offset);
     }
   }
@@ -751,7 +874,7 @@ export class SVMLInterpreter {
     this.push(closure);
   }
 
-  private call(numArgs: number, isTailCall: boolean): void {
+  private call(numArgs: number, isTailCall: boolean, pc: number): void {
     if (!this.currentFrame) {
       throw new Error("No current frame");
     }
@@ -799,10 +922,22 @@ export class SVMLInterpreter {
 
     const closure = func;
 
-    const funcDef = this.program.functions[closure.functionIndex];
+    const canonical = this.program.functions[closure.functionIndex];
 
-    if (numArgs !== funcDef.numArgs) {
-      throw new Error(`Function expects ${funcDef.numArgs} arguments but got ${numArgs}`);
+    if (numArgs !== canonical.numArgs) {
+      throw new Error(`Function expects ${canonical.numArgs} arguments but got ${numArgs}`);
+    }
+
+    // JIT dispatch: give the hook the chance to observe the call, publish
+    // param observations, and return a specialized IR compiled under the
+    // post-observation chain. `undefined` means "use canonical."
+    let funcDef = canonical;
+    if (
+      this.dispatchCall !== undefined &&
+      canonical.scopeKey instanceof StmtNS.FunctionDef
+    ) {
+      const specialized = this.dispatchCall(canonical.scopeKey.id, args);
+      if (specialized !== undefined) funcDef = specialized;
     }
 
     const newEnv = new SVMLEnvironment(funcDef.envSize, closure.parentEnv);
@@ -868,6 +1003,7 @@ export class SVMLInterpreter {
 
     // Pop return value from CURRENT (callee's) stack
     const returnValue = this.pop();
+    this.dispatchReturnSite(returnValue);
 
     if (__DEBUG__)
       debug(`[RETG] Returning value: ${JSON.stringify(SVMLInterpreter.toJSValue(returnValue))}`);
@@ -895,7 +1031,8 @@ export class SVMLInterpreter {
   // ========================================================================
 
   private createArray(): void {
-    const size = this.pop() as number;
+    // Python list sizes are int (bigint at runtime); coerce for JS Array ctor.
+    const size = Number(this.pop() as number | bigint);
     const arr: SVMLArray = {
       type: "array",
       elements: new Array(size).fill(undefined),
@@ -904,7 +1041,7 @@ export class SVMLInterpreter {
   }
 
   private loadArrayElement(): void {
-    const index = this.pop() as number;
+    const index = Number(this.pop() as number | bigint);
     const arr = this.pop();
 
     if (!isSVMLObject(arr) || arr.type !== "array") {
@@ -920,7 +1057,7 @@ export class SVMLInterpreter {
 
   private storeArrayElement(): void {
     const value = this.pop();
-    const index = this.pop() as number;
+    const index = Number(this.pop() as number | bigint);
     const arr = this.pop();
 
     if (!isSVMLObject(arr) || arr.type !== "array") {
@@ -945,6 +1082,13 @@ export class SVMLInterpreter {
     if (value === null || value === undefined) return value;
     if (typeof value === "number" || typeof value === "boolean" || typeof value === "string")
       return value;
+    // Display-friendly: flatten Python int → JS number for callers that
+    // don't care about int/float distinction (debug logs, tests that
+    // predate the int/float split). Python semantics still live on the
+    // stack as bigint — this conversion is one-way at the display edge.
+    if (typeof value === "bigint") {
+      return Number(value);
+    }
     if (isSVMLObject(value)) {
       if (value.type === "closure") return `<closure:${value.functionIndex}>`;
       if (value.type === "array") return value.elements.map(e => SVMLInterpreter.toJSValue(e));

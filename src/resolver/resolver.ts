@@ -3,6 +3,7 @@ import { Group } from "../stdlib/utils";
 import { Token, TokenType } from "../tokenizer/tokenizer";
 import { FeatureValidator } from "../validator/types";
 import { ResolverErrors } from "./errors";
+import { MEMO_INTRINSIC_NAMES } from "../runtime/memo";
 type Expr = ExprNS.Expr;
 type Stmt = StmtNS.Stmt;
 
@@ -43,7 +44,11 @@ export class Environment {
    * If name isn't found, return -1.
    * */
   lookupName(identifier: Token): number {
-    const name = identifier.lexeme;
+    return this.lookupNameByString(identifier.lexeme);
+  }
+
+  /** String-based variant of lookupName — avoids constructing synthetic Tokens. */
+  lookupNameByString(name: string): number {
     let distance = 0;
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     let curr: Environment | null = this;
@@ -62,11 +67,16 @@ export class Environment {
    * Returns the Environment where the name is found, or null if not found.
    */
   lookupNameEnv(identifier: Token): Environment | null {
-    if (this.names.has(identifier.lexeme)) {
+    return this.lookupNameEnvByString(identifier.lexeme);
+  }
+
+  /** String-based variant of lookupNameEnv — avoids constructing synthetic Tokens. */
+  lookupNameEnvByString(name: string): Environment | null {
+    if (this.names.has(name)) {
       return this;
     }
     for (let curr = this.enclosing; curr !== null; curr = curr.enclosing) {
-      if (curr.names.has(identifier.lexeme)) {
+      if (curr.names.has(name)) {
         return curr;
       }
     }
@@ -198,7 +208,17 @@ export class Resolver implements StmtNS.Visitor<void>, ExprNS.Visitor<void> {
             ([name]) => [name, new Token(TokenType.NAME, name, 0, 0, 0)] as const,
           ),
         ),
-        ...preludeNames.map(name => [name, new Token(TokenType.NAME, name, 0, 0, 0)] as const),
+        ...preludeNames.map(
+          name => [name, new Token(TokenType.NAME, name, 0, 0, 0)] as [string, Token],
+        ),
+        // Memoization intrinsics are emitted by the specialization transform
+        // into function bodies after the resolver has already run. Seeding
+        // them in the global env ensures lookup succeeds when the SVML
+        // compiler (or any post-transform resolver pass) re-analyses the
+        // wrapped body.
+        ...MEMO_INTRINSIC_NAMES.map(
+          name => [name, new Token(TokenType.NAME, name, 0, 0, 0)] as [string, Token],
+        ),
       ]),
     );
     this.functionScope = null;

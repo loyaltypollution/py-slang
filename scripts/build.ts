@@ -9,8 +9,13 @@ const allTargets = [
   "PyCseEvaluator2",
   "PyCseEvaluator3",
   "PyCseEvaluator4",
+  "PyCseJitEvaluator1",
+  "PyCseJitEvaluator2",
+  "PyCseJitEvaluator3",
+  "PyCseJitEvaluator4",
   "PyWasmEvaluator",
   "PySvmlEvaluator",
+  "PySvmlJitEvaluator",
   "PySvmlSinterEvaluator",
 ] as const;
 

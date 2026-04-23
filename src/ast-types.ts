@@ -4,6 +4,13 @@ import { PyComplexNumber } from "./types";
 
 export type FunctionParam = Token & { isStarred: boolean };
 export type AssignTarget = ExprNS.Variable | ExprNS.Subscript;
+
+let _nextNodeId = 1;
+/** Reset the global node ID counter (for testing). */
+export function resetNodeIds(): void {
+  _nextNodeId = 1;
+}
+
 export namespace ExprNS {
   export interface Visitor<T> {
     visitBigIntLiteralExpr(expr: BigIntLiteral): T;
@@ -26,9 +33,11 @@ export namespace ExprNS {
   }
   export abstract class Expr {
     abstract readonly kind: string;
+    readonly id: number;
     startToken: Token;
     endToken: Token;
     protected constructor(startToken: Token, endToken: Token) {
+      this.id = _nextNodeId++;
       this.startToken = startToken;
       this.endToken = endToken;
     }
@@ -281,9 +290,11 @@ export namespace StmtNS {
   }
   export abstract class Stmt {
     abstract readonly kind: string;
+    readonly id: number;
     startToken: Token;
     endToken: Token;
     protected constructor(startToken: Token, endToken: Token) {
+      this.id = _nextNodeId++;
       this.startToken = startToken;
       this.endToken = endToken;
     }

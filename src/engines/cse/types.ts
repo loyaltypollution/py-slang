@@ -114,6 +114,11 @@ export interface EndOfFunctionBodyInstr extends BaseInstr {
 
 export interface ResetInstr extends BaseInstr {
   instrType: InstrType.RESET;
+  /** FunctionDef id if this RESET is unwinding a function call, undefined
+   *  otherwise. Populated by the CALL handler so JIT `dispatchReturn` can
+   *  attribute the return value to the right scope on every unwind path
+   *  (normal completion AND early return, both of which reach this RESET). */
+  jitScopeId?: number;
 }
 
 export interface PopInstr extends BaseInstr {

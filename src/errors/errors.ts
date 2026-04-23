@@ -67,16 +67,14 @@ export class RuntimeSourceError implements SourceError {
   public message = "Error";
 
   constructor(node?: Locatable) {
-    if (node) {
+    // `node` may be a non-AST control-stack entry (e.g. an Instr) that lacks
+    // `startToken`; fall back to UNKNOWN_LOCATION rather than NPE'ing while
+    // constructing the error itself, which would hide the real cause.
+    const tok = node?.startToken;
+    if (tok) {
       this.location = {
-        start: {
-          line: node.startToken.line,
-          column: node.startToken.col,
-        },
-        end: {
-          line: node.startToken.line,
-          column: node.startToken.col,
-        },
+        start: { line: tok.line, column: tok.col },
+        end: { line: tok.line, column: tok.col },
       };
     } else {
       this.location = UNKNOWN_LOCATION;
@@ -376,35 +374,29 @@ export class ZeroDivisionError extends RuntimeSourceError {
 }
 
 export class StepLimitExceededError extends RuntimeSourceError {
-  constructor(source: string, node: ExprNS.Expr | StmtNS.Stmt) {
+  constructor(source: string, node: ExprNS.Expr | StmtNS.Stmt | undefined) {
     super(node);
     this.type = ErrorType.RUNTIME;
-    const index = node.startToken.indexInSource;
-
-    const { lineIndex, fullLine } = getFullLine(source, index);
-
-    const errorPos =
-      "operator" in node && node.operator instanceof Token
-        ? node.operator.indexInSource - node.startToken.indexInSource
-        : 0;
-
-    const indicator = createErrorIndicator(fullLine, errorPos); // no target symbol
-
     const name = "StepLimitExceededError";
     const hint = "The evaluation has exceeded the maximum step limit.";
-
-    const offset = fullLine.indexOf(fullLine);
-    const adjustedOffset = offset >= 0 ? offset : 0;
-
-    const msg = [
+    const tok = node?.startToken;
+    if (!tok) {
+      this.message = `${name}\n${hint}`;
+      return;
+    }
+    const { lineIndex, fullLine } = getFullLine(source, tok.indexInSource);
+    const errorPos =
+      node && "operator" in node
+        ? (node.operator as Token).indexInSource - tok.indexInSource
+        : 0;
+    const indicator = createErrorIndicator(fullLine, errorPos);
+    this.message = [
       `${name} at line ${lineIndex}`,
       "",
       "    " + fullLine,
-      "    " + " ".repeat(adjustedOffset) + indicator,
+      "    " + indicator,
       hint,
     ].join("\n");
-
-    this.message = msg;
   }
 }
 

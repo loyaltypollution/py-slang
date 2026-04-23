@@ -6,6 +6,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import math from "../stdlib/math";
+import memo from "../stdlib/memo";
 import misc from "../stdlib/misc";
 import { EvaluatorError } from "./errors";
 
@@ -31,7 +32,7 @@ export class PySvmlSinterEvaluator extends BasicEvaluator {
     try {
       const script = chunk + "\n";
       const ast = parse(script);
-      const { errors, environments } = analyzeWithEnvironments(ast, script, 4, [misc, math]);
+      const { errors, environments } = analyzeWithEnvironments(ast, script, 4, [misc, math, memo]);
       if (errors.length > 0) {
         throw errors[0];
       }

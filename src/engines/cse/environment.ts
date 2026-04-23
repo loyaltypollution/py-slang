@@ -161,7 +161,9 @@ export const getPreludeEnvironment = (context: Context): Environment | null => {
   return envs.length > 1 ? envs[envs.length - 2] : null;
 };
 
-export const popEnvironment = (context: Context) => context.runtime.environments.shift();
+export const popEnvironment = (context: Context) => {
+  return context.runtime.environments.shift();
+};
 
 export const pushEnvironment = (context: Context, environment: Environment) => {
   context.runtime.environments.unshift(environment);

@@ -14,6 +14,7 @@ import { analyze } from "../resolver/analysis";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import math from "../stdlib/math";
+import memo from "../stdlib/memo";
 import misc from "../stdlib/misc";
 import pairmutator from "../stdlib/pairmutator";
 import parser from "../stdlib/parser";
@@ -29,11 +30,11 @@ function once<T>(fn: () => Promise<T>): () => Promise<T> {
  * The abstract class PyCseEvaluatorBase implements the common logic for all variants of
  * the CSE evaluator, which includes setting up the context, loading preludes, and evaluating chunks of code.
  */
-abstract class PyCseEvaluatorBase extends BasicEvaluator {
-  private context = new Context();
-  private readonly variant: number;
-  private readonly groups: Group[];
-  private readonly ensurePreludesLoaded: () => Promise<void>;
+export abstract class PyCseEvaluatorBase extends BasicEvaluator {
+  protected context = new Context();
+  protected readonly variant: number;
+  protected readonly groups: Group[];
+  protected readonly ensurePreludesLoaded: () => Promise<void>;
 
   protected constructor(conductor: IRunnerPlugin, variant: number, groups: Group[]) {
     super(conductor);
@@ -112,24 +113,24 @@ abstract class PyCseEvaluatorBase extends BasicEvaluator {
 
 export class PyCseEvaluator1 extends PyCseEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
-    super(conductor, 1, [misc, math]);
+    super(conductor, 1, [misc, math, memo]);
   }
 }
 
 export class PyCseEvaluator2 extends PyCseEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
-    super(conductor, 2, [misc, math, linkedList]);
+    super(conductor, 2, [misc, math, memo, linkedList]);
   }
 }
 
 export class PyCseEvaluator3 extends PyCseEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
-    super(conductor, 3, [misc, math, linkedList, list, pairmutator, stream]);
+    super(conductor, 3, [misc, math, memo, linkedList, list, pairmutator, stream]);
   }
 }
 
 export class PyCseEvaluator4 extends PyCseEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
-    super(conductor, 4, [misc, math, linkedList, list, pairmutator, stream, parser]);
+    super(conductor, 4, [misc, math, memo, linkedList, list, pairmutator, stream, parser]);
   }
 }

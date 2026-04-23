@@ -1,7 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import { Context } from "./context";
 import { ControlItem } from "./control";
-import { Environment, uniqueId } from "./environment";
+import { Environment } from "./environment";
 import { StatementSequence } from "./types";
 import { isNode } from "./utils";
 
@@ -17,23 +16,24 @@ export class Closure {
   public node: StmtNS.FunctionDef | ExprNS.Lambda;
   /** Environment captures at time of function's definition, key for lexical scoping */
   public environment: Environment;
-  public context: Context;
   public readonly predefined: boolean;
   public originalNode?: StmtNS.FunctionDef | ExprNS.Lambda;
   /** Stores local variables for scope check */
   public localVariables: Set<string>;
 
+  /** Name of the constant declaration that the closure is assigned to */
+  public declaredName?: string;
+
   constructor(
     node: StmtNS.FunctionDef | ExprNS.Lambda,
     environment: Environment,
-    context: Context,
+    id: string,
     predefined: boolean = false,
     localVariables: Set<string> = new Set(),
   ) {
-    this.id = uniqueId(context);
+    this.id = id;
     this.node = node;
     this.environment = environment;
-    this.context = context;
     this.predefined = predefined;
     this.originalNode = node;
     this.localVariables = localVariables;
@@ -42,21 +42,19 @@ export class Closure {
   static makeFromFunctionDef(
     node: StmtNS.FunctionDef,
     environment: Environment,
-    context: Context,
+    id: string,
     localVariables: Set<string>,
   ): Closure {
-    const closure = new Closure(node, environment, context, false, localVariables);
-    return closure;
+    return new Closure(node, environment, id, false, localVariables);
   }
 
   static makeFromLambda(
     node: ExprNS.Lambda,
     environment: Environment,
-    context: Context,
+    id: string,
     localVariables: Set<string>,
   ): Closure {
-    const closure = new Closure(node, environment, context, false, localVariables);
-    return closure;
+    return new Closure(node, environment, id, false, localVariables);
   }
 }
 

@@ -110,13 +110,14 @@ export function stringifyProgram(P: SVMLProgram) {
       "\nNum Args: " +
       f.numArgs +
       "\n";
-    const instructions = f.toInstructions();
-    for (let j = 0; j < instructions.length; j++) {
+    for (let j = 0; j < f.count; j++) {
+      const opcode = f.opcodes[j];
+      const arg1: unknown = opcode === OpCodes.LGCS ? f.strings[f.arg1s[j]] : f.arg1s[j];
+      const arg2 = f.arg2s[j];
       s += j;
-      const ins = instructions[j];
-      s += ": " + getName(ins.opcode);
-      s += " " + (ins.arg1 ?? " ");
-      s += " " + (ins.arg2 ?? " ");
+      s += ": " + getName(opcode);
+      s += " " + arg1;
+      s += " " + arg2;
       s += "\n";
     }
     programStr += s + "\n";

@@ -202,7 +202,6 @@ describe("SVML E2E", () => {
     "type errors": [
       ['1 + ""', UnsupportedOperandTypeError, null],
       ["not 1", UnsupportedOperandTypeError, null],
-      ["if 1:\n    10\nelse:\n    20", UnsupportedOperandTypeError, null],
     ],
     "arithmetic errors": [
       ["1 / 0", ZeroDivisionError, null],

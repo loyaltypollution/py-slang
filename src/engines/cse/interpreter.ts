@@ -22,6 +22,7 @@ import {
   currentEnvironment,
   popEnvironment,
   pushEnvironment,
+  uniqueId,
 } from "./environment";
 import { handleRuntimeError, UnknownEvaluatorError } from "./error";
 import * as instrCreator from "./instrCreator";
@@ -36,10 +37,8 @@ import {
   BranchInstr,
   BreakInstr,
   ContinueInstr,
-  EndOfFunctionBodyInstr,
   EnvInstr,
   ForInstr,
-  Instr,
   InstrType,
   ListAccessInstr,
   ListAssmtInstr,
@@ -47,7 +46,7 @@ import {
   PopInstr,
   ResetInstr,
   UnOpInstr,
-  WhileInstr,
+  WhileInstr
 } from "./types";
 import {
   envChanging,
@@ -297,7 +296,7 @@ export async function* generateCSEMachineStateStream(
       context.runtime.nodes.shift();
       context.runtime.nodes.unshift(command);
       const nodeKind = node.kind;
-      if (!isDeclaredEvaluator(nodeKind)) {
+      if (!(nodeKind in cmdEvaluators)) {
         handleRuntimeError(context, new UnknownEvaluatorError(node.kind));
       }
       await cmdEvaluators[nodeKind](
@@ -321,7 +320,7 @@ export async function* generateCSEMachineStateStream(
     } else {
       // Command is an instruction
       const instrType = command.instrType;
-      if (!isDeclaredEvaluator(instrType)) {
+      if (!(instrType in cmdEvaluators)) {
         handleRuntimeError(context, new UnknownEvaluatorError(command.instrType));
       }
       await cmdEvaluators[instrType](
@@ -345,23 +344,23 @@ export async function* generateCSEMachineStateStream(
     yield { stash, control, steps };
   }
 }
-function isDeclaredEvaluator(kind: string): kind is keyof CmdEvaluators {
-  return kind in cmdEvaluators;
+
+/**
+ * Derive the nearest enclosing scope key for observation emission.
+ * Walks the environment chain to find a closure; falls back to the root
+ * program scope (`context.jitHooks.rootScope`) for top-level statements.
+ */
+function currentScopeKey(context: Context): StmtNS.FileInput | StmtNS.FunctionDef | undefined {
+  for (let env: any = currentEnvironment(context); env; env = env.tail) {
+    if (env.closure && env.closure.node) {
+      return env.closure.node as StmtNS.FileInput | StmtNS.FunctionDef;
+    }
+  }
+  return context.jitHooks?.rootScope;
 }
-type ExprKeys = Exclude<keyof typeof ExprNS, "Expr" | "MultiLambda" | "Starred">;
-type StmtKeys = Exclude<
-  keyof typeof StmtNS,
-  "Stmt" | "AnnAssign" | "Global" | "Assert" | "NonLocal"
->;
-type InstrKeys = Exclude<InstrType, "Assert" | "Global" | "NonLocal" | "Import" | "Program">;
-type CmdEvaluators = {
-  [K in ExprKeys]: CmdEvaluator<InstanceType<(typeof ExprNS)[K]>>;
-} & {
-  [K in StmtKeys]: CmdEvaluator<InstanceType<(typeof StmtNS)[K]>>;
-} & {
-  [K in InstrKeys]: CmdEvaluator<Extract<Instr, { instrType: K }>>;
-};
-const cmdEvaluators: CmdEvaluators = {
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const cmdEvaluators: { [type: string]: CmdEvaluator<any> } = {
   /**
    * AST Nodes
    */
@@ -605,7 +604,7 @@ const cmdEvaluators: CmdEvaluators = {
     const closure = Closure.makeFromFunctionDef(
       functionDefNode,
       currentEnvironment(context),
-      context,
+      uniqueId(context),
       localVariables,
     );
     pyDefineVariable(context, functionDefNode.name.lexeme, { type: "closure", closure });
@@ -623,7 +622,7 @@ const cmdEvaluators: CmdEvaluators = {
     const closure = Closure.makeFromLambda(
       lambdaNode,
       currentEnvironment(context),
-      context,
+      uniqueId(context),
       localVariables,
     );
     stash.push({ type: "closure", closure });
@@ -631,18 +630,22 @@ const cmdEvaluators: CmdEvaluators = {
 
   Return: function (
     _code: string,
-    returnNode: StmtNS.Return,
-    _context: Context,
+    command: ControlItem,
+    context: Context,
     control: Control,
     stash: Stash,
     _isPrelude: boolean,
   ) {
+    const returnNode = command as StmtNS.Return;
     let head;
     while (true) {
       head = control.pop();
-      if (!head || ("instrType" in head && head.instrType === InstrType.RESET)) {
-        break;
-      }
+      if (!head) break;
+      if ("instrType" in head && head.instrType === InstrType.RESET) break;
+      // No per-instruction pin bookkeeping — the env stack owns pin
+      // state via push/popEnvironment. The Return-unwind loop preserves
+      // RESET on the control stack (re-pushed below), and RESET's
+      // handler pops the env, which decrements the pin-set.
     }
     if (head) {
       control.push(head);
@@ -792,14 +795,22 @@ const cmdEvaluators: CmdEvaluators = {
   /**
    * Instructions
    */
+  // (helper defined below the handlers object; hoisted via function declaration)
   [InstrType.RESET]: function (
     _code: string,
-    _command: ResetInstr,
+    command: ControlItem,
     context: Context,
     _control: Control,
-    _stash: Stash,
+    stash: Stash,
     _isPrelude: boolean,
   ) {
+    const instr = command as ResetInstr;
+    // Function-call unwind: attribute the return value against the call's
+    // own chain (B1) BEFORE popping the environment. `peek()` — the value
+    // stays for the caller's consumer.
+    if (instr.jitScopeId !== undefined && context.jitHooks !== undefined) {
+      context.jitHooks.dispatchReturn(instr.jitScopeId, stash.peek());
+    }
     popEnvironment(context);
   },
 
@@ -1059,55 +1070,72 @@ const cmdEvaluators: CmdEvaluators = {
   ) {
     const numOfArgs = instr.numOfArgs;
 
-    const rawArgs: Value[] = [];
+    // stash.pop() yields args in reverse, so reverse-fill a pre-sized array.
+    const rawArgs: Value[] = new Array(numOfArgs);
     for (let i = 0; i < numOfArgs; i++) {
       const arg = stash.pop();
       if (arg) {
-        rawArgs.unshift(arg);
+        rawArgs[numOfArgs - 1 - i] = arg;
       }
     }
 
-    // Flatten spread args: starred indices contain list values that
-    // need to be expanded inline.
-    const spreadSet = new Set(instr.spreadIndices);
-    const args: Value[] =
-      spreadSet.size === 0
-        ? rawArgs
-        : rawArgs.flatMap((val, i) => {
-            if (!spreadSet.has(i)) return val;
-            if (val?.type === "list") {
-              return val.value;
-            }
-            handleRuntimeError(
-              context,
-              new error.TypeError(
-                code,
-                instr.srcNode,
-                context,
-                val ? val.type : "NoneType",
-                "iterable",
-              ),
-            );
-          });
+    const spreadIndices = instr.spreadIndices;
+    let args: Value[];
+    if (spreadIndices.length === 0) {
+      args = rawArgs;
+    } else {
+      const spreadSet = new Set(spreadIndices);
+      args = rawArgs.flatMap((val, i) => {
+        if (!spreadSet.has(i)) return val;
+        if (val?.type === "list") {
+          return (val as { type: "list"; value: Value[] }).value;
+        }
+        handleRuntimeError(
+          context,
+          new error.TypeError(
+            code,
+            instr.srcNode as ExprNS.Call,
+            context,
+            val ? val.type : "NoneType",
+            "iterable",
+          ),
+        );
+        return []; // unreachable, satisfies TypeScript
+      });
+    }
 
     const callable = stash.pop();
 
     if (callable?.type == "closure") {
       const closure = callable.closure;
-      control.push(instrCreator.resetInstr(instr.srcNode));
-      if (closure.node.kind === "FunctionDef") {
+      const closureNode = closure.node;
+      const fd = closureNode instanceof StmtNS.FunctionDef ? closureNode : undefined;
+
+      // Thread fd.id into RESET so `dispatchReturn` fires on every unwind
+      // path — early-return unwind (Return handler) pops intermediate
+      // control items but preserves this RESET, so attribution is uniform.
+      control.push(instrCreator.resetInstr(instr.srcNode, fd?.id));
+
+      if (fd !== undefined) {
         control.push(instrCreator.endOfFunctionBodyInstr(instr.srcNode));
       }
 
       const newEnv = createEnvironment(code, context, closure, args, instr.srcNode);
       pushEnvironment(context, newEnv);
 
-      const closureNode = closure.node;
-      if (closureNode.kind === "FunctionDef") {
-        const bodyStmts = closureNode.body.slice().reverse();
-        control.push(...bodyStmts);
+      if (fd !== undefined) {
+        // LBD contract: sink may install non-monotone transforms mid-run;
+        // safe because dispatchCall re-resolves the body at call-entry.
+        // dispatchCall is atomic (LIFO push + param observation + body
+        // selection); `undefined` return = "use fd.body unchanged."
+        const specialized = context.jitHooks?.dispatchCall(fd.id, args);
+        const bodyStmts = specialized ?? fd.body;
+        // slice() + reverse() keeps a single variadic push — `Control.push`
+        // iterates `items` once; pushing one statement at a time would
+        // allocate a rest-args array per iteration.
+        control.push(...bodyStmts.slice().reverse());
       } else {
-        const bodyExpr = closureNode.body;
+        const bodyExpr = (closureNode as ExprNS.Lambda).body;
         control.push(bodyExpr);
       }
     } else if (callable?.type === "builtin") {
@@ -1218,12 +1246,17 @@ const cmdEvaluators: CmdEvaluators = {
 
   [InstrType.END_OF_FUNCTION_BODY]: function (
     _code: string,
-    _command: EndOfFunctionBodyInstr,
-    _context: Context,
+    _command: ControlItem,
+    context: Context,
     _control: Control,
     stash: Stash,
     _isPrelude: boolean,
   ) {
+    // No explicit deactivate — popEnvironment on the forthcoming RESET
+    // decrements the pin-set. Early return's control-unwind loop also
+    // reaches RESET (it re-pushes the RESET instr after popping the
+    // END_OF_FUNCTION_BODY marker), so the env pop fires on every exit
+    // path without per-path bookkeeping.
     stash.push({ type: "none" });
   },
 };

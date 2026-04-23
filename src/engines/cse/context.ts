@@ -2,6 +2,32 @@ import { ConductorError } from "@sourceacademy/conductor/common";
 import { StmtNS } from "../../ast-types";
 import { RuntimeSourceError } from "../../errors";
 import { ModuleContext, NativeStorage } from "../../types";
+
+/** Capabilities injected by JIT-capable evaluators. Absent in plain runs.
+ *
+ *  `dispatchCall` is the atomic call-entry hook: it records the call
+ *  boundary (LIFO push, hotness bump), publishes param observations that
+ *  extend the speculation chain, and returns the body to execute — or
+ *  `undefined` to signal "use the function's own body, no specialization."
+ *
+ *  `dispatchReturn` fires on call unwind. It attributes the return value as
+ *  a runtime observation (feeds `returnKindNarrowing`) against the LIFO
+ *  frame's chain (B1: the chain that actually held during this call), then
+ *  pops the frame.
+ *
+ *  Per-call chain bookkeeping stays on the LIFO because return-kind
+ *  observations need to attribute to the call being unwound, not to
+ *  whatever the engine's global leaf has since moved to.
+ */
+export interface JitHooks {
+  readonly rootScope: StmtNS.FileInput;
+  dispatchCall(
+    scopeId: number,
+    args: readonly unknown[],
+  ): ReadonlyArray<StmtNS.Stmt> | undefined;
+  dispatchReturn(scopeId: number, value: unknown): void;
+}
+
 import { Control } from "./control";
 import { Environment } from "./environment";
 import { BuiltinValue, Stash } from "./stash";
@@ -44,6 +70,10 @@ export class Context {
     breakpointSteps: number[];
     changepointSteps: number[];
   };
+
+  /** JIT capabilities. Wired by JIT-capable evaluators before `evaluate`;
+   *  cleared afterward. `undefined` in plain (non-JIT) runs. */
+  jitHooks?: JitHooks;
 
   /**
    * Used for storing the native context and other values

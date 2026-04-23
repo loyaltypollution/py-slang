@@ -1,5 +1,8 @@
+import type { StmtNS } from "../../ast-types";
+
 export type SVMLBoxType =
   | number
+  | bigint
   | boolean
   | string
   | null
@@ -12,7 +15,8 @@ export enum SVMLType {
   UNDEFINED = "undefined",
   NULL = "null",
   BOOLEAN = "boolean",
-  NUMBER = "number",
+  INT = "int",
+  FLOAT = "float",
   STRING = "string",
   ARRAY = "array",
   CLOSURE = "closure",
@@ -27,10 +31,10 @@ export interface SVMLArray {
 export interface SVMLIterator {
   type: "iterator";
   kind: "range" | "list";
-  // range fields
-  current?: number;
-  stop?: number;
-  step?: number;
+  // range fields — bigint because Python range yields ints.
+  current?: bigint;
+  stop?: bigint;
+  step?: bigint;
   // list fields
   array?: SVMLArray;
   index?: number;
@@ -87,7 +91,13 @@ export class SVMLEnvironment {
   }
 }
 
-/** @deprecated Use SVMLIR typed arrays directly */
+/**
+ * Record-shaped instruction used by the sinter binary assembler and its
+ * text-parse path (see svml-assembler.ts). Hot paths — the interpreter
+ * dispatch loop and any spec/codegen that walks bytecode — read SVMLIR's
+ * typed arrays directly; this shape exists only where a mutable
+ * per-instruction record is genuinely more ergonomic than struct-of-arrays.
+ */
 export interface Instruction {
   opcode: number;
   arg1?: SVMLBoxType;
@@ -101,11 +111,21 @@ export interface Instruction {
 import OpCodes from "./opcodes";
 
 /**
+ * Runtime observation site attached to a specific pc in an SVMLIR.
+ *
+ * - `kind: "call"` — CALL/CALLT of a user function. The callee's scopeKey is
+ *   derived at runtime from the closure's functionIndex.
+ */
+export type ObservationSite = { kind: "call" };
+
+/**
  * IR representation of a single compiled function.
  *
  * Produced by SVMLIRBuilder.build() and consumed by SVMLInterpreter.
  * Uses struct-of-arrays typed arrays for cache-friendly dispatch.
  */
+const EMPTY_SITES: ReadonlyMap<number, ObservationSite> = new Map();
+
 export class SVMLIR {
   readonly opcodes: Int32Array;
   readonly arg1s: Float64Array;
@@ -115,6 +135,10 @@ export class SVMLIR {
   readonly stackSize: number;
   readonly envSize: number;
   readonly numArgs: number;
+  /** Scope this IR was compiled for (if known — FileInput or FunctionDef). */
+  readonly scopeKey: StmtNS.FileInput | StmtNS.FunctionDef | undefined;
+  /** pc → observation site metadata. Empty when no sink is attached. */
+  readonly observationSites: ReadonlyMap<number, ObservationSite>;
 
   constructor(
     opcodes: Int32Array,
@@ -124,6 +148,8 @@ export class SVMLIR {
     stackSize: number,
     symbolCount: number,
     numArgs: number,
+    scopeKey?: StmtNS.FileInput | StmtNS.FunctionDef,
+    observationSites?: ReadonlyMap<number, ObservationSite>,
   ) {
     this.opcodes = opcodes;
     this.arg1s = arg1s;
@@ -133,6 +159,8 @@ export class SVMLIR {
     this.stackSize = stackSize;
     this.envSize = symbolCount + numArgs;
     this.numArgs = numArgs;
+    this.scopeKey = scopeKey;
+    this.observationSites = observationSites ?? EMPTY_SITES;
   }
 
   /** Compatibility: reconstruct Instruction[] for assembler/debug (not hot path). */
@@ -176,8 +204,10 @@ export class SVMLProgram {
 }
 
 export function getSVMLType(value: SVMLBoxType): SVMLType {
-  if (typeof value === "number") {
-    return SVMLType.NUMBER;
+  if (typeof value === "bigint") {
+    return SVMLType.INT;
+  } else if (typeof value === "number") {
+    return SVMLType.FLOAT;
   } else if (typeof value === "string") {
     return SVMLType.STRING;
   } else if (typeof value === "boolean") {

@@ -9,12 +9,29 @@ import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { RuntimeSourceError } from "../errors";
 import { parse } from "../parser/parser-adapter";
 import { Resolver } from "../resolver";
+import type { FunctionEnvironments } from "../resolver";
+import { Worklist } from "../specialization/framework/worklist";
+import { createDefaultWorklist } from "../specialization/defaults";
 import math from "../stdlib/math";
+import memo from "../stdlib/memo";
 import misc from "../stdlib/misc";
 import { Group } from "../stdlib/utils";
 import { PyComplexNumber, RecursivePartial, Result } from "../types";
 import { makeValidatorsForChapter } from "../validator";
 import Stmt = StmtNS.Stmt;
+
+/**
+ * Test-only helper. Builds a `Worklist` preloaded with the
+ * standard analyses and transforms. Replaces the deleted
+ * `createReactiveOptimization` / `SpecializationEngine` production
+ * factories — do not introduce new callers in production code.
+ */
+export function buildTestWorklist(
+  ast: StmtNS.FileInput,
+  functionEnvironments: FunctionEnvironments,
+): Worklist {
+  return createDefaultWorklist(ast, functionEnvironments);
+}
 
 /**
  * Test-local replacement for the deleted pyRunner.runInContext.
@@ -96,7 +113,7 @@ export function toPythonAst(text: string): Stmt {
 export function toPythonAstAndResolve(text: string, variant: number): Stmt {
   const script = text + "\n";
   const ast = toPythonAst(text);
-  const resolver = new Resolver(script, ast, makeValidatorsForChapter(variant), [misc, math]);
+  const resolver = new Resolver(script, ast, makeValidatorsForChapter(variant), [misc, math, memo]);
   const errors = resolver.resolve(ast);
   if (errors.length > 0) {
     throw errors[0];
@@ -320,6 +337,14 @@ export const generateSVMLTestCases = (testCases: SVMLTestCases) => {
           expect(result).toBeNull();
         } else if (typeof expected === "number" && !Number.isInteger(expected)) {
           expect(result).toBeCloseTo(expected);
+        } else if (
+          typeof expected === "number"
+          && Number.isInteger(expected)
+          && typeof result === "bigint"
+        ) {
+          // Post-int/float refactor: Python int results are bigint. Existing
+          // test fixtures still write them as JS numbers; compare by value.
+          expect(result).toBe(BigInt(expected));
         } else {
           expect(result).toBe(expected);
         }

@@ -1,12 +1,12 @@
-import { parse } from "../parser/parser-adapter";
-import { analyzeWithEnvironments } from "../resolver";
-import { SVMLCompiler } from "../engines/svml/svml-compiler";
-import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import {
   MissingRequiredPositionalError,
   UnsupportedOperandTypeError,
   ZeroDivisionError,
 } from "../engines/svml/errors";
+import { SVMLCompiler } from "../engines/svml/svml-compiler";
+import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
+import { parse } from "../parser/parser-adapter";
+import { analyzeWithEnvironments } from "../resolver";
 
 function compileAndRun(code: string): unknown {
   const ast = parse(code);
@@ -280,14 +280,15 @@ not 1
       expect(() => compileAndRun(code)).toThrow(UnsupportedOperandTypeError);
     });
 
-    test("branch condition must be boolean", () => {
+    test("branch condition uses Python truthiness (non-zero int is truthy)", () => {
+      // BRF/BRT now use Python truthiness, not strict boolean check.
       const code = `
 if 1:
     10
 else:
     20
 `;
-      expect(() => compileAndRun(code)).toThrow(UnsupportedOperandTypeError);
+      expect(compileAndRun(code)).toBe(10);
     });
   });
 

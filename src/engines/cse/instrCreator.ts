@@ -78,9 +78,10 @@ export const binOpInstr = (symbol: TokenType, srcNode: Node): BinOpInstr => ({
   srcNode,
 });
 
-export const resetInstr = (srcNode: Node): ResetInstr => ({
+export const resetInstr = (srcNode: Node, jitScopeId?: number): ResetInstr => ({
   instrType: InstrType.RESET,
   srcNode,
+  jitScopeId,
 });
 
 export const branchInstr = (
