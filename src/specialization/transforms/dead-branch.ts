@@ -5,12 +5,11 @@
 import { StmtNS } from "../../ast-types";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
-import type { AssumptionChain } from "../lattice/chain";
-import { visibleBody } from "../assumption/assumption-bodies";
-import { typeAnalysis } from "../framework/narrowing-registry";
+import type { AssumptionChain } from "../assumption/chain";
+import { visibleBody } from "../speculation/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
-import { BOOL_BIT, BoolRef, TypeLattice } from "../type-analysis/lattice";
+import { BOOL_BIT, BoolRef, type TypeLattice, typeAnalysis } from "../analysis";
 import { BaseStmtVisitor, runWitnessSweep } from "./witness-utils";
 
 function boolCondition(chain: AssumptionChain, topology: ProgramTopology, nodeId: number) {

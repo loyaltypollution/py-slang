@@ -1,13 +1,13 @@
 import {
   ROOT_CONTEXT,
   isRoot,
-} from "../../specialization/lattice/chain";
+} from "../../specialization/assumption/chain";
 import {
   at,
   extend,
   leq,
   without,
-} from "../../specialization/lattice/algebra";
+} from "../../specialization/assumption/algebra";
 import { makeNarrowing } from "./harness/lattice-doubles";
 
 function makeAnalysis<K, V>(_name: string) {

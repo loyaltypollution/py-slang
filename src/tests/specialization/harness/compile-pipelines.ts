@@ -6,7 +6,7 @@ import { makeDfaQuery } from "../../../specialization";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import type { SVMLProgram } from "../../../engines/svml/types";
 import type { Analysis } from "../../../specialization/framework/analysis";
-import type { ObservationChannel } from "../../../specialization/assumption/observation-channel";
+import type { ObservationChannel } from "../../../specialization/observation/observation-channel";
 import { Worklist } from "../../../specialization/framework/worklist";
 import math from "../../../stdlib/math";
 import memo from "../../../stdlib/memo";

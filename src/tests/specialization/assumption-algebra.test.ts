@@ -11,13 +11,12 @@ import {
   extend,
   leq,
   without,
-} from "../../specialization/lattice/algebra";
+} from "../../specialization/assumption/algebra";
 
 function mkN<K, V>(eq: (a: V, b: V) => boolean = (a, b) => a === b): Narrowing<K, V> {
   return {
     eq,
     blockAnalysis: () => ({} as any),
-    lift: () => undefined,
   };
 }
 

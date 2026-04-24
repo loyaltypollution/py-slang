@@ -1,9 +1,9 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
-import { extend } from "../../specialization/lattice/algebra";
-import { typeAnalysis } from "../../specialization/framework/narrowing-registry";
-import { typeNarrowing } from "../../specialization/type-analysis/analysis";
-import { INT_BIT, INT_POS, TOP } from "../../specialization/type-analysis/lattice";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
+import { extend } from "../../specialization/assumption/algebra";
+import { typeAnalysis } from "../../specialization/analysis";
+import { typeNarrowing } from "../../specialization/analysis/type/analysis";
+import { INT_BIT, INT_POS, TOP } from "../../specialization/analysis/type/lattice";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 describe("typeAnalysis under a non-ROOT context", () => {

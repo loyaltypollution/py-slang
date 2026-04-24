@@ -8,8 +8,8 @@
  */
 import { AnalysisStore } from "../../specialization/framework/analysis-store";
 import type { JoinSemiLattice, Narrowing } from "../../specialization/framework/analysis";
-import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
-import { extend } from "../../specialization/lattice/algebra";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
+import { extend } from "../../specialization/assumption/algebra";
 
 const intMaxLattice: JoinSemiLattice<number> = {
   bottom: 0,
@@ -36,7 +36,6 @@ function makeHandle<K, V>(_name: string, eq: (a: V, b: V) => boolean): Narrowing
   return {
     eq,
     blockAnalysis: () => ({} as any),
-    lift: () => undefined,
   };
 }
 

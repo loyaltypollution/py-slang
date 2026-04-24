@@ -11,9 +11,7 @@ import {
 } from "../engines/cse/streams";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import { DEFAULT_PASSES, DEFAULT_TRANSFORMS } from "../specialization/defaults";
-import { makeJitDispatch } from "../specialization/assumption/jit-dispatch";
-import { Worklist } from "../specialization/framework/worklist";
+import { createDefaultWorklist, makeJitDispatch } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
 import pairmutator from "../stdlib/pairmutator";
@@ -49,7 +47,7 @@ abstract class PyCseJitEvaluatorBase extends PyCseEvaluatorBase {
         throw errors[errors.length - 1];
       }
 
-      const worklist = new Worklist(ast, environments, DEFAULT_PASSES, undefined, DEFAULT_TRANSFORMS);
+      const worklist = createDefaultWorklist(ast, environments);
       worklist.drain();
 
       const dispatch = makeJitDispatch(worklist);

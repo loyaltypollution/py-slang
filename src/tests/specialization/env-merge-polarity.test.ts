@@ -4,7 +4,7 @@ import {
   UNBOUND,
   boundLattice,
   type BoundStatus,
-} from "../../specialization/definitely-bound-analysis/lattice";
+} from "../../specialization/analysis/definitely-bound/lattice";
 import {
   BOTTOM,
   INT_NEG,
@@ -14,7 +14,7 @@ import {
   join,
   leq,
   meet,
-} from "../../specialization/type-analysis/lattice";
+} from "../../specialization/analysis/type/lattice";
 
 const typeLattice = { bottom: BOTTOM, top: TOP, join, meet, leq, eq };
 

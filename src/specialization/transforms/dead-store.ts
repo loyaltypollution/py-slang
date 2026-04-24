@@ -6,15 +6,15 @@
 // the assignment is still present, pure, and dead by the liveness facts.
 
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { AssumptionChain } from "../lattice/chain";
-import { forkBody, visibleBody } from "../assumption/assumption-bodies";
+import type { AssumptionChain } from "../assumption/chain";
+import { forkBody, visibleBody } from "../speculation/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
 import { isLocal, type SlotLookup } from "../framework/slot-table";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
 import type { TransformRule } from "../framework/analysis";
-import { livenessAnalysis, perStatementLiveOut } from "../liveness-analysis/analysis";
-import { lineageTo, walkExpr, walkExprs } from "./witness-utils";
+import { livenessAnalysis, perStatementLiveOut } from "../analysis";
+import { walkExpr, walkExprs } from "./witness-utils";
 
 // Conservative syntactic purity. Call/Subscript/List/Starred/Lambda are
 // excluded: they may side-effect, throw, or capture.
@@ -215,7 +215,12 @@ export const deadStoreRule: TransformRule = {
     collectRemovableStmtIds(body, liveOutMap, unit.slotLookup, escaped, removableNow);
     if (removableNow.size === 0) return false;
 
-    const lineage = lineageTo(chain);
+    // Walk chain→ROOT, then reverse so shallowest-first.
+    const lineage: AssumptionChain[] = [];
+    for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
+      lineage.push(cur);
+    }
+    lineage.reverse();
     const removalsByWitness = new Map<AssumptionChain, Set<number>>();
     for (const stmtId of removableNow) {
       const witness = witnessForRemoval(unit, lineage, stmtId, liveOutCache, escapedCache);

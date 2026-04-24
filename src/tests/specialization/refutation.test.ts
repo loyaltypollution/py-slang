@@ -8,14 +8,13 @@ import type { Narrowing } from "../../specialization/framework/analysis";
 import {
   empty,
   extend,
-} from "../../specialization/lattice/algebra";
-import { Refutations } from "../../specialization/lattice/refutation";
+} from "../../specialization/assumption/algebra";
+import { Refutations } from "../../specialization/assumption/refutation";
 
 function mkN<K, V>(): Narrowing<K, V> {
   return {
     eq: (a, b) => a === b,
     blockAnalysis: () => ({} as any),
-    lift: () => undefined,
   };
 }
 

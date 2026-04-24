@@ -1,8 +1,8 @@
 import { StmtNS } from "../../ast-types";
-import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
-import { bodyToCompile, dispatchValid } from "../../specialization/assumption/dispatch";
-import { paramKey } from "../../specialization/framework/key-spaces";
-import { runtimeParamChannel } from "../../specialization/assumption/runtime-analyses";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
+import { bodyToCompile, dispatchValid } from "../../specialization/speculation/chain-dispatch";
+import { paramKey } from "../../specialization/framework/analysis";
+import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 describe("dispatchValid", () => {

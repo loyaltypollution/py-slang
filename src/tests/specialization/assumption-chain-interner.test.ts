@@ -1,14 +1,14 @@
 import type { JoinSemiLattice } from "../../specialization/framework/analysis";
 import { AnalysisStore } from "../../specialization/framework/analysis-store";
-import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import {
   at,
   extend as extendAlg,
   without,
-} from "../../specialization/lattice/algebra";
+} from "../../specialization/assumption/algebra";
 import {
   ChainInterner,
-} from "../../specialization/lattice/interner";
+} from "../../specialization/assumption/interner";
 import {
   box,
   boxedEq,

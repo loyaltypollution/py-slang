@@ -1,13 +1,13 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
-import type { ConstLattice } from "../../specialization/const-analysis/lattice";
-import type { TypeLattice } from "../../specialization/type-analysis/lattice";
+import type { ConstLattice } from "../../specialization/analysis/const/lattice";
+import type { TypeLattice } from "../../specialization/analysis/type/lattice";
 import type { Unit } from "../../specialization/framework/function-unit";
 import type { DfaQuery } from "../../specialization/dfa-query";
 import {
   BOOL_BIT,
   FLOAT_BIT,
-} from "../../specialization/type-analysis/lattice";
+} from "../../specialization/analysis/type/lattice";
 import math from "../../stdlib/math";
 import memo from "../../stdlib/memo";
 import misc from "../../stdlib/misc";

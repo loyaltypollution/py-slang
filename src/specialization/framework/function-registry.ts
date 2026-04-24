@@ -1,6 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { traverseAST } from "../../validator/traverse";
-import { AssumptionChain, ROOT_CONTEXT, isRoot } from "../lattice/chain";
+import { AssumptionChain, ROOT_CONTEXT, isRoot } from "../assumption/chain";
 
 export type FunctionScopeNode =
   | StmtNS.FileInput

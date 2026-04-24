@@ -6,7 +6,7 @@
 
 import type { BasicBlock } from "./cfg";
 import type { Unit } from "./function-unit";
-import type { FunctionId, NodeId } from "./key-spaces";
+import type { FunctionId, NodeId } from "./analysis";
 
 interface NodeLocation {
   readonly unit: Unit;

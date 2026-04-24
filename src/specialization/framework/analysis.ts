@@ -1,13 +1,37 @@
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
-import type { AssumptionChain } from "../lattice/chain";
+import type { AssumptionChain, NarrowingId } from "../assumption/chain";
 import type { BlockFixpointAnalysis } from "./dfa-factory";
 import type { Unit } from "./function-unit";
-import type { RawKind } from "./raw-value";
 import type { ProgramTopology } from "./topology";
-import type { ObservationChannel } from "../assumption/observation-channel";
 import type { Worklist } from "./worklist";
 import type { BasicBlock } from "./cfg";
-import type { FunctionId, NodeId } from "./key-spaces";
+
+/** AST node id. Indexes individual expression/statement nodes. */
+export type NodeId = number;
+
+/** `FunctionDef.id` or `FileInput.id` — node id of a scope-owning AST node
+ *  whose optimization unit is registered with the topology. Every
+ *  `FunctionId` is also a `NodeId`; the distinction is semantic
+ *  (topology.unitOfNode vs. topology.unitOfFunctionId). */
+export type FunctionId = number;
+
+/** Function-entry parameter identity, encoded as `${functionId}:${paramIndex}`
+ *  so it is stable and usable directly as a Context/store key. Lives here
+ *  (rather than narrowing-policy/) so the observation channel that types it
+ *  and the narrowing that consumes it don't form a module cycle. */
+export type ParamKey = `${FunctionId}:${number}`;
+
+export function paramKey(functionId: FunctionId, paramIndex: number): ParamKey {
+  return `${functionId}:${paramIndex}`;
+}
+
+export function paramKeyFunctionId(key: ParamKey): FunctionId {
+  return Number(key.slice(0, key.indexOf(":")));
+}
+
+export function paramKeyIndex(key: ParamKey): number {
+  return Number(key.slice(key.indexOf(":") + 1));
+}
 
 export type UnitResolver<K> = (ctx: AnalysisCtx, key: K) => Unit | undefined;
 
@@ -49,12 +73,11 @@ export interface Analysis<K, V> {
   /** Optional explicit value for an unwritten cell. Falls back to
    *  `storeAlgebra.bottom`. */
   readonly emptyValue?: V;
-  /** Read-only cell surface. Internal mutation goes through helpers in
-   *  `analysis-store.ts` so listener fan-out stays centralized. */
+  /** Read-only cell surface. All outside-transfer queries go through `.store`;
+   *  transfer-time reads go through `ctx` for dependency tracking. Internal
+   *  mutation goes through helpers in `analysis-store.ts` so listener fan-out
+   *  stays centralized. */
   readonly store: ReadonlyAnalysisStore<K, V>;
-  read(key: K, context: AssumptionChain): V;
-  tryRead(key: K, context: AssumptionChain): V | undefined;
-  readAll(context: AssumptionChain): ReadonlyMap<K, V>;
   /** Priority tier: runtime observations settle before analyses. Mandatory —
    *  no implicit default, to catch priority-sensitive miscompiles. */
   readonly tier: "runtime" | "analysis";
@@ -65,20 +88,6 @@ export interface Analysis<K, V> {
    *  Return `undefined` for "no write"; the worklist writes the returned
    *  value into `this.store` on the caller's behalf. */
   transfer(ctx: AnalysisCtx, key: K): V | undefined;
-
-  /** Walk `chain → ROOT`, returning the shallowest ancestor whose written
-   *  cell value satisfies `accept`. */
-  readMinimal(
-    chain: AssumptionChain,
-    key: K,
-    accept: (value: V) => boolean,
-  ): { value: V; witness: AssumptionChain } | undefined;
-
-  /** Walk `chain → ROOT`, returning the deepest ancestor with a written cell. */
-  readDeepest(
-    chain: AssumptionChain,
-    key: K,
-  ): { value: V; witness: AssumptionChain } | undefined;
 
   /** Optional registration hook. Called by `Worklist.register`. */
   bind?(worklist: Worklist): void;
@@ -106,13 +115,13 @@ export function composeBind(
  *  narrowing carries no lattice or store of its own, only the identity that
  *  lets chain bindings be looked up at transfer time. AnalysisStore cells
  *  partition per `(key, context)` natively, so refutation of a context
- *  leaves its cells unreachable without an eviction hook. */
-export interface Narrowing<K = any, V = unknown> {
-  eq(a: V, b: V): boolean;
+ *  leaves its cells unreachable without an eviction hook.
+ *
+ *  Observation glue (which runtime channel drives this dimension and how
+ *  to lift a `RawKind` into V) lives in `ObservationBinding` so the
+ *  framework stays observation-agnostic. */
+export interface Narrowing<K = any, V = unknown> extends NarrowingId<K, V> {
   readonly blockAnalysis: () => BlockFixpointAnalysis<any>;
-  readonly observationSource?: ObservationChannel<K, RawKind>;
-  resolveUnit?: UnitResolver<K>;
-  lift(observed: RawKind): V | undefined;
 }
 
 export interface AnalysisCtx {
@@ -155,26 +164,8 @@ export function defineAnalysis<
   V,
   P extends Analysis<K, V>["polarity"],
 >(
-  spec: Omit<Analysis<K, V>, "store" | "polarity" | "read" | "tryRead" | "readAll" | "readMinimal" | "readDeepest"> & { polarity: P },
+  spec: Omit<Analysis<K, V>, "store" | "polarity"> & { polarity: P },
 ): Analysis<K, V> & { polarity: P } {
   const store = new AnalysisStore<K, V>(spec.storeAlgebra, spec.emptyValue);
-  return {
-    ...spec,
-    store,
-    read(key, context) {
-      return store.read(key, context);
-    },
-    tryRead(key, context) {
-      return store.tryRead(key, context);
-    },
-    readAll(context) {
-      return store.readAll(context);
-    },
-    readMinimal(chain, key, accept) {
-      return store.readMinimal(chain, key, accept);
-    },
-    readDeepest(chain, key) {
-      return store.readDeepest(chain, key);
-    }
-  };
+  return { ...spec, store };
 }

@@ -1,6 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { AssumptionChain } from "../lattice/chain";
-import { forkBody } from "../assumption/assumption-bodies";
+import type { AssumptionChain } from "../assumption/chain";
+import { forkBody } from "../speculation/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 
 /** Invoke `onExpr` on every expression (and sub-expression) inside `stmts`.
@@ -60,38 +60,6 @@ export function walkExpr(e: ExprNS.Expr, onExpr: (expr: ExprNS.Expr) => void): v
   } else if (e instanceof ExprNS.Starred) {
     walkExpr(e.value, onExpr);
   }
-}
-
-export function lineageTo(chain: AssumptionChain): AssumptionChain[] {
-  const out: AssumptionChain[] = [];
-  for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
-    out.push(cur);
-  }
-  return out.reverse();
-}
-
-function pickWitness(
-  witnesses: ReadonlyArray<AssumptionChain | undefined>,
-  preferCandidate: (candidate: AssumptionChain, current: AssumptionChain) => boolean,
-): AssumptionChain | undefined {
-  let chosen: AssumptionChain | undefined;
-  for (const w of witnesses) {
-    if (w === undefined) continue;
-    if (chosen === undefined || preferCandidate(w, chosen)) chosen = w;
-  }
-  return chosen;
-}
-
-export function deepestWitness(
-  ...witnesses: ReadonlyArray<AssumptionChain | undefined>
-): AssumptionChain | undefined {
-  return pickWitness(witnesses, (w, c) => w.depth > c.depth);
-}
-
-export function shallowestWitness(
-  ...witnesses: ReadonlyArray<AssumptionChain | undefined>
-): AssumptionChain | undefined {
-  return pickWitness(witnesses, (w, c) => w.depth < c.depth);
 }
 
 /** No-op-default statement visitor. Subclasses override whichever kinds they rewrite. */
@@ -182,17 +150,15 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   visitNoneExpr(expr: ExprNS.None): ExprNS.Expr { return expr; }
 }
 
-interface SweepingVisitor {
-  readonly changed: boolean;
-  sweep(body: StmtNS.Stmt[]): void;
-}
-
 /** For each witness (shallow→deep), fork the body and run a fresh visitor.
  *  Shallow-first lets deeper forks inherit earlier rewrites in the same sweep. */
 export function runWitnessSweep(
   unit: Unit,
   witnesses: Iterable<AssumptionChain>,
-  makeVisitor: (witness: AssumptionChain) => SweepingVisitor,
+  makeVisitor: (witness: AssumptionChain) => {
+    readonly changed: boolean;
+    sweep(body: StmtNS.Stmt[]): void;
+  },
 ): boolean {
   const ordered = Array.from(witnesses).sort((a, b) => a.depth - b.depth);
   let changed = false;

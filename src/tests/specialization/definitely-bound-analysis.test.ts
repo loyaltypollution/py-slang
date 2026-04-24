@@ -14,9 +14,9 @@
 //   6. Loop iterator slots become bound inside / after the loop body.
 
 import { StmtNS } from "../../ast-types";
-import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
-import { definitelyBoundAnalysis } from "../../specialization/definitely-bound-analysis/analysis";
-import { BOUND, UNBOUND } from "../../specialization/definitely-bound-analysis/lattice";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
+import { definitelyBoundAnalysis } from "../../specialization/analysis/definitely-bound/analysis";
+import { BOUND, UNBOUND } from "../../specialization/analysis/definitely-bound/lattice";
 import { DEFAULT_PASSES } from "../../specialization/defaults";
 import { setupWithAnalyses } from "./harness/compile-pipelines";
 
@@ -40,7 +40,7 @@ def f(a, b):
     const unit = worklist.units.get(fn.id)!;
 
     const entry = unit.cfg.entry;
-    const env = definitelyBoundAnalysis.env.read(entry, ROOT_CONTEXT);
+    const env = definitelyBoundAnalysis.env.store.read(entry, ROOT_CONTEXT);
     // After transferBlock runs on entry, all param slots should be BOUND.
     const slotA = unit.slotLookup(fn.parameters[0]).slot;
     const slotB = unit.slotLookup(fn.parameters[1]).slot;
@@ -64,7 +64,7 @@ def f(flag):
     const slotX = unit.slotLookup(xTarget.name).slot;
 
     const entry = unit.cfg.entry;
-    const env = definitelyBoundAnalysis.env.read(entry, ROOT_CONTEXT);
+    const env = definitelyBoundAnalysis.env.store.read(entry, ROOT_CONTEXT);
     expect(env.get(slotX)).toBe(UNBOUND);
   });
 
@@ -84,7 +84,7 @@ def f():
     const slotX = unit.slotLookup(xRef.name).slot;
 
     const exit = unit.cfg.exit;
-    const env = definitelyBoundAnalysis.env.read(exit, ROOT_CONTEXT);
+    const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
     expect(env.get(slotX)).toBe(BOUND);
   });
 
@@ -106,7 +106,7 @@ def f(flag):
     const slotX = unit.slotLookup(xTarget.name).slot;
 
     const exit = unit.cfg.exit;
-    const env = definitelyBoundAnalysis.env.read(exit, ROOT_CONTEXT);
+    const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
     expect(env.get(slotX)).toBe(UNBOUND);
   });
 
@@ -127,7 +127,7 @@ def f(flag):
     const slotX = unit.slotLookup(xRef.name).slot;
 
     const exit = unit.cfg.exit;
-    const env = definitelyBoundAnalysis.env.read(exit, ROOT_CONTEXT);
+    const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
     expect(env.get(slotX)).toBe(BOUND);
   });
 
@@ -146,7 +146,7 @@ def f(xs):
     const slotI = unit.slotLookup(forStmt.target).slot;
 
     const exit = unit.cfg.exit;
-    const env = definitelyBoundAnalysis.env.read(exit, ROOT_CONTEXT);
+    const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
     // `i` is bound by the For header; definitely bound at exit when the body
     // runs at least once. Under must semantics, a zero-iteration path would
     // leave `i` unbound — the analysis is conservative and doesn't model the

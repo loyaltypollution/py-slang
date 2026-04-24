@@ -2,15 +2,15 @@ import { StmtNS } from "../../ast-types";
 import {
   ROOT_CONTEXT,
   type AssumptionChain,
-} from "../../specialization/lattice/chain";
+} from "../../specialization/assumption/chain";
 import {
   at,
   extend,
   without,
-} from "../../specialization/lattice/algebra";
-import { paramKey } from "../../specialization/framework/key-spaces";
-import { runtimeParamChannel } from "../../specialization/assumption/runtime-analyses";
-import { paramTypeNarrowing } from "../../specialization/assumption/param-handles";
+} from "../../specialization/assumption/algebra";
+import { paramKey } from "../../specialization/framework/analysis";
+import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
+import { paramTypeBinding, paramTypeNarrowing } from "../../specialization/narrowing-policy/param-handles";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 describe("chain reconvergence across widen → re-observe (Python-driven)", () => {
@@ -53,7 +53,7 @@ describe("chain reconvergence across widen → re-observe (Python-driven)", () =
     expect(at(widened, paramTypeNarrowing, kx)).not.toBeUndefined();
 
     // Re-observe y with the same shape. The interner must reconverge.
-    const ty = paramTypeNarrowing.lift({ kind: "number", value: 4 })!;
+    const ty = paramTypeBinding.lift({ kind: "number", value: 4 })!;
     const reborn = extend(widened, paramTypeNarrowing, ky, ty);
     expect(reborn).toBe(hotChain);
   });

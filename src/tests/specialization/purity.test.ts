@@ -4,10 +4,10 @@
  */
 
 import { StmtNS } from "../../ast-types";
-import { purityScopeAnalysis } from "../../specialization/purity-analysis/analysis";
-import { runtimeParamChannel } from "../../specialization/assumption/runtime-analyses";
-import { paramKey } from "../../specialization/framework/key-spaces";
-import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
+import { purityScopeAnalysis } from "../../specialization/analysis/purity/analysis";
+import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
+import { paramKey } from "../../specialization/framework/analysis";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 function purityOf(code: string, fnName: string): boolean | undefined {

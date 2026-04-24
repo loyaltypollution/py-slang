@@ -8,10 +8,10 @@
 // retires the minimal singleton of the refuted binding.
 
 import { StmtNS } from "../../ast-types";
-import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
-import { bindings, extend } from "../../specialization/lattice/algebra";
-import { paramKey } from "../../specialization/framework/key-spaces";
-import { runtimeParamChannel } from "../../specialization/assumption/runtime-analyses";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
+import { bindings, extend } from "../../specialization/assumption/algebra";
+import { paramKey } from "../../specialization/framework/analysis";
+import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 describe("refutation filter: worklist integration", () => {

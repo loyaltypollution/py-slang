@@ -5,7 +5,7 @@ import {
   CONST_BOTTOM,
   CONST_TOP,
   constOf,
-} from "../../specialization/const-analysis/lattice";
+} from "../../specialization/analysis/const/lattice";
 import {
   type AbsVal,
   absJoin,
@@ -14,12 +14,12 @@ import {
   GLOBAL as ABS_GLOBAL,
   IMPURE_MARKER,
   UNKNOWN as ABS_UNKNOWN,
-} from "../../specialization/purity-analysis/lattice";
+} from "../../specialization/analysis/purity/lattice";
 import {
   runtimeParamChannel,
   runtimeReturnChannel,
-} from "../../specialization/assumption/runtime-analyses";
-import type { RawKind } from "../../specialization/framework/raw-value";
+} from "../../specialization/observation/runtime-analyses";
+import type { RawKind } from "../../specialization/observation/raw-value";
 import {
   BOOL_FALSE,
   BOOL_TRUE,
@@ -41,7 +41,7 @@ import {
   STRING,
   TOP,
   type TypeLattice,
-} from "../../specialization/type-analysis/lattice";
+} from "../../specialization/analysis/type/lattice";
 import { expectLatticeLaws, expectJoinSemiLatticeLaws } from "./harness/lattice-laws";
 
 describe("reusable lattice-law verification", () => {

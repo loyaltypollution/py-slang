@@ -1,8 +1,7 @@
 import type { ExprNS } from "../../ast-types";
 import type { BasicBlock, CFGEdge } from "./cfg";
-import type { AssumptionChain } from "../lattice/chain";
+import type { AssumptionChain } from "../assumption/chain";
 import type { Unit } from "./function-unit";
-import type { NodeId } from "./key-spaces";
 import type { SlotLookup } from "./slot-table";
 import { MutableEnv } from "./mutable-env";
 import type {
@@ -11,10 +10,12 @@ import type {
   Analysis,
   AnalysisCtx,
   SemanticAnalysis,
+  NodeId,
 } from "./analysis";
 import { defineAnalysis } from "./analysis";
 import type { ReadonlyAnalysisStore } from "./analysis-store";
 import {
+  EMPTY_MAP,
   storeContexts,
   storeEvict,
   walkChainDeepest,
@@ -152,7 +153,7 @@ export function makeBlockFixpointAnalysis<L>(
 ): BlockFixpointAnalysis<L> {
   // Frozen shared bottom: mutators throw, forcing `snapshot()` first.
   const bottomEnv = new MutableEnv<L>().freeze();
-  const EMPTY_FACTS: ReadonlyMap<number, L> = new Map();
+  const EMPTY_FACTS = EMPTY_MAP as ReadonlyMap<number, L>;
   const valueLattice = config.valueLattice;
 
   const envLeq = (a: MutableEnv<L>, b: MutableEnv<L>): boolean => a.leq(b, valueLattice);

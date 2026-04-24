@@ -1,12 +1,12 @@
-// Conductor-facing public surface. Re-exports only what `src/conductor/*`
-// needs to wire a JIT evaluator. Engines and tests import directly from
-// `./framework/*` and sibling subpaths.
+// Public surface. Everything outside src/specialization/ and src/tests/
+// must import from here — deep imports are forbidden by lint. Tests may
+// reach into internals to exercise them.
 
-export { Worklist } from "./framework/worklist";
+export { createDefaultWorklist } from "./defaults";
+export { makeDfaQuery, type DfaQuery, type StaticDfaQuery } from "./dfa-query";
 export {
-  makeDfaQuery,
-  type DfaQuery,
-  type StaticDfaQuery,
-} from "./dfa-query";
-export { makeJitObservers } from "./assumption/runtime-analyses";
-export { makeJitDispatch, type DispatchOutcome, type JitDispatch } from "./assumption/jit-dispatch";
+  makeJitDispatch,
+  type DispatchOutcome,
+  type JitDispatch,
+} from "./observation/jit-dispatch";
+export type { Unit } from "./framework/function-unit";

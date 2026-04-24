@@ -16,7 +16,7 @@ import {
   eqSigns,
   neqSigns,
   notBoolRef,
-} from "../../specialization/type-analysis/transfer";
+} from "../../specialization/analysis/type/transfer";
 import {
   INT_POS,
   INT_NEG,
@@ -35,7 +35,7 @@ import {
   BOOL_BIT,
   FLOAT_BIT,
   COMPLEX_BIT,
-} from "../../specialization/type-analysis/lattice";
+} from "../../specialization/analysis/type/lattice";
 
 describe("transferBinaryOp", () => {
   test("pos + pos = pos", () => {

@@ -1,5 +1,5 @@
 import { StmtNS } from "../../../ast-types";
-import { runtimeCallCounter } from "../../../specialization/assumption/runtime-analyses";
+import { runtimeCallCounter } from "../../../specialization/observation/runtime-analyses";
 import type { Worklist } from "../../../specialization/framework/worklist";
 
 export function findFunctionDef(ast: StmtNS.FileInput, name: string): StmtNS.FunctionDef {

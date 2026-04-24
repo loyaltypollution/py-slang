@@ -2,7 +2,7 @@
 // readonly surface; framework-owned writes go through `storeWrite(...)`.
 
 import type { JoinSemiLattice } from "./analysis";
-import type { AssumptionChain } from "../lattice/chain";
+import type { AssumptionChain } from "../assumption/chain";
 
 export interface ReadonlyAnalysisStore<K, V> {
   read(key: K, context: AssumptionChain): V;
@@ -25,7 +25,11 @@ export interface StoreWriteResult<V> {
   readonly next: V;
 }
 
-const EMPTY_MAP: ReadonlyMap<unknown, unknown> = new Map();
+/** Shared readonly empty-map singleton. Used as the fallback for unwritten
+ *  contexts in `AnalysisStore.readAll`, as the `bottom` / `emptyValue` for
+ *  per-block expr-fact lattices in `dfa-factory`, and as the "no facts
+ *  recorded" sentinel returned by statement transfer. Never mutated. */
+export const EMPTY_MAP: ReadonlyMap<unknown, unknown> = new Map();
 
 /** Walk `chain → ROOT`, returning the shallowest ancestor whose `tryRead`
  *  hit satisfies `accept`. */

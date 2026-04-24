@@ -5,17 +5,18 @@
 // stays tied to the analysis topology.
 
 import type { Unit } from "./framework/function-unit";
-import type { FunctionId, NodeId } from "./framework/key-spaces";
+import type { FunctionId, NodeId } from "./framework/analysis";
 import type { ProgramTopology } from "./framework/topology";
-import { ROOT_CONTEXT, type AssumptionChain } from "./lattice/chain";
-import { constAnalysis, typeAnalysis } from "./framework/narrowing-registry";
-import { purityScopeAnalysis } from "./purity-analysis/analysis";
-import type { TypeLattice } from "./type-analysis/lattice";
-import type { ConstLattice } from "./const-analysis/lattice";
+import { ROOT_CONTEXT, type AssumptionChain } from "./assumption/chain";
 import {
-  requirementAtEntry,
+  constAnalysis,
+  type ConstLattice,
   type EntryRequirement,
-} from "./type-requirement-analysis/analysis";
+  purityScopeAnalysis,
+  requirementAtEntry,
+  typeAnalysis,
+  type TypeLattice,
+} from "./analysis";
 
 /** Transform-safe projection of the current DFA facts: only reads that
  *  are sound to consume during AST mutation. Excludes speculative readers
@@ -74,7 +75,7 @@ export function makeDfaQuery(
     isPureScope: scopeId => {
       const unit = topology.unitOfFunctionId(scopeId);
       const context = unit !== undefined ? futureDispatchChainForUnit(unit) : ROOT_CONTEXT;
-      return purityScopeAnalysis.readDeepest(context, scopeId)?.value;
+      return purityScopeAnalysis.store.readDeepest(context, scopeId)?.value;
     },
   };
 }

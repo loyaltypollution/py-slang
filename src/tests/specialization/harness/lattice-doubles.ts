@@ -4,7 +4,6 @@ export function makeNarrowing<K, V>(eq: (a: V, b: V) => boolean = Object.is): Na
   return {
     eq,
     blockAnalysis: () => ({} as any),
-    lift: () => undefined,
   };
 }
 

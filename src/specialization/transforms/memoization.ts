@@ -1,17 +1,17 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import { MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
+import { clearMemoId, MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokenizer";
-import { directParamEntryGuardsFor, guardKeyFromGuards } from "../assumption/entry-guards";
+import { directParamEntryGuardsFor, guardKeyFromGuards } from "../narrowing-policy/entry-guards";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfFunctionId, wakeOwningUnit } from "../framework/analysis";
-import { shadowNode } from "../framework/ast-deep-clone";
-import { type AssumptionChain } from "../lattice/chain";
-import { forkBody } from "../assumption/assumption-bodies";
+import { shadowNode } from "../framework/variant-body-clone";
+import { type AssumptionChain } from "../assumption";
+import { forkBody } from "../speculation/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
-import { RUNTIME_CALL_COUNT_SAT, runtimeCallCounter } from "../assumption/runtime-analyses";
+import { RUNTIME_CALL_COUNT_SAT, runtimeCallCounter } from "../observation/runtime-analyses";
 import type { ProgramTopology } from "../framework/topology";
-import { purityScopeAnalysis } from "../purity-analysis/analysis";
+import { purityScopeAnalysis } from "../analysis";
 
 export const MEMOIZATION_THRESHOLD = RUNTIME_CALL_COUNT_SAT - 1;
 
@@ -100,7 +100,7 @@ function memoizationWitnessFor(
   fd: StmtNS.FunctionDef,
   chain: AssumptionChain,
 ): { value: true; witness: AssumptionChain } | undefined {
-  return purityScopeAnalysis.readMinimal(chain, fd.id, value => value === true) as
+  return purityScopeAnalysis.store.readMinimal(chain, fd.id, value => value === true) as
     | { value: true; witness: AssumptionChain }
     | undefined;
 }
@@ -138,6 +138,15 @@ export const memoizationRule: TransformRule = {
     const wakeUnit = wakeOwningUnit(unitOfFunctionId);
     wl.onTransformCounterBumped(memoizationRule, runtimeCallCounter, wakeUnit);
     wl.onTransformFactDirty(memoizationRule, purityScopeAnalysis, wakeUnit);
+    // Refutation invalidates the memo bucket whose variant was keyed on the
+    // refuted carrier's direct-param entry guards. The framework fires
+    // refute events; this rule (which owns the memo cache scheme) decides
+    // what to evict — keeps `clearMemoId`/`memoIdFor` knowledge here.
+    wl.onRefute((unit, carrier) => {
+      const fd = unit.funcAst;
+      if (!(fd instanceof StmtNS.FunctionDef)) return;
+      clearMemoId(memoIdFor(fd, guardKeyFromGuards(directParamEntryGuardsFor(unit, carrier))));
+    });
   },
   sweep(unit: Unit, chain: AssumptionChain, _topology: ProgramTopology): boolean {
     const fd = unit.funcAst;

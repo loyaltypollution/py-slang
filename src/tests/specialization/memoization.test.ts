@@ -10,7 +10,7 @@ import {
   MEMO_MISS,
   memoPut,
 } from "../../runtime/memo";
-import { runtimeCallCounter } from "../../specialization/assumption/runtime-analyses";
+import { runtimeCallCounter } from "../../specialization/observation/runtime-analyses";
 import type { Unit } from "../../specialization/framework/function-unit";
 import { setup } from "./harness/compile-pipelines";
 import { findFunctionDef, observeCallsTo } from "./harness/function-observe";

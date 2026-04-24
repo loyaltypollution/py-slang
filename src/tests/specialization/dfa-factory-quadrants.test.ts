@@ -3,7 +3,7 @@ import {
   type Analysis,
 } from "../../specialization/framework/analysis";
 import type { BasicBlock } from "../../specialization/framework/cfg";
-import { ROOT_CONTEXT } from "../../specialization/lattice/chain";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import {
   buildFirstFunctionUnit,
   intMaxLattice,
@@ -35,11 +35,11 @@ describe("makeBlockFixpointAnalysis quadrant coverage", () => {
       const expectedSeed = seed === "entry" ? unit.cfg.entry : unit.cfg.exit;
       expect(analysis.seed(unit)).toBe(expectedSeed);
 
-      const seededEnv = analysis.env.tryRead(expectedSeed, ROOT_CONTEXT);
+      const seededEnv = analysis.env.store.tryRead(expectedSeed, ROOT_CONTEXT);
       expect(seededEnv).toBeDefined();
       expect(seededEnv?.get(0)).toBe(1);
 
-      const seededFacts = analysis.facts.tryRead(expectedSeed, ROOT_CONTEXT);
+      const seededFacts = analysis.facts.store.tryRead(expectedSeed, ROOT_CONTEXT);
       expect(seededFacts).toBeDefined();
       expect(seededFacts?.get(-1)).toBe(expectedSeed.stmts.length);
     },

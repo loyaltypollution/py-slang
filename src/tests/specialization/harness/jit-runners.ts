@@ -5,11 +5,7 @@ import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import math from "../../../stdlib/math";
 import memo from "../../../stdlib/memo";
 import misc from "../../../stdlib/misc";
-import { makeDfaQuery } from "../../../specialization";
-import { DEFAULT_PASSES, DEFAULT_TRANSFORMS } from "../../../specialization/defaults";
-import { makeJitDispatch } from "../../../specialization/assumption/jit-dispatch";
-import { Worklist } from "../../../specialization/framework/worklist";
-import { memoizationRule } from "../../../specialization/transforms/memoization";
+import { createDefaultWorklist, makeDfaQuery, makeJitDispatch } from "../../../specialization";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
 
@@ -24,7 +20,7 @@ export async function runSvmlJit(code: string): Promise<string[]> {
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4, [misc, math, memo]);
   if (errors.length > 0) throw errors[0];
 
-  const worklist = new Worklist(ast, environments, DEFAULT_PASSES, undefined, DEFAULT_TRANSFORMS);
+  const worklist = createDefaultWorklist(ast, environments);
   worklist.drain();
 
   const compiler = SVMLCompiler.fromProgramUnit(
@@ -67,7 +63,7 @@ export async function runSvmlNoJit(code: string): Promise<string[]> {
   const ast = parse(script);
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4, [misc, math, memo]);
   if (errors.length > 0) throw errors[0];
-  const worklist = new Worklist(ast, environments, DEFAULT_PASSES, undefined, DEFAULT_TRANSFORMS);
+  const worklist = createDefaultWorklist(ast, environments);
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
@@ -85,9 +81,6 @@ export async function runSvmlNoJit(code: string): Promise<string[]> {
   return captured;
 }
 
-// Memoization is excluded because CSE runs live-per-call and doesn't need it.
-const CSE_JIT_TRANSFORMS = DEFAULT_TRANSFORMS.filter(r => r !== memoizationRule);
-
 /**
  * Run `code` through the CSE JIT pipeline. Mirrors
  * `PyCseJitEvaluator.evaluateChunk` without the conductor dependency.
@@ -98,7 +91,7 @@ export async function runCseJit(code: string): Promise<string[]> {
   const { errors, environments } = analyzeWithEnvironments(ast, script, 3, [misc, math, memo]);
   if (errors.length > 0) throw errors[0];
 
-  const worklist = new Worklist(ast, environments, DEFAULT_PASSES, undefined, CSE_JIT_TRANSFORMS);
+  const worklist = createDefaultWorklist(ast, environments);
   worklist.drain();
 
   const dispatch = makeJitDispatch(worklist);

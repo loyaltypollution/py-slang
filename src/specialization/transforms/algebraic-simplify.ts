@@ -2,26 +2,51 @@
 // Identity/annihilator laws only. Witness-aware: each rewrite publishes at
 // the deepest witness among the facts it uses.
 
-import { ExprNS, StmtNS } from "../../ast-types";
+import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
-import type { ConstLattice } from "../const-analysis/lattice";
+import {
+  BOOL_BIT,
+  BoolRef,
+  constAnalysis,
+  type ConstLattice,
+  INT_BIT,
+  IntRef,
+  truthiness,
+  typeAnalysis,
+  type TypeLattice,
+} from "../analysis";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
-import type { AssumptionChain } from "../lattice/chain";
-import { visibleBody } from "../assumption/assumption-bodies";
-import { constAnalysis, typeAnalysis } from "../framework/narrowing-registry";
+import type { AssumptionChain } from "../assumption/chain";
+import { visibleBody } from "../speculation/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 import type { ProgramTopology } from "../framework/topology";
-import { BOOL_BIT, BoolRef, INT_BIT, IntRef, type TypeLattice } from "../type-analysis/lattice";
-import { truthiness } from "../type-analysis/transfer";
 import {
-  deepestWitness,
   DescendingExprVisitor,
   ExprDrivenStmtVisitor,
   runWitnessSweep,
-  shallowestWitness,
   walkExprs,
 } from "./witness-utils";
+
+function deepestWitness(
+  ...witnesses: ReadonlyArray<AssumptionChain | undefined>
+): AssumptionChain | undefined {
+  let chosen: AssumptionChain | undefined;
+  for (const w of witnesses) {
+    if (w !== undefined && (chosen === undefined || w.depth > chosen.depth)) chosen = w;
+  }
+  return chosen;
+}
+
+function shallowestWitness(
+  ...witnesses: ReadonlyArray<AssumptionChain | undefined>
+): AssumptionChain | undefined {
+  let chosen: AssumptionChain | undefined;
+  for (const w of witnesses) {
+    if (w !== undefined && (chosen === undefined || w.depth < chosen.depth)) chosen = w;
+  }
+  return chosen;
+}
 
 type Witnessed<T> = { value: T; witness: AssumptionChain };
 type RewritePlan = { witness: AssumptionChain; replacement: ExprNS.Expr };
@@ -208,18 +233,6 @@ function rewritePlan(
   return undefined;
 }
 
-function collectWitnesses(
-  chain: AssumptionChain,
-  topology: ProgramTopology,
-  stmts: readonly StmtNS.Stmt[],
-  out: Set<AssumptionChain>,
-): void {
-  walkExprs(stmts, (expr) => {
-    const plan = rewritePlan(chain, topology, expr);
-    if (plan !== undefined) out.add(plan.witness);
-  });
-}
-
 class AlgebraicSimplifyVisitor extends DescendingExprVisitor {
   changed = false;
   constructor(
@@ -237,20 +250,15 @@ class AlgebraicSimplifyVisitor extends DescendingExprVisitor {
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
-    expr.left = expr.left.accept(this);
-    expr.right = expr.right.accept(this);
-    return this.maybeRewrite(expr);
+    return this.maybeRewrite(super.visitBinaryExpr(expr));
   }
 
   visitBoolOpExpr(expr: ExprNS.BoolOp): ExprNS.Expr {
-    expr.left = expr.left.accept(this);
-    expr.right = expr.right.accept(this);
-    return this.maybeRewrite(expr);
+    return this.maybeRewrite(super.visitBoolOpExpr(expr));
   }
 
   visitUnaryExpr(expr: ExprNS.Unary): ExprNS.Expr {
-    expr.right = expr.right.accept(this);
-    return this.maybeRewrite(expr);
+    return this.maybeRewrite(super.visitUnaryExpr(expr));
   }
 }
 
@@ -264,7 +272,10 @@ export const algebraicSimplifyRule: TransformRule = {
   },
   sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
     const witnesses = new Set<AssumptionChain>();
-    collectWitnesses(chain, topology, visibleBody(unit, chain), witnesses);
+    walkExprs(visibleBody(unit, chain), (expr) => {
+      const plan = rewritePlan(chain, topology, expr);
+      if (plan !== undefined) witnesses.add(plan.witness);
+    });
     return runWitnessSweep(
       unit,
       witnesses,
