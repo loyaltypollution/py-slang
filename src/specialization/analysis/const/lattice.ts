@@ -29,8 +29,6 @@ export function constLeq(a: ConstLattice, b: ConstLattice): boolean {
   return a.value === b.value;
 }
 
-/** Structural equality on the const lattice. Shared between the const
- *  assumption handle's value algebra and the const analysis module. */
 export function constEq(a: ConstLattice, b: ConstLattice): boolean {
   if (a === b) return true;
   if (a.tag !== b.tag) return false;
@@ -44,8 +42,6 @@ export function constMeet(a: ConstLattice, b: ConstLattice): ConstLattice {
   return a.value === b.value ? a : CONST_BOTTOM;
 }
 
-/** Canonical `Lattice<ConstLattice>` — spread into the DFA spec so the
- *  spec's `bottom/top/join/meet/leq/eq` aren't declared inline. */
 export const constLattice: Lattice<ConstLattice> = {
   bottom: CONST_BOTTOM,
   top: CONST_TOP,

@@ -16,9 +16,7 @@ export type NodeId = number;
 export type FunctionId = number;
 
 /** Function-entry parameter identity, encoded as `${functionId}:${paramIndex}`
- *  so it is stable and usable directly as a Context/store key. Lives here
- *  (rather than narrowing-policy/) so the observation channel that types it
- *  and the narrowing that consumes it don't form a module cycle. */
+ *  so it is usable directly as a Context/store key. */
 export type ParamKey = `${FunctionId}:${number}`;
 
 export function paramKey(functionId: FunctionId, paramIndex: number): ParamKey {
@@ -108,16 +106,10 @@ export function composeBind(
   };
 }
 
-/** Typed axis for extending a `AssumptionChain` chain. Contributions enter
- *  INSIDE `blockAnalysis()`'s transfer via `at(ctx, narrowing, key)` — a
- *  narrowing carries no lattice or store of its own, only the identity that
- *  lets chain bindings be looked up at transfer time. AnalysisStore cells
- *  partition per `(key, context)` natively, so refutation of a context
- *  leaves its cells unreachable without an eviction hook.
- *
- *  Observation glue (which runtime channel drives this dimension and how
- *  to lift a `RawKind` into V) lives in `ObservationBinding` so the
- *  framework stays observation-agnostic. */
+/** Typed axis for extending an `AssumptionChain`. Carries no lattice or
+ *  store of its own — only the identity used to look up chain bindings at
+ *  transfer time via the paired `blockAnalysis()`. Observation glue lives
+ *  in `ObservationBinding`. */
 export interface Narrowing<K = any, V = unknown> extends NarrowingId<K, V> {
   readonly blockAnalysis: () => BlockFixpointAnalysis<any>;
 }

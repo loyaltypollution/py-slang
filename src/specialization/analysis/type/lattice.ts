@@ -152,8 +152,6 @@ export function floatValue(floatRef: IntRef = IntRef.Top): TypeLattice {
 
 import type { Lattice } from "../../framework/analysis";
 
-/** Canonical `Lattice<TypeLattice>` — spread into DFA specs or pass as
- *  `valueLattice` so bottom/top/join/meet/leq/eq aren't declared inline. */
 export const typeLattice: Lattice<TypeLattice> = {
   bottom: BOTTOM,
   top: TOP,

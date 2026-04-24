@@ -1,6 +1,4 @@
-// Per-(Unit, AssumptionChain) forked function bodies. Storage only.
-// `visibleBody` finds the deepest non-refuted stored fork ⊑ s, falling
-// back to `unit.body`. `forkBody` publishes a rewrite at `s`.
+// Per-(Unit, AssumptionChain) forked function bodies.
 
 import type { StmtNS } from "../../ast-types";
 import { cloneStmts } from "../framework/variant-body-clone";
@@ -9,8 +7,7 @@ import type { Unit } from "../framework/function-unit";
 
 const bodies: WeakMap<Unit, Map<AssumptionChain, StmtNS.Stmt[]>> = new WeakMap();
 
-/** Body visible at `s`: deepest non-refuted stored fork ⊑ `s`, else
- *  `unit.body`. */
+/** Deepest non-refuted stored fork ⊑ `s`, else `unit.body`. */
 export function visibleBody(
   unit: Unit,
   s: AssumptionChain,
@@ -22,13 +19,13 @@ export function visibleBody(
   let best: AssumptionChain | undefined;
   for (const k of m.keys()) {
     if (!leq(k, s)) continue;
-    if (isRefuted !== undefined && isRefuted(k)) continue;
+    if (isRefuted?.(k)) continue;
     if (best === undefined || k.depth > best.depth) best = k;
   }
   return best !== undefined ? m.get(best)! : unit.body;
 }
 
-/** Materialize (or reuse) a forked body at `s`. Returns `unit.body` at `empty`. */
+/** Materialize (or reuse) a forked body at `s`. Returns `unit.body` at root. */
 export function forkBody(unit: Unit, s: AssumptionChain): StmtNS.Stmt[] {
   if (s.parent === undefined) return unit.body;
   let m = bodies.get(unit);

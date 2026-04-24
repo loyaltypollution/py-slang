@@ -1,7 +1,3 @@
-// Dead branch elimination. Idempotent (spliced-out `If` nodes cannot match
-// again). Witness-aware: each prune publishes at the shallowest chain that
-// proves the condition constant.
-
 import { StmtNS } from "../../ast-types";
 import type { TransformRule } from "../framework/analysis";
 import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";

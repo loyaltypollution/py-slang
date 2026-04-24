@@ -17,12 +17,8 @@ import {
   type ConstLattice,
 } from "./lattice";
 
-/** Baseline const facts are semantic-only — no chain-extension narrowing.
- *  Concrete-value param speculation thrashes recursively (e.g. `f(x)`
- *  calling `f(x-1)` observes a different value per frame), so param
- *  speculation lives on `paramTypeNarrowing` exclusively. `constAnalysis`
- *  is a static (chain-invariant) pass driving `constantFoldingRule`,
- *  `deadStoreRule`, and `algebraicSimplifyRule`. */
+/** Chain-invariant const propagation. No param speculation (recursive
+ *  value thrash); param speculation lives on `paramTypeNarrowing`. */
 
 function foldBinary(op: TokenType, left: ConstLattice, right: ConstLattice): ConstLattice {
   if (left.tag !== "const" || right.tag !== "const") return CONST_TOP;

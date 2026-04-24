@@ -1,18 +1,10 @@
-// Must-backward type-requirement analysis — the fourth DFA quadrant
-// (backward direction, must-merge). Under a return-kind speculation context,
-// it propagates the required return type backward through the body,
-// producing per-slot type requirements at every program point.
+// Backward + must type-requirement analysis. Under a return-kind speculation
+// context, propagates the required return type backward to produce per-slot
+// requirements at every program point. Polarity on `TypeLattice`: TOP = no
+// constraint, BOTTOM = contradiction.
 //
-// Polarity on `TypeLattice`: TOP = no constraint, BOTTOM = contradiction,
-// meet = intersection, join = union. At `unit.cfg.entry` the outEnv is the
-// function's pre-body requirement; bindings narrower than TOP are candidate
-// parameter-guard sites.
-//
-// Bypasses `BlockDfaSpec` (like liveness) because the backward visitor pushes
-// target requirements *down* into operand slots, which doesn't fit
-// `ExprNS.Visitor<L>`. At each `Return e` the transfer reads
-// `at(ctx.currentContext, returnKindNarrowing, functionId)`; a missing
-// assumption leaves all requirements at TOP (sound no-op).
+// Bypasses `BlockDfaSpec` (like liveness) because requirements flow *down*
+// into operand slots, not up through `ExprNS.Visitor<L>`.
 
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
@@ -205,21 +197,14 @@ export const returnKindBinding: ObservationBinding<FunctionId, TypeLattice> = {
   resolveUnit: unitOfFunctionId,
 };
 
-/** Split view of the per-slot entry requirement. `provable` lists slots
- *  whose requirement is strictly stronger than TOP and satisfiable (guard
- *  candidates). `unprovable` lists slots whose requirement is empty — two
- *  body paths demand incompatible types, so the speculation cannot hold.
- *
- *  Consumers MUST branch on `unprovable` before emitting a guard: an
- *  unprovable slot means every call would gate on a check that always fails. */
+/** Per-slot entry requirement split by satisfiability. `provable` slots are
+ *  guard candidates (stronger than TOP, non-empty). `unprovable` slots have
+ *  BOTTOM requirements — speculation cannot hold. */
 export interface EntryRequirement {
   readonly provable: ReadonlyMap<number, TypeLattice>;
   readonly unprovable: ReadonlySet<number>;
 }
 
-/** Per-slot entry requirement at `unit.cfg.entry` under `context`. TOP
- *  bindings are omitted. Empty sets when no fact exists (context carries no
- *  return-kind assumption). */
 export function requirementAtEntry(
   unit: Unit,
   context: AssumptionChain = ROOT_CONTEXT,

@@ -19,7 +19,6 @@ export interface Unit {
   blockMap: Map<BlockId, BasicBlock>;
   /** Node id → enclosing basic block, rebuilt with `wireCFG`. */
   nodeToBlock: Map<NodeId, BasicBlock>;
-  generation: number;
   blockOfNode(nodeId: NodeId): BasicBlock | undefined;
 }
 
@@ -39,7 +38,6 @@ export function buildOneUnit(
     slotLookup: buildSlotTable(env, paramNames),
     blockMap: new Map(),
     nodeToBlock: new Map<NodeId, BasicBlock>(),
-    generation: 0,
     get body(): StmtNS.Stmt[] {
       return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
     },

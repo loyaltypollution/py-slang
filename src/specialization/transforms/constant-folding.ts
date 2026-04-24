@@ -1,7 +1,3 @@
-// Constant folding of Binary expressions to Literals. Idempotent (the Literal
-// no longer matches). Witness-aware: each fold publishes at the shallowest
-// chain that proves the expression constant.
-
 import { ExprNS } from "../../ast-types";
 import { constAnalysis, type ConstLattice } from "../analysis";
 import type { TransformRule } from "../framework/analysis";

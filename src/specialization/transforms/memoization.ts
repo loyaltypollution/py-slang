@@ -22,13 +22,11 @@ export function memoIdFor(fd: StmtNS.FunctionDef, variant?: string): string {
   return variant === undefined ? base : `${base}#${variant}`;
 }
 
-/** Clone each Variable so every call-site gets a distinct AST node. */
 function cloneVars(vars: readonly ExprNS.Variable[]): ExprNS.Variable[] {
   return vars.map(p => new ExprNS.Variable(p.startToken, p.endToken, p.name));
 }
 
-/** Recursively rewrite each `return v` into `return MEMO_PUT(id, ...params, v)`.
- *  Returns the same array when nothing changed (structural sharing). */
+/** Rewrite each `return v` into `return MEMO_PUT(id, ...params, v)`. */
 function rewriteReturnsCloned(
   stmts: readonly StmtNS.Stmt[],
   fd: StmtNS.FunctionDef,
@@ -123,7 +121,6 @@ function mkCall(fd: StmtNS.FunctionDef, fn: string, args: ExprNS.Expr[]): ExprNS
   return new ExprNS.Call(fd.startToken, fd.endToken, mkVar(fd, fn), args);
 }
 
-/** True iff `body` already opens with the memo-check prelude. */
 function bodyHasMemoPrelude(body: readonly StmtNS.Stmt[]): boolean {
   const first = body[0];
   if (!(first instanceof StmtNS.If)) return false;
@@ -138,10 +135,7 @@ export const memoizationRule: TransformRule = {
     const wakeUnit = wakeOwningUnit(unitOfFunctionId);
     wl.onTransformCounterBumped(memoizationRule, runtimeCallCounter, wakeUnit);
     wl.onTransformFactDirty(memoizationRule, purityScopeAnalysis, wakeUnit);
-    // Refutation invalidates the memo bucket whose variant was keyed on the
-    // refuted carrier's direct-param entry guards. The framework fires
-    // refute events; this rule (which owns the memo cache scheme) decides
-    // what to evict — keeps `clearMemoId`/`memoIdFor` knowledge here.
+    // On refute: evict the memo bucket keyed by the refuted carrier's guards.
     wl.onRefute((unit, carrier) => {
       const fd = unit.funcAst;
       if (!(fd instanceof StmtNS.FunctionDef)) return;
@@ -156,11 +150,9 @@ export const memoizationRule: TransformRule = {
     if (witnessInfo === undefined) return false;
     const body = forkBody(unit, witnessInfo.witness);
     if (bodyHasMemoPrelude(body)) return false;
-    // Variant identity from witness context: sibling contexts that readMinimal
-    // the same witness converge on one memo table.
     const variant = guardKeyFromGuards(directParamEntryGuardsFor(unit, witnessInfo.witness));
     const rewritten = memoWrappedBody(fd, body, variant);
-    // In-place replace preserves array identity so descendants inherit via bodyFor.
+    // In-place: preserve array identity so descendants inherit via bodyFor.
     body.length = 0;
     body.push(...rewritten);
     return true;

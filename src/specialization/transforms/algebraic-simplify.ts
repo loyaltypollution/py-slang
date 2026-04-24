@@ -1,7 +1,3 @@
-// Algebraic simplification on Binary/BoolOp/Unary using type + const facts.
-// Identity/annihilator laws only. Witness-aware: each rewrite publishes at
-// the deepest witness among the facts it uses.
-
 import { ExprNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
 import {
@@ -28,26 +24,6 @@ import {
   walkExprs,
   type Witnessed,
 } from "./witness-utils";
-
-function deepestWitness(
-  ...witnesses: ReadonlyArray<AssumptionChain | undefined>
-): AssumptionChain | undefined {
-  let chosen: AssumptionChain | undefined;
-  for (const w of witnesses) {
-    if (w !== undefined && (chosen === undefined || w.depth > chosen.depth)) chosen = w;
-  }
-  return chosen;
-}
-
-function shallowestWitness(
-  ...witnesses: ReadonlyArray<AssumptionChain | undefined>
-): AssumptionChain | undefined {
-  let chosen: AssumptionChain | undefined;
-  for (const w of witnesses) {
-    if (w !== undefined && (chosen === undefined || w.depth < chosen.depth)) chosen = w;
-  }
-  return chosen;
-}
 
 type RewritePlan = { witness: AssumptionChain; replacement: ExprNS.Expr };
 
@@ -83,7 +59,9 @@ function intZeroWitness(
     type?.value.kinds === INT_BIT && type.value.intRef === IntRef.Zero ? type.witness : undefined;
   const fromConst =
     konst?.value.tag === "const" && konst.value.value === 0 ? konst.witness : undefined;
-  return shallowestWitness(fromType, fromConst);
+  if (fromType === undefined) return fromConst;
+  if (fromConst === undefined) return fromType;
+  return fromType.depth < fromConst.depth ? fromType : fromConst;
 }
 
 function intOneWitness(konst: Witnessed<ConstLattice> | undefined): AssumptionChain | undefined {
@@ -103,8 +81,6 @@ function unwrapGrouping(e: ExprNS.Expr): ExprNS.Expr {
   return e;
 }
 
-// `x` is safe to drop (purely readable) if it's a Literal, Variable, None, or
-// BigInt. Calls, subscripts, arithmetic etc. may side-effect or throw.
 function isSafeToDrop(e: ExprNS.Expr): boolean {
   const u = unwrapGrouping(e);
   return (
@@ -121,7 +97,7 @@ function planWhen(
   replacement: ExprNS.Expr,
 ): RewritePlan | undefined {
   if (a === undefined || b === undefined) return undefined;
-  return { witness: deepestWitness(a, b)!, replacement };
+  return { witness: a.depth >= b.depth ? a : b, replacement };
 }
 
 function planBinary(
@@ -143,21 +119,17 @@ function planBinary(
 
   switch (expr.operator.type) {
     case TokenType.PLUS:
-      // x + 0 → x ; 0 + x → x
       return (
         planWhen(leftPureInt, rightZero, expr.left) ??
         planWhen(leftZero, rightPureInt, expr.right)
       );
     case TokenType.MINUS:
-      // x - 0 → x
       return planWhen(leftPureInt, rightZero, expr.left);
     case TokenType.STAR: {
-      // x * 1 → x ; 1 * x → x
       const oneIdent =
         planWhen(leftPureInt, rightOne, expr.left) ??
         planWhen(leftOne, rightPureInt, expr.right);
       if (oneIdent !== undefined) return oneIdent;
-      // x * 0 → 0 : only when the dropped side is side-effect-free AND statically int.
       const zero = new ExprNS.Literal(expr.startToken, expr.endToken, 0);
       if (isSafeToDrop(expr.left)) {
         const plan = planWhen(leftPureInt, rightZero, zero);
@@ -170,7 +142,6 @@ function planBinary(
       return undefined;
     }
     case TokenType.DOUBLESLASH:
-      // x // 1 → x
       return planWhen(leftPureInt, rightOne, expr.left);
     default:
       return undefined;

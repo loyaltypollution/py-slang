@@ -283,14 +283,6 @@ export class Worklist {
     else list.push(fn);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Typed `on*` subscribe methods.
-  //   factWrite  → onFactDirty
-  //   mint       → onMint
-  //   rebuild    → onRebuildDirty + onRebuildEvict
-  //   specRev    → onSpecRev
-  // ─────────────────────────────────────────────────────────────────────────
-
   /** Subscribe `reader` to dirtied keys when `from` advances at any key.
    *  `dirtied(ctx, key)` projects the upstream key-change into the reader's
    *  key space.
@@ -382,11 +374,6 @@ export class Worklist {
     this.mintSubs.push(addUnit);
     this.rebuildSubs.push(addUnit);
     rule.bind?.(this);
-  }
-
-  /** Public mutator for a transform's dirty set. */
-  dirtyTransform(rule: TransformRule, unit: Unit): void {
-    this.dirtyFor(rule).add(unit);
   }
 
   /** Mirror of `onFactDirty` for transforms. */
@@ -712,7 +699,6 @@ export class Worklist {
     if (this.pendingRebuilds.size === 0) return [];
     const rebuilt: Unit[] = [];
     for (const unit of this.pendingRebuilds) {
-      unit.generation++;
       wireCFG(unit);
       this._topology.reindexUnit(unit);
       rebuilt.push(unit);

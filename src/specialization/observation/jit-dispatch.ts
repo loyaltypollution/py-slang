@@ -1,8 +1,6 @@
 // Single JIT orchestrator. Owns observe-push → observe-params → sweep →
 // chain → gate → body pipeline; consumers map the outcome to their own
-// compile policy. Conductors and the test harness both construct one via
-// `makeJitDispatch(worklist)` — one place for the sequencing, one place
-// for the sweep-before-read discipline.
+// compile policy.
 
 import type { StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption";
@@ -34,10 +32,7 @@ export function makeJitDispatch(worklist: Worklist): JitDispatch {
       for (let i = 0; i < args.length; i++) {
         observers.observeParamEntry(scopeId, i, args[i]);
       }
-      // Sweep before read: `publish`/`bump` deliberately skip the transform
-      // sweep (see `bump` guard), so memoization and other runtime-gated
-      // transforms stay dirty-but-unrun until drain. Reading the body first
-      // would lower the unrewritten AST.
+      // Sweep before reading body: publish/bump defer transforms to drain.
       worklist.sweepTransforms();
       const chain = observers.currentChainFor(scopeId);
       const isRefuted = (n: AssumptionChain) => worklist.isRefuted(n);

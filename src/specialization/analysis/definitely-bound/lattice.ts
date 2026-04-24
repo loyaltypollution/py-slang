@@ -1,27 +1,8 @@
-// Two-point value lattice for the forward-must "definitely-bound" analysis.
+// Two-point lattice for forward-must "definitely-bound":
+//   top = bound, bottom = unbound, meet = unbound wins (pessimism at joins).
 //
-// The analysis asks: at this program point, is local slot `s` bound on every
-// path from entry? Values are exactly "bound" or "unbound":
-//
-//   - "bound"   — strong claim: every path reaching here has assigned the slot.
-//   - "unbound" — weak claim: at least one path has not assigned it (or has
-//                 deleted it). This is the safe default and the absorbing
-//                 element of the CFG-merge meet.
-//
-// Lattice orientation (information-theoretic):
-//   top = "bound"   (maximum information; meet-identity)
-//   bottom = "unbound"
-//   leq: unbound ⊑ bound, bound ⊑ bound, unbound ⊑ unbound
-//   meet = GLB  = "unbound wins" on disagreement (forward-must merge)
-//   join = LUB  = "bound wins" on disagreement  (store-advance helper)
-//
-// This is the natural polarity for forward-must: at a CFG join, the merge is
-// "bound" only when every predecessor carries "bound" — meet propagates
-// pessimism. `MutableEnv.meetWith` treats an absent-slot side as `top` (=
-// "bound"), so correctness depends on the analysis seeding every slot at
-// entry and never calling `MutableEnv.clear` during transfer. See
-// `analysis.ts` for the seed and transfer contracts that preserve that
-// invariant.
+// `MutableEnv.meetWith` treats an absent slot as top, so `analysis.ts` must
+// seed every slot at entry and never `clear` during transfer.
 
 import type { Lattice } from "../../framework/analysis";
 

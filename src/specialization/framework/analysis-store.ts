@@ -20,7 +20,7 @@ export interface ReadonlyAnalysisStore<K, V> {
 }
 
 /** Result of an advancing write. `null` means the cell did not advance. */
-export interface StoreWriteResult<V> {
+interface StoreWriteResult<V> {
   readonly prev: V | undefined;
   readonly next: V;
 }

@@ -1,10 +1,3 @@
-// Dead-store elimination. Splices out `x = <pure expr>` when x is not live
-// at that program point. Designed to fire *after* dead-branch and
-// constant-folding have removed the only consumers of a slot.
-//
-// Witness-aware: each removal is authorized at the shallowest chain where
-// the assignment is still present, pure, and dead by the liveness facts.
-
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption/chain";
 import { forkBody, visibleBody } from "../speculation/assumption-bodies";
@@ -16,8 +9,6 @@ import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../analysis";
 import { walkExpr, walkExprs } from "./witness-utils";
 
-// Conservative syntactic purity. Call/Subscript/List/Starred/Lambda are
-// excluded: they may side-effect, throw, or capture.
 function isPureRhs(expr: ExprNS.Expr, slotLookup: SlotLookup): boolean {
   if (
     expr instanceof ExprNS.Literal ||
@@ -47,8 +38,8 @@ function isPureRhs(expr: ExprNS.Expr, slotLookup: SlotLookup): boolean {
   return false;
 }
 
-/** Local slots read inside any Lambda/MultiLambda body in `stmts`. Liveness
- *  under-approximates inside lambdas, so treat such locals as escaping. */
+/** Liveness under-approximates inside lambdas, so treat locals read by any
+ *  nested Lambda/MultiLambda body as escaping. */
 function escapedLocalSlotsIn(
   stmts: ReadonlyArray<StmtNS.Stmt>,
   slotLookup: SlotLookup,
@@ -60,7 +51,7 @@ function escapedLocalSlotsIn(
       const info = slotLookup(inner.name);
       if (isLocal(info)) escaped.add(info.slot);
     } catch {
-      // Name unresolvable in this unit's scope — not a local escape.
+      // Unresolved name: not a local escape.
     }
   };
   const visitInLambda = (expr: ExprNS.Expr) => {
@@ -75,7 +66,6 @@ function escapedLocalSlotsIn(
   return escaped;
 }
 
-// Keyed by `stmt.id`, stable across deep-cloned forked bodies.
 function buildLiveOutMap(unit: Unit, chain: AssumptionChain): Map<number, ReadonlySet<number>> {
   const out = new Map<number, ReadonlySet<number>>();
   for (const block of unit.blockMap.values()) {
@@ -106,7 +96,6 @@ function removableAssignment(
   );
 }
 
-/** Invoke `visit` on each nested body of a statement that contains sub-blocks. */
 function forEachNestedBody(
   stmt: StmtNS.Stmt,
   visit: (body: readonly StmtNS.Stmt[]) => void,
@@ -166,7 +155,6 @@ function sweepRemovalsById(stmts: StmtNS.Stmt[], removableIds: ReadonlySet<numbe
   return changed;
 }
 
-/** Memoize `compute(key)` in `cache`. */
 function memo<K, V>(cache: Map<K, V>, key: K, compute: (key: K) => V): V {
   let value = cache.get(key);
   if (value === undefined) {
@@ -201,8 +189,7 @@ export const deadStoreRule: TransformRule = {
     wl.onTransformFactDirty(deadStoreRule, livenessAnalysis.env, wakeOwningUnit(unitOfBlock));
   },
   sweep(unit: Unit, chain: AssumptionChain, _topology: ProgramTopology): boolean {
-    // Skip module scope: top-level names are observable (imports, REPL, harness).
-    // Function-scope locals are dead at return; DSE on them is always sound.
+    // Top-level names are observable; only function-scope slots are safe to DSE.
     if (unit.funcAst instanceof StmtNS.FileInput) return false;
 
     const body = visibleBody(unit, chain);
@@ -215,7 +202,6 @@ export const deadStoreRule: TransformRule = {
     collectRemovableStmtIds(body, liveOutMap, unit.slotLookup, escaped, removableNow);
     if (removableNow.size === 0) return false;
 
-    // Walk chain→ROOT, then reverse so shallowest-first.
     const lineage: AssumptionChain[] = [];
     for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
       lineage.push(cur);

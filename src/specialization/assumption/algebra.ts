@@ -1,7 +1,5 @@
-// Algebraic surface for AssumptionChains. An AssumptionChain is a canonical
-// finite partial map (Narrowing, Key) ⇀ Value, interned content-addressably.
-// The structure is a join-semilattice with bottom (the empty chain); join
-// is partial — `extend` throws on conflicting bindings at the same axis.
+// Algebraic surface for AssumptionChains: a join-semilattice with bottom
+// (ROOT_CONTEXT). `extend` is partial — throws on conflict at the same axis.
 
 import type { Assumption, AssumptionChain, NarrowingId } from "./chain";
 import { ROOT_CONTEXT } from "./chain";
@@ -9,13 +7,8 @@ import { defaultInterner } from "./interner";
 
 export type { AssumptionChain } from "./chain";
 
-/** Bottom element of the chain lattice — the empty partial map. Aliased to
- *  `ROOT_CONTEXT` (same value); prefer `empty` in algebra-side code,
- *  `ROOT_CONTEXT` where the "unspeculated dispatch" reading is primary. */
 export const empty: AssumptionChain = ROOT_CONTEXT;
 
-/** Extend `s` with `(narrowing, key) ↦ value`. Idempotent on equal value;
- *  throws on conflict — callers replacing a value should `without` first. */
 export function extend<K, V>(
   s: AssumptionChain,
   narrowing: NarrowingId<K, V>,
@@ -25,7 +18,6 @@ export function extend<K, V>(
   return defaultInterner.extend(s, narrowing, key, value);
 }
 
-/** Drop the binding at `(narrowing, key)`, or identity-return if absent. */
 export function without<K>(
   s: AssumptionChain,
   narrowing: NarrowingId<K, any>,
@@ -34,7 +26,6 @@ export function without<K>(
   return defaultInterner.exclude(s, narrowing, key);
 }
 
-/** Bound value at `(narrowing, key)`, or `undefined`. O(1). */
 export function at<K, V>(
   s: AssumptionChain,
   narrowing: NarrowingId<K, V>,
@@ -43,8 +34,7 @@ export function at<K, V>(
   return s.bindings.get(narrowing)?.get(key)?.value as V | undefined;
 }
 
-/** Chain node on `s`'s canonical parent-path whose tip binds
- *  `(narrowing, key)`. Trie-level concept used as a retirement handle. */
+/** Chain node on `s`'s parent-path whose tip binds `(narrowing, key)`. */
 export function carrier<K>(
   s: AssumptionChain,
   narrowing: NarrowingId<K, any>,
@@ -58,8 +48,7 @@ export function carrier<K>(
   return undefined;
 }
 
-/** `x ⊑ y` iff every binding in `x` is present in `y` with the same
- *  value under the narrowing's `eq`. O(|x|). */
+/** `x ⊑ y` iff every binding in `x` is present in `y` with the same value. */
 export function leq(x: AssumptionChain, y: AssumptionChain): boolean {
   if (x === y) return true;
   if (x.depth > y.depth) return false;
@@ -75,7 +64,6 @@ export function leq(x: AssumptionChain, y: AssumptionChain): boolean {
   return true;
 }
 
-/** Iterate every binding in `s`. Order is implementation-defined. */
 export function* bindings(s: AssumptionChain): Generator<Assumption> {
   for (const inner of s.bindings.values()) yield* inner.values();
 }

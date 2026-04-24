@@ -1,11 +1,6 @@
-// Canonicalizing interner for AssumptionChains. Invariants:
-//   1. Structural equality ⇒ reference equality.
-//   2. Assumption-set identity ⇒ chain identity, regardless of arrival order
-//      (chains are built in canonical order: per-interner narrowing ordinal,
-//      then compareKey(key)).
-// Trie: parent -> narrowing -> key -> ValueBucket, a small array scanned
-// linearly via `narrowing.eq` (so e.g. structurally-equal const(v)s from
-// separate liftConst calls converge).
+// Canonicalizing interner for AssumptionChains.
+// Structural equality ⇒ reference equality; arrival order doesn't matter
+// (chains are sorted by per-interner narrowing ordinal, then key).
 
 import type { Assumption, AssumptionChain, NarrowingId } from "./chain";
 import { ROOT_CONTEXT } from "./chain";
@@ -14,10 +9,6 @@ interface ValueEntry {
   readonly value: unknown;
   readonly node: AssumptionChain;
 }
-
-const CONFLICT_MSG =
-  "assumption/algebra: extend conflicts with existing binding at same (narrowing, key). " +
-  "Use without(s, narrowing, key) first if the old value is being replaced.";
 
 export class ChainInterner {
   private readonly children: Map<
@@ -52,8 +43,6 @@ export class ChainInterner {
     return sa < sb ? -1 : sa > sb ? 1 : 0;
   }
 
-  /** Extend `parent` with `(narrowing, key, value)`. Idempotent when equal
-   *  under `narrowing.eq`; throws on conflict. */
   extend<K, V>(
     parent: AssumptionChain,
     narrowing: NarrowingId<K, V>,
@@ -73,13 +62,10 @@ export class ChainInterner {
     if (cmp > 0) return this.internChild(parent, narrowing, key, value);
     if (cmp < 0) return this.rebuildWith(parent, narrowing, key, value);
     if (narrowing.eq(parentAssumption.value as V, value)) return parent;
-    throw new Error(CONFLICT_MSG);
+    throw new Error("assumption/interner: extend conflicts with existing binding");
   }
 
-  /** Remove the link at `(narrowing, key)` from `ctx`; identity-return
-   *  when absent. */
   exclude<K>(ctx: AssumptionChain, narrowing: NarrowingId<K, any>, key: K): AssumptionChain {
-    // Walk child-first; reverse-iterate to rebuild root-to-child.
     const links: Assumption[] = [];
     let found = false;
     for (let cur: AssumptionChain | undefined = ctx; cur !== undefined; cur = cur.parent) {
@@ -100,7 +86,6 @@ export class ChainInterner {
     return result;
   }
 
-  /** Diagnostic: number of non-root interned nodes. */
   debugNodeCount(): number {
     let count = 0;
     for (const byNarrowing of this.children.values()) {
@@ -142,8 +127,6 @@ export class ChainInterner {
       key: key as unknown,
       value: value as unknown,
     });
-    // Build child bindings from parent's, extended with the new tip.
-    // Clone only the outer Map and the inner Map under `narrowing`.
     const bindings = new Map(parent.bindings);
     const parentInner = parent.bindings.get(narrowing);
     const inner: Map<unknown, Assumption> = parentInner !== undefined
@@ -161,8 +144,6 @@ export class ChainInterner {
     return node;
   }
 
-  /** Flatten, sort canonically, and re-intern. Called when the new
-   *  assumption sorts before parent's tip. */
   private rebuildWith<K, V>(
     parent: AssumptionChain,
     narrowing: NarrowingId<K, V>,
@@ -175,7 +156,7 @@ export class ChainInterner {
       if (a === undefined) continue;
       if (a.narrowing === narrowing && a.key === key) {
         if (narrowing.eq(a.value as V, value)) continue;
-        throw new Error(CONFLICT_MSG);
+        throw new Error("assumption/interner: extend conflicts with existing binding");
       }
       links.push(a);
     }

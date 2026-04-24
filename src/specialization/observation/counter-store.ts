@@ -1,16 +1,11 @@
-// Key → saturating count. A profiler/evidence surface distinct from
-// `Analysis`: no transfer, no lattice, no context — just an opaque counter
-// that the worklist bumps and fans out to subscribers.
-//
-// Dispatch: `Worklist.bump(counter, key)` advances the count (clamped at
-// `saturation`) and fires subscribers. Post-saturation bumps are no-ops.
+// Key → saturating count. Profiler/evidence surface: no transfer, no
+// lattice, no context — just an opaque counter the worklist bumps.
 
 import type { Worklist } from "../framework/worklist";
 
 export class CounterStore<K> {
   private readonly counts = new Map<K, number>();
 
-  /** `saturation` is an inclusive ceiling; reaching it freezes the cell. */
   constructor(readonly saturation: number) {
     if (!Number.isInteger(saturation) || saturation <= 0) {
       throw new Error(
@@ -19,21 +14,12 @@ export class CounterStore<K> {
     }
   }
 
-  /** Current count at `key`. Unwritten keys read as 0. */
   at(key: K): number {
     return this.counts.get(key) ?? 0;
   }
 
-  /** Drop the cell at `key`. Idempotent. */
-  evict(key: K): void {
-    this.counts.delete(key);
-  }
-
-  /** Optional registration hook. Called by `Worklist.registerCounter`. */
   bind?(worklist: Worklist): void;
 
-  /** Package-private. Called only by `Worklist.bump`. Returns the prev/next
-   *  pair when the cell advanced, or `null` when already saturated. */
   _applyBump(key: K): { prev: number; next: number } | null {
     const prev = this.counts.get(key) ?? 0;
     if (prev >= this.saturation) return null;

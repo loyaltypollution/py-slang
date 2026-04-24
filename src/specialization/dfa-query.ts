@@ -1,8 +1,6 @@
-// Application-layer fact-read projection over the DFA facts. Lives
-// outside `framework/worklist.ts` because it names concrete analyses
-// (typeAnalysis, constAnalysis, purityScopeAnalysis, requirementAtEntry).
-// Reads route through each analysis's per-expression view so the key space
-// stays tied to the analysis topology.
+// Fact-read projection over DFA facts. Named here (not in framework/) because
+// it references concrete analyses; reads route through each analysis's
+// per-expression view to keep key space tied to analysis topology.
 
 import type { Unit } from "./framework/function-unit";
 import type { FunctionId, NodeId } from "./framework/analysis";
@@ -18,44 +16,23 @@ import {
   type TypeLattice,
 } from "./analysis";
 
-/** Transform-safe projection of the current DFA facts: only reads that
- *  are sound to consume during AST mutation. Excludes speculative readers
- *  — a narrowed fact can become ⊤ on the next observation (deopt), and a
- *  transform that rewrote based on the narrowed fact cannot un-rewrite.
- *  AST-mutating code MUST accept only this sub-interface. */
+/** ROOT-context reads only — sound to consume during AST mutation. */
 export interface StaticDfaQuery {
   typeOf(nodeId: NodeId): TypeLattice | undefined;
   constOf(nodeId: NodeId): ConstLattice | undefined;
-  /** Purity verdict for a FunctionDef scope. `true` = no observable side
-   *  effects ⇒ safe to whole-call deopt re-entry. `false` = impure.
-   *  `undefined` = not yet computed (treat as impure for safety). */
   isPureScope(scopeId: FunctionId): boolean | undefined;
 }
 
-/** Full DfaQuery extends `StaticDfaQuery` with speculation readers —
- *  intended for backend emission, where a runtime guard protects against
- *  violation of the narrowed fact. NOT sound for AST mutation. Guard
- *  violations retract speculation; once pruned, speculative readers return
- *  the non-narrowed ROOT facts and the compiler falls back naturally. */
+/** Adds speculation readers for backend emission (requires runtime guard). */
 export interface DfaQuery extends StaticDfaQuery {
-  /** Speculatively-narrowed type fact. Consumers MUST emit a runtime
-   *  guard at any specialization decision that depends on a tighter
-   *  answer than `typeOf` would give. */
   speculativeTypeOf(nodeId: NodeId): TypeLattice | undefined;
   speculativeConstOf(nodeId: NodeId): ConstLattice | undefined;
-  /** Guard-hoistable entry requirements for a FunctionDef under its active
-   *  speculation context. Consumable only when the backend also emits a
-   *  runtime guard covering the producing assumption chain. */
   entryRequirementsOf(scopeId: FunctionId): EntryRequirement | undefined;
 }
 
 export function makeDfaQuery(
   topology: ProgramTopology,
-  /** Future-dispatch chain for a node's owning unit, or ROOT_CONTEXT if
-   *  nothing has been speculated yet. */
   futureDispatchChainForNode: (nodeId: NodeId) => AssumptionChain = () => ROOT_CONTEXT,
-  /** Future-dispatch chain for a unit. Defaults to ROOT for callers that
-   *  do not participate in speculative compilation. */
   futureDispatchChainForUnit: (unit: Unit) => AssumptionChain = () => ROOT_CONTEXT,
 ): DfaQuery {
   const typeStore = typeAnalysis.perExpr(topology);

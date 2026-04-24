@@ -2,30 +2,18 @@
 // polarity, no chain-based fact semantics. Observations enter via
 // `Worklist.publish(channel, ...)` which dedup-writes through the
 // channel's shadow AND feeds the observation→context translator.
-//
-// POC admissibility: only observations bottoming out in a param-type
-// guard at function entry are admissible. Two channels survive:
-//   - `runtimeParamChannel`  — direct param-type entry assumptions.
-//   - `runtimeReturnChannel` — per-callee return-kind observations,
-//     lowered by `returnKindNarrowing` to entry-block type requirements.
-// Call hotness is a saturating `CounterStore` — profitability evidence,
-// not semantic speculation.
 
 import { ROOT_CONTEXT, type AssumptionChain } from "../assumption";
 import { paramKey, type FunctionId, type JoinSemiLattice, type ParamKey } from "../framework/analysis";
 import type { Worklist } from "../framework/worklist";
 import { CounterStore } from "./counter-store";
 import { ObservationChannel } from "./observation-channel";
-import { classifyRawValue, type RawKind } from "./raw-value";
+import { classifyRawValue, RAW_UNKNOWN, type RawKind } from "./raw-value";
 
 // Saturation ceiling; post-saturation writes compare equal and suppress cascade.
 export const RUNTIME_CALL_COUNT_SAT = 11;
 
-const RAW_TOP: RawKind = { kind: "unknown" };
-
-// Observation lattice: singletons < ⊤ ({kind:"unknown"}, conflict-
-// absorbing). `bottom` is RAW_TOP because the channel shadow is only
-// written, never read as a semantic fact.
+// Observation lattice: singletons < ⊤ (RAW_UNKNOWN, conflict-absorbing).
 function rawKindEquals(a: RawKind, b: RawKind): boolean {
   if (a === b) return true;
   if (a.kind !== b.kind) return false;
@@ -40,28 +28,24 @@ function rawKindEquals(a: RawKind, b: RawKind): boolean {
 }
 
 const rawValueLattice: JoinSemiLattice<RawKind> = {
-  bottom: RAW_TOP,
+  bottom: RAW_UNKNOWN,
   leq: (a, b) => b.kind === "unknown" || rawKindEquals(a, b),
   join: (a, b) =>
     a.kind === "unknown" || b.kind === "unknown"
-      ? RAW_TOP
-      : rawKindEquals(a, b) ? a : RAW_TOP,
+      ? RAW_UNKNOWN
+      : rawKindEquals(a, b) ? a : RAW_UNKNOWN,
   eq: (a, b) => a === b || rawKindEquals(a, b),
 };
 
-/** Per-parameter entry-value observations. Key = ParamKey. Feeds
- *  paramKey-scoped narrowings (entry specialization on param types). */
+/** Per-parameter entry-value observations. Feeds paramKey-scoped narrowings. */
 export const runtimeParamChannel: ObservationChannel<ParamKey, RawKind> =
   new ObservationChannel<ParamKey, RawKind>(rawValueLattice);
 
-/** Per-function return-kind observations. Key = FunctionId. Feeds the
- *  return-kind narrowing — keyed by functionId (not Return nodeId)
- *  because the narrowing summarizes across all return paths. */
+/** Per-function return-kind observations. Feeds the return-kind narrowing. */
 export const runtimeReturnChannel: ObservationChannel<FunctionId, RawKind> =
   new ObservationChannel<FunctionId, RawKind>(rawValueLattice);
 
-/** Runtime call-count counter, keyed by FunctionDef.id. Saturates at
- *  `RUNTIME_CALL_COUNT_SAT`. */
+/** Runtime call-count counter, keyed by FunctionDef.id. */
 export const runtimeCallCounter: CounterStore<FunctionId> =
   new CounterStore<FunctionId>(RUNTIME_CALL_COUNT_SAT);
 
@@ -71,20 +55,13 @@ export const runtimeCallCounter: CounterStore<FunctionId> =
  *  `observeScopeCall` pushes the unit's current future-dispatch chain;
  *  `observeScopeReturn` pops. Observations attribute to the top-of-stack
  *  chain, or ROOT at top level. `observeParamEntry` may refine the
- *  current chain in place.
- *
- *  Engine contract: `observeScopeCall(scopeId)` fires before any other
- *  observation in the callee and before body-selection. The engines have
- *  no exceptions or tail calls — adding either would require revisiting
- *  stack discipline. */
+ *  current chain in place. */
 export function makeJitObservers(
   worklist: Worklist
 ): {
   observeScopeCall: (scopeId: FunctionId) => void;
   observeScopeReturn: (scopeId: FunctionId, value: unknown) => void;
   observeParamEntry: (scopeId: FunctionId, paramIndex: number, value: unknown) => void;
-  /** Top-of-stack provenance for the currently-executing `scopeId`.
-   *  Returns `ROOT_CONTEXT` when stack top is not this `scopeId`. */
   currentChainFor: (scopeId: FunctionId) => AssumptionChain;
 } {
   // Parallel arrays instead of {scopeId, chain} wrappers — per-call
@@ -92,8 +69,6 @@ export function makeJitObservers(
   const scopeIds: FunctionId[] = [];
   const chains: AssumptionChain[] = [];
 
-  // Asserts the stack top is `scopeId` and returns its index. The length
-  // check also guards subsequent `[top]` indexing.
   function requireTop(scopeId: FunctionId, op: string): number {
     const top = scopeIds.length - 1;
     if (top < 0 || scopeIds[top] !== scopeId) {
@@ -114,7 +89,6 @@ export function makeJitObservers(
     observeScopeReturn: (scopeId, value) => {
       // Pop AFTER observing so the return attributes to the unwinding call.
       const top = requireTop(scopeId, "observeScopeReturn");
-      // Publish's updated chain would be discarded by the imminent pop.
       worklist.publish(runtimeReturnChannel, scopeId, classifyRawValue(value), chains[top]);
       scopeIds.pop();
       chains.pop();

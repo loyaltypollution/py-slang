@@ -10,8 +10,7 @@ import { MutableEnv } from "../../framework/mutable-env";
 import { isLocal, type SlotLookup } from "../../framework/slot-table";
 import { LIVE, livenessLattice, type LiveVal } from "./lattice";
 
-/** Marks every `Variable` read as live in the shared env. All other visit
- *  methods just recurse into children; return value is ignored. */
+/** Marks every `Variable` read live in the shared env; other visits recurse. */
 class ReadCollector implements ExprNS.Visitor<void> {
   constructor(
     private readonly env: MutableEnv<LiveVal>,
@@ -82,8 +81,7 @@ function killLocal(
 }
 
 /** Backward per-statement transfer: env in = live-OUT, env out = live-IN.
- *  For Assign: kill LHS before visiting RHS so a self-assign `s = s + 1`
- *  keeps `s` live on the way in. */
+ *  Assign kills LHS before visiting RHS so `s = s + 1` keeps `s` live in. */
 function transferStmtBackward(
   stmt: StmtNS.Stmt,
   env: MutableEnv<LiveVal>,
@@ -130,8 +128,7 @@ function transferStmtBackward(
   // FileInput: no reads, no kills.
 }
 
-/** Backward may-liveness. Stored `outEnv` is the block's live-IN; its
- *  live-OUT is the join of CFG-successors' live-INs (see `liveOutOf`). */
+/** Backward may-liveness. Stored `outEnv` is the block's live-IN. */
 export const livenessAnalysis: BlockFixpointAnalysis<LiveVal> =
   makeBlockFixpointAnalysis<LiveVal>({
     direction: "backward",

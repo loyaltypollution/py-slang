@@ -273,10 +273,8 @@ function transferStmt(
       const fd = stmt as StmtNS.FunctionDef;
       const info = state.slotLookup(fd.name);
       if (!isLocal(info)) { state.impure = true; return; }
-      // Deepest verdict wins: speculative narrowings that prune impure
-      // branches live at deeper contexts. `undefined` = not yet analyzed;
-      // record a pending Closure so call sites defer (monotone-safe) until
-      // the scope→block reads-edge wakes this block with a definite verdict.
+      // Deepest verdict wins; `undefined` = pending until the scope→block
+      // reads-edge wakes this block with a definite verdict.
       const innerPure = purityScopeAnalysis.store.readDeepest(state.chain, fd.id)?.value;
       state.env.set(info.slot, { kind: "closure", functionId: fd.id, pure: innerPure });
       return;

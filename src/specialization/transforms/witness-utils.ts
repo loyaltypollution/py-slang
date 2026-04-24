@@ -3,13 +3,8 @@ import type { AssumptionChain } from "../assumption/chain";
 import { forkBody } from "../speculation/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 
-/** A fact value paired with the chain at which it was witnessed. Matches
- *  `AnalysisStore.readMinimal`/`readDeepest`'s return shape; named here so
- *  transforms that thread witnesses through helpers share one type. */
 export type Witnessed<T> = { value: T; witness: AssumptionChain };
 
-/** Invoke `onExpr` on every expression (and sub-expression) inside `stmts`.
- *  Lambda/MultiLambda bodies are not descended — they belong to separate units. */
 export function walkExprs(
   stmts: readonly StmtNS.Stmt[],
   onExpr: (expr: ExprNS.Expr) => void,
@@ -67,7 +62,6 @@ export function walkExpr(e: ExprNS.Expr, onExpr: (expr: ExprNS.Expr) => void): v
   }
 }
 
-/** No-op-default statement visitor. Subclasses override whichever kinds they rewrite. */
 export abstract class BaseStmtVisitor implements StmtNS.Visitor<void> {
   abstract visitIfStmt(stmt: StmtNS.If): void;
   abstract visitWhileStmt(stmt: StmtNS.While): void;
@@ -87,8 +81,6 @@ export abstract class BaseStmtVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
-/** Recurses into every sub-expression, leaving each node unchanged by default.
- *  Lambda/MultiLambda bodies are not descended — they belong to separate units. */
 export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   rewrite(expr: ExprNS.Expr): ExprNS.Expr {
     return expr.accept(this);
@@ -145,7 +137,6 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     expr.value = expr.value.accept(this);
     return expr;
   }
-  // Leaf-like nodes: no descent required.
   visitLambdaExpr(expr: ExprNS.Lambda): ExprNS.Expr { return expr; }
   visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExprNS.Expr { return expr; }
   visitLiteralExpr(expr: ExprNS.Literal): ExprNS.Expr { return expr; }
@@ -155,8 +146,6 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   visitNoneExpr(expr: ExprNS.None): ExprNS.Expr { return expr; }
 }
 
-/** For each witness (shallow→deep), fork the body and run a fresh visitor.
- *  Shallow-first lets deeper forks inherit earlier rewrites in the same sweep. */
 export function runWitnessSweep(
   unit: Unit,
   witnesses: Iterable<AssumptionChain>,
@@ -176,9 +165,6 @@ export function runWitnessSweep(
   return changed;
 }
 
-/** Applies an expression visitor to every embedded expression position in a
- *  body-bearing statement tree, forwarding the visitor's `changed` flag. Used
- *  by transforms that only rewrite at the expression level. */
 export class ExprDrivenStmtVisitor<V extends DescendingExprVisitor & { changed: boolean }>
   extends BaseStmtVisitor
 {

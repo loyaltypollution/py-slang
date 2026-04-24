@@ -9,9 +9,7 @@ import type { RawKind } from "../../observation/raw-value";
 import { isLocal, type SlotLookup } from "../../framework/slot-table";
 import { blockFixpointFromSpec } from "../../framework/stmt-transfer";
 
-/** Interned `${fid}:${i}` strings, grown on demand. Hot path: the type
- *  visitor indexes `paramKeysFor(fid, n)[slot]` instead of re-formatting
- *  on every block-transfer visit. */
+/** Interned `${fid}:${i}` ParamKeys, grown on demand. */
 const PARAM_KEYS: Map<FunctionId, ParamKey[]> = new Map();
 function paramKeysFor(fid: FunctionId, count: number): readonly ParamKey[] {
   let arr = PARAM_KEYS.get(fid);
@@ -78,13 +76,10 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
   [TokenType.NOTEQUAL, "!="],
 ]);
 
-/** Node-keyed type-narrowing fact-surface identity. A
- *  `(typeNarrowing, nodeId, lattice)` binding in a non-ROOT context is met
- *  into `typeAnalysis`'s per-node fact at that `nodeId` via
- *  `TypeAnalysisVisitor.annotate` — no separate store, no parallel analysis.
- *  Production has no observation binding on this axis today; production
- *  bindings live in `narrowing-policy/param-handles.ts` and
- *  `analysis/type-requirement/analysis.ts`. */
+/** Node-keyed type-narrowing. A `(typeNarrowing, nodeId, lattice)` binding in
+ *  a non-ROOT context is met into the per-node fact via `annotate` — no
+ *  separate store. Currently used by tests only; production param/return
+ *  bindings live in `narrowing-policy/` and `type-requirement/`. */
 export const typeNarrowing: Narrowing<NodeId, TypeLattice> = {
   eq,
   blockAnalysis: () => typeAnalysis,
@@ -288,8 +283,6 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
 
 const POOLED_TYPE_VISITOR = new TypeAnalysisVisitor();
 
-/** Forward may-analysis module. ROOT facts are context-free; non-ROOT
- *  contexts consult assumptions via `findAssumption`. */
 const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
   ...typeLattice,
   mergeKind: "may",
@@ -323,8 +316,6 @@ const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
   },
 };
 
-/** Block-level fixpoint analysis for type narrowing. Owned here at the
- *  dimension's source so `typeNarrowing.blockAnalysis` has a stable binding. */
 export const typeAnalysis: BlockFixpointAnalysis<TypeLattice> =
   blockFixpointFromSpec(typeAnalysisModule);
 

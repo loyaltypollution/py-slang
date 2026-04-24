@@ -1,10 +1,5 @@
-// Per-analysis canonical entry points. Other layers (transforms, narrowings,
-// defaults, dfa-query, narrowing-policy hooks) import from here so that
-// adding a new analysis means touching one path, not many.
-//
-// Files INSIDE analysis/ keep direct relative imports to siblings — going
-// through this index would create paper cycles even though the underlying
-// edges are downward-only.
+// Canonical entry points. Non-analysis layers import from here; files inside
+// analysis/ keep direct sibling imports to avoid cycles through this barrel.
 
 export { constAnalysis } from "./const/analysis";
 export { constEq, type ConstLattice } from "./const/lattice";

@@ -1,7 +1,3 @@
-// Assumption-chain spine: the values and algebra that define a
-// speculation context. Pure data — no Unit, no AST, no worklist. The
-// "what does a chain mean at runtime" mechanism lives in speculation/.
-
 export {
   ROOT_CONTEXT,
   isRoot,

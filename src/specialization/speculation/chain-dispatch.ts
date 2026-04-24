@@ -1,7 +1,5 @@
-// Dispatch lane: decides validity of and produces the body for
-// speculative compilation at (unit, s). Bodies are compile-only clones —
-// they are never inserted into analysis store, CFG, or topology. Cloned
-// nodes preserve NodeIds as stable references into the canonical unit.
+// Dispatch lane: validity + body for speculative compilation at (unit, s).
+// Bodies are compile-only clones; cloned nodes preserve NodeIds.
 
 import { StmtNS } from "../../ast-types";
 import { contextIsEntrySpecializable, directParamEntryGuardsFor } from "../narrowing-policy/entry-guards";
@@ -24,8 +22,7 @@ function conditionTruth(
   return undefined;
 }
 
-/** Prune dead branches under the type facts at `context`. Returns the
- *  original array when no rewrite was needed. */
+/** Prune dead branches under type facts at `context`. Returns `stmts` when unchanged. */
 function pruneWithFactsAt(
   stmts: readonly StmtNS.Stmt[],
   context: AssumptionChain,
@@ -66,8 +63,7 @@ function pruneWithFactsAt(
   return changed ? out : stmts;
 }
 
-/** Is `(unit, s)` a valid target for speculation-lane dispatch?
- *  When `isRefuted` is omitted, retirement is assumed trivial (tests). */
+/** Is `(unit, s)` a valid target for speculation-lane dispatch? */
 export function dispatchValid(
   unit: Unit,
   s: AssumptionChain,
@@ -75,16 +71,15 @@ export function dispatchValid(
 ): boolean {
   if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return false;
   if (!contextIsEntrySpecializable(unit, s)) return false;
-  if (isRefuted !== undefined && isRefuted(s)) return false;
+  if (isRefuted?.(s)) return false;
   if (directParamEntryGuardsFor(unit, s) === undefined) return false;
   return true;
 }
 
-/** The body to compile at `(unit, s)`: nearest non-retired ancestor fork
- *  (or `unit.body`) plus dead-branch pruning under the context's type
- *  facts. Reference equality against `unit.body` tells the caller whether
- *  speculation contributed anything. Precondition: `dispatchValid(unit, s,
- *  isRefuted)` holds — asserted below. */
+/** Body to compile at `(unit, s)`: nearest non-retired ancestor fork
+ *  (or `unit.body`), dead-branch-pruned under `s`'s type facts.
+ *  Reference equality vs `unit.body` indicates whether speculation contributed.
+ *  Requires `dispatchValid(unit, s, isRefuted)`. */
 export function bodyToCompile(
   unit: Unit,
   s: AssumptionChain,
@@ -92,11 +87,7 @@ export function bodyToCompile(
   isRefuted?: (s: AssumptionChain) => boolean,
 ): readonly StmtNS.Stmt[] {
   if (!dispatchValid(unit, s, isRefuted)) {
-    throw new Error(
-      "[bodyToCompile] precondition violated: dispatchValid(unit, s, isRefuted) must hold. " +
-      "Gate the call site, or use visibleBody directly if you genuinely need an ungated read.",
-    );
+    throw new Error("[bodyToCompile] dispatchValid(unit, s, isRefuted) must hold");
   }
-  const source = visibleBody(unit, s, isRefuted);
-  return pruneWithFactsAt(source, s, topology);
+  return pruneWithFactsAt(visibleBody(unit, s, isRefuted), s, topology);
 }
