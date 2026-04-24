@@ -6,9 +6,9 @@
 // translator, which extends the owning unit's speculation context via
 // registered `Narrowing`s whose `observationSource === channel`.
 
-import { AnalysisStore } from "../framework/analysis-store";
-import type { JoinSemiLattice } from "../framework/analysis";
 import type { AssumptionChain } from "../assumption/chain";
+import type { JoinSemiLattice } from "../framework/analysis";
+import { AnalysisStore } from "../framework/analysis-store";
 import type { Worklist } from "../framework/worklist";
 
 export class ObservationChannel<K, V> {

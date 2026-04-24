@@ -48,6 +48,7 @@ import {
   NULL,
   NULL_BIT,
   STR_BIT,
+  typeLattice,
   STRING,
   TOP,
 } from "./lattice";
@@ -290,14 +291,9 @@ const POOLED_TYPE_VISITOR = new TypeAnalysisVisitor();
 /** Forward may-analysis module. ROOT facts are context-free; non-ROOT
  *  contexts consult assumptions via `findAssumption`. */
 const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
+  ...typeLattice,
   mergeKind: "may",
   direction: "forward",
-  bottom: BOTTOM,
-  top: TOP,
-  join,
-  meet,
-  leq,
-  eq,
   makeExprVisitor(
     env: MutableEnv<TypeLattice>,
     unit,

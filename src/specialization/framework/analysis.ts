@@ -1,10 +1,10 @@
-import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
 import type { AssumptionChain, NarrowingId } from "../assumption/chain";
+import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
+import type { BasicBlock } from "./cfg";
 import type { BlockFixpointAnalysis } from "./dfa-factory";
 import type { Unit } from "./function-unit";
 import type { ProgramTopology } from "./topology";
 import type { Worklist } from "./worklist";
-import type { BasicBlock } from "./cfg";
 
 /** AST node id. Indexes individual expression/statement nodes. */
 export type NodeId = number;
@@ -12,7 +12,7 @@ export type NodeId = number;
 /** `FunctionDef.id` or `FileInput.id` — node id of a scope-owning AST node
  *  whose optimization unit is registered with the topology. Every
  *  `FunctionId` is also a `NodeId`; the distinction is semantic
- *  (topology.unitOfNode vs. topology.unitOfFunctionId). */
+ *  (topology.unitOfNode vs. AnalysisCtx.units.get). */
 export type FunctionId = number;
 
 /** Function-entry parameter identity, encoded as `${functionId}:${paramIndex}`
@@ -36,8 +36,8 @@ export function paramKeyIndex(key: ParamKey): number {
 export type UnitResolver<K> = (ctx: AnalysisCtx, key: K) => Unit | undefined;
 
 export const unitOfBlock: UnitResolver<BasicBlock> = (_ctx, block) => block.unit;
-export const unitOfNodeId: UnitResolver<NodeId> = (ctx, nodeId) => ctx.topology.unitOfNode(nodeId);
-export const unitOfFunctionId: UnitResolver<FunctionId> = (ctx, functionId) => ctx.topology.unitOfFunctionId(functionId);
+export const unitOfNodeId: UnitResolver<NodeId> = (ctx, nodeId) => ctx.unitOfNode(nodeId);
+export const unitOfFunctionId: UnitResolver<FunctionId> = (ctx, functionId) => ctx.units.get(functionId);
 
 export function wakeOwningUnit<K>(resolveUnit: UnitResolver<K>): (ctx: AnalysisCtx, key: K) => Iterable<Unit> {
   return (ctx, key) => {
@@ -45,8 +45,6 @@ export function wakeOwningUnit<K>(resolveUnit: UnitResolver<K>): (ctx: AnalysisC
     return unit ? [unit] : [];
   };
 }
-
-export type SemanticAnalysis<K, V> = Analysis<K, V> & { polarity: "may" | "must" };
 
 /** Algebra over one stored value space `V`. Drives `AnalysisStore`:
  *  `bottom` is the unwritten-cell default, `join` is storage combine,
@@ -126,6 +124,12 @@ export interface Narrowing<K = any, V = unknown> extends NarrowingId<K, V> {
 
 export interface AnalysisCtx {
   readonly topology: ProgramTopology;
+  /** FunctionId → Unit view. Analyses look up owning units by scope id
+   *  through this map rather than through topology. */
+  readonly units: ReadonlyMap<FunctionId, Unit>;
+  /** NodeId → owning Unit. Block-level lookup is on the resulting Unit
+   *  (`unit.blockOfNode`). */
+  unitOfNode(nodeId: NodeId): Unit | undefined;
   readonly currentContext: AssumptionChain;
   read<K, V>(analysis: Analysis<K, V>, key: K): V;
   tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined;

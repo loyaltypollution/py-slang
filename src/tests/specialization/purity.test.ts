@@ -178,7 +178,7 @@ def hot(x):
     worklist.publish(runtimeParamChannel, paramKey(fn.id, 0), { kind: "number", value: 8 }, ROOT_CONTEXT);
     worklist.drain();
 
-    const unit = worklist.topology.unitOfFunctionId(fn.id)!;
+    const unit = worklist.units.get(fn.id)!;
     const specCtx = worklist.futureDispatchChainFor(unit);
     expect(specCtx).not.toBe(ROOT_CONTEXT);
     expect(worklist.tryRead(purityScopeAnalysis, fn.id, specCtx)).toBe(true);

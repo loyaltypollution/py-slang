@@ -5,7 +5,7 @@
  * single function would invalidate every `NEWC <index>` operand in its
  * sibling functions.
  */
-import { StmtNS } from "../ast-types";
+import { ExprNS, StmtNS } from "../ast-types";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { makeDfaQuery } from "../specialization";
 import OpCodes from "../engines/svml/opcodes";
@@ -14,6 +14,7 @@ import { analyzeWithEnvironments } from "../resolver";
 import math from "../stdlib/math";
 import memo from "../stdlib/memo";
 import misc from "../stdlib/misc";
+import { traverseAST } from "../validator/traverse";
 import { buildTestWorklist } from "./utils";
 
 function build(code: string) {
@@ -28,7 +29,6 @@ function build(code: string) {
     ast,
     environments,
     makeDfaQuery(engine.topology),
-    engine.registry,
   );
   return { ast, environments, units, compiler };
 }
@@ -124,6 +124,74 @@ g(2)
       }
     }
     expect(foundNewc).toBe(true);
+  });
+
+  describe("lambda/multilambda slot stability", () => {
+    // Program interleaves FunctionDef, Lambda, MultiLambda so that an
+    // incorrect walk (e.g. FunctionDef-only) would assign different slot
+    // indices than a correct pre-order DFS over all function-scope nodes.
+    const lambdaProgram = `
+def f(x):
+    return x + 1
+sq = lambda y: y * y
+def g(z):
+    twice = lambda w: w + w
+    return sq(z) + twice(z) + f(z)
+g(3)
+`;
+
+    function collectFunctionScopeNodes(ast: StmtNS.FileInput) {
+      const nodes: Array<StmtNS.FileInput | StmtNS.FunctionDef | ExprNS.Lambda | ExprNS.MultiLambda> = [ast];
+      traverseAST(ast, node => {
+        if (
+          node instanceof StmtNS.FunctionDef ||
+          node instanceof ExprNS.Lambda ||
+          node instanceof ExprNS.MultiLambda
+        ) {
+          nodes.push(node);
+        }
+      });
+      return nodes;
+    }
+
+    test("SVMLProgram.functions has one slot per function-scope node (FileInput + FunctionDef + Lambda + MultiLambda)", () => {
+      const { ast, compiler } = build(lambdaProgram);
+      const program = compiler.compileProgram(ast);
+      const expected = collectFunctionScopeNodes(ast).length;
+      expect(program.functions.length).toBe(expected);
+    });
+
+    test("per-function bytecode is identical across independent builds of a lambda-containing program", () => {
+      // This pins NEWC operands for lambdas: if the walk order changes,
+      // lambda slots shift and the NEWC operand in g would diverge.
+      const a = build(lambdaProgram);
+      const progA = a.compiler.compileProgram(a.ast);
+      const b = build(lambdaProgram);
+      const progB = b.compiler.compileProgram(b.ast);
+
+      expect(progA.functions.length).toBe(progB.functions.length);
+      for (let i = 0; i < progA.functions.length; i++) {
+        const fa = progA.functions[i];
+        const fb = progB.functions[i];
+        expect(Array.from(fb.opcodes)).toEqual(Array.from(fa.opcodes));
+        expect(Array.from(fb.arg1s)).toEqual(Array.from(fa.arg1s));
+        expect(Array.from(fb.arg2s)).toEqual(Array.from(fa.arg2s));
+      }
+    });
+
+    test("NEWC operands for lambdas point at slots that are actually populated", () => {
+      const { ast, compiler } = build(lambdaProgram);
+      const program = compiler.compileProgram(ast);
+      for (const ir of program.functions) {
+        for (let i = 0; i < ir.count; i++) {
+          if (ir.opcodes[i] === OpCodes.NEWC) {
+            const slot = ir.arg1s[i];
+            expect(slot).toBeGreaterThanOrEqual(0);
+            expect(slot).toBeLessThan(program.functions.length);
+          }
+        }
+      }
+    });
   });
 
   test("compileFunction produces stable output across repeated calls", () => {

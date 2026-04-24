@@ -55,7 +55,6 @@ export function setupWithAnalyses(
     ast,
     environments,
     analyses,
-    undefined,
     [],
     [],
     [],
@@ -70,7 +69,6 @@ export function compileOptimized(code: string): SVMLProgram {
     ast,
     environments,
     makeDfaQuery(worklist.topology),
-    worklist.registry,
   );
   return compiler.compileProgram(ast);
 }

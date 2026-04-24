@@ -14,6 +14,9 @@ import { analyzeWithEnvironments } from "../resolver";
 import { createDefaultWorklist, makeJitDispatch } from "../specialization";
 import linkedList from "../stdlib/linked-list";
 import list from "../stdlib/list";
+import math from "../stdlib/math";
+import memo from "../stdlib/memo";
+import misc from "../stdlib/misc";
 import pairmutator from "../stdlib/pairmutator";
 import parser from "../stdlib/parser";
 import stream from "../stdlib/stream";
@@ -38,6 +41,7 @@ abstract class PyCseJitEvaluatorBase extends PyCseEvaluatorBase {
         script,
         this.variant,
         this.groups,
+        Object.keys(this.context.runtime.environments[0].head),
       );
 
       if (errors.length > 0) {
@@ -86,24 +90,24 @@ abstract class PyCseJitEvaluatorBase extends PyCseEvaluatorBase {
 
 export class PyCseJitEvaluator1 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
-    super(conductor, 1, []);
+    super(conductor, 1, [misc, math, memo]);
   }
 }
 
 export class PyCseJitEvaluator2 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
-    super(conductor, 2, [linkedList]);
+    super(conductor, 2, [misc, math, memo, linkedList]);
   }
 }
 
 export class PyCseJitEvaluator3 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
-    super(conductor, 3, [linkedList, list, pairmutator, stream]);
+    super(conductor, 3, [misc, math, memo, linkedList, list, pairmutator, stream]);
   }
 }
 
 export class PyCseJitEvaluator4 extends PyCseJitEvaluatorBase {
   constructor(conductor: IRunnerPlugin) {
-    super(conductor, 4, [linkedList, list, pairmutator, stream, parser]);
+    super(conductor, 4, [misc, math, memo, linkedList, list, pairmutator, stream, parser]);
   }
 }

@@ -17,6 +17,7 @@ import {
   typeRequirementAnalysis,
 } from "./analysis";
 import type { Analysis, Narrowing } from "./framework/analysis";
+import { Worklist } from "./framework/worklist";
 import { paramTypeBinding, paramTypeNarrowing } from "./narrowing-policy/param-handles";
 import type { ObservationBinding } from "./observation/observation-binding";
 import {
@@ -24,7 +25,6 @@ import {
   runtimeParamChannel,
   runtimeReturnChannel,
 } from "./observation/runtime-analyses";
-import { Worklist } from "./framework/worklist";
 import {
   algebraicSimplifyRule,
   constantFoldingRule,
@@ -74,7 +74,6 @@ export function createDefaultWorklist(
     ast,
     functionEnvironments,
     DEFAULT_PASSES,
-    undefined,
     [deadBranchRule, constantFoldingRule, algebraicSimplifyRule, deadStoreRule, memoizationRule],
     DEFAULT_NARROWINGS,
     [runtimeCallCounter],

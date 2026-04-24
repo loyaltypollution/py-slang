@@ -26,6 +26,7 @@ import {
   ExprDrivenStmtVisitor,
   runWitnessSweep,
   walkExprs,
+  type Witnessed,
 } from "./witness-utils";
 
 function deepestWitness(
@@ -48,7 +49,6 @@ function shallowestWitness(
   return chosen;
 }
 
-type Witnessed<T> = { value: T; witness: AssumptionChain };
 type RewritePlan = { witness: AssumptionChain; replacement: ExprNS.Expr };
 
 function typeInfo(

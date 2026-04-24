@@ -15,9 +15,10 @@ import {
   ExprDrivenStmtVisitor,
   runWitnessSweep,
   walkExprs,
+  type Witnessed,
 } from "./witness-utils";
 
-type ConstWitness = { value: Extract<ConstLattice, { tag: "const" }>; witness: AssumptionChain };
+type ConstWitness = Witnessed<Extract<ConstLattice, { tag: "const" }>>;
 
 function constInfo(
   chain: AssumptionChain,

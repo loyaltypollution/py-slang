@@ -23,7 +23,7 @@ describe("chain reconvergence across widen → re-observe (Python-driven)", () =
       "def f(x, y):\n    return x + y\n",
     );
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.topology.unitOfFunctionId(fd.id)!;
+    const unit = worklist.units.get(fd.id)!;
     const kx = paramKey(fd.id, 0);
     const ky = paramKey(fd.id, 1);
 
@@ -69,7 +69,7 @@ describe("chain reconvergence across widen → re-observe (Python-driven)", () =
       "def f(x, y):\n    return x * y\n",
     );
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.topology.unitOfFunctionId(fd.id)!;
+    const unit = worklist.units.get(fd.id)!;
 
     worklist.publish(
       runtimeParamChannel, paramKey(fd.id, 0),

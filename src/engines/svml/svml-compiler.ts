@@ -16,10 +16,7 @@ import { SVMLIRBuilder } from "./SVMLIRBuilder";
 import { PRIMITIVE_FUNCTIONS } from "./builtins";
 import OpCodes from "./opcodes";
 import { SVMLIR, SVMLProgram } from "./types";
-import {
-  FunctionRegistry,
-  buildFunctionRegistry,
-} from "../../specialization/framework/function-registry";
+import { SvmlSlotTable } from "./function-slots";
 
 /** Signed 32-bit integer bounds used to decide LGCI vs LGCF64 encoding. */
 const I32_MIN = -2_147_483_648;
@@ -59,15 +56,12 @@ export class SVMLCompiler
   private isTailCall: boolean;
   private dfaQuery: DfaQuery | undefined;
   /**
-   * Shared canonical registry of function identity and slot layout. Built
-   * once at top-level compiler construction from the AST (or supplied by the
-   * caller so Worklist and compiler observe the same identity), inherited by
-   * child compilers through `fromFunctionNode`. Transforms that structurally
-   * add or remove function scopes must `mint`/`retire` through it — a missing
-   * entry here throws at slot lookup, converting silent miscompiles into
-   * loud failures.
+   * SVML-local dense function-table slot assignment. Seeded at top-level
+   * construction by a pre-order AST walk over FunctionDef/Lambda/MultiLambda,
+   * and inherited by child compilers through `fromFunctionNode`. Transforms
+   * that mint new functions during JIT get a fresh slot on first query.
    */
-  private registry!: FunctionRegistry;
+  private slots!: SvmlSlotTable;
 
   private tokenAnnotations = new WeakMap<Token, CompilerAnnotation>();
   private envSlotCounters = new WeakMap<Environment, number>();
@@ -136,12 +130,10 @@ export class SVMLCompiler
   /**
    * Create SVMLCompiler from program AST.
    * Analysis pre-computed environments (from analyzeWithEnvironments) to avoid a second resolver run.
-   * Analysis `registry` when sharing identity with a Worklist (JIT pipelines); omit to build one internally.
    */
   static fromProgram(
     program: StmtNS.FileInput,
     functionEnvironments?: FunctionEnvironments,
-    registry?: FunctionRegistry,
   ): SVMLCompiler {
     if (!functionEnvironments) {
       const resolver = new Resolver("", program, [], [misc, math, memo]);
@@ -151,11 +143,11 @@ export class SVMLCompiler
     if (!mainEnv) {
       throw new Error("Main program environment not found");
     }
-    const reg = registry ?? buildFunctionRegistry(program);
-    const builder = new SVMLIRBuilder(0, reg.slotOfNode(program));
+    const slots = new SvmlSlotTable(program);
+    const builder = new SVMLIRBuilder(0, slots.slotOfNode(program));
     builder.setScopeKey(program);
     const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder);
-    compiler.registry = reg;
+    compiler.slots = slots;
     return compiler;
   }
 
@@ -163,17 +155,16 @@ export class SVMLCompiler
     program: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
     dfaQuery?: DfaQuery,
-    registry?: FunctionRegistry,
   ): SVMLCompiler {
     const mainEnv = functionEnvironments.get(program);
     if (!mainEnv) {
       throw new Error("Main program environment not found");
     }
-    const reg = registry ?? buildFunctionRegistry(program);
-    const builder = new SVMLIRBuilder(0, reg.slotOfNode(program));
+    const slots = new SvmlSlotTable(program);
+    const builder = new SVMLIRBuilder(0, slots.slotOfNode(program));
     builder.setScopeKey(program);
     const compiler = new SVMLCompiler(mainEnv, functionEnvironments, builder, dfaQuery);
-    compiler.registry = reg;
+    compiler.slots = slots;
     return compiler;
   }
 
@@ -186,7 +177,7 @@ export class SVMLCompiler
       nextEnvironment.lookupNameCurrentEnvWithError(param);
     }
     const numArgs = node.parameters.length;
-    const childIndex = this.registry.slotOfNode(node);
+    const childIndex = this.slots.slotOfNode(node);
     const builder = this.builder.createChildBuilder(numArgs, childIndex);
     // Only FunctionDef bodies are ScopeKeys; Lambda/MultiLambda are not DFA units.
     if (node instanceof StmtNS.FunctionDef) {
@@ -199,7 +190,7 @@ export class SVMLCompiler
       builder,
       this.dfaQuery,
     );
-    compiler.registry = this.registry;
+    compiler.slots = this.slots;
     const slotMap = new Map<string, number>();
     compiler.envSlotMaps.set(nextEnvironment, slotMap);
 
@@ -231,7 +222,7 @@ export class SVMLCompiler
    * having run.
    */
   indexOf(scope: StmtNS.FileInput | StmtNS.FunctionDef): number | undefined {
-    return this.registry.hasNode(scope) ? this.registry.slotOfNode(scope) : undefined;
+    return this.slots.slotOf(scope.id);
   }
 
   /**
@@ -296,7 +287,7 @@ export class SVMLCompiler
     for (const param of funcAst.parameters) {
       nextEnvironment.lookupNameCurrentEnvWithError(param);
     }
-    const index = this.registry.slotOfNode(funcAst);
+    const index = this.slots.slotOfNode(funcAst);
 
     // Fresh standalone builder — NOT attached as a child of `this.builder`.
     // That keeps compileProgram idempotent and leaves sibling builders
@@ -311,7 +302,7 @@ export class SVMLCompiler
       builder,
       this.dfaQuery,
     );
-    subCompiler.registry = this.registry;
+    subCompiler.slots = this.slots;
 
     const slotMap = new Map<string, number>();
     subCompiler.envSlotMaps.set(nextEnvironment, slotMap);

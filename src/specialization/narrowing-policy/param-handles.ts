@@ -27,5 +27,5 @@ export const paramTypeBinding: ObservationBinding<ParamKey, TypeLattice> = {
   narrowing: paramTypeNarrowing,
   source: runtimeParamChannel,
   lift: liftType,
-  resolveUnit: (ctx, key) => ctx.topology.unitOfFunctionId(paramKeyFunctionId(key)),
+  resolveUnit: (ctx, key) => ctx.units.get(paramKeyFunctionId(key)),
 };

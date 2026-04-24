@@ -1,3 +1,5 @@
+import type { JoinSemiLattice } from "../../framework/analysis";
+
 // Per-slot abstract value for the purity dataflow. Tracks the *origin* of the
 // value held in each slot so that a subscript-store is pure iff it targets a
 // freshly-allocated object that has not escaped this frame.
@@ -121,3 +123,12 @@ export function absJoin(a: AbsVal, b: AbsVal): AbsVal {
   return UNKNOWN;
 }
 
+
+/** Canonical `JoinSemiLattice<AbsVal>` — no natural meet/top (slot absence
+ *  is ⊥ in `MutableEnv`), so pair only with `mergeKind: "may"`. */
+export const absValLattice: JoinSemiLattice<AbsVal> = {
+  bottom: BOTTOM,
+  leq: absLeq,
+  join: absJoin,
+  eq: (a, b) => a === b || (absLeq(a, b) && absLeq(b, a)),
+};

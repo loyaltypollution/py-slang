@@ -11,13 +11,12 @@
 // Call hotness is a saturating `CounterStore` — profitability evidence,
 // not semantic speculation.
 
-import { StmtNS } from "../../ast-types";
+import { ROOT_CONTEXT, type AssumptionChain } from "../assumption";
 import { paramKey, type FunctionId, type JoinSemiLattice, type ParamKey } from "../framework/analysis";
-import { type AssumptionChain, ROOT_CONTEXT } from "../assumption";
+import type { Worklist } from "../framework/worklist";
 import { CounterStore } from "./counter-store";
 import { ObservationChannel } from "./observation-channel";
 import { classifyRawValue, type RawKind } from "./raw-value";
-import type { Worklist } from "../framework/worklist";
 
 // Saturation ceiling; post-saturation writes compare equal and suppress cascade.
 export const RUNTIME_CALL_COUNT_SAT = 11;
@@ -106,7 +105,7 @@ export function makeJitObservers(
 
   return {
     observeScopeCall: (scopeId) => {
-      const unit = worklist.topology.unitOfFunctionId(scopeId);
+      const unit = worklist.units.get(scopeId);
       const provenanceChain = unit !== undefined ? worklist.futureDispatchChainFor(unit) : ROOT_CONTEXT;
       scopeIds.push(scopeId);
       chains.push(provenanceChain);

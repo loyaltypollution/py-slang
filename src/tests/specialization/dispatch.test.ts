@@ -8,7 +8,7 @@ import { setupAndDrain } from "./harness/compile-pipelines";
 describe("dispatchValid", () => {
   test("FileInput unit rejected", () => {
     const { ast, worklist } = setupAndDrain("x = 1");
-    const rootUnit = worklist.topology.unitOfFunctionId(ast.id)!;
+    const rootUnit = worklist.units.get(ast.id)!;
     expect(dispatchValid(rootUnit, ROOT_CONTEXT)).toBe(false);
   });
 
@@ -20,7 +20,7 @@ def f():
     return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.topology.unitOfFunctionId(fd.id)!;
+    const unit = worklist.units.get(fd.id)!;
     expect(dispatchValid(unit, ROOT_CONTEXT)).toBe(false);
   });
 
@@ -32,7 +32,7 @@ def f(x):
     return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.topology.unitOfFunctionId(fd.id)!;
+    const unit = worklist.units.get(fd.id)!;
     worklist.publish(
       runtimeParamChannel, paramKey(fd.id, 0),
       { kind: "bool", value: true }, ROOT_CONTEXT,
@@ -59,7 +59,7 @@ def f(x):
         return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.topology.unitOfFunctionId(fd.id)!;
+    const unit = worklist.units.get(fd.id)!;
     const originalBody = fd.body;
     const originalIf = originalBody[0];
 
@@ -88,7 +88,7 @@ def f(x):
     return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.topology.unitOfFunctionId(fd.id)!;
+    const unit = worklist.units.get(fd.id)!;
     // ROOT_CONTEXT has no entry guards → dispatchValid === false.
     expect(() => bodyToCompile(unit, ROOT_CONTEXT, worklist.topology))
       .toThrow(/precondition violated/);

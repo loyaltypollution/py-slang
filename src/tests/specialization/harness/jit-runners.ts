@@ -31,7 +31,6 @@ export async function runSvmlJit(code: string): Promise<string[]> {
       id => worklist.futureDispatchChainForNode(id),
       u => worklist.futureDispatchChainFor(u),
     ),
-    worklist.registry,
   );
   const program = compiler.compileProgram(ast);
 
@@ -72,7 +71,6 @@ export async function runSvmlNoJit(code: string): Promise<string[]> {
       id => worklist.futureDispatchChainForNode(id),
       u => worklist.futureDispatchChainFor(u),
     ),
-    worklist.registry,
   );
   const program = compiler.compileProgram(ast);
   const captured: string[] = [];

@@ -149,3 +149,16 @@ export function boolValue(ref: BoolRef = BoolRef.Top): TypeLattice {
 export function floatValue(floatRef: IntRef = IntRef.Top): TypeLattice {
   return floatRef === IntRef.Bottom ? BOTTOM : FLOAT_SINGLETONS[floatRef];
 }
+
+import type { Lattice } from "../../framework/analysis";
+
+/** Canonical `Lattice<TypeLattice>` — spread into DFA specs or pass as
+ *  `valueLattice` so bottom/top/join/meet/leq/eq aren't declared inline. */
+export const typeLattice: Lattice<TypeLattice> = {
+  bottom: BOTTOM,
+  top: TOP,
+  join,
+  meet,
+  leq,
+  eq,
+};

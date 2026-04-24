@@ -68,12 +68,12 @@ export function makeDfaQuery(
     speculativeConstOf: id =>
       constStore.tryRead(id, futureDispatchChainForNode(id)),
     entryRequirementsOf: scopeId => {
-      const unit = topology.unitOfFunctionId(scopeId);
+      const unit = topology.units.get(scopeId);
       if (unit === undefined) return undefined;
       return requirementAtEntry(unit, futureDispatchChainForUnit(unit));
     },
     isPureScope: scopeId => {
-      const unit = topology.unitOfFunctionId(scopeId);
+      const unit = topology.units.get(scopeId);
       const context = unit !== undefined ? futureDispatchChainForUnit(unit) : ROOT_CONTEXT;
       return purityScopeAnalysis.store.readDeepest(context, scopeId)?.value;
     },

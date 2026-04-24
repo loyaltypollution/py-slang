@@ -30,14 +30,12 @@ import { runtimeReturnChannel } from "../../observation/runtime-analyses";
 import { isLocal, type SlotLookup } from "../../framework/slot-table";
 import { liftType } from "../type/analysis";
 import {
-  BOTTOM,
+  typeLattice,
   INT_BIT,
   TOP,
   eq,
   integer,
   isSatisfiableType,
-  join,
-  leq,
   meet,
   type TypeLattice,
 } from "../type/lattice";
@@ -170,7 +168,7 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
   makeBlockFixpointAnalysis<TypeLattice>({
     direction: "backward",
     mergeKind: "must",
-    valueLattice: { bottom: BOTTOM, top: TOP, join, meet, leq, eq },
+    valueLattice: typeLattice,
     seedEnv: () => new MutableEnv<TypeLattice>(),
     transferBlock: (ctx, block, inEnv, unit) => {
       const fd = unit.funcAst;
@@ -184,7 +182,6 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
       }
       return { outEnv, exprFacts: new Map() };
     },
-    refineOnEdge: (env, _edge) => env,
   });
 
 /** Narrowing dimension for per-function return-kind assumptions, keyed by

@@ -5,12 +5,12 @@
 // for the sweep-before-read discipline.
 
 import type { StmtNS } from "../../ast-types";
-import { bodyToCompile, dispatchValid } from "../speculation/chain-dispatch";
+import type { AssumptionChain } from "../assumption";
 import type { FunctionId } from "../framework/analysis";
 import type { Unit } from "../framework/function-unit";
-import type { AssumptionChain } from "../assumption";
-import { makeJitObservers } from "./runtime-analyses";
 import type { Worklist } from "../framework/worklist";
+import { bodyToCompile, dispatchValid } from "../speculation/chain-dispatch";
+import { makeJitObservers } from "./runtime-analyses";
 
 /** Outcome of one dispatched CALL. `undefined` from `onCall` means the
  *  scope has no Unit in topology (no compilation to perform). */
@@ -29,7 +29,7 @@ export function makeJitDispatch(worklist: Worklist): JitDispatch {
   return {
     onCall(scopeId, args) {
       observers.observeScopeCall(scopeId);
-      const unit = worklist.topology.unitOfFunctionId(scopeId);
+      const unit = worklist.units.get(scopeId);
       if (unit === undefined) return undefined;
       for (let i = 0; i < args.length; i++) {
         observers.observeParamEntry(scopeId, i, args[i]);

@@ -18,9 +18,9 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { constAnalysis } from "../const/analysis";
 import type {
+  Analysis,
   AnalysisCtx,
   JoinSemiLattice,
-  SemanticAnalysis
 } from "../../framework/analysis";
 import { composeBind, defineAnalysis } from "../../framework/analysis";
 import type { BasicBlock } from "../../framework/cfg";
@@ -36,8 +36,7 @@ import type { ProgramTopology } from "../../framework/topology";
 import { typeAnalysis } from "../type/analysis";
 import { BOOL_BIT, BoolRef } from "../type/lattice";
 import {
-  absJoin,
-  absLeq,
+  absValLattice,
   BOTTOM,
   GLOBAL,
   IMPURE_MARKER,
@@ -291,15 +290,6 @@ function transferStmt(
   }
 }
 
-// No natural meet/top for AbsVal: MutableEnv uses slot absence as ⊥, and the
-// DfaConfig discriminated union rejects pairing this with `mergeKind: "must"`.
-const absValLattice: JoinSemiLattice<AbsVal> = {
-  bottom: BOTTOM,
-  leq: absLeq,
-  join: absJoin,
-  eq: (a, b) => a === b || (absLeq(a, b) && absLeq(b, a)),
-};
-
 const EMPTY_EXPR_FACTS: ReadonlyMap<number, AbsVal> = new Map();
 
 const POOLED_PURITY_VISITOR = new PurityExprVisitor();
@@ -334,7 +324,6 @@ export const purityBlockAnalysis: BlockFixpointAnalysis<AbsVal> =
       : EMPTY_EXPR_FACTS;
     return { outEnv: state.env, exprFacts };
   },
-  refineOnEdge: (env, _edge) => env,
 });
 
 // Ordering: undefined ⊏ true ⊏ false. `false` (seen-and-impure) sits at ⊤ so
@@ -351,12 +340,12 @@ const outerLattice: JoinSemiLattice<boolean | undefined> = {
   eq: (a, b) => a === b,
 };
 
-export const purityScopeAnalysis: SemanticAnalysis<number, boolean | undefined> = defineAnalysis({
+export const purityScopeAnalysis: Analysis<number, boolean | undefined> = defineAnalysis({
   storeAlgebra: outerLattice,
   polarity: "may",
   tier: "analysis",
   transfer(ctx: AnalysisCtx, functionId: number): boolean | undefined {
-    const unit = ctx.topology.unitOfFunctionId(functionId);
+    const unit = ctx.units.get(functionId);
     if (unit === undefined) return undefined;
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
@@ -441,7 +430,7 @@ function conditionTruth(
 purityBlockAnalysis.env.bind = composeBind(purityBlockAnalysis.env.bind, (wl) => {
   wl.onFactDirty(purityScopeAnalysis, purityBlockAnalysis.env, (ctx, key) => {
     if (typeof key !== "number") return [];
-    const block = ctx.topology.blockOfNode(key);
+    const block = ctx.unitOfNode(key)?.blockOfNode(key);
     return block === undefined ? [] : [block];
   });
   wl.onSpecRev(purityBlockAnalysis.env, (_ctx, unit) => [purityBlockAnalysis.seed(unit)]);

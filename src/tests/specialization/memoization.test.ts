@@ -190,7 +190,6 @@ describe("memoization: SVML wiring", () => {
       ast,
       environments,
       makeDfaQuery(worklist.topology),
-      worklist.registry,
     );
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
     worklist.drain();
@@ -219,7 +218,6 @@ f(5)
       ast,
       environments,
       makeDfaQuery(worklist.topology),
-      worklist.registry,
     );
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
 

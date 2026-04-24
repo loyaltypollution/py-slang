@@ -27,7 +27,7 @@ def f(x, y):
     return x
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.topology.unitOfFunctionId(fd.id)!;
+    const unit = worklist.units.get(fd.id)!;
 
     worklist.publish(
       runtimeParamChannel, paramKey(fd.id, 0),

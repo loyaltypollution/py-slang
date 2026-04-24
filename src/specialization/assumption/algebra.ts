@@ -9,7 +9,9 @@ import { defaultInterner } from "./interner";
 
 export type { AssumptionChain } from "./chain";
 
-/** Bottom element: the empty partial map. Alias for `ROOT_CONTEXT`. */
+/** Bottom element of the chain lattice — the empty partial map. Aliased to
+ *  `ROOT_CONTEXT` (same value); prefer `empty` in algebra-side code,
+ *  `ROOT_CONTEXT` where the "unspeculated dispatch" reading is primary. */
 export const empty: AssumptionChain = ROOT_CONTEXT;
 
 /** Extend `s` with `(narrowing, key) ↦ value`. Idempotent on equal value;

@@ -65,6 +65,5 @@ export const definitelyBoundAnalysis: BlockFixpointAnalysis<BoundStatus> =
     },
     // No branch-condition narrowing: an `if x == 10` does not tell us
     // whether x is bound on the taken edge — the guard already assumes
-    // access. Identity on both edges.
-    refineOnEdge: (env, _edge) => env,
+    // access. Factory default (identity on every edge) is correct.
   });

@@ -9,18 +9,11 @@ import type {
   JoinSemiLattice,
   Analysis,
   AnalysisCtx,
-  SemanticAnalysis,
   NodeId,
 } from "./analysis";
 import { defineAnalysis } from "./analysis";
 import type { ReadonlyAnalysisStore } from "./analysis-store";
-import {
-  EMPTY_MAP,
-  storeContexts,
-  storeEvict,
-  walkChainDeepest,
-  walkChainMinimal,
-} from "./analysis-store";
+import { EMPTY_MAP, storeContexts, storeEvict, walkChain } from "./analysis-store";
 import type { ProgramTopology, ReadonlyProgramTopology } from "./topology";
 
 /** Expression-level DFA module for block-fixpoint analyses. Extends
@@ -45,10 +38,9 @@ export interface BlockDfaSpec<L> extends Lattice<L> {
 
   /** Per-edge env refinement, applied before a predecessor's OUT env is
    *  merged into the current block's IN env. Must be monotone (result ⊑
-   *  input) and MUST NOT mutate `env` in place — `snapshot()` first. To
-   *  opt out, return `env` unchanged; the factory elides a redundant
-   *  snapshot on identity. */
-  refineOnEdge(env: MutableEnv<L>, edge: CFGEdge): MutableEnv<L>;
+   *  input) and MUST NOT mutate `env` in place — `snapshot()` first. When
+   *  omitted, the factory treats every edge as identity (no narrowing). */
+  refineOnEdge?(env: MutableEnv<L>, edge: CFGEdge): MutableEnv<L>;
 }
 
 /** Self-iterating iterable over block-projected CFG edges. Reused across
@@ -112,8 +104,8 @@ function evictStaleBlockCells(
  *  `perExpr(topology)` returns a node-keyed adapter. `seed(unit)` returns
  *  the block where the fixpoint is seeded (entry forward, exit backward). */
 export interface BlockFixpointAnalysis<L> {
-  readonly env: SemanticAnalysis<BasicBlock, MutableEnv<L>>;
-  readonly facts: SemanticAnalysis<BasicBlock, ReadonlyMap<number, L>>;
+  readonly env: Analysis<BasicBlock, MutableEnv<L>>;
+  readonly facts: Analysis<BasicBlock, ReadonlyMap<number, L>>;
   /** Node-keyed view over `facts`. Canonical read surface for per-expression
    *  consumers. */
   perExpr(topology: ReadonlyProgramTopology): ReadonlyAnalysisStore<number, L>;
@@ -140,9 +132,9 @@ type DfaConfig<L> = {
   ) => BlockPassResult<L>;
   /** Seed the entry (forward) / exit (backward) block's IN env. */
   readonly seedEnv: (unit: Unit) => MutableEnv<L>;
-  /** Per-edge env refinement. See `BlockDfaSpec.refineOnEdge`. Mandatory;
-   *  analyses that don't narrow return `env` unchanged. */
-  readonly refineOnEdge: (env: MutableEnv<L>, edge: CFGEdge) => MutableEnv<L>;
+  /** Per-edge env refinement. See `BlockDfaSpec.refineOnEdge`. Optional;
+   *  omitted means identity (no narrowing on any edge). */
+  readonly refineOnEdge?: (env: MutableEnv<L>, edge: CFGEdge) => MutableEnv<L>;
 } & (
   | { readonly mergeKind: "may"; readonly valueLattice: JoinSemiLattice<L> }
   | { readonly mergeKind: "must"; readonly valueLattice: Lattice<L> }
@@ -223,7 +215,7 @@ export function makeBlockFixpointAnalysis<L>(
     for (const edge of preds) {
       const predBlock = isForward ? edge.from : edge.to;
       const predOut = envAnalysis.store.read(predBlock, context);
-      const refined = config.refineOnEdge(predOut, edge);
+      const refined = config.refineOnEdge ? config.refineOnEdge(predOut, edge) : predOut;
       if (env === undefined) {
         // Snapshot only when `refineOnEdge` returned the stored env unchanged.
         env = refined === predOut ? predOut.snapshot() : refined;
@@ -236,7 +228,7 @@ export function makeBlockFixpointAnalysis<L>(
     return env ?? config.seedEnv(unit);
   }
 
-  const envAnalysis: SemanticAnalysis<BasicBlock, MutableEnv<L>> = defineAnalysis({
+  const envAnalysis: Analysis<BasicBlock, MutableEnv<L>> = defineAnalysis({
     storeAlgebra: envLattice,
     emptyValue: bottomEnv,
     tier: "analysis",
@@ -254,7 +246,7 @@ export function makeBlockFixpointAnalysis<L>(
     },
   });
 
-  const factsAnalysis: SemanticAnalysis<BasicBlock, ReadonlyMap<number, L>> = defineAnalysis({
+  const factsAnalysis: Analysis<BasicBlock, ReadonlyMap<number, L>> = defineAnalysis({
     storeAlgebra: factsLattice,
     emptyValue: EMPTY_FACTS,
     tier: "analysis",
@@ -290,7 +282,7 @@ export function makeBlockFixpointAnalysis<L>(
     const cached = perExprCache.get(topology);
     if (cached !== undefined) return cached;
     const tryReadNode = (nodeId: number, context: AssumptionChain): L | undefined => {
-      const block = topology.blockOfNode(nodeId);
+      const block = topology.unitOfNode(nodeId)?.blockOfNode(nodeId);
       return block === undefined ? undefined : factsAnalysis.store.tryRead(block, context)?.get(nodeId);
     };
     const store: ReadonlyAnalysisStore<number, L> = {
@@ -306,10 +298,10 @@ export function makeBlockFixpointAnalysis<L>(
         return flat;
       },
       readMinimal(chain, key, accept) {
-        return walkChainMinimal(chain, key, tryReadNode, accept);
+        return walkChain(chain, key, tryReadNode, "minimal", accept);
       },
       readDeepest(chain, key) {
-        return walkChainDeepest(chain, key, tryReadNode);
+        return walkChain(chain, key, tryReadNode, "deepest");
       },
     };
     perExprCache.set(topology, store);

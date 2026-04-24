@@ -8,6 +8,9 @@ import {
   makeDfaQuery,
   makeJitDispatch,
 } from "../specialization";
+import math from "../stdlib/math";
+import memo from "../stdlib/memo";
+import misc from "../stdlib/misc";
 import { EvaluatorError } from "./errors";
 
 /**
@@ -28,7 +31,11 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
     try {
       const script = chunk + "\n";
       const ast = parse(script);
-      const { errors, environments } = analyzeWithEnvironments(ast, script, 4);
+      const { errors, environments } = analyzeWithEnvironments(ast, script, 4, [
+        misc,
+        math,
+        memo,
+      ]);
       if (errors.length > 0) throw errors[0];
 
       const worklist = createDefaultWorklist(ast, environments);
@@ -42,7 +49,6 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
           nodeId => worklist.futureDispatchChainForNode(nodeId),
           unit => worklist.futureDispatchChainFor(unit),
         ),
-        worklist.registry,
       );
       const program = compiler.compileProgram(ast);
 

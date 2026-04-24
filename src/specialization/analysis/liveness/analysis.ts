@@ -149,7 +149,6 @@ export const livenessAnalysis: BlockFixpointAnalysis<LiveVal> =
       }
       return { outEnv, exprFacts: new Map() };
     },
-    refineOnEdge: (env, _edge) => env,
   });
 
 /** Per-statement backward walk: returns live-OUT of each stmt (= live-IN of

@@ -5,8 +5,21 @@
 // cache) that splitting them creates more accidental coupling than it
 // removes.
 
-import { StmtNS } from "../../../ast-types";
-import type { FunctionEnvironments } from "../../../resolver";
+import { StmtNS } from "../../ast-types";
+import type { FunctionEnvironments } from "../../resolver";
+import {
+  carrier as carrierOf,
+  extend,
+  Refutations,
+  ROOT_CONTEXT,
+  without,
+  type AssumptionChain,
+} from "../assumption";
+import type { CounterStore } from "../observation/counter-store";
+import type { ObservationBinding } from "../observation/observation-binding";
+import type { ObservationChannel } from "../observation/observation-channel";
+import type { RawKind } from "../observation/raw-value";
+import type { FunctionId, NodeId } from "./analysis";
 import {
   unitOfNodeId,
   type Analysis,
@@ -14,37 +27,20 @@ import {
   type Narrowing,
   type TransformRule,
   type UnitResolver,
-} from "../analysis";
+} from "./analysis";
 import {
   storeEvict,
   storeWrite,
-} from "../analysis-store";
-import {
-  type AssumptionChain,
-  carrier as carrierOf,
-  extend,
-  Refutations,
-  ROOT_CONTEXT,
-  without,
-} from "../../assumption";
-import type { CounterStore } from "../../observation/counter-store";
-import {
-  buildFunctionRegistry,
-  FunctionRegistry,
-  type FunctionScopeNode,
-} from "../function-registry";
+} from "./analysis-store";
+import type { BlockFixpointAnalysis } from "./dfa-factory";
 import {
   buildOneUnit,
   buildUnits,
   wireCFG,
   type Unit,
-} from "../function-unit";
-import type { FunctionId, NodeId } from "../analysis";
-import type { ObservationChannel } from "../../observation/observation-channel";
-import type { ObservationBinding } from "../../observation/observation-binding";
-import { ProgramTopology } from "../topology";
-import type { BlockFixpointAnalysis } from "../dfa-factory";
-import type { RawKind } from "../../observation/raw-value";
+} from "./function-unit";
+import { isRoot } from "../assumption/chain";
+import { ProgramTopology } from "./topology";
 /** A `(analysis, key, context)` triple as the worklist enqueues it. */
 interface AnalysisTriple {
   analysis: Analysis<any, any>;
@@ -144,7 +140,6 @@ export class Worklist {
    *  to invalidate them — keeps the framework free of concrete cache knowledge. */
   private readonly refuteSubs: Array<(unit: Unit, carrier: AssumptionChain) => void> = [];
 
-  readonly registry: FunctionRegistry;
   private readonly functionEnvironments: FunctionEnvironments;
 
   get topology(): ProgramTopology {
@@ -153,6 +148,10 @@ export class Worklist {
 
   get units(): ReadonlyMap<FunctionId, Unit> {
     return this._topology.units;
+  }
+
+  unitOfNode(nodeId: NodeId): Unit | undefined {
+    return this._topology.unitOfNode(nodeId);
   }
 
   private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
@@ -178,7 +177,6 @@ export class Worklist {
     ast: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
     analyses: ReadonlyArray<Analysis<any, any>>,
-    registry: FunctionRegistry | undefined,
     transforms: ReadonlyArray<TransformRule>,
     narrowings: ReadonlyArray<Narrowing<any, any>> = [],
     counters: ReadonlyArray<CounterStore<any>> = [],
@@ -209,14 +207,8 @@ export class Worklist {
     }
     this.unitResolverBySource = unitResolverBySource;
     this.bindingsBySource = bindingsBySource;
-    this.registry = registry ?? buildFunctionRegistry(ast);
     this.functionEnvironments = functionEnvironments;
-    for (const [, unit] of buildUnits(ast, functionEnvironments, this.registry)) {
-      if (!this.registry.hasNode(unit.funcAst)) {
-        throw new Error(
-          `[Worklist] unit for functionId=${unit.funcAst.id} missing from FunctionRegistry — registry likely built from a different AST`,
-        );
-      }
+    for (const [, unit] of buildUnits(ast, functionEnvironments)) {
       this._topology.registerUnit(unit);
     }
 
@@ -224,15 +216,22 @@ export class Worklist {
     for (const c of counters) this.registerCounter(c);
     for (const ch of channels) this.registerChannel(ch);
     for (const r of transforms) this.registerTransform(r);
-
-    this.registry.setMintListener(node => this.onRegistryMint(node));
   }
 
-  private onRegistryMint(node: FunctionScopeNode): void {
-    if (!(node instanceof StmtNS.FunctionDef)) return;
-    const unit = buildOneUnit(node, this.functionEnvironments, this.registry);
+  /** Register a structurally-introduced FunctionDef: build its Unit, publish
+   *  to the topology, and fire `onMint` subscribers. ROOT-only — function
+   *  identity has no chain dimension, so a non-ROOT rewrite would publish a
+   *  function visible to every sibling chain. */
+  addFunction(node: StmtNS.FunctionDef, chain: AssumptionChain): Unit {
+    if (!isRoot(chain)) {
+      throw new Error(
+        `[Worklist] addFunction: structural rewrites are ROOT-only (chain depth=${chain.depth}).`,
+      );
+    }
+    const unit = buildOneUnit(node, this.functionEnvironments);
     this._topology.registerUnit(unit);
     for (const sub of this.mintSubs) sub(this.passCtx, unit);
+    return unit;
   }
 
   private dirtyFor(rule: TransformRule): Set<Unit> {
@@ -585,6 +584,8 @@ export class Worklist {
     const worklist = this;
     return {
       topology,
+      units: topology.units,
+      unitOfNode: (nodeId) => topology.unitOfNode(nodeId),
       currentContext: context,
       read<K, V>(analysis: Analysis<K, V>, key: K): V {
         return analysis.store.read(key, context);

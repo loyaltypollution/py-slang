@@ -3,6 +3,11 @@ import type { AssumptionChain } from "../assumption/chain";
 import { forkBody } from "../speculation/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
 
+/** A fact value paired with the chain at which it was witnessed. Matches
+ *  `AnalysisStore.readMinimal`/`readDeepest`'s return shape; named here so
+ *  transforms that thread witnesses through helpers share one type. */
+export type Witnessed<T> = { value: T; witness: AssumptionChain };
+
 /** Invoke `onExpr` on every expression (and sub-expression) inside `stmts`.
  *  Lambda/MultiLambda bodies are not descended — they belong to separate units. */
 export function walkExprs(

@@ -31,33 +31,24 @@ export interface StoreWriteResult<V> {
  *  recorded" sentinel returned by statement transfer. Never mutated. */
 export const EMPTY_MAP: ReadonlyMap<unknown, unknown> = new Map();
 
-/** Walk `chain → ROOT`, returning the shallowest ancestor whose `tryRead`
- *  hit satisfies `accept`. */
-export function walkChainMinimal<K, V>(
+/** Walk `chain → ROOT`, returning either the shallowest ancestor whose
+ *  `tryRead` hit satisfies `accept` (`mode: "minimal"`) or the deepest
+ *  ancestor with any `tryRead` hit (`mode: "deepest"`). */
+export function walkChain<K, V>(
   chain: AssumptionChain,
   key: K,
   tryRead: (key: K, context: AssumptionChain) => V | undefined,
-  accept: (value: V) => boolean,
+  mode: "minimal" | "deepest",
+  accept: (value: V) => boolean = () => true,
 ): { value: V; witness: AssumptionChain } | undefined {
   let match: { value: V; witness: AssumptionChain } | undefined;
   for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
     const value = tryRead(key, cur);
-    if (value !== undefined && accept(value)) match = { value, witness: cur };
+    if (value === undefined || !accept(value)) continue;
+    if (mode === "deepest") return { value, witness: cur };
+    match = { value, witness: cur };
   }
   return match;
-}
-
-/** Walk `chain → ROOT`, returning the deepest ancestor with a `tryRead` hit. */
-export function walkChainDeepest<K, V>(
-  chain: AssumptionChain,
-  key: K,
-  tryRead: (key: K, context: AssumptionChain) => V | undefined,
-): { value: V; witness: AssumptionChain } | undefined {
-  for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
-    const value = tryRead(key, cur);
-    if (value !== undefined) return { value, witness: cur };
-  }
-  return undefined;
 }
 
 export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
@@ -94,14 +85,14 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
     key: K,
     accept: (value: V) => boolean,
   ): { value: V; witness: AssumptionChain } | undefined {
-    return walkChainMinimal(chain, key, (k, c) => this.tryRead(k, c), accept);
+    return walkChain(chain, key, (k, c) => this.tryRead(k, c), "minimal", accept);
   }
 
   readDeepest(
     chain: AssumptionChain,
     key: K,
   ): { value: V; witness: AssumptionChain } | undefined {
-    return walkChainDeepest(chain, key, (k, c) => this.tryRead(k, c));
+    return walkChain(chain, key, (k, c) => this.tryRead(k, c), "deepest");
   }
 
   /** Combine `value` with the existing cell via `algebra.join` and store.

@@ -12,9 +12,7 @@ import { isLocal, type SlotLookup } from "../../framework/slot-table";
 import {
   CONST_BOTTOM,
   CONST_TOP,
-  constEq,
-  constJoin,
-  constLeq,
+  constLattice,
   constOf,
   type ConstLattice,
 } from "./lattice";
@@ -25,13 +23,6 @@ import {
  *  speculation lives on `paramTypeNarrowing` exclusively. `constAnalysis`
  *  is a static (chain-invariant) pass driving `constantFoldingRule`,
  *  `deadStoreRule`, and `algebraicSimplifyRule`. */
-
-function constMeet(a: ConstLattice, b: ConstLattice): ConstLattice {
-  if (a.tag === "top") return b;
-  if (b.tag === "top") return a;
-  if (a.tag === "bottom" || b.tag === "bottom") return CONST_BOTTOM;
-  return a.value === b.value ? a : CONST_BOTTOM;
-}
 
 function foldBinary(op: TokenType, left: ConstLattice, right: ConstLattice): ConstLattice {
   if (left.tag !== "const" || right.tag !== "const") return CONST_TOP;
@@ -164,14 +155,9 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
 }
 
 const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
+  ...constLattice,
   mergeKind: "may",
   direction: "forward",
-  bottom: CONST_BOTTOM,
-  top: CONST_TOP,
-  join: constJoin,
-  meet: constMeet,
-  leq: constLeq,
-  eq: constEq,
   makeExprVisitor(
     env: MutableEnv<ConstLattice>,
     _unit,
@@ -180,9 +166,6 @@ const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
     _context: AssumptionChain,
   ): ExprNS.Visitor<ConstLattice> {
     return new ConstAnalysisVisitor(env, slotLookup, recordExprFact);
-  },
-  refineOnEdge(env, _edge) {
-    return env;
   },
 };
 
