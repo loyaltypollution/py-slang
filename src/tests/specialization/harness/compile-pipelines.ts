@@ -66,7 +66,7 @@ export function compileOptimized(code: string): SVMLProgram {
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(worklist),
+    makeDfaQuery(worklist.locate, (id) => worklist.futureDispatchChainForNode(id)),
   );
   return compiler.compileProgram(ast);
 }

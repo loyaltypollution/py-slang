@@ -9,7 +9,7 @@ import { setupAndDrain } from "./harness/compile-pipelines";
 function optimiseFn(fnBody: string): StmtNS.Stmt[] {
   const indented = fnBody.split("\n").map(l => "    " + l).join("\n");
   const { ast, worklist } = setupAndDrain(`def f():\n${indented}`);
-  const fnDef = worklist.functions.get(ast.id)!.body[0] as StmtNS.FunctionDef;
+  const fnDef = worklist.locate.functionById(ast.id)!.body[0] as StmtNS.FunctionDef;
   return fnDef.body;
 }
 
@@ -63,7 +63,7 @@ describe("dead-store elimination", () => {
 
   test("module-top-level assignments are NOT removed (observable namespace)", () => {
     const { ast, worklist } = setupAndDrain(`x = 1\ny = 2`);
-    const stmts = worklist.functions.get(ast.id)!.body;
+    const stmts = worklist.locate.functionById(ast.id)!.body;
     expect(stmts.filter(s => s instanceof StmtNS.Assign)).toHaveLength(2);
   });
 });

@@ -5,7 +5,7 @@ import { functionOfBlock, wakeOwningFunction } from "../program/views/function-r
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/views/function";
-import type { FunctionView } from "../program/views/function-view";
+import type { FunctionLocator } from "../program/views/function-locator";
 import {
   DescendingExprVisitor,
   ExprDrivenStmtVisitor,
@@ -16,7 +16,7 @@ import {
 
 type ConstHit = Witnessed<Extract<ConstLattice, { tag: "const" }>>;
 
-function readConst(chain: AssumptionChain, view: FunctionView, nodeId: number): ConstHit | undefined {
+function readConst(chain: AssumptionChain, view: FunctionLocator, nodeId: number): ConstHit | undefined {
   return constAnalysis.perExpr(view).readMinimal(
     chain,
     nodeId,
@@ -29,7 +29,7 @@ class ConstFoldExprVisitor extends DescendingExprVisitor {
 
   constructor(
     private readonly chain: AssumptionChain,
-    private readonly view: FunctionView,
+    private readonly view: FunctionLocator,
   ) {
     super();
   }
@@ -51,7 +51,7 @@ export const constantFoldingRule: TransformRule = {
       wakeOwningFunction(functionOfBlock),
     );
   },
-  sweep(unit: Function, chain: AssumptionChain, view: FunctionView): boolean {
+  sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator): boolean {
     const witnesses = new Set<AssumptionChain>();
     walkExprs(visibleBody(unit, chain), (e) => {
       if (!(e instanceof ExprNS.Binary)) return;

@@ -10,7 +10,7 @@ import { type AssumptionChain } from "../assumption";
 import { forkBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/views/function";
 import { runtimeCallCounter } from "../observation/runtime-analyses";
-import type { FunctionView } from "../program/views/function-view";
+import type { FunctionLocator } from "../program/views/function-locator";
 import { purityFunctionAnalysis } from "../analysis";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
@@ -131,7 +131,7 @@ export const memoizationRule: TransformRule = {
       clearMemoId(memoIdFor(fd, guardKeyFromGuards(directParamEntryGuardsFor(unit, carrier))));
     });
   },
-  sweep(unit: Function, chain: AssumptionChain, _view: FunctionView): boolean {
+  sweep(unit: Function, chain: AssumptionChain, _view: FunctionLocator): boolean {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
     // Fire one call before saturation so the memo wrapper is installed before

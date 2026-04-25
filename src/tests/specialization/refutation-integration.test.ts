@@ -27,7 +27,7 @@ def f(x, y):
     return x
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.functions.get(fd.id)!;
+    const unit = worklist.locate.functionById(fd.id)!;
 
     worklist.publish(
       runtimeParamChannel, paramKey(fd.id, 0),

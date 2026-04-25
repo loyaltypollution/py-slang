@@ -1,5 +1,4 @@
 import { type Narrowing } from "../framework/analysis";
-import { asProgramCtx } from "../program/program-ctx";
 import { paramKeyFunctionId, type ParamKey } from "./param-key";
 import { eq as typeEq, type TypeLattice } from "../analysis/type/lattice";
 import { liftType, typeAnalysis } from "../analysis/type/analysis";
@@ -16,5 +15,5 @@ export const paramTypeBinding: ObservationBinding<ParamKey, TypeLattice, RawKind
   narrowing: paramTypeNarrowing,
   source: runtimeParamChannel,
   lift: liftType,
-  resolveUnit: (ctx, key) => asProgramCtx(ctx).functions.get(paramKeyFunctionId(key)),
+  resolveUnit: (locator, key) => locator.functionById(paramKeyFunctionId(key)),
 };

@@ -12,9 +12,9 @@ import type {
 } from "../../framework/analysis";
 import { defineAnalysis } from "../../framework/analysis";
 import { internSingletonNode } from "../../program/node-set";
-import { asProgramCtx } from "../../program/program-ctx";
 import type { BasicBlock } from "../../program/views/basic-block";
 import type { Function } from "../../program/views/function";
+import type { FunctionLocator } from "../../program/views/function-locator";
 import { MutableEnv } from "../../analysis/mutable-env";
 import { isCapture, isLocal, type SlotLookup } from "../../program/slot-table";
 import { constAnalysis } from "../const/analysis";
@@ -254,7 +254,7 @@ function transferStmt(
       if (!isLocal(info)) { state.impure = true; return; }
       // `undefined` = scope verdict pending; readDeepest records the dep so
       // this block re-runs when the verdict lands.
-      const innerUnit = asProgramCtx(state.ctx).functions.get(fd.id);
+      const innerUnit = boundLocator?.functionById(fd.id);
       const innerPure = innerUnit !== undefined
         ? state.ctx.readDeepest(purityFunctionAnalysis, innerUnit)?.value
         : undefined;
@@ -273,6 +273,10 @@ function transferStmt(
 const EMPTY_EXPR_FACTS: ReadonlyMap<number, AbsVal> = new Map();
 
 const POOLED_PURITY_VISITOR = new PurityExprVisitor();
+
+/** Captured at `purityFunctionAnalysis.bind` time so the per-block transfer
+ *  can resolve nested-FunctionDef ids without casting AnalysisCtx. */
+let boundLocator: FunctionLocator | undefined;
 
 export const purityBlockAnalysis: BlockFixpointAnalysis<AbsVal> =
   makeBlockFixpointAnalysis<AbsVal>({
@@ -348,6 +352,7 @@ export const purityFunctionAnalysis: Analysis<Function, boolean | undefined> = d
     return anyVisited ? true : undefined;
   },
   bind(wl) {
+    boundLocator = wl.locate;
     const unitOf = (unit: Function): Function[] =>
       unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
     wl.onMint(purityFunctionAnalysis, (_ctx, unit) => unitOf(unit));

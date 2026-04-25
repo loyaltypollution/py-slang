@@ -1,6 +1,6 @@
 import { ROOT_CONTEXT, type AssumptionChain } from "../assumption";
 import { type JoinSemiLattice } from "../framework/analysis";
-import type { FunctionId } from "../program/views/function-view";
+import type { FunctionId } from "../program/views/function";
 import { paramKey, type ParamKey } from "../narrowing-policy/param-key";
 import type { Worklist } from "../framework/worklist";
 import { CounterStore } from "./counter-store";
@@ -63,7 +63,7 @@ export function makeJitObservers(
 
   return {
     observeScopeCall: (scopeId) => {
-      const unit = worklist.functions.get(scopeId);
+      const unit = worklist.locate.functionById(scopeId);
       const provenanceChain = unit !== undefined ? worklist.futureDispatchChainFor(unit) : ROOT_CONTEXT;
       scopeIds.push(scopeId);
       chains.push(provenanceChain);

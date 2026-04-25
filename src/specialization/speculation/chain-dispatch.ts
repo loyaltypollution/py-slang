@@ -7,12 +7,12 @@ import type { AssumptionChain } from "../assumption";
 import { visibleBody } from "./assumption-bodies";
 import { shadowNode } from "../framework/variant-body-clone";
 import type { Function } from "../program/views/function";
-import type { FunctionView } from "../program/views/function-view";
+import type { FunctionLocator } from "../program/views/function-locator";
 import { BOOL_BIT, BoolRef, typeAnalysis } from "../analysis";
 
 function conditionTruth(
   condId: number,
-  view: FunctionView,
+  view: FunctionLocator,
   context: AssumptionChain,
 ): boolean | undefined {
   const fact = typeAnalysis.perExpr(view).tryRead(condId, context);
@@ -26,7 +26,7 @@ function conditionTruth(
 function pruneWithFactsAt(
   stmts: readonly StmtNS.Stmt[],
   context: AssumptionChain,
-  view: FunctionView,
+  view: FunctionLocator,
 ): readonly StmtNS.Stmt[] {
   let changed = false;
   const out: StmtNS.Stmt[] = [];
@@ -83,7 +83,7 @@ export function dispatchValid(
 export function bodyToCompile(
   unit: Function,
   s: AssumptionChain,
-  view: FunctionView,
+  view: FunctionLocator,
   isRefuted?: (s: AssumptionChain) => boolean,
 ): readonly StmtNS.Stmt[] {
   if (!dispatchValid(unit, s, isRefuted)) {

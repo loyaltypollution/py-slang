@@ -4,13 +4,13 @@ import { functionOfBlock, wakeOwningFunction } from "../program/views/function-r
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/views/function";
-import type { FunctionView } from "../program/views/function-view";
+import type { FunctionLocator } from "../program/views/function-locator";
 import { BOOL_BIT, BoolRef, type TypeLattice, typeAnalysis } from "../analysis";
 import { BaseStmtVisitor, runWitnessSweep, type Witnessed } from "./witness-utils";
 
 function boolCondition(
   chain: AssumptionChain,
-  view: FunctionView,
+  view: FunctionLocator,
   nodeId: number,
 ): Witnessed<TypeLattice> | undefined {
   return typeAnalysis
@@ -26,7 +26,7 @@ function boolCondition(
 function collectConstCondWitnesses(
   stmts: readonly StmtNS.Stmt[],
   chain: AssumptionChain,
-  view: FunctionView,
+  view: FunctionLocator,
   out: Set<AssumptionChain>,
 ): void {
   for (const s of stmts) {
@@ -47,7 +47,7 @@ class DeadBranchVisitor extends BaseStmtVisitor {
   changed = false;
   constructor(
     private readonly chain: AssumptionChain,
-    private readonly view: FunctionView,
+    private readonly view: FunctionLocator,
   ) {
     super();
   }
@@ -94,7 +94,7 @@ export const deadBranchRule: TransformRule = {
   bind(wl) {
     wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, wakeOwningFunction(functionOfBlock));
   },
-  sweep(unit: Function, chain: AssumptionChain, view: FunctionView): boolean {
+  sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator): boolean {
     const witnesses = new Set<AssumptionChain>();
     collectConstCondWitnesses(visibleBody(unit, chain), chain, view, witnesses);
     return runWitnessSweep(

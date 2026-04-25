@@ -12,7 +12,7 @@ else:
 z = 3
 `);
 
-    const unit = worklist.functions.get(ast.id)!;
+    const unit = worklist.locate.functionById(ast.id)!;
     const ifStmt = ast.statements.find((s): s is StmtNS.If => s instanceof StmtNS.If)!;
     const thenStmt = ifStmt.body[0];
     const elseStmt = ifStmt.elseBlock![0];
@@ -33,11 +33,11 @@ def f():
 f()
 `);
 
-    const root = worklist.functions.get(ast.id)!;
+    const root = worklist.locate.functionById(ast.id)!;
     const fd = ast.statements.find(
       (s): s is StmtNS.FunctionDef => s instanceof StmtNS.FunctionDef,
     )!;
-    const nested = worklist.functions.get(fd.id)!;
+    const nested = worklist.locate.functionById(fd.id)!;
     const nestedStmt = fd.body[0];
     const defBlock = root.blockOfNode(fd.id)!;
 
@@ -46,7 +46,7 @@ f()
     expect(root.contains(nestedStmt.id)).toBe(false);
     expect(defBlock.contains(nestedStmt.id)).toBe(false);
     expect(nested.contains(nestedStmt.id)).toBe(true);
-    expect(worklist.functionOfNode(nestedStmt.id)).toBe(nested);
+    expect(worklist.locate.functionContainingNode(nestedStmt.id)).toBe(nested);
   });
 
   // Pins the documented hazard on `BasicBlock.nodeIds` and on
@@ -66,7 +66,7 @@ while i < 3:
     i = i + 1
 `);
 
-    const unit = worklist.functions.get(ast.id)!;
+    const unit = worklist.locate.functionById(ast.id)!;
     // Exit block is always synthetic — only ever link-targeted, never has
     // stmts pushed onto it.
     expect(unit.cfg.exit.stmts.length).toBe(0);

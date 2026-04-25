@@ -7,6 +7,20 @@ import type { SlotLookup } from "../slot-table";
 import { buildSlotTable } from "../slot-table";
 import type { View } from "./view";
 
+/** `FunctionDef.id` or `FileInput.id` (alias of NodeId, semantic only).
+ *
+ *  Boundary key — exists for runtime/JIT/observation surfaces (counters,
+ *  channels, AssumptionChain bindings, ParamKey) where a stable serialisable
+ *  identity is required. NOT a routing/structural key inside the IR; internal
+ *  view relations should use a `Function` reference (e.g. `block.unit`) and
+ *  reach for a FunctionId only at the boundary, via `unit.funcAst.id`.
+ *
+ *  A `FunctionDef` id has two legitimate meanings, kept distinct at call sites:
+ *    - `functionLocator.functionById(id)` resolves the function rooted at that node.
+ *    - `functionLocator.functionContainingNode(id)` resolves the enclosing
+ *      function that owns the FunctionDef statement in its CFG. */
+export type FunctionId = NodeId;
+
 /** Per-scope optimization unit. A View — concrete program region with
  *  NodeSet membership over the nodes it owns. `cfg` and `blockMap` are
  *  scheduler-owned and replaced by `Worklist.flushPendingRebuilds`. `body`

@@ -10,14 +10,21 @@ import { StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
 import { ROOT_CONTEXT, isRoot, type AssumptionChain } from "../../assumption";
 import type { NodeId } from "../node-set";
-import type { FunctionId } from "./function-view";
 import type { Refutations } from "../../assumption/refutation";
-import { buildFunctions, buildOneFunction, wireCFG, type Function } from "./function";
-import type { FunctionView } from "./function-view";
+import {
+  buildFunctions,
+  buildOneFunction,
+  wireCFG,
+  type Function,
+  type FunctionId,
+} from "./function";
+import type { FunctionLocator } from "./function-locator";
+import type { BasicBlock } from "./basic-block";
 
-/** Implements `FunctionView` so it's the runtime backing for
- *  `ProgramCtx.functions` / `ProgramCtx.functionOfNode`. */
-export class FunctionViewManager implements FunctionView {
+/** Implements `FunctionLocator` — the program-wide read surface for the
+ *  `Function` view kind. Future Phase-4 split: a generic `ViewManager<V>`
+ *  shell + the Function-specific build/index/locator/dispatch helpers. */
+export class FunctionViewManager implements FunctionLocator {
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
   private readonly functionByNode = new Map<NodeId, Function>();
   private readonly nodesByFunction = new Map<Function, Set<NodeId>>();
@@ -40,13 +47,25 @@ export class FunctionViewManager implements FunctionView {
     }
   }
 
-  // ── FunctionView surface ────────────────────────────────────────────
-  get functions(): ReadonlyMap<FunctionId, Function> {
-    return this.functionsByFunctionId;
+  // ── FunctionLocator surface ─────────────────────────────────────────
+  functions(): Iterable<Function> {
+    return this.functionsByFunctionId.values();
   }
 
-  functionOfNode(nodeId: NodeId): Function | undefined {
+  functionById(id: FunctionId): Function | undefined {
+    return this.functionsByFunctionId.get(id);
+  }
+
+  functionForAst(ast: StmtNS.FileInput | StmtNS.FunctionDef): Function | undefined {
+    return this.functionsByFunctionId.get(ast.id);
+  }
+
+  functionContainingNode(nodeId: NodeId): Function | undefined {
     return this.functionByNode.get(nodeId);
+  }
+
+  blockContaining(nodeId: NodeId): BasicBlock | undefined {
+    return this.functionByNode.get(nodeId)?.blockOfNode(nodeId);
   }
 
   // ── Lifecycle subscriptions ─────────────────────────────────────────
@@ -108,7 +127,7 @@ export class FunctionViewManager implements FunctionView {
   }
 
   futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
-    const unit = this.functionOfNode(nodeId);
+    const unit = this.functionContainingNode(nodeId);
     return unit === undefined ? ROOT_CONTEXT : this.futureDispatchChainFor(unit);
   }
 

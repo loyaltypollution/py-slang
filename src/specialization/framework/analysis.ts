@@ -66,9 +66,9 @@ export interface Narrowing<K = any, V = unknown> extends NarrowingId<K, V> {
 
 /** Generic transfer-time context. The framework knows about chain-walking
  *  reads, writes (with optional delta), and evictions — nothing about
- *  Functions, BasicBlocks, or specific view kinds. Worklist hands transfers
- *  a richer `ProgramCtx` (with function-view accessors) that analyses
- *  reach via `asProgramCtx`. */
+ *  Functions, BasicBlocks, or specific view kinds. Analyses that need
+ *  program-shape lookup capture a `FunctionLocator` explicitly at `bind`
+ *  time via `worklist.locate`; the ctx surface stays narrow. */
 export interface AnalysisCtx {
   readonly currentContext: AssumptionChain;
   read<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): V;
@@ -102,7 +102,7 @@ export interface AnalysisCtx {
  *  responsibility.
  *
  *  Generic over `V` (view) and `P` (program-wide handle). Today's transforms
- *  instantiate `TransformRule<Function, FunctionView>`. */
+ *  instantiate `TransformRule<Function, FunctionLocator>`. */
 export interface TransformRule<V = unknown, P = unknown> {
   /** Returns `true` iff the body at `chain` was mutated — the worklist
    *  then schedules a rebuild for `view`. Worklist always passes

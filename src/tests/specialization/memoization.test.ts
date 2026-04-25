@@ -56,7 +56,7 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
       "f",
       MEMO_TRIGGER_CALLS - 1,
     );
-    expect(memoFired(worklist.functions.get(fd.id)!)).toBe(false);
+    expect(memoFired(worklist.locate.functionById(fd.id)!)).toBe(false);
     expect(fd.body).toHaveLength(1);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.Return);
   });
@@ -67,7 +67,7 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
       "f",
       MEMO_TRIGGER_CALLS,
     );
-    expect(memoFired(worklist.functions.get(fd.id)!)).toBe(true);
+    expect(memoFired(worklist.locate.functionById(fd.id)!)).toBe(true);
     expect(fd.body).toHaveLength(2);
     const guard = fd.body[0] as StmtNS.If;
     expect(((guard.condition as ExprNS.Call).callee as ExprNS.Variable).name.lexeme).toBe("__memo_has");
@@ -128,7 +128,7 @@ describe("memoization: purity gate", () => {
       "g",
       MEMO_TRIGGER_CALLS * 2,
     );
-    expect(memoFired(worklist.functions.get(fd.id)!)).toBe(false);
+    expect(memoFired(worklist.locate.functionById(fd.id)!)).toBe(false);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.Return);
   });
 
@@ -138,7 +138,7 @@ describe("memoization: purity gate", () => {
       "f",
       MEMO_TRIGGER_CALLS * 2,
     );
-    expect(memoFired(worklist.functions.get(fd.id)!)).toBe(false);
+    expect(memoFired(worklist.locate.functionById(fd.id)!)).toBe(false);
     expect(fd.body).toHaveLength(2);
   });
 });
@@ -190,7 +190,7 @@ describe("memoization: SVML wiring", () => {
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      makeDfaQuery(worklist),
+      makeDfaQuery(worklist.locate),
     );
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
     worklist.drain();
@@ -213,12 +213,12 @@ f(5)
     const fd = findFunctionDef(ast, "f");
     observeCallsTo(worklist, fd, MEMO_TRIGGER_CALLS);
     worklist.drain();
-    expect(memoFired(worklist.functions.get(fd.id)!)).toBe(true);
+    expect(memoFired(worklist.locate.functionById(fd.id)!)).toBe(true);
 
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      makeDfaQuery(worklist),
+      makeDfaQuery(worklist.locate),
     );
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
 

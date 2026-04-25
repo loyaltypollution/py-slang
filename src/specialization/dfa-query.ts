@@ -1,5 +1,5 @@
 import type { NodeId } from "./framework/analysis";
-import type { FunctionView } from "./program/views/function-view";
+import type { FunctionLocator } from "./program/views/function-locator";
 import { ROOT_CONTEXT, type AssumptionChain } from "./assumption/chain";
 import {
   constAnalysis,
@@ -24,34 +24,23 @@ export interface DfaQuery extends StaticDfaQuery {
 }
 
 /** Thin facade over `typeAnalysis`/`constAnalysis` per-expression stores.
- *  The `FunctionView` handle is the seam where node-keyed reads
- *  materialize from block-keyed storage (`perExpr` walks block → env →
- *  expr-fact at the node's position). */
-interface FutureDispatchView extends FunctionView {
-  futureDispatchChainForNode(nodeId: NodeId): AssumptionChain;
-}
-
-function hasFutureDispatchView(view: FunctionView): view is FutureDispatchView {
-  return typeof (view as Partial<FutureDispatchView>).futureDispatchChainForNode === "function";
-}
-
+ *  `locator` is the seam where node-keyed reads materialize from block-keyed
+ *  storage (`perExpr` walks block → env → expr-fact at the node's position).
+ *  `futureDispatchChainForNode` is supplied explicitly — phase 5 splits the
+ *  speculation-policy surface from the locator/registry. Defaults to ROOT
+ *  for callers that have no per-node speculation chain. */
 export function makeDfaQuery(
-  view: FunctionView,
-  futureDispatchChainForNode?: (nodeId: NodeId) => AssumptionChain,
+  locator: FunctionLocator,
+  futureDispatchChainForNode: (nodeId: NodeId) => AssumptionChain = () => ROOT_CONTEXT,
 ): DfaQuery {
-  const typeStore = typeAnalysis.perExpr(view);
-  const constStore = constAnalysis.perExpr(view);
-  const futureChain = futureDispatchChainForNode ?? (
-    hasFutureDispatchView(view)
-      ? (nodeId: NodeId) => view.futureDispatchChainForNode(nodeId)
-      : () => ROOT_CONTEXT
-  );
+  const typeStore = typeAnalysis.perExpr(locator);
+  const constStore = constAnalysis.perExpr(locator);
   return {
     typeOf: id => typeStore.tryRead(id, ROOT_CONTEXT),
     constOf: id => constStore.tryRead(id, ROOT_CONTEXT),
     speculativeTypeOf: id =>
-      typeStore.tryRead(id, futureChain(id)),
+      typeStore.tryRead(id, futureDispatchChainForNode(id)),
     speculativeConstOf: id =>
-      constStore.tryRead(id, futureChain(id)),
+      constStore.tryRead(id, futureDispatchChainForNode(id)),
   };
 }

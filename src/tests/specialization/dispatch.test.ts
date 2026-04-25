@@ -8,7 +8,7 @@ import { setupAndDrain } from "./harness/compile-pipelines";
 describe("dispatchValid", () => {
   test("FileInput unit rejected", () => {
     const { ast, worklist } = setupAndDrain("x = 1");
-    const rootUnit = worklist.functions.get(ast.id)!;
+    const rootUnit = worklist.locate.functionById(ast.id)!;
     expect(dispatchValid(rootUnit, ROOT_CONTEXT)).toBe(false);
   });
 
@@ -20,7 +20,7 @@ def f():
     return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.functions.get(fd.id)!;
+    const unit = worklist.locate.functionById(fd.id)!;
     expect(dispatchValid(unit, ROOT_CONTEXT)).toBe(false);
   });
 
@@ -32,7 +32,7 @@ def f(x):
     return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.functions.get(fd.id)!;
+    const unit = worklist.locate.functionById(fd.id)!;
     worklist.publish(
       runtimeParamChannel, paramKey(fd.id, 0),
       { kind: "bool", value: true }, ROOT_CONTEXT,
@@ -59,7 +59,7 @@ def f(x):
         return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.functions.get(fd.id)!;
+    const unit = worklist.locate.functionById(fd.id)!;
     const originalBody = fd.body;
     const originalIf = originalBody[0];
 
@@ -73,7 +73,7 @@ def f(x):
 
     const specContext = worklist.futureDispatchChainFor(unit);
     expect(dispatchValid(unit, specContext)).toBe(true);
-    const body = bodyToCompile(unit, specContext, worklist);
+    const body = bodyToCompile(unit, specContext, worklist.locate);
     expect(body).not.toBe(unit.body);
     // Shared AST is untouched — the pruned body is a clone.
     expect(fd.body).toBe(originalBody);
@@ -88,9 +88,9 @@ def f(x):
     return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.functions.get(fd.id)!;
+    const unit = worklist.locate.functionById(fd.id)!;
     // ROOT_CONTEXT has no entry guards → dispatchValid === false.
-    expect(() => bodyToCompile(unit, ROOT_CONTEXT, worklist))
+    expect(() => bodyToCompile(unit, ROOT_CONTEXT, worklist.locate))
       .toThrow(/dispatchValid.*must hold/);
   });
 });

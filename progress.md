@@ -76,7 +76,81 @@ Updates:
 
 No code change. Tests still 810/810.
 
-## Phase 3 — pending
+## Phase 3 — done
+
+The big one. Killed `ProgramCtx`, `asProgramCtx`, the `FunctionView` registry,
+and the `function-view.ts` module. `AnalysisCtx` is now what its docstring
+always claimed it was: a generic transfer-time surface with no view-shape
+accessors.
+
+Architecture:
+- New `program/views/function-locator.ts` — read-only program-wide lookup
+  surface: `functions()`, `functionById`, `functionForAst`,
+  `functionContainingNode`, `blockContaining`. Manager implements it.
+- `Worklist.locate: FunctionLocator` is the single seam consumers use. The
+  old `worklist.functions` Map and `worklist.functionOfNode` forwarders are
+  gone; tests adopted `worklist.locate.functionById(id)` /
+  `worklist.locate.functionContainingNode(id)`.
+- `FunctionId` moved out of the dying `function-view.ts` into `function.ts`
+  (the file that already declares `Function`, whose `funcAst.id` IS this
+  type). `function-view.ts` deleted.
+- `program-ctx.ts` deleted (`ProgramCtx`, `asProgramCtx`).
+
+Migration:
+- All cast sites replaced with explicit dependencies:
+  - `dfa-factory` `readPerExprDeepest` captures `wl.locate` at
+    `factsAnalysis.bind` time and reads via `boundLocator.blockContaining`.
+  - `dfa-factory.perExpr(view)` → `perExpr(locator: FunctionLocator)`; cache
+    keyed by locator identity (the manager is the single instance per
+    program, same identity discipline as before).
+  - `purity` block-transfer captures `wl.locate` at
+    `purityFunctionAnalysis.bind` time. Resolves nested-FunctionDef ids via
+    `boundLocator.functionById(fd.id)`.
+  - `param-handles` `resolveUnit` reframed: `(locator, key) => locator.functionById(...)`.
+- `FunctionResolver<K>` signature changed from `(ctx, key) => Function | undefined`
+  to `(locator, key) => Function | undefined`. The cast layer was the only
+  reason the signature ever needed an `AnalysisCtx`.
+- Worklist subscription callbacks (`subscribe`, `subscribeOnAdvance`,
+  `onMint`, `onRebuildDirty`, `onSpecRev`, `onTransformFactDirty`,
+  `onTransformCounterBumped`) had their `dirtied: (ctx, key) => Iterable<K>`
+  signature changed to `(locator, key) => Iterable<K>`. Existing call sites
+  all used `(_ctx, ...)` — never read the ctx — so this was a strict
+  signature tightening. Internal `enqueueAt` projection still uses the
+  per-write ctx for chain context; that's not part of the dirtied surface.
+- Transforms migrated from `view: FunctionView` parameter to
+  `locator: FunctionLocator` (mechanical rename across
+  algebraic-simplify, constant-folding, dead-branch, dead-store, memoization,
+  speculation/chain-dispatch, dfa-query). The `view` name was always wrong
+  here; it carried a registry, not a view object.
+- `dfa-query.makeDfaQuery` took the (`FunctionView`, optional duck-typed
+  future-dispatch) shape. Now takes `(FunctionLocator, futureDispatchChainForNode?)`
+  with the future-dispatch hook as an explicit second argument. Phase 5
+  will further untangle that callback from the locator.
+
+Smells noticed:
+- `function-resolver.ts` left in place — its helpers (`functionOfBlock`,
+  `functionOfNodeId`, `functionOfFunctionId`) are now one-liners over the
+  locator. They earn their keep as call-site documentation but are
+  inlineable. `wakeOwningFunction` is more substantive (turns a unit
+  resolver into an iterable wake). Worth revisiting in Phase 6 alongside
+  the broader transform-capability narrowing.
+- `Worklist.passCtx` is still around (used by `bump` for counter dispatch
+  and as a default ctx for the sweep path). Phase 6's "transforms receive
+  only the read/query capabilities they need" will probably eat it.
+- Many of the existing `(_ctx, key) => …` callbacks revealed an old
+  generalisation that never got used: every dirtied callback received a
+  per-write `AnalysisCtx`, but no caller ever read it. Either the
+  generalisation was speculative, or it was intended to give callbacks
+  access to the chain — which they got via the enqueue path anyway.
+  Either way, the simpler signature was always available.
+- The deletion of `ProgramCtx` removed the only place where the framework's
+  generic ctx interface was widened with view-shape concepts. The
+  vocabulary now actually holds the line the comments always claimed it
+  did. (Several stale comments referenced `asProgramCtx`/"richer ctx" —
+  cleaned up.)
+
+## Phase 4 — pending
+
 
 
 

@@ -14,7 +14,7 @@ function purityOf(code: string, fnName: string): boolean | undefined {
   const { ast, worklist } = setupAndDrain(code);
   for (const stmt of ast.statements) {
     if (stmt instanceof StmtNS.FunctionDef && stmt.name.lexeme === fnName) {
-      return worklist.tryRead(purityFunctionAnalysis, worklist.functions.get(stmt.id)!, ROOT_CONTEXT);
+      return worklist.tryRead(purityFunctionAnalysis, worklist.locate.functionById(stmt.id)!, ROOT_CONTEXT);
     }
   }
   throw new Error(`FunctionDef ${fnName} not found`);
@@ -173,15 +173,15 @@ def hot(x):
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
 
-    expect(worklist.tryRead(purityFunctionAnalysis, worklist.functions.get(fn.id)!,ROOT_CONTEXT)).toBe(false);
+    expect(worklist.tryRead(purityFunctionAnalysis, worklist.locate.functionById(fn.id)!,ROOT_CONTEXT)).toBe(false);
 
     worklist.publish(runtimeParamChannel, paramKey(fn.id, 0), { kind: "number", value: 8 }, ROOT_CONTEXT);
     worklist.drain();
 
-    const unit = worklist.functions.get(fn.id)!;
+    const unit = worklist.locate.functionById(fn.id)!;
     const specCtx = worklist.futureDispatchChainFor(unit);
     expect(specCtx).not.toBe(ROOT_CONTEXT);
-    expect(worklist.tryRead(purityFunctionAnalysis, worklist.functions.get(fn.id)!,specCtx)).toBe(true);
+    expect(worklist.tryRead(purityFunctionAnalysis, worklist.locate.functionById(fn.id)!,specCtx)).toBe(true);
   });
 });
 

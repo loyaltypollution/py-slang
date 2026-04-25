@@ -73,5 +73,5 @@ export function buildFirstFunctionUnit(
   const { ast, worklist } = setupWithAnalyses(code, analyses);
   worklist.drain();
   const fn = ast.statements[0] as StmtNS.FunctionDef;
-  return { unit: worklist.functions.get(fn.id)!, worklist };
+  return { unit: worklist.locate.functionById(fn.id)!, worklist };
 }

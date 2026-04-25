@@ -7,7 +7,7 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
 import { ROOT_CONTEXT, at, type AssumptionChain } from "../../assumption";
 import { type Narrowing } from "../../framework/analysis";
-import type { FunctionId } from "../../program/views/function-view";
+import type { FunctionId } from "../../program/views/function";
 import { functionOfFunctionId } from "../../program/views/function-resolver";
 import type { Function } from "../../program/views/function";
 import { MutableEnv } from "../../analysis/mutable-env";

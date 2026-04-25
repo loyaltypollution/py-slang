@@ -10,8 +10,7 @@ import type {
 } from "../framework/analysis";
 import { defineAnalysis } from "../framework/analysis";
 import { EMPTY_NODESET, nodeSetOfIds } from "../program/node-set";
-import type { FunctionView } from "../program/views/function-view";
-import { asProgramCtx } from "../program/program-ctx";
+import type { FunctionLocator } from "../program/views/function-locator";
 import type { ReadonlyAnalysisStore } from "../framework/analysis-store";
 import { EMPTY_MAP, storeContexts, storeEvict, walkChain } from "../framework/analysis-store";
 import type { BasicBlock, CFGEdge } from "../program/views/basic-block";
@@ -125,7 +124,7 @@ export interface BlockFixpointAnalysis<L> {
    *  consumers. NOT edge-recording — use `readPerExprDeepest(ctx, nodeId)`
    *  from inside a transfer if you want auto-invalidation when the cell
    *  changes. */
-  perExpr(view: FunctionView): ReadonlyAnalysisStore<number, L>;
+  perExpr(locator: FunctionLocator): ReadonlyAnalysisStore<number, L>;
   /** Edge-recording per-expression read. Walks the chain at `ctx.currentContext`,
    *  returning the deepest ancestor whose facts map contains `nodeId`.
    *  Records a read edge on `(facts, blockOfNode(nodeId))` so that any
@@ -336,17 +335,21 @@ export function makeBlockFixpointAnalysis<L>(
   };
 
   // factsAnalysis: eviction only. envAnalysis drives the seed; expr facts
-  // do not propagate through CFG successors.
+  // do not propagate through CFG successors. Captures `wl.locate` for the
+  // transfer-time `readPerExprDeepest` block lookup — explicit dependency
+  // instead of casting AnalysisCtx to a richer ctx.
+  let boundLocator: FunctionLocator | undefined;
   factsAnalysis.bind = (wl) => {
+    boundLocator = wl.locate;
     wl.onRebuildEvict((unit) => evictStaleBlockCells(factsAnalysis.store, unit));
   };
 
-  const perExprCache = new WeakMap<FunctionView, ReadonlyAnalysisStore<number, L>>();
-  function perExpr(view: FunctionView): ReadonlyAnalysisStore<number, L> {
-    const cached = perExprCache.get(view);
+  const perExprCache = new WeakMap<FunctionLocator, ReadonlyAnalysisStore<number, L>>();
+  function perExpr(locator: FunctionLocator): ReadonlyAnalysisStore<number, L> {
+    const cached = perExprCache.get(locator);
     if (cached !== undefined) return cached;
     const tryReadNode = (nodeId: number, context: AssumptionChain): L | undefined => {
-      const block = view.functionOfNode(nodeId)?.blockOfNode(nodeId);
+      const block = locator.blockContaining(nodeId);
       return block === undefined ? undefined : factsAnalysis.store.tryRead(block, context)?.get(nodeId);
     };
     const store: ReadonlyAnalysisStore<number, L> = {
@@ -368,7 +371,7 @@ export function makeBlockFixpointAnalysis<L>(
         return walkChain(chain, key, tryReadNode, "deepest");
       },
     };
-    perExprCache.set(view, store);
+    perExprCache.set(locator, store);
     return store;
   }
 
@@ -376,7 +379,10 @@ export function makeBlockFixpointAnalysis<L>(
     ctx: AnalysisCtx,
     nodeId: number,
   ): { value: L; witness: AssumptionChain } | undefined {
-    const block = asProgramCtx(ctx).functionOfNode(nodeId)?.blockOfNode(nodeId);
+    if (boundLocator === undefined) {
+      throw new Error("[readPerExprDeepest] called before factsAnalysis was bound to a Worklist.");
+    }
+    const block = boundLocator.blockContaining(nodeId);
     if (block === undefined) return undefined;
     // Single edge on (factsAnalysis, block) — invalidation fires on any
     // advancing write to that block's facts map. Walk via store.tryRead so

@@ -2,7 +2,7 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
 import { type AssumptionChain, at, isRoot } from "../../assumption";
 import type { Narrowing, NodeId } from "../../framework/analysis";
-import type { FunctionId } from "../../program/views/function-view";
+import type { FunctionId } from "../../program/views/function";
 import type { ParamKey } from "../../narrowing-policy/param-key";
 import { MutableEnv } from "../../analysis/mutable-env";
 import { isLocal, type SlotLookup } from "../../program/slot-table";

@@ -16,7 +16,6 @@ import type { ObservationBinding } from "../observation/observation-binding";
 import type { ObservationChannel } from "../observation/observation-channel";
 import type { NodeId, NodeSet } from "./analysis";
 import { intersects } from "../program/node-set";
-import type { FunctionId } from "../program/views/function-view";
 import {
   type Analysis,
   type AnalysisCtx,
@@ -25,13 +24,13 @@ import {
   type TransformRule,
 } from "./analysis";
 import { functionOfNodeId, type FunctionResolver } from "../program/views/function-resolver";
-import type { ProgramCtx } from "../program/program-ctx";
 import {
   storeEvict,
   storeWrite,
 } from "./analysis-store";
 import { type Function } from "../program/views/function";
 import { FunctionViewManager } from "../program/views/function-view-manager";
+import type { FunctionLocator } from "../program/views/function-locator";
 
 /** A `(analysis, key, context)` triple as the worklist enqueues it. */
 interface AnalysisTriple {
@@ -152,13 +151,12 @@ export class Worklist {
   /** Refutation filter (minimal generators; `contains(c) = ∃ r. leq(r, c)`). */
   private readonly refutations: Refutations = new Refutations();
 
-  // Convenience accessors delegating to the function-view manager.
-  get functions(): ReadonlyMap<FunctionId, Function> {
-    return this.functionViews.functions;
-  }
-
-  functionOfNode(nodeId: NodeId): Function | undefined {
-    return this.functionViews.functionOfNode(nodeId);
+  /** Read surface for the `Function` view kind — function/block lookups by
+   *  id, AST node, or enclosing node. Generic dispatch does not need this;
+   *  consumers that genuinely require program shape capture it explicitly
+   *  (typically at `Analysis.bind` / `TransformRule.bind`). */
+  get locate(): FunctionLocator {
+    return this.functionViews;
   }
 
   private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
@@ -273,13 +271,13 @@ export class Worklist {
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
     interest: NodeSet,
-    dirtied: (ctx: AnalysisCtx, key: unknown) => Iterable<K>,
+    dirtied: (locator: FunctionLocator, key: unknown) => Iterable<K>,
     opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
   ): void {
     const project = opts?.enqueueAt;
     const fire = (ctx: AnalysisCtx, key: unknown): void => {
       const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
-      for (const k of dirtied(ctx, key)) this.enqueue(reader, k, enqueueCtx);
+      for (const k of dirtied(this.functionViews, key)) this.enqueue(reader, k, enqueueCtx);
     };
     let list = this.nodeSetSubs.get(from);
     if (list === undefined) {
@@ -294,13 +292,13 @@ export class Worklist {
   subscribeOnAdvance<K extends NodeSet>(
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
-    dirtied: (ctx: AnalysisCtx, key: unknown) => Iterable<K>,
+    dirtied: (locator: FunctionLocator, key: unknown) => Iterable<K>,
     opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
   ): void {
     const project = opts?.enqueueAt;
     Worklist.addSub(this.advanceSubs, from, (ctx, key) => {
       const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
-      for (const k of dirtied(ctx, key)) this.enqueue(reader, k, enqueueCtx);
+      for (const k of dirtied(this.functionViews, key)) this.enqueue(reader, k, enqueueCtx);
     });
   }
 
@@ -308,10 +306,10 @@ export class Worklist {
    *  at registration so late subscribers see the initial burst. */
   onMint<K extends NodeSet>(
     reader: Analysis<K, any>,
-    dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
+    dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
     this.functionViews.onMint(unit => {
-      for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+      for (const k of dirtied(this.functionViews, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
@@ -319,10 +317,10 @@ export class Worklist {
    *  `onRebuildEvict` to drop stale block-keyed cells. */
   onRebuildDirty<K extends NodeSet>(
     reader: Analysis<K, any>,
-    dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
+    dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
     this.functionViews.onRebuild(unit => {
-      for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+      for (const k of dirtied(this.functionViews, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
@@ -336,10 +334,10 @@ export class Worklist {
    *  observation-driven extension mutates `futureDispatchContext`. */
   onSpecRev<K extends NodeSet>(
     reader: Analysis<K, any>,
-    dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
+    dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
     this.functionViews.onSpecRev(unit => {
-      for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+      for (const k of dirtied(this.functionViews, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
@@ -373,11 +371,11 @@ export class Worklist {
   onTransformFactDirty<K extends NodeSet>(
     rule: TransformRule,
     from: Analysis<K, any>,
-    dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Function>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
   ): void {
     const dirty = this.dirtyFor(rule);
-    Worklist.addSub(this.advanceSubs, from as Analysis<any, any>, (ctx, key) => {
-      for (const u of dirtied(ctx, key as K)) dirty.add(u);
+    Worklist.addSub(this.advanceSubs, from as Analysis<any, any>, (_ctx, key) => {
+      for (const u of dirtied(this.functionViews, key as K)) dirty.add(u);
     });
   }
 
@@ -407,11 +405,11 @@ export class Worklist {
   /** Subscribe a transform to counter bumps. */
   onTransformCounterBumped<K>(rule: TransformRule,
     counter: CounterStore<K>,
-    dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Function>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
   ): void {
     const dirty = this.dirtyFor(rule);
-    Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (ctx, key) => {
-      for (const u of dirtied(ctx, key as K)) dirty.add(u);
+    Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (_ctx, key) => {
+      for (const u of dirtied(this.functionViews, key as K)) dirty.add(u);
     });
   }
 
@@ -567,7 +565,7 @@ export class Worklist {
         for (const unit of dirty) {
           const chain = this.futureDispatchChainFor(unit);
           if (this.isRefuted(chain)) continue;
-          const fired = r.sweep(unit, chain, this);
+          const fired = r.sweep(unit, chain, this.functionViews);
           if (fired) {
             this.functionViews.schedulePendingRebuild(unit);
             anyFired = true;
@@ -581,16 +579,12 @@ export class Worklist {
     return anyFired;
   }
 
-  /** Allocate a `ProgramCtx` bound to `context`. Framework's `Analysis`
-   *  signature only promises `AnalysisCtx`; the richer ctx (with view
-   *  accessors) is reached via `asProgramCtx`. Getters on `functions` /
-   *  `functionOfNode` keep `passCtx` (a class-field initializer) working
-   *  before the constructor body runs. */
-  private makeCtx(context: AssumptionChain): ProgramCtx {
+  /** Allocate an `AnalysisCtx` bound to `context`. Generic surface only —
+   *  no view-shape accessors. Consumers that need program shape acquire a
+   *  `FunctionLocator` explicitly at `bind` time via `worklist.locate`. */
+  private makeCtx(context: AssumptionChain): AnalysisCtx {
     const worklist = this;
     return {
-      get functions() { return worklist.functions; },
-      functionOfNode: (nodeId: NodeId) => worklist.functionOfNode(nodeId),
       currentContext: context,
       read<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): V {
         worklist.recordReadEdge(analysis as Analysis<any, any>, key);
@@ -669,7 +663,7 @@ export class Worklist {
     if (applicable === undefined || applicable.length === 0) return context;
 
     const resolveUnit = this.unitResolverBySource.get(source) ?? functionOfNodeId;
-    const unit = resolveUnit(this.passCtx, key);
+    const unit = resolveUnit(this.functionViews, key);
     if (unit === undefined) return context;
 
     const parentCtx = context;

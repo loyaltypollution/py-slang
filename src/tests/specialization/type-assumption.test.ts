@@ -15,10 +15,10 @@ def hot(x):
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    const block = worklist.functionOfNode(xRead.id)?.blockOfNode(xRead.id)!;
+    const block = worklist.locate.functionContainingNode(xRead.id)?.blockOfNode(xRead.id)!;
 
     // ROOT-context fact: x is a parameter slot → TOP.
-    expect(typeAnalysis.perExpr(worklist).tryRead(xRead.id, ROOT_CONTEXT)?.kinds)
+    expect(typeAnalysis.perExpr(worklist.locate).tryRead(xRead.id, ROOT_CONTEXT)?.kinds)
       .not.toBe(INT_BIT);
 
     // Build a Context with a single assumption: x at `xRead.id` is INT_POS.
@@ -33,7 +33,7 @@ def hot(x):
     expect(narrowed?.kinds).toBe(INT_BIT);
 
     // The ROOT cell is unaffected — independent Kildall per context.
-    const rootStill = typeAnalysis.perExpr(worklist).tryRead(xRead.id, ROOT_CONTEXT);
+    const rootStill = typeAnalysis.perExpr(worklist.locate).tryRead(xRead.id, ROOT_CONTEXT);
     expect(rootStill?.kinds).not.toBe(INT_BIT);
   });
 
@@ -60,7 +60,7 @@ def hot(x, z):
     ) as StmtNS.Assign;
     const xRead = xAssign.value as ExprNS.Variable;
     const zRead = zAssign.value as ExprNS.Variable;
-    const block = worklist.functionOfNode(xRead.id)?.blockOfNode(xRead.id)!;
+    const block = worklist.locate.functionContainingNode(xRead.id)?.blockOfNode(xRead.id)!;
 
     // Assumption only at xRead.id, not zRead.id.
     const ctx = extend(ROOT_CONTEXT, typeNarrowing, xRead.id, INT_POS);
@@ -84,7 +84,7 @@ def hot(x):
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    const block = worklist.functionOfNode(xRead.id)?.blockOfNode(xRead.id)!;
+    const block = worklist.locate.functionContainingNode(xRead.id)?.blockOfNode(xRead.id)!;
 
     const ctxIntPos = extend(ROOT_CONTEXT, typeNarrowing, xRead.id, INT_POS);
     // A different assumption value at the same node.
