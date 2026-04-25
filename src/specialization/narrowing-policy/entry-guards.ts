@@ -1,6 +1,6 @@
 import { StmtNS } from "../../ast-types";
 import { at, type AssumptionChain, isRoot } from "../assumption";
-import type { Function } from "../program/views/function";
+import type { Function } from "../program/function";
 import { paramKey, paramKeyIndex, type ParamKey } from "./param-key";
 import { paramTypeNarrowing } from "./param-handles";
 import { returnKindNarrowing, type TypeLattice } from "../analysis";

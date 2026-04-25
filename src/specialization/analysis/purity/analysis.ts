@@ -12,9 +12,9 @@ import type {
 } from "../../framework/analysis";
 import { defineAnalysis } from "../../framework/analysis";
 import { internSingletonNode } from "../../program/node-set";
-import type { BasicBlock } from "../../program/views/basic-block";
-import type { Function } from "../../program/views/function";
-import type { FunctionLocator } from "../../program/views/function-locator";
+import type { BasicBlock } from "../../program/basic-block";
+import type { Function } from "../../program/function";
+import type { FunctionLocator } from "../../program/function-locator";
 import { MutableEnv } from "../../analysis/mutable-env";
 import { isCapture, isLocal, type SlotLookup } from "../../program/slot-table";
 import { constAnalysis } from "../const/analysis";

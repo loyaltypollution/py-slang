@@ -1,10 +1,10 @@
 // Per-Function speculation policy is split into the composed
 // `FunctionDispatchState` — orthogonal to node ownership.
 
-import { StmtNS } from "../../../ast-types";
-import type { FunctionEnvironments } from "../../../resolver";
-import { isRoot, ROOT_CONTEXT, type AssumptionChain } from "../../assumption";
-import { EMPTY_NODESET, nodeSetOfIds, type NodeId, type NodeSet } from "../node-set";
+import { StmtNS } from "../../ast-types";
+import type { FunctionEnvironments } from "../../resolver";
+import { isRoot, ROOT_CONTEXT, type AssumptionChain } from "../assumption";
+import { EMPTY_NODESET, nodeSetOfIds, type NodeId, type NodeSet } from "./node-set";
 import {
   buildFunctions,
   buildOneFunction,

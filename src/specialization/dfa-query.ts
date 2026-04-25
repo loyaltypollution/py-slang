@@ -1,5 +1,5 @@
 import type { NodeId } from "./framework/analysis";
-import type { FunctionLocator } from "./program/views/function-locator";
+import type { FunctionLocator } from "./program/function-locator";
 import { ROOT_CONTEXT, type AssumptionChain } from "./assumption/chain";
 import {
   constAnalysis,

@@ -7,8 +7,8 @@ import {
 } from "./dfa-factory";
 import type { AssumptionChain } from "../assumption/chain";
 import { EMPTY_MAP } from "../framework/analysis-store";
-import type { BasicBlock } from "../program/views/basic-block";
-import type { Function } from "../program/views/function";
+import type { BasicBlock } from "../program/basic-block";
+import type { Function } from "../program/function";
 import { MutableEnv } from "./mutable-env";
 import { isLocal, type SlotLookup } from "../program/slot-table";
 

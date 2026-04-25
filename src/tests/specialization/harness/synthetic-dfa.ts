@@ -5,12 +5,12 @@ import type {
   JoinSemiLattice,
   Lattice,
 } from "../../../specialization/framework/analysis";
-import type { BasicBlock } from "../../../specialization/program/views/basic-block";
+import type { BasicBlock } from "../../../specialization/program/basic-block";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
 } from "../../../specialization/analysis/dfa-factory";
-import type { Function } from "../../../specialization/program/views/function";
+import type { Function } from "../../../specialization/program/function";
 import { MutableEnv } from "../../../specialization/analysis/mutable-env";
 import type { Worklist } from "../../../specialization/framework/worklist";
 import { setupWithAnalyses } from "./compile-pipelines";

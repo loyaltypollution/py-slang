@@ -27,9 +27,9 @@ import {
   storeEvict,
   storeWrite,
 } from "./analysis-store";
-import { type Function } from "../program/views/function";
-import { FunctionManager } from "../program/views/function-manager";
-import type { FunctionLocator } from "../program/views/function-locator";
+import { type Function } from "../program/function";
+import { FunctionManager } from "../program/function-manager";
+import type { FunctionLocator } from "../program/function-locator";
 
 /** Resolver supplied per-binding (or the default below): turns the channel's
  *  key into the owning Function so observation ingress can route narrowings
@@ -161,10 +161,10 @@ export class Worklist {
   /** Refutation filter (minimal generators; `contains(c) = ∃ r. leq(r, c)`). */
   private readonly refutations: Refutations = new Refutations();
 
-  /** Read surface for the `Function` view kind — function/block lookups by
-   *  id, AST node, or enclosing node. Generic dispatch does not need this;
-   *  consumers that genuinely require program shape capture it explicitly
-   *  (typically at `Analysis.bind` / `TransformRule.bind`). */
+  /** Read surface for `Function` lookups — by id, AST node, or enclosing
+   *  node. Generic dispatch does not need this; consumers that genuinely
+   *  require program shape capture it explicitly (typically at
+   *  `Analysis.bind` / `TransformRule.bind`). */
   get locate(): FunctionLocator {
     return this.functionManager;
   }

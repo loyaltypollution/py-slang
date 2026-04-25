@@ -1,6 +1,6 @@
 import type { NarrowingId } from "../assumption";
-import type { Function } from "../program/views/function";
-import type { FunctionLocator } from "../program/views/function-locator";
+import type { Function } from "../program/function";
+import type { FunctionLocator } from "../program/function-locator";
 import type { ObservationChannel } from "./observation-channel";
 
 export interface ObservationBinding<K = any, V = unknown, O = unknown> {

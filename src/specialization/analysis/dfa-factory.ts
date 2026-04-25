@@ -10,11 +10,11 @@ import type {
 } from "../framework/analysis";
 import { defineAnalysis } from "../framework/analysis";
 import { EMPTY_NODESET, nodeSetOfIds } from "../program/node-set";
-import type { FunctionLocator } from "../program/views/function-locator";
+import type { FunctionLocator } from "../program/function-locator";
 import type { ReadonlyAnalysisStore } from "../framework/analysis-store";
 import { EMPTY_MAP, storeContexts, storeEvict, walkChain } from "../framework/analysis-store";
-import type { BasicBlock, CFGEdge } from "../program/views/basic-block";
-import type { Function } from "../program/views/function";
+import type { BasicBlock, CFGEdge } from "../program/basic-block";
+import type { Function } from "../program/function";
 import { MutableEnv } from "../analysis/mutable-env";
 import type { SlotLookup } from "../program/slot-table";
 

@@ -1,8 +1,8 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption/chain";
 import { forkBody, visibleBody } from "../speculation/assumption-bodies";
-import type { Function } from "../program/views/function";
-import type { FunctionLocator } from "../program/views/function-locator";
+import type { Function } from "../program/function";
+import type { FunctionLocator } from "../program/function-locator";
 import { isLocal, type SlotLookup } from "../program/slot-table";
 import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../analysis";

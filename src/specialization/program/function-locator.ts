@@ -1,9 +1,9 @@
-import type { StmtNS } from "../../../ast-types";
-import type { NodeId } from "../node-set";
+import type { StmtNS } from "../../ast-types";
+import type { NodeId } from "./node-set";
 import type { BasicBlock } from "./basic-block";
 import type { Function, FunctionId } from "./function";
 
-/** Read-only program-wide lookup surface for the `Function` view kind.
+/** Read-only program-wide lookup surface for `Function`.
  *
  *  Owned by `FunctionManager`. Consumers that need program-shape lookup
  *  take this as an explicit dependency rather than casting `AnalysisCtx`

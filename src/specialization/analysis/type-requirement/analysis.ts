@@ -7,7 +7,7 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
 import { ROOT_CONTEXT, at, type AssumptionChain } from "../../assumption";
 import { type Narrowing } from "../../framework/analysis";
-import type { Function, FunctionId } from "../../program/views/function";
+import type { Function, FunctionId } from "../../program/function";
 import { MutableEnv } from "../../analysis/mutable-env";
 import { isLocal, type SlotLookup } from "../../program/slot-table";
 import type { ObservationBinding } from "../../observation/observation-binding";

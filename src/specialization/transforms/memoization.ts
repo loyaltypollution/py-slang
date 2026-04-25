@@ -7,9 +7,9 @@ import type { TransformRule } from "../framework/analysis";
 import { shadowNode } from "../framework/variant-body-clone";
 import { type AssumptionChain } from "../assumption";
 import { forkBody } from "../speculation/assumption-bodies";
-import type { Function } from "../program/views/function";
+import type { Function } from "../program/function";
 import { runtimeCallCounter } from "../observation/runtime-analyses";
-import type { FunctionLocator } from "../program/views/function-locator";
+import type { FunctionLocator } from "../program/function-locator";
 import { purityFunctionAnalysis } from "../analysis";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;

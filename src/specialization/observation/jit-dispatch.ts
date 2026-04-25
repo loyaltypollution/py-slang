@@ -1,5 +1,5 @@
 import type { StmtNS } from "../../ast-types";
-import type { Function, FunctionId } from "../program/views/function";
+import type { Function, FunctionId } from "../program/function";
 import type { Worklist } from "../framework/worklist";
 import { bodyToCompile, dispatchValid } from "../speculation/chain-dispatch";
 import { makeJitObservers } from "./runtime-analyses";

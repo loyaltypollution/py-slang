@@ -3,7 +3,7 @@
 // (preferred-dispatch chain change). Plus the orthogonal `onRefute` event.
 
 import { setup } from "./harness/compile-pipelines";
-import type { Function } from "../../specialization/program/views/function";
+import type { Function } from "../../specialization/program/function";
 import type { NodeSet } from "../../specialization/program/node-set";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import type { AssumptionChain } from "../../specialization/assumption/chain";

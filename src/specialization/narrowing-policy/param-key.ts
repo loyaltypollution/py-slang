@@ -1,4 +1,4 @@
-import type { FunctionId } from "../program/views/function";
+import type { FunctionId } from "../program/function";
 
 /** Function-entry parameter identity, encoded as `${functionId}:${paramIndex}`
  *  so it is usable directly as an AssumptionChain / observation key.

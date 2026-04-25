@@ -2,8 +2,8 @@
 // identity. Consumers keyed by block reference must evict when the
 // owning Function's extent changes (FunctionManager.onExtentChange).
 
-import type { ExprNS, StmtNS } from "../../../ast-types";
-import type { NodeId, NodeSet } from "../node-set";
+import type { ExprNS, StmtNS } from "../../ast-types";
+import type { NodeId, NodeSet } from "./node-set";
 import type { Function } from "./function";
 
 export type BlockId = number;

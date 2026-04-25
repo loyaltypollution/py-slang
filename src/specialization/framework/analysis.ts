@@ -2,8 +2,8 @@ import type { AssumptionChain, NarrowingId } from "../assumption/chain";
 import type { NodeId, NodeSet } from "../program/node-set";
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
 import type { Worklist } from "./worklist";
-import type { Function } from "../program/views/function";
-import type { FunctionLocator } from "../program/views/function-locator";
+import type { Function } from "../program/function";
+import type { FunctionLocator } from "../program/function-locator";
 import type { CounterStore } from "../observation/counter-store";
 
 export type { NodeId, NodeSet } from "../program/node-set";
@@ -69,7 +69,7 @@ export interface Narrowing<K = any, V = unknown> extends NarrowingId<K, V> {
 
 /** Generic transfer-time context. The framework knows about chain-walking
  *  reads, writes (with optional delta), and evictions — nothing about
- *  Functions, BasicBlocks, or specific view kinds. Analyses that need
+ *  program-shape nouns like `Function` or `BasicBlock`. Analyses that need
  *  program-shape lookup capture a `FunctionLocator` explicitly at `bind`
  *  time via `worklist.locate`; the ctx surface stays narrow. */
 export interface AnalysisCtx {

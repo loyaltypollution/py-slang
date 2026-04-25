@@ -1,10 +1,10 @@
-import { ExprNS, StmtNS } from "../../../ast-types";
-import type { FunctionEnvironments } from "../../../resolver";
-import type { NodeId, NodeSet } from "../node-set";
+import { ExprNS, StmtNS } from "../../ast-types";
+import type { FunctionEnvironments } from "../../resolver";
+import type { NodeId, NodeSet } from "./node-set";
 import type { BasicBlock, BlockId, CFG } from "./basic-block";
 import { buildCFG } from "./basic-block";
-import type { SlotLookup } from "../slot-table";
-import { buildSlotTable } from "../slot-table";
+import type { SlotLookup } from "./slot-table";
+import { buildSlotTable } from "./slot-table";
 
 /** Boundary key for runtime/JIT/observation surfaces (counters, channels,
  *  AssumptionChain bindings, ParamKey). Internal view relations should use
