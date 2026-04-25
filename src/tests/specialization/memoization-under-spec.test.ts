@@ -29,10 +29,7 @@ async function runJitWithIntrospection(code: string, functionName: string) {
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(
-      worklist,
-      id => worklist.futureDispatchChainForNode(id),
-    ),
+    makeDfaQuery(worklist),
   );
   const program = compiler.compileProgram(ast);
 
