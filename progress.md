@@ -149,7 +149,46 @@ Smells noticed:
   did. (Several stale comments referenced `asProgramCtx`/"richer ctx" —
   cleaned up.)
 
-## Phase 4 — pending
+## Phase 4 — done
+
+Bookkeeping phase — extracts the kind-agnostic shell out of FunctionManager.
+
+- New `program/views/view-manager.ts` with `ViewManager<V extends View>`.
+  Generic shell only: `values()`, `onMint(cb)`, `onRebuild(cb)`. Per-kind
+  lookups (`functionById`, `blockContaining`) are NOT in the shell — they
+  live on the kind-specific manager / its `Locator` companion. The reason
+  is the same one that motivates the Locator/Manager split: a hypothetical
+  `LoopManager` has no `functionById`, so generic code must not depend on
+  one.
+- Renamed: `function-view-manager.ts` → `function-manager.ts`,
+  `FunctionViewManager` → `FunctionManager`. The field on Worklist became
+  `functionManager` to match.
+- `FunctionManager` now declares `implements ViewManager<Function>,
+  FunctionLocator`. The lifecycle (`onMint`/`onRebuild`) signatures already
+  matched the generic shell — only `functions()` had to change to `values()`
+  to satisfy `ViewManager.values()`. `FunctionLocator.functions()` was
+  unused by any caller, so it left with the rename.
+
+What did NOT change in Phase 4:
+- Worklist still keeps `functionManager: FunctionManager` (concrete) rather
+  than a `Map<ViewKind, ViewManager<V>>`. There is exactly one view kind
+  today; introducing the generic store before a second kind exists is the
+  premature-architecture trap the user explicitly flagged in memory. When
+  a `LoopManager` actually arrives, the shell is ready to receive it.
+- Generic lifecycle loops in Worklist still mention `Function` (because
+  every callback fans out to per-Function dirty sets). Phase 6's
+  `TransformRule<V>` work is the right place to push the generic plumbing
+  the rest of the way.
+
+Smells noticed:
+- The `FunctionLocator` interface and the `FunctionManager` class both
+  carry "function" in their name and live one directory apart. That's
+  fine while there's one kind; it would become noise if we end up with
+  `FooLocator` + `FooManager` per kind. Worth revisiting if a second view
+  kind ever lands — the locator may want to be inlined into the manager.
+
+## Phase 5 — pending
+
 
 
 

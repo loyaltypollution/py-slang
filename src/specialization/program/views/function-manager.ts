@@ -1,10 +1,8 @@
-// Owns Function lifecycle, indexing, and per-function dispatch context.
-// This is the *manager* for the `Function` view kind; despite the legacy
-// name it is not itself a view. The framework's vocabulary stops at
-// `View` / `NodeSet`; per-kind concerns (registry, indexing, mint/rebuild,
-// speculation policy) live here. Phase 4 of the view-contract refactor
-// extracts a generic `ViewManager<V>` shell from this class and renames it
-// to `FunctionManager`.
+// Owns Function lifecycle, indexing, locator surface, and per-function
+// dispatch context. The generic `ViewManager<V>` interface captures the
+// kind-agnostic shell (mint/rebuild lifecycle + iteration); kind-specific
+// concerns — building from AST, node-to-function indexing, FunctionLocator
+// lookups, future-dispatch policy — live here.
 
 import { StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
@@ -20,11 +18,9 @@ import {
 } from "./function";
 import type { FunctionLocator } from "./function-locator";
 import type { BasicBlock } from "./basic-block";
+import type { ViewManager } from "./view-manager";
 
-/** Implements `FunctionLocator` — the program-wide read surface for the
- *  `Function` view kind. Future Phase-4 split: a generic `ViewManager<V>`
- *  shell + the Function-specific build/index/locator/dispatch helpers. */
-export class FunctionViewManager implements FunctionLocator {
+export class FunctionManager implements ViewManager<Function>, FunctionLocator {
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
   private readonly functionByNode = new Map<NodeId, Function>();
   private readonly nodesByFunction = new Map<Function, Set<NodeId>>();
@@ -47,11 +43,12 @@ export class FunctionViewManager implements FunctionLocator {
     }
   }
 
-  // ── FunctionLocator surface ─────────────────────────────────────────
-  functions(): Iterable<Function> {
+  // ── ViewManager<Function> surface ───────────────────────────────────
+  values(): Iterable<Function> {
     return this.functionsByFunctionId.values();
   }
 
+  // ── FunctionLocator surface ─────────────────────────────────────────
   functionById(id: FunctionId): Function | undefined {
     return this.functionsByFunctionId.get(id);
   }
@@ -88,7 +85,7 @@ export class FunctionViewManager implements FunctionLocator {
   addFunction(node: StmtNS.FunctionDef, chain: AssumptionChain): Function {
     if (!isRoot(chain)) {
       throw new Error(
-        `[FunctionViewManager.addFunction] structural rewrites are ROOT-only (chain depth=${chain.depth}).`,
+        `[FunctionManager.addFunction] structural rewrites are ROOT-only (chain depth=${chain.depth}).`,
       );
     }
     const unit = buildOneFunction(node, this.functionEnvironments);

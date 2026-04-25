@@ -29,7 +29,7 @@ import {
   storeWrite,
 } from "./analysis-store";
 import { type Function } from "../program/views/function";
-import { FunctionViewManager } from "../program/views/function-view-manager";
+import { FunctionManager } from "../program/views/function-manager";
 import type { FunctionLocator } from "../program/views/function-locator";
 
 /** A `(analysis, key, context)` triple as the worklist enqueues it. */
@@ -89,7 +89,7 @@ export class Worklist {
   /** Function-shape state lives here. Worklist's vocabulary stops at view-
    *  agnostic dispatch; everything Function-specific (indices, lifecycle,
    *  speculation context, CFG rebuild) is the manager's concern. */
-  readonly functionViews: FunctionViewManager;
+  readonly functionManager: FunctionManager;
 
   private readonly registeredAnalyses = new Set<Analysis<any, any>>();
   // Two tier-specific FIFOs: the only enforced order is
@@ -156,7 +156,7 @@ export class Worklist {
    *  consumers that genuinely require program shape capture it explicitly
    *  (typically at `Analysis.bind` / `TransformRule.bind`). */
   get locate(): FunctionLocator {
-    return this.functionViews;
+    return this.functionManager;
   }
 
   private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
@@ -209,10 +209,10 @@ export class Worklist {
     }
     this.unitResolverBySource = unitResolverBySource;
     this.bindingsBySource = bindingsBySource;
-    // Build the function-view manager FIRST: registrations below depend on
+    // Build the function manager FIRST: registrations below depend on
     // the initial mint burst it fires when subscribers register via
     // `onMint`. Manager constructor builds Functions from `ast`.
-    this.functionViews = new FunctionViewManager(ast, functionEnvironments);
+    this.functionManager = new FunctionManager(ast, functionEnvironments);
 
     for (const p of analyses) this.register(p);
     for (const c of counters) this.registerCounter(c);
@@ -231,9 +231,9 @@ export class Worklist {
     return this.refutations.contains(node);
   }
 
-  /** Subscribe to refutation events. Delegates to the function-view manager. */
+  /** Subscribe to refutation events. Delegates to the function manager. */
   onRefute(callback: (unit: Function, carrier: AssumptionChain) => void): void {
-    this.functionViews.onRefute(callback);
+    this.functionManager.onRefute(callback);
   }
 
   /** Refute `carrier` for `unit`: add the minimal singleton of the carrier's
@@ -245,7 +245,7 @@ export class Worklist {
     const a = carrier.assumption!;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
     this.refutations.add(minimal);
-    this.functionViews.refuteSubscribersAndReconcileDispatch(unit, carrier, this.refutations);
+    this.functionManager.refuteSubscribersAndReconcileDispatch(unit, carrier, this.refutations);
   }
 
   private static addSub<S>(
@@ -277,7 +277,7 @@ export class Worklist {
     const project = opts?.enqueueAt;
     const fire = (ctx: AnalysisCtx, key: unknown): void => {
       const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
-      for (const k of dirtied(this.functionViews, key)) this.enqueue(reader, k, enqueueCtx);
+      for (const k of dirtied(this.functionManager, key)) this.enqueue(reader, k, enqueueCtx);
     };
     let list = this.nodeSetSubs.get(from);
     if (list === undefined) {
@@ -298,7 +298,7 @@ export class Worklist {
     const project = opts?.enqueueAt;
     Worklist.addSub(this.advanceSubs, from, (ctx, key) => {
       const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
-      for (const k of dirtied(this.functionViews, key)) this.enqueue(reader, k, enqueueCtx);
+      for (const k of dirtied(this.functionManager, key)) this.enqueue(reader, k, enqueueCtx);
     });
   }
 
@@ -308,8 +308,8 @@ export class Worklist {
     reader: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
-    this.functionViews.onMint(unit => {
-      for (const k of dirtied(this.functionViews, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+    this.functionManager.onMint(unit => {
+      for (const k of dirtied(this.functionManager, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
@@ -319,15 +319,15 @@ export class Worklist {
     reader: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
-    this.functionViews.onRebuild(unit => {
-      for (const k of dirtied(this.functionViews, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+    this.functionManager.onRebuild(unit => {
+      for (const k of dirtied(this.functionManager, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
   /** Subscribe an evict callback to rebuild. Drops block-keyed cells whose
    *  `BasicBlock` identities belong to the pre-rebuild CFG. */
   onRebuildEvict(evict: (unit: Function) => void): void {
-    this.functionViews.onRebuild(evict);
+    this.functionManager.onRebuild(evict);
   }
 
   /** Subscribe `reader` to spec-context bumps on any unit. Fires when
@@ -336,8 +336,8 @@ export class Worklist {
     reader: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
-    this.functionViews.onSpecRev(unit => {
-      for (const k of dirtied(this.functionViews, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+    this.functionManager.onSpecRev(unit => {
+      for (const k of dirtied(this.functionManager, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
@@ -359,8 +359,8 @@ export class Worklist {
     this.transformDirty.set(rule, dirty);
 
     const addUnit = (unit: Function): void => { dirty.add(unit); };
-    this.functionViews.onMint(addUnit);
-    this.functionViews.onRebuild(addUnit);
+    this.functionManager.onMint(addUnit);
+    this.functionManager.onRebuild(addUnit);
     rule.bind?.(this);
   }
 
@@ -375,7 +375,7 @@ export class Worklist {
   ): void {
     const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.advanceSubs, from as Analysis<any, any>, (_ctx, key) => {
-      for (const u of dirtied(this.functionViews, key as K)) dirty.add(u);
+      for (const u of dirtied(this.functionManager, key as K)) dirty.add(u);
     });
   }
 
@@ -409,7 +409,7 @@ export class Worklist {
   ): void {
     const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (_ctx, key) => {
-      for (const u of dirtied(this.functionViews, key as K)) dirty.add(u);
+      for (const u of dirtied(this.functionManager, key as K)) dirty.add(u);
     });
   }
 
@@ -565,9 +565,9 @@ export class Worklist {
         for (const unit of dirty) {
           const chain = this.futureDispatchChainFor(unit);
           if (this.isRefuted(chain)) continue;
-          const fired = r.sweep(unit, chain, this.functionViews);
+          const fired = r.sweep(unit, chain, this.functionManager);
           if (fired) {
-            this.functionViews.schedulePendingRebuild(unit);
+            this.functionManager.schedulePendingRebuild(unit);
             anyFired = true;
           }
         }
@@ -663,7 +663,7 @@ export class Worklist {
     if (applicable === undefined || applicable.length === 0) return context;
 
     const resolveUnit = this.unitResolverBySource.get(source) ?? functionOfNodeId;
-    const unit = resolveUnit(this.functionViews, key);
+    const unit = resolveUnit(this.functionManager, key);
     if (unit === undefined) return context;
 
     const parentCtx = context;
@@ -677,13 +677,13 @@ export class Worklist {
       }
       if (pruned === parentCtx) return parentCtx;
       if (this.refutations.contains(pruned)) {
-        this.functionViews.clearFutureDispatchContext(unit);
+        this.functionManager.clearFutureDispatchContext(unit);
         return ROOT_CONTEXT;
       }
-      if (pruned === ROOT_CONTEXT) this.functionViews.clearFutureDispatchContext(unit);
-      else this.functionViews.setFutureDispatchContext(unit, pruned);
+      if (pruned === ROOT_CONTEXT) this.functionManager.clearFutureDispatchContext(unit);
+      else this.functionManager.setFutureDispatchContext(unit, pruned);
       this.enqueueNarrowingEntry(unit, pruned);
-      this.functionViews.fireSpecRev(unit);
+      this.functionManager.fireSpecRev(unit);
       return pruned;
     }
 
@@ -705,23 +705,23 @@ export class Worklist {
 
     if (newCtx === parentCtx) return parentCtx;
     if (this.refutations.contains(newCtx)) {
-      this.functionViews.clearFutureDispatchContext(unit);
+      this.functionManager.clearFutureDispatchContext(unit);
       return ROOT_CONTEXT;
     }
-    this.functionViews.setFutureDispatchContext(unit, newCtx);
+    this.functionManager.setFutureDispatchContext(unit, newCtx);
     this.enqueueNarrowingEntry(unit, newCtx);
-    this.functionViews.fireSpecRev(unit);
+    this.functionManager.fireSpecRev(unit);
     return newCtx;
   }
 
   /** Preferred future-dispatch chain for `unit`. Delegates to manager. */
   futureDispatchChainFor(unit: Function): AssumptionChain {
-    return this.functionViews.futureDispatchChainFor(unit);
+    return this.functionManager.futureDispatchChainFor(unit);
   }
 
   /** Same as `futureDispatchChainFor`, keyed by nodeId. */
   futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
-    return this.functionViews.futureDispatchChainForNode(nodeId);
+    return this.functionManager.futureDispatchChainForNode(nodeId);
   }
 
   /** Drain to fixed point: analyses → transforms → analyses → CFG rebuild,
@@ -736,7 +736,7 @@ export class Worklist {
       this.processAnalysesToFixpoint();
       const fired = this.sweepTransforms();
       this.processAnalysesToFixpoint();
-      const rebuilt = this.functionViews.flushPendingRebuilds();
+      const rebuilt = this.functionManager.flushPendingRebuilds();
 
       if (!fired && rebuilt.length === 0) break;
 

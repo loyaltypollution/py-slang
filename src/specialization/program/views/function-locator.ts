@@ -5,12 +5,10 @@ import type { Function, FunctionId } from "./function";
 
 /** Read-only program-wide lookup surface for the `Function` view kind.
  *
- *  Owned by `FunctionViewManager` (becomes `FunctionManager` in Phase 4).
- *  Consumers that need program-shape lookup take this as an explicit
- *  dependency rather than casting `AnalysisCtx` to a richer ctx. */
+ *  Owned by `FunctionManager`. Consumers that need program-shape lookup
+ *  take this as an explicit dependency rather than casting `AnalysisCtx`
+ *  to a richer ctx. */
 export interface FunctionLocator {
-  /** Iterate all known functions in registration order. */
-  functions(): Iterable<Function>;
   /** Lookup by FunctionId boundary key (typically `funcAst.id`). */
   functionById(id: FunctionId): Function | undefined;
   /** Lookup by AST scope node — equivalent to `functionById(ast.id)`. The
