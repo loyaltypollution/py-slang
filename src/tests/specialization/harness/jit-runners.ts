@@ -29,7 +29,6 @@ export async function runSvmlJit(code: string): Promise<string[]> {
     makeDfaQuery(
       worklist,
       id => worklist.futureDispatchChainForNode(id),
-      u => worklist.futureDispatchChainFor(u),
     ),
   );
   const program = compiler.compileProgram(ast);
@@ -69,7 +68,6 @@ export async function runSvmlNoJit(code: string): Promise<string[]> {
     makeDfaQuery(
       worklist,
       id => worklist.futureDispatchChainForNode(id),
-      u => worklist.futureDispatchChainFor(u),
     ),
   );
   const program = compiler.compileProgram(ast);

@@ -26,7 +26,6 @@ describe("DfaQuery / StaticDfaQuery split", () => {
     // Sound readers are present on both sides.
     expect(typeof restricted.typeOf).toBe("function");
     expect(typeof restricted.constOf).toBe("function");
-    expect(typeof restricted.isPureScope).toBe("function");
 
     // Speculative readers are absent from StaticDfaQuery — the following
     // lines must fail the typechecker. If any of them stop failing, the

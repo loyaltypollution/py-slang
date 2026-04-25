@@ -32,7 +32,6 @@ async function runJitWithIntrospection(code: string, functionName: string) {
     makeDfaQuery(
       worklist,
       id => worklist.futureDispatchChainForNode(id),
-      u => worklist.futureDispatchChainFor(u),
     ),
   );
   const program = compiler.compileProgram(ast);
