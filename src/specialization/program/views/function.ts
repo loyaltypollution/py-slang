@@ -5,11 +5,13 @@ import type { BasicBlock, BlockId, CFG } from "./basic-block";
 import { buildCFG } from "./basic-block";
 import type { SlotLookup } from "../slot-table";
 import { buildSlotTable } from "../slot-table";
+import type { View } from "./view";
 
-/** Per-scope optimization unit. `cfg` and `blockMap` are scheduler-owned
- *  and replaced by `Worklist.flushPendingRebuilds`. `body` is a live getter
- *  onto the AST. Function identity is `funcAst.id`. */
-export interface Function {
+/** Per-scope optimization unit. A View — concrete program region with
+ *  NodeSet membership over the nodes it owns. `cfg` and `blockMap` are
+ *  scheduler-owned and replaced by `Worklist.flushPendingRebuilds`. `body`
+ *  is a live getter onto the AST. Function identity is `funcAst.id`. */
+export interface Function extends View {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];

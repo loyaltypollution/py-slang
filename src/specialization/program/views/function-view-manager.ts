@@ -1,6 +1,10 @@
 // Owns Function lifecycle, indexing, and per-function dispatch context.
-// Worklist delegates Function-shape orchestration here; the framework's
-// vocabulary stops at `View` / `NodeSet`.
+// This is the *manager* for the `Function` view kind; despite the legacy
+// name it is not itself a view. The framework's vocabulary stops at
+// `View` / `NodeSet`; per-kind concerns (registry, indexing, mint/rebuild,
+// speculation policy) live here. Phase 4 of the view-contract refactor
+// extracts a generic `ViewManager<V>` shell from this class and renames it
+// to `FunctionManager`.
 
 import { StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";

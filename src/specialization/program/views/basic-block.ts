@@ -5,6 +5,7 @@ import type { ExprNS, StmtNS } from "../../../ast-types";
 import type { NodeId } from "../node-set";
 import type { FunctionId } from "./function-view";
 import type { Function } from "./function";
+import type { View } from "./view";
 
 export type BlockId = number;
 
@@ -23,14 +24,15 @@ export type CFGEdge =
       readonly condition: ExprNS.Expr;
     };
 
-export interface BasicBlock {
+/** A View — concrete CFG region with exclusive ownership of its `nodeIds`.
+ *  Synthetic blocks (entry/exit/joins) have empty `nodeIds` and are not
+ *  valid `subscribe` interests. */
+export interface BasicBlock extends View {
   readonly id: BlockId;
   readonly stmts: StmtNS.Stmt[];
   readonly successorEdges: CFGEdge[];
   readonly predecessorEdges: CFGEdge[];
   readonly unitId: FunctionId;
-  /** Node ids owned by this block. Synthetic blocks (entry/exit/joins) have
-   *  empty `nodeIds` and are not valid `subscribe` interests. */
   readonly nodeIds: Set<NodeId>;
   contains(n: NodeId): boolean;
   readonly size: number;

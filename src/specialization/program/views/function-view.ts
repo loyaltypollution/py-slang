@@ -10,9 +10,11 @@ import type { NodeId } from "../node-set";
  *  Keep that distinction explicit at call sites. */
 export type FunctionId = NodeId;
 
-/** Read-only program-wide function-view index. This is the program-shape
- *  capability exposed through `ProgramCtx`; generic framework dispatch should
- *  not depend on it. */
+/** Read-only program-wide function index. NOT a view object — this is a
+ *  registry surface (the view objects are `Function` and `BasicBlock`). The
+ *  name is historical and is scheduled to change with Phase 3 of the
+ *  view-contract refactor (becomes the lookup surface on `FunctionManager`).
+ *  Generic framework dispatch should not depend on it. */
 export interface FunctionView {
   readonly functions: ReadonlyMap<FunctionId, Function>;
   functionOfNode(nodeId: NodeId): Function | undefined;
