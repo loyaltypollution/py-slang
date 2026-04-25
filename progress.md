@@ -387,6 +387,131 @@ explicit: don't begin by designing a generic hierarchy; begin by writing
 the three answers (materialized / looked up / rebuilt) for Loop. Nothing
 to do until that work lands.
 
+## Phase 11 — done
+
+The structural change. Worklist's transform sweep had been hardwired to
+Function: dirty sets typed `Set<Function>`, mint/rebuild dirtying went
+through `FunctionManager` directly, and `sweepTransforms` read
+`futureDispatchChainFor` + `schedulePendingRebuild` off the manager.
+`TransformRule<V, P>` had the V slot since Phase 6 but the runtime was
+monomorphic. User's call: this is the lever that unblocks Loop-based
+analyses and any other root scheduling unit.
+
+New `SweepKind<V>` interface (framework/sweep-kind.ts) names the four
+operational questions a transform-sweep granularity has to answer:
+mint subscription, rebuild subscription, chainFor(view), scheduleRebuild.
+A new view kind ships its own SweepKind impl and the worklist needs no
+further surgery.
+
+Worklist refactor:
+- `transformDirty: Map<rule, Set<Function>>` →
+  `transformEntries: Map<rule, { kind: SweepKind<V>, dirty: Set<V> }>`
+- `registerTransform<V>(rule, kind?)` — overload-typed: no-kind form is
+  constrained to `TransformRule<Function, any>`, explicit form is
+  generic. Existing call sites unchanged.
+- `onTransformFactDirty<V, K>` / `onTransformCounterBumped<V, K>` infer
+  V from the rule arg; dirtied callbacks return `Iterable<V>`.
+- `sweepTransforms` uses `entry.kind.chainFor` / `entry.kind.scheduleRebuild`
+  per rule; nothing in the loop knows about Function specifically.
+
+`TransformBindCtx` (analysis.ts) tightens to match — same V inference.
+
+Two load-bearing tests in `sweep-kind-polymorphism.test.ts`:
+1. Register a rule under a custom `SweepKind<SynthView>`; pin that mint,
+   rebuild, chain selection, and scheduleRebuild all route through the
+   custom kind, not through FunctionManager.
+2. Custom `chainFor` controls the chain passed to `sweep`.
+
+Without these tests the polymorphism would type-check but rot.
+
+Smells noticed:
+- The default-kind injection in `registerTransform` requires one
+  internal `as unknown as SweepKind<V>` cast in the implementation
+  signature — TS can't prove `SweepKind<Function>` ⊆ `SweepKind<V>`
+  without a constraint that doesn't exist at the type system. Isolated
+  behind overloads so callers never see it.
+- Analysis-side subscriptions (`onMint`, `onRebuildDirty`, `onSpecRev`)
+  still take `unit: Function`. That's intentional — they fan out to
+  analysis dirty sets keyed by NodeSet, not view kind. If a future Loop
+  kind needs Loop-mint-driven analysis seeding, that's a separate
+  generalization.
+
+## Phase 12 — done (function-resolver elimination)
+
+`function-resolver.ts` had become a pre-polymorphism artifact: three
+one-line wrappers (`functionOfBlock` / `functionOfNodeId` /
+`functionOfFunctionId`) plus `wakeOwningFunction` lift. With
+`TransformBindCtx` inferring `Iterable<V>` per-rule (Phase 11), nothing
+load-bearing remained.
+
+Inlined at every call site:
+- 4 transforms (algebraic-simplify, constant-folding, dead-branch,
+  dead-store): `wakeOwningFunction(functionOfBlock)` → `(_, b) => [b.unit]`.
+  block.unit is non-undefined by construction; the lift step was
+  zero-value.
+- memoization: `wakeOwningFunction(functionOfFunctionId)` → 3-line
+  lambda doing the option→list step explicitly.
+- type-requirement: `resolveUnit: functionOfFunctionId` → arrow lambda.
+
+Type-level cleanup:
+- `ObservationBinding.resolveUnit`'s typed shape inlined as
+  `(FunctionLocator, K) => Function | undefined` — was
+  `FunctionResolver<K>`.
+- Worklist's per-channel resolver gets a local `UnitResolver` alias and
+  a `defaultUnitResolver` constant for the "key is a NodeId, find the
+  enclosing function" default.
+
+Why this matters: every consumer was a "do the same thing as Function"
+shape that obstructed migration to per-kind dirty fan-out. Removing the
+shared resolver helpers makes the polymorphic shape (V inferred from
+the rule) the only path. A future Loop transform writes its own lambda;
+no shared wrapper has to be generalised.
+
+## Phase 13 — done (FunctionSweepKind consolidation)
+
+`FunctionSweepKind` was a 17-line wrapper class with one consumer
+(Worklist) — exactly the "1 consumer → consider inlining" pattern. Folded
+into `FunctionManager` directly: it now `implements FunctionLocator,
+SweepKind<Function>`. Added `chainFor(unit)` as a one-line delegate to
+`dispatch.futureDispatchChainFor`; renamed `schedulePendingRebuild` →
+`scheduleRebuild` (the `Pending` was leaking the until-flush
+implementation detail, and SweepKind's interface already spells it that
+way).
+
+`Worklist.functionSweepKind` is now `this.functionManager` directly,
+typed as `SweepKind<Function>` — no wrapper construction.
+
+Pattern this confirms for future kinds: a per-kind manager that owns
+lifecycle + lookup naturally implements its own SweepKind. No
+intermediate wrapper class needed. A `LoopManager` would `implements
+LoopLocator, SweepKind<Loop>` the same way.
+
+## Cumulative state
+
+`program/views/` after this run:
+- view.ts (marker — `View extends NodeSet`)
+- function.ts (Function + buildOneFunction + wireCFG)
+- function-manager.ts (registry + FunctionLocator + SweepKind<Function> +
+  lifecycle + composed FunctionDispatchState)
+- function-locator.ts (read-only narrow interface)
+- function-dispatch.ts (speculation policy, composed)
+- basic-block.ts (BasicBlock + buildCFG)
+
+Down from 9 files at the start of this run (deleted: view-manager.ts,
+function-view.ts, program-ctx.ts, function-resolver.ts,
+function-sweep-kind.ts).
+
+Polymorphic dirty model (Phase 11) is the structural change; everything
+else (Phases 7-10 view contract, 12-13 cleanup) is downstream
+clarification.
+
+Adding a new root view kind today means:
+1. Define `interface MyView extends View` and its construction owner.
+2. Implement `SweepKind<MyView>` (mint/rebuild/chainFor/scheduleRebuild)
+   — typically on whatever object materialises the views.
+3. Register transforms with `registerTransform(rule, mySweepKind)`.
+4. No worklist surgery.
+
 
 
 
