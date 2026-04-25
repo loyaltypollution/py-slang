@@ -1,7 +1,14 @@
 // Owns Function lifecycle (build/index/rebuild) and the FunctionLocator
-// read surface. The generic `ViewManager<V>` interface captures the
-// kind-agnostic shell (mint/rebuild + iteration); kind-specific lookups
-// (`functionById`, `blockContaining`, ...) live on the locator.
+// read surface. Concrete owner of the function-rooted world — NOT a
+// generic template for other view kinds. When a second root view kind
+// arrives, extract the smallest correct shared shape from *two* live
+// consumers, not from this one.
+//
+// The three-question contract for `Function`:
+//   - materialized: by this manager from the AST + function environments.
+//   - looked up:    via FunctionLocator (this manager implements it).
+//   - rebuilt:      directly, via flushPendingRebuilds — Function is the
+//                   root scheduling unit; blocks rebuild transitively.
 //
 // Per-Function speculation policy (futureDispatchContext, refute/spec-rev
 // fan-out) is split out into a composed `FunctionDispatchState` —
@@ -22,10 +29,9 @@ import {
 } from "./function";
 import type { FunctionLocator } from "./function-locator";
 import type { BasicBlock } from "./basic-block";
-import type { ViewManager } from "./view-manager";
 import { FunctionDispatchState } from "./function-dispatch";
 
-export class FunctionManager implements ViewManager<Function>, FunctionLocator {
+export class FunctionManager implements FunctionLocator {
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
   private readonly functionByNode = new Map<NodeId, Function>();
   private readonly nodesByFunction = new Map<Function, Set<NodeId>>();
@@ -47,7 +53,7 @@ export class FunctionManager implements ViewManager<Function>, FunctionLocator {
     }
   }
 
-  // ── ViewManager<Function> surface ───────────────────────────────────
+  /** Iterate all currently-registered functions in registration order. */
   values(): Iterable<Function> {
     return this.functionsByFunctionId.values();
   }

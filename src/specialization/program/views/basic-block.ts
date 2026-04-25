@@ -1,5 +1,17 @@
 // BasicBlock / CFG types + builder. Branch edges carry the `condition`
 // expression for refineOnEdge.
+//
+// Three-question contract for `BasicBlock`:
+//   - materialized: by `buildCFG` during the owning `Function`'s
+//                   construction or rebuild (see `wireCFG` in function.ts).
+//   - looked up:    by direct reference (e.g. `block.unit`) or via the
+//                   owning function's `blockOfNode` / FunctionLocator's
+//                   `blockContaining`. Block ids are local to one CFG
+//                   build, NOT a stable program-wide identity.
+//   - rebuilt:      indirectly, when the owning function rebuilds. Old
+//                   block instances are replaced wholesale; consumers
+//                   keyed by block reference must evict on
+//                   FunctionManager.onRebuild.
 
 import type { ExprNS, StmtNS } from "../../../ast-types";
 import type { NodeId } from "../node-set";

@@ -22,9 +22,17 @@ import type { View } from "./view";
 export type FunctionId = NodeId;
 
 /** Per-scope optimization unit. A View — concrete program region with
- *  NodeSet membership over the nodes it owns. `cfg` and `blockMap` are
- *  scheduler-owned and replaced by `Worklist.flushPendingRebuilds`. `body`
- *  is a live getter onto the AST. Function identity is `funcAst.id`. */
+ *  NodeSet membership over the nodes it owns.
+ *
+ *  Owns its own CFG materialization in-place: `cfg`, `blockMap`, and
+ *  `nodeToBlock` are produced by `wireCFG` (this file) and replaced by
+ *  `FunctionManager.flushPendingRebuilds`. The CFG/block apparatus is
+ *  deliberately not extracted into a separate `FunctionCfg` owner — it's
+ *  a tight invariant that's easier to read in one place than across two,
+ *  and there is no consumer that benefits from the split today.
+ *
+ *  `body` is a live getter onto the AST. Function identity is
+ *  `funcAst.id`. */
 export interface Function extends View {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
