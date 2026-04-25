@@ -7,32 +7,20 @@ import type { SlotLookup } from "../slot-table";
 import { buildSlotTable } from "../slot-table";
 import type { View } from "./view";
 
-/** `FunctionDef.id` or `FileInput.id` (alias of NodeId, semantic only).
+/** Boundary key for runtime/JIT/observation surfaces (counters, channels,
+ *  AssumptionChain bindings, ParamKey). Internal view relations should use
+ *  a `Function` reference and reach for a FunctionId only at the boundary,
+ *  via `unit.funcAst.id`.
  *
- *  Boundary key — exists for runtime/JIT/observation surfaces (counters,
- *  channels, AssumptionChain bindings, ParamKey) where a stable serialisable
- *  identity is required. NOT a routing/structural key inside the IR; internal
- *  view relations should use a `Function` reference (e.g. `block.unit`) and
- *  reach for a FunctionId only at the boundary, via `unit.funcAst.id`.
- *
- *  A `FunctionDef` id has two legitimate meanings, kept distinct at call sites:
- *    - `functionLocator.functionById(id)` resolves the function rooted at that node.
- *    - `functionLocator.functionContainingNode(id)` resolves the enclosing
- *      function that owns the FunctionDef statement in its CFG. */
+ *  Two legitimate meanings, kept distinct at call sites:
+ *    - `functionLocator.functionById(id)` — function rooted at that node.
+ *    - `functionLocator.functionContainingNode(id)` — enclosing function
+ *      whose CFG owns the FunctionDef statement. */
 export type FunctionId = NodeId;
 
-/** Per-scope optimization unit. A View — concrete program region with
- *  NodeSet membership over the nodes it owns.
- *
- *  Owns its own CFG materialization in-place: `cfg`, `blockMap`, and
- *  `nodeToBlock` are produced by `wireCFG` (this file) and replaced by
- *  `FunctionManager.flushPendingRebuilds`. The CFG/block apparatus is
- *  deliberately not extracted into a separate `FunctionCfg` owner — it's
- *  a tight invariant that's easier to read in one place than across two,
- *  and there is no consumer that benefits from the split today.
- *
- *  `body` is a live getter onto the AST. Function identity is
- *  `funcAst.id`. */
+/** Per-scope optimization unit. Owns its CFG materialization in-place:
+ *  `cfg`/`blockMap`/`nodeToBlock` are produced by `wireCFG` and replaced
+ *  by `FunctionManager.flushPendingRebuilds`. */
 export interface Function extends View {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
@@ -46,7 +34,7 @@ export interface Function extends View {
   iterate(): Iterable<NodeId>;
 }
 
-/** Build a single Function for `funcAst` — no recursion into nested scopes. */
+/** No recursion into nested scopes — see `buildFunctions`. */
 export function buildOneFunction(
   funcAst: StmtNS.FileInput | StmtNS.FunctionDef,
   functionEnvironments: FunctionEnvironments,
@@ -83,8 +71,6 @@ export function buildOneFunction(
   return unit;
 }
 
-/** (Re)build `unit.cfg`, refresh `blockMap`, and reindex `nodeToBlock`. The
- *  topology reindexes its own flat `NodeId → Function` map separately. */
 export function wireCFG(unit: Function): void {
   unit.cfg = buildCFG(unit.body, unit);
   const blockMap = new Map<BlockId, BasicBlock>();
@@ -127,10 +113,8 @@ function walkAstNodeIds(
   }
 }
 
-/** `BasicBlock` membership is exclusive CFG ownership, not syntactic subtree
- *  containment. Header blocks own their predicate/iter expression; body
- *  statements belong to the blocks `buildCFG` emitted for those bodies.
- *  Nested function/lambda bodies are separate scopes. */
+/** Skip keys whose subtrees belong to a different block (CFG body) or a
+ *  different function (nested scope). */
 function isNestedScopeOrCfgBody(node: unknown, key: string): boolean {
   if (node instanceof StmtNS.If) return key === "body" || key === "elseBlock";
   if (node instanceof StmtNS.While || node instanceof StmtNS.For) return key === "body";

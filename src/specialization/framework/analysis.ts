@@ -102,12 +102,8 @@ export interface AnalysisCtx {
 /** Narrow capability surface offered to a `TransformRule.bind`. Lets a
  *  transform register dirtying subscriptions and refute hooks without
  *  receiving the full `Worklist` (and the read/write powers that come
- *  with it).
- *
- *  Polymorphic in `V extends View` per call: the dirtied callback's return
- *  type is inferred from the `rule` argument's V. A Function-rooted rule
- *  (the default) infers `Iterable<Function>`; a future Loop-rooted rule
- *  registered with a `SweepKind<Loop>` infers `Iterable<Loop>`. */
+ *  with it). `V` is inferred from `rule` so the `dirtied` callback's
+ *  iterable type matches the rule's sweep kind. */
 export interface TransformBindCtx {
   onTransformFactDirty<V extends View, K extends NodeSet>(
     rule: TransformRule<V, any>,

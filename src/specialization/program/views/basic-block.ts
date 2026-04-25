@@ -1,17 +1,6 @@
-// BasicBlock / CFG types + builder. Branch edges carry the `condition`
-// expression for refineOnEdge.
-//
-// Three-question contract for `BasicBlock`:
-//   - materialized: by `buildCFG` during the owning `Function`'s
-//                   construction or rebuild (see `wireCFG` in function.ts).
-//   - looked up:    by direct reference (e.g. `block.unit`) or via the
-//                   owning function's `blockOfNode` / FunctionLocator's
-//                   `blockContaining`. Block ids are local to one CFG
-//                   build, NOT a stable program-wide identity.
-//   - rebuilt:      indirectly, when the owning function rebuilds. Old
-//                   block instances are replaced wholesale; consumers
-//                   keyed by block reference must evict on
-//                   FunctionManager.onRebuild.
+// Block ids are local to one CFG build — not a stable program-wide
+// identity. Consumers keyed by block reference must evict on
+// FunctionManager.onRebuild.
 
 import type { ExprNS, StmtNS } from "../../../ast-types";
 import type { NodeId } from "../node-set";
@@ -35,16 +24,13 @@ export type CFGEdge =
       readonly condition: ExprNS.Expr;
     };
 
-/** A View — concrete CFG region with exclusive ownership of its `nodeIds`.
- *  Synthetic blocks (entry/exit/joins) have empty `nodeIds` and are not
+/** Synthetic blocks (entry/exit/joins) have empty `nodeIds` and are not
  *  valid `subscribe` interests. */
 export interface BasicBlock extends View {
   readonly id: BlockId;
   readonly stmts: StmtNS.Stmt[];
   readonly successorEdges: CFGEdge[];
   readonly predecessorEdges: CFGEdge[];
-  /** Direct reference to the owning Function. Use `unit.funcAst.id` when a
-   *  FunctionId boundary key is required (runtime/JIT/observation surfaces). */
   readonly unit: Function;
   readonly nodeIds: Set<NodeId>;
   contains(n: NodeId): boolean;
@@ -58,7 +44,6 @@ export interface CFG {
   readonly blocks: ReadonlyArray<BasicBlock>;
 }
 
-/** Build CFG from a flat stmt list. Single entry/exit. */
 export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
   let nextId = 0;
   const blocks: BasicBlock[] = [];

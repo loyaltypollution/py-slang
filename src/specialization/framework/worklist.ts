@@ -114,20 +114,15 @@ export class Worklist {
 
   /** Registered transforms and their per-rule sweep state. A view enters
    *  `entry.dirty` on mint, rebuild, or a write to an upstream analysis the
-   *  rule subscribes to; sweep clears it. `entry.kind` is the `SweepKind`
-   *  the rule was registered under — drives mint/rebuild wiring,
-   *  per-instance speculation chain selection, and post-sweep rebuild
-   *  scheduling. Rules registered without an explicit kind default to
-   *  `functionSweepKind`. */
+   *  rule subscribes to; sweep clears it. `entry.kind` drives mint/rebuild
+   *  wiring, sweep-time chain selection, and post-fire rebuild scheduling. */
   private readonly transforms: TransformRule<any, any>[] = [];
   private readonly transformsSet = new Set<TransformRule<any, any>>();
   private readonly transformEntries = new Map<
     TransformRule<any, any>,
-    { kind: SweepKind<any>; dirty: Set<View> }
+    { kind: SweepKind<any>; dirty: Set<any> }
   >();
-  /** Default SweepKind: `Function`. Constructor populates this; transforms
-   *  registered without an explicit kind get this one. */
-  private readonly functionSweepKind: FunctionSweepKind;
+  private readonly functionSweepKind: SweepKind<Function>;
 
   /** Reentrancy guard: set while `sweepTransforms` runs. `publish`/`bump`
    *  throw when true — observation ingress mid-sweep would shift
@@ -239,7 +234,7 @@ export class Worklist {
   ): { kind: SweepKind<V>; dirty: Set<V> } {
     const e = this.transformEntries.get(rule);
     if (e === undefined) throw new Error(`[Worklist] missed registerTransform`);
-    return e as { kind: SweepKind<V>; dirty: Set<V> };
+    return e;
   }
 
   /** `c` is refuted iff any generator is an algebraic subset. */
@@ -367,8 +362,9 @@ export class Worklist {
 
   /** Register a transform rule under a sweep kind. Idempotent. Auto-installs
    *  mint/rebuild dirtying through `kind`, then lets the rule subscribe via
-   *  `bind`. `kind` defaults to `functionSweepKind` so existing
-   *  Function-rooted transforms register unchanged. */
+   *  `bind`. Function-rooted transforms may omit `kind`. */
+  registerTransform(rule: TransformRule<Function, any>): void;
+  registerTransform<V extends View>(rule: TransformRule<V, any>, kind: SweepKind<V>): void;
   registerTransform<V extends View>(
     rule: TransformRule<V, any>,
     kind: SweepKind<V> = this.functionSweepKind as unknown as SweepKind<V>,
@@ -377,7 +373,7 @@ export class Worklist {
     this.transformsSet.add(rule);
     this.transforms.push(rule);
     const dirty = new Set<V>();
-    this.transformEntries.set(rule, { kind, dirty: dirty as unknown as Set<View> });
+    this.transformEntries.set(rule, { kind, dirty });
 
     const addUnit = (view: V): void => { dirty.add(view); };
     kind.onMint(addUnit);

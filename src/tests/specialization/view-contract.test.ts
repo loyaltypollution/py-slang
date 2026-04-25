@@ -1,8 +1,3 @@
-// Pins the three-question contract for the View kinds that exist today.
-// Each test ties one invariant to a specific call site so a future drift
-// (e.g. someone reintroducing a stringly registry, or letting BasicBlock
-// outlive its owning function rebuild) trips here, not in production.
-
 import { setup } from "./harness/compile-pipelines";
 import { makeDfaQuery } from "../../specialization";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
@@ -59,30 +54,21 @@ describe("View contract — invariants pinned across the three questions", () =>
     expect(target).toBeDefined();
     const unit = target!;
 
-    const oldBlocks = unit.cfg.blocks;
-    const oldEntry = unit.cfg.entry;
+    const oldBlocks = new Set(unit.cfg.blocks);
     const oldNodeIds = Array.from(unit.nodeToBlock.keys());
     expect(oldNodeIds.length).toBeGreaterThan(0);
 
     fm.schedulePendingRebuild(unit);
-    const rebuilt = fm.flushPendingRebuilds();
+    expect(fm.flushPendingRebuilds()).toContain(unit);
 
-    expect(rebuilt).toContain(unit);
-
-    // Function reference stays stable; block instances are replaced.
-    expect(unit.cfg.entry).not.toBe(oldEntry);
-    for (const oldBlock of oldBlocks) {
-      expect(unit.cfg.blocks).not.toContain(oldBlock);
+    for (const block of unit.cfg.blocks) {
+      expect(oldBlocks.has(block)).toBe(false);
+      expect(block.unit).toBe(unit);
     }
 
-    // Index points at the new blocks.
     for (const nodeId of oldNodeIds) {
       const newBlock = unit.blockOfNode(nodeId);
       expect(newBlock).toBeDefined();
-      expect(oldBlocks).not.toContain(newBlock);
-      expect(newBlock!.unit).toBe(unit);
-
-      // Locator agrees with per-function index post-rebuild.
       expect(worklist.locate.blockContaining(nodeId)).toBe(newBlock);
     }
   });
@@ -114,9 +100,5 @@ describe("View contract — invariants pinned across the three questions", () =>
     specQ.speculativeTypeOf(someNodeId);
     specQ.speculativeConstOf(someNodeId);
     expect(speculativeCallbackHits).toBe(2);
-
-    // makeDfaQuery's only program-shape dependency is the explicit locator
-    // arg — no hidden Worklist back-channel. Constructing a query that
-    // never actually inspects worklist beyond `locate` exercises that.
   });
 });
