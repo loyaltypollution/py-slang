@@ -2,6 +2,10 @@ import type { AssumptionChain, NarrowingId } from "../assumption/chain";
 import type { NodeId, NodeSet } from "../program/node-set";
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
 import type { Worklist } from "./worklist";
+import type { Function } from "../program/views/function";
+import type { FunctionLocator } from "../program/views/function-locator";
+import type { View } from "../program/views/view";
+import type { CounterStore } from "../observation/counter-store";
 
 export type { NodeId, NodeSet } from "../program/node-set";
 
@@ -95,20 +99,38 @@ export interface AnalysisCtx {
   evict<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): void;
 }
 
+/** Narrow capability surface offered to a `TransformRule.bind`. Lets a
+ *  transform register dirtying subscriptions and refute hooks without
+ *  receiving the full `Worklist` (and the read/write powers that come
+ *  with it). */
+export interface TransformBindCtx {
+  onTransformFactDirty<K extends NodeSet>(
+    rule: TransformRule<any, any>,
+    from: Analysis<K, any>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
+  ): void;
+  onTransformCounterBumped<K>(
+    rule: TransformRule<any, any>,
+    counter: CounterStore<K>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
+  ): void;
+  onRefute(cb: (unit: Function, carrier: AssumptionChain) => void): void;
+}
+
 /** Imperative AST sweep gated on analyses. No lattice, no transfer, no store
  *  write. The worklist dirties a rule on view mint/rebuild and on writes to
  *  subscribed analyses; `sweep` runs once per dirty view; views that
  *  rewrote are scheduled for rebuild. Idempotency is the rule's
  *  responsibility.
  *
- *  Generic over `V` (view) and `P` (program-wide handle). Today's transforms
- *  instantiate `TransformRule<Function, FunctionLocator>`. */
-export interface TransformRule<V = unknown, P = unknown> {
+ *  Generic over `V extends View` (view kind) and `P` (program-wide handle).
+ *  Today's transforms all instantiate `TransformRule<Function, FunctionLocator>`. */
+export interface TransformRule<V extends View = Function, P = FunctionLocator> {
   /** Returns `true` iff the body at `chain` was mutated — the worklist
    *  then schedules a rebuild for `view`. Worklist always passes
    *  `chain = futureDispatchChainFor(view)`. */
   sweep(view: V, chain: AssumptionChain, program: P): boolean;
-  bind?(worklist: Worklist): void;
+  bind?(ctx: TransformBindCtx): void;
 }
 
 /** Construct an `Analysis`, auto-attaching its `store` from `storeAlgebra`

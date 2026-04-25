@@ -228,7 +228,87 @@ Smells noticed:
   removed in Phase 6 alongside the broader transform-capability
   cleanup, or left as a stable Worklist surface. Judgment call.
 
-## Phase 6 — pending
+## Phase 6 — done
+
+Two targeted typing changes:
+
+1. `TransformRule<V extends View = Function, P = FunctionLocator>`. The
+   old defaults were `<V = unknown, P = unknown>` — nothing in the type
+   said "V is a view"; the constraint was carried only by docstrings.
+   Now the type encodes what the docs already claimed: a transform
+   operates on a concrete program region (View), and receives a
+   program-handle (P). A hypothetical `LoopManager` + `TransformRule<Loop>`
+   wires up without changing TransformRule itself.
+
+2. New `TransformBindCtx` interface — narrow capability surface offered
+   to `TransformRule.bind`. Exactly:
+   - `onTransformFactDirty(rule, from, dirtied)`
+   - `onTransformCounterBumped(rule, counter, dirtied)`
+   - `onRefute(cb)`
+   That's the full set every existing transform actually uses. The
+   `bind?(worklist: Worklist)` signature changed to `bind?(ctx: TransformBindCtx)`.
+   Worklist still satisfies the interface structurally, so existing call
+   sites compile unchanged — but a transform reaching for, say,
+   `wl.write(...)` or `wl.tryRead(...)` from inside `bind` no longer
+   type-checks.
+
+Verified: every transform's `bind` only touches the three permitted
+methods (grep confirmed). Tests 810/810 throughout.
+
+What was deferred (and why):
+- `transformDirty: Map<TransformRule, Set<Function>>` was NOT generalised
+  to `Set<V>`. Doing so requires runtime view-kind tagging or a
+  per-kind dirty store on Worklist; both are premature when there is
+  exactly one view kind. The TransformRule generics now make the
+  TypeScript-level decision visible the day a second kind lands —
+  which is the right time to pick.
+- `Worklist.passCtx`, the convenience forwarders
+  `worklist.futureDispatchChainFor(unit)` /
+  `futureDispatchChainForNode(nodeId)`, and the `function-resolver.ts`
+  one-line helpers (`functionOfBlock`, `functionOfNodeId`,
+  `functionOfFunctionId`) are still around. They earn their keep at
+  external call sites (tests, jit-dispatch, transform `bind`s) and the
+  alternative is a wider blast-radius rename for marginal benefit.
+
+Plan acceptance:
+- a hypothetical LoopManager + TransformRule<Loop> wire up without
+  framework surgery ✓
+- transforms cannot accidentally depend on unrelated Worklist powers ✓
+- DFA query helpers take explicit locator + explicit future-dispatch
+  callback (Phase 3 work) ✓
+
+## Wrap-up
+
+Across the six phases:
+- 6 commits, 810 specialization tests green throughout, no behavior change.
+- Deleted: `program-ctx.ts`, `function-view.ts`, the `asProgramCtx` cast
+  layer, the `ProgramCtx extends FunctionView` widening, the
+  `worklist.functions` Map / `functionOfNode` forwarders, the duck-typed
+  future-dispatch detection in `dfa-query`.
+- Added: `View` marker interface, `FunctionLocator` (proper read surface),
+  `ViewManager<V>` shell, `FunctionDispatchState` (speculation policy
+  separated from registry/lifecycle), `TransformBindCtx` (narrow transform
+  capability).
+- Renamed: `BasicBlock.unitId: FunctionId` → `unit: Function`,
+  `FunctionViewManager` → `FunctionManager`. `FunctionId` migrated from
+  the dying `function-view.ts` to `function.ts`.
+
+The architecture now reads as plan.md's end state describes:
+- `NodeId` = atomic address
+- `NodeSet` = routing geometry
+- `View` = concrete program region (`Function`, `BasicBlock`)
+- `ViewManager<V>` = lifecycle/index for one kind
+- `FunctionLocator` = read surface for the Function kind
+- `FunctionDispatchState` = speculation policy for the Function kind
+- runtime ids (FunctionId, ParamKey) = boundary keys only
+
+Cross-cutting smell observations to revisit:
+- `function-resolver.ts` survived but is one-line sugar over the locator —
+  inline candidate when transform `bind` ergonomics get attention.
+- `Worklist.passCtx` survived — used by counter dispatch and as a default
+  in the sweep path. Worth a closer look as part of a future sweep
+  cleanup, not as part of this view-contract pass.
+
 
 
 
