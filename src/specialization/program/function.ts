@@ -22,6 +22,10 @@ export interface Function {
   blockOfNode(nodeId: NodeId): BasicBlock | undefined;
   /** NodeSet conformance: O(1) via this unit's `nodeToBlock` keys. */
   contains(n: NodeId): boolean;
+  /** NodeSet conformance: number of nodes owned by this function-view. */
+  readonly size: number;
+  /** NodeSet conformance: iterate node ids owned by this function-view. */
+  iterate(): Iterable<NodeId>;
 }
 
 /** Build a single Function for `funcAst` — no recursion into nested scopes. */
@@ -49,6 +53,12 @@ export function buildOneFunction(
     contains(nodeId: NodeId): boolean {
       return (this as Function).nodeToBlock.has(nodeId);
     },
+    get size(): number {
+      return (this as Function).nodeToBlock.size;
+    },
+    iterate(): Iterable<NodeId> {
+      return (this as Function).nodeToBlock.keys();
+    },
   } as Omit<Function, "cfg"> as Function;
   wireCFG(unit);
   return unit;
@@ -72,6 +82,8 @@ export function wireCFG(unit: Function): void {
     }
   }
   unit.nodeToBlock = nodeToBlock;
+  // `block.nodeIds` is filled in lockstep by `walkAstNodeIds`, so each
+  // block's NodeSet view becomes enumerable for `intersects`.
 }
 
 function walkAstNodeIds(
@@ -85,7 +97,10 @@ function walkAstNodeIds(
   seen.add(node as object);
   const obj = node as Record<string, unknown>;
   const id = obj.id;
-  if (typeof id === "number") out.set(id, block);
+  if (typeof id === "number") {
+    out.set(id, block);
+    block.nodeIds.add(id);
+  }
   for (const key of Object.keys(obj)) {
     const child = obj[key];
     if (Array.isArray(child)) {

@@ -34,8 +34,15 @@ export interface BasicBlock {
    *  An opaque numeric tag, not a typed back-pointer — blocks are pure
    *  NodeSets; ownership is data, not structure. */
   readonly unitId: FunctionId;
-  /** NodeSet conformance: O(1) via the owning unit's `nodeToBlock` index. */
+  /** Node ids owned by this block. Populated by `wireCFG`. Backs both
+   *  `contains` (membership) and the `NodeSet` iteration contract. */
+  readonly nodeIds: Set<NodeId>;
+  /** NodeSet conformance: O(1) via this block's own `nodeIds` set. */
   contains(n: NodeId): boolean;
+  /** NodeSet conformance: cardinality of `nodeIds`. */
+  readonly size: number;
+  /** NodeSet conformance: iterate this block's node ids. */
+  iterate(): Iterable<NodeId>;
 }
 
 export interface CFG {
@@ -51,14 +58,22 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
   const blocks: BasicBlock[] = [];
 
   function makeBlock(): BasicBlock {
+    const nodeIds = new Set<NodeId>();
     const block: BasicBlock = {
       id: nextId++,
       stmts: [],
       successorEdges: [],
       predecessorEdges: [],
       unitId: unit.funcAst.id,
+      nodeIds,
       contains(n: NodeId): boolean {
-        return unit.nodeToBlock.get(n) === this;
+        return nodeIds.has(n);
+      },
+      get size(): number {
+        return nodeIds.size;
+      },
+      iterate(): Iterable<NodeId> {
+        return nodeIds;
       },
     };
     blocks.push(block);
