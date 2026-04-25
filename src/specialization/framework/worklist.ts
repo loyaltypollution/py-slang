@@ -31,6 +31,9 @@ import {
 import { type Function } from "../program/views/function";
 import { FunctionManager } from "../program/views/function-manager";
 import type { FunctionLocator } from "../program/views/function-locator";
+import { FunctionSweepKind } from "../program/views/function-sweep-kind";
+import type { SweepKind } from "./sweep-kind";
+import type { View } from "../program/views/view";
 
 /** A `(analysis, key, context)` triple as the worklist enqueues it. */
 interface AnalysisTriple {
@@ -109,12 +112,22 @@ export class Worklist {
     Map<AssumptionChain, Set<unknown>>
   >();
 
-  /** Registered transforms and their dirty sets. A unit enters the dirty set
-   *  on mint, rebuild, or a write to an upstream analysis the rule subscribes
-   *  to; sweep clears it. */
-  private readonly transforms: TransformRule[] = [];
-  private readonly transformsSet = new Set<TransformRule>();
-  private readonly transformDirty = new Map<TransformRule, Set<Function>>();
+  /** Registered transforms and their per-rule sweep state. A view enters
+   *  `entry.dirty` on mint, rebuild, or a write to an upstream analysis the
+   *  rule subscribes to; sweep clears it. `entry.kind` is the `SweepKind`
+   *  the rule was registered under — drives mint/rebuild wiring,
+   *  per-instance speculation chain selection, and post-sweep rebuild
+   *  scheduling. Rules registered without an explicit kind default to
+   *  `functionSweepKind`. */
+  private readonly transforms: TransformRule<any, any>[] = [];
+  private readonly transformsSet = new Set<TransformRule<any, any>>();
+  private readonly transformEntries = new Map<
+    TransformRule<any, any>,
+    { kind: SweepKind<any>; dirty: Set<View> }
+  >();
+  /** Default SweepKind: `Function`. Constructor populates this; transforms
+   *  registered without an explicit kind get this one. */
+  private readonly functionSweepKind: FunctionSweepKind;
 
   /** Reentrancy guard: set while `sweepTransforms` runs. `publish`/`bump`
    *  throw when true — observation ingress mid-sweep would shift
@@ -213,6 +226,7 @@ export class Worklist {
     // the initial mint burst it fires when subscribers register via
     // `onMint`. Manager constructor builds Functions from `ast`.
     this.functionManager = new FunctionManager(ast, functionEnvironments);
+    this.functionSweepKind = new FunctionSweepKind(this.functionManager);
 
     for (const p of analyses) this.register(p);
     for (const c of counters) this.registerCounter(c);
@@ -220,10 +234,12 @@ export class Worklist {
     for (const r of transforms) this.registerTransform(r);
   }
 
-  private dirtyFor(rule: TransformRule): Set<Function> {
-    const s = this.transformDirty.get(rule);
-    if (s === undefined) throw new Error(`[Worklist] missed registerTransform`);
-    return s;
+  private entryFor<V extends View>(
+    rule: TransformRule<V, any>,
+  ): { kind: SweepKind<V>; dirty: Set<V> } {
+    const e = this.transformEntries.get(rule);
+    if (e === undefined) throw new Error(`[Worklist] missed registerTransform`);
+    return e as { kind: SweepKind<V>; dirty: Set<V> };
   }
 
   /** `c` is refuted iff any generator is an algebraic subset. */
@@ -349,33 +365,38 @@ export class Worklist {
     analysis.bind?.(this);
   }
 
-  /** Register a transform rule. Idempotent. Auto-installs mint/rebuild
-   *  dirtying for the rule's own unit, then lets the rule subscribe via `bind`. */
-  registerTransform(rule: TransformRule): void {
+  /** Register a transform rule under a sweep kind. Idempotent. Auto-installs
+   *  mint/rebuild dirtying through `kind`, then lets the rule subscribe via
+   *  `bind`. `kind` defaults to `functionSweepKind` so existing
+   *  Function-rooted transforms register unchanged. */
+  registerTransform<V extends View>(
+    rule: TransformRule<V, any>,
+    kind: SweepKind<V> = this.functionSweepKind as unknown as SweepKind<V>,
+  ): void {
     if (this.transformsSet.has(rule)) return;
     this.transformsSet.add(rule);
     this.transforms.push(rule);
-    const dirty = new Set<Function>();
-    this.transformDirty.set(rule, dirty);
+    const dirty = new Set<V>();
+    this.transformEntries.set(rule, { kind, dirty: dirty as unknown as Set<View> });
 
-    const addUnit = (unit: Function): void => { dirty.add(unit); };
-    this.functionManager.onMint(addUnit);
-    this.functionManager.onRebuild(addUnit);
+    const addUnit = (view: V): void => { dirty.add(view); };
+    kind.onMint(addUnit);
+    kind.onRebuild(addUnit);
     rule.bind?.(this);
   }
 
   /** Transform-side fact-dirty: when `from` advances, add the projected
-   *  units to `rule`'s dirty set. This is a cell-identity dependency: most
-   *  transforms decide their own affected units from the source key rather
-   *  than from the producer's node delta. */
-  onTransformFactDirty<K extends NodeSet>(
-    rule: TransformRule,
+   *  views to `rule`'s dirty set. This is a cell-identity dependency: most
+   *  transforms decide their own affected views from the source key rather
+   *  than from the producer's node delta. `V` is inferred from `rule`. */
+  onTransformFactDirty<V extends View, K extends NodeSet>(
+    rule: TransformRule<V, any>,
     from: Analysis<K, any>,
-    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<V>,
   ): void {
-    const dirty = this.dirtyFor(rule);
+    const { dirty } = this.entryFor(rule);
     Worklist.addSub(this.advanceSubs, from as Analysis<any, any>, (_ctx, key) => {
-      for (const u of dirtied(this.functionManager, key as K)) dirty.add(u);
+      for (const v of dirtied(this.functionManager, key as K)) dirty.add(v);
     });
   }
 
@@ -402,14 +423,15 @@ export class Worklist {
     this.processAnalysesToFixpoint();
   }
 
-  /** Subscribe a transform to counter bumps. */
-  onTransformCounterBumped<K>(rule: TransformRule,
+  /** Subscribe a transform to counter bumps. `V` is inferred from `rule`. */
+  onTransformCounterBumped<V extends View, K>(
+    rule: TransformRule<V, any>,
     counter: CounterStore<K>,
-    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<V>,
   ): void {
-    const dirty = this.dirtyFor(rule);
+    const { dirty } = this.entryFor(rule);
     Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (_ctx, key) => {
-      for (const u of dirtied(this.functionManager, key as K)) dirty.add(u);
+      for (const v of dirtied(this.functionManager, key as K)) dirty.add(v);
     });
   }
 
@@ -551,23 +573,24 @@ export class Worklist {
     return true;
   }
 
-  /** Sweep every registered transform over its dirty functions once. Units
-   *  that rewrote enter `pendingRebuilds`; CFG rebuild is NOT flushed here.
-   *  Public so online participants can run transforms before emitting
-   *  bytecode. Returns true iff any rule fired. */
+  /** Sweep every registered transform over its dirty views once. Views that
+   *  rewrote are scheduled for rebuild via the rule's `SweepKind`; structural
+   *  rebuild itself is NOT flushed here. Public so online participants can
+   *  run transforms before emitting bytecode. Returns true iff any rule
+   *  fired. */
   sweepTransforms(): boolean {
     let anyFired = false;
     this.inTransformSweep = true;
     try {
       for (const r of this.transforms) {
-        const dirty = this.dirtyFor(r);
+        const { kind, dirty } = this.entryFor(r);
         if (dirty.size === 0) continue;
-        for (const unit of dirty) {
-          const chain = this.futureDispatchChainFor(unit);
+        for (const view of dirty) {
+          const chain = kind.chainFor(view);
           if (this.isRefuted(chain)) continue;
-          const fired = r.sweep(unit, chain, this.functionManager);
+          const fired = r.sweep(view, chain, this.functionManager);
           if (fired) {
-            this.functionManager.schedulePendingRebuild(unit);
+            kind.scheduleRebuild(view);
             anyFired = true;
           }
         }
