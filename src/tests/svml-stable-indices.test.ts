@@ -24,11 +24,11 @@ function build(code: string) {
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
   engine.drain();
-  const functions = engine.functions;
+  const functions = engine.functionManager;
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(engine),
+    makeDfaQuery(engine.locate),
   );
   return { ast, environments, functions, compiler };
 }
@@ -75,7 +75,7 @@ g(2)
     const fullProgram = compiler.compileProgram(ast);
 
     // Pick the `h` unit (nested inside `g`)
-    let hUnit: ReturnType<typeof functions.get> | undefined;
+    let hUnit: ReturnType<typeof functions.functionById> | undefined;
     for (const unit of functions.values()) {
       const scope = unit.funcAst;
       if (scope instanceof StmtNS.FunctionDef && scope.name.lexeme === "h") {
@@ -203,7 +203,7 @@ g(3)
     const progA = a.compiler.compileProgram(a.ast);
 
     const b = build(program);
-    let hUnitB: ReturnType<typeof b.functions.get> | undefined;
+    let hUnitB: ReturnType<typeof b.functions.functionById> | undefined;
     for (const unit of b.functions.values()) {
       const scope = unit.funcAst;
       if (scope instanceof StmtNS.FunctionDef && scope.name.lexeme === "h") hUnitB = unit;
