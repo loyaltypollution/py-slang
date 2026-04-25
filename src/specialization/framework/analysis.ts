@@ -4,7 +4,6 @@ import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
 import type { Worklist } from "./worklist";
 import type { Function } from "../program/views/function";
 import type { FunctionLocator } from "../program/views/function-locator";
-import type { View } from "../program/views/view";
 import type { CounterStore } from "../observation/counter-store";
 
 export type { NodeId, NodeSet } from "../program/node-set";
@@ -105,12 +104,12 @@ export interface AnalysisCtx {
  *  with it). `V` is inferred from `rule` so the `dirtied` callback's
  *  iterable type matches the rule's sweep kind. */
 export interface TransformBindCtx {
-  onTransformFactDirty<V extends View, K extends NodeSet>(
+  onTransformFactDirty<V extends NodeSet, K extends NodeSet>(
     rule: TransformRule<V, any>,
     from: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, key: K) => Iterable<V>,
   ): void;
-  onTransformCounterBumped<V extends View, K>(
+  onTransformCounterBumped<V extends NodeSet, K>(
     rule: TransformRule<V, any>,
     counter: CounterStore<K>,
     dirtied: (locator: FunctionLocator, key: K) => Iterable<V>,
@@ -124,9 +123,10 @@ export interface TransformBindCtx {
  *  rewrote are scheduled for rebuild. Idempotency is the rule's
  *  responsibility.
  *
- *  Generic over `V extends View` (view kind) and `P` (program-wide handle).
- *  Today's transforms all instantiate `TransformRule<Function, FunctionLocator>`. */
-export interface TransformRule<V extends View = Function, P = FunctionLocator> {
+ *  Generic over `V extends NodeSet` (root view kind) and `P` (program-wide
+ *  handle). Today's transforms all instantiate
+ *  `TransformRule<Function, FunctionLocator>`. Phase 18 monomorphizes. */
+export interface TransformRule<V extends NodeSet = Function, P = FunctionLocator> {
   /** Returns `true` iff the body at `chain` was mutated — the worklist
    *  then schedules a rebuild for `view`. Worklist always passes
    *  `chain = futureDispatchChainFor(view)`. */

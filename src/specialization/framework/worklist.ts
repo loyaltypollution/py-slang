@@ -31,7 +31,6 @@ import { type Function } from "../program/views/function";
 import { FunctionManager } from "../program/views/function-manager";
 import type { FunctionLocator } from "../program/views/function-locator";
 import type { SweepKind } from "./sweep-kind";
-import type { View } from "../program/views/view";
 
 /** Resolver supplied per-binding (or the default below): turns the channel's
  *  key into the owning Function so observation ingress can route narrowings
@@ -241,7 +240,7 @@ export class Worklist {
     for (const r of transforms) this.registerTransform(r);
   }
 
-  private entryFor<V extends View>(
+  private entryFor<V extends NodeSet>(
     rule: TransformRule<V, any>,
   ): { kind: SweepKind<V>; dirty: Set<V> } {
     const e = this.transformEntries.get(rule);
@@ -376,8 +375,8 @@ export class Worklist {
    *  mint/rebuild dirtying through `kind`, then lets the rule subscribe via
    *  `bind`. Function-rooted transforms may omit `kind`. */
   registerTransform(rule: TransformRule<Function, any>): void;
-  registerTransform<V extends View>(rule: TransformRule<V, any>, kind: SweepKind<V>): void;
-  registerTransform<V extends View>(
+  registerTransform<V extends NodeSet>(rule: TransformRule<V, any>, kind: SweepKind<V>): void;
+  registerTransform<V extends NodeSet>(
     rule: TransformRule<V, any>,
     kind: SweepKind<V> = this.functionSweepKind as unknown as SweepKind<V>,
   ): void {
@@ -397,7 +396,7 @@ export class Worklist {
    *  views to `rule`'s dirty set. This is a cell-identity dependency: most
    *  transforms decide their own affected views from the source key rather
    *  than from the producer's node delta. `V` is inferred from `rule`. */
-  onTransformFactDirty<V extends View, K extends NodeSet>(
+  onTransformFactDirty<V extends NodeSet, K extends NodeSet>(
     rule: TransformRule<V, any>,
     from: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, key: K) => Iterable<V>,
@@ -432,7 +431,7 @@ export class Worklist {
   }
 
   /** Subscribe a transform to counter bumps. `V` is inferred from `rule`. */
-  onTransformCounterBumped<V extends View, K>(
+  onTransformCounterBumped<V extends NodeSet, K>(
     rule: TransformRule<V, any>,
     counter: CounterStore<K>,
     dirtied: (locator: FunctionLocator, key: K) => Iterable<V>,

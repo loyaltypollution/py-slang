@@ -1,11 +1,10 @@
 // Block ids are local to one CFG build — not a stable program-wide
-// identity. Consumers keyed by block reference must evict on
-// FunctionManager.onRebuild.
+// identity. Consumers keyed by block reference must evict when the
+// owning Function's extent changes (FunctionManager.onExtentChange).
 
 import type { ExprNS, StmtNS } from "../../../ast-types";
-import type { NodeId } from "../node-set";
+import type { NodeId, NodeSet } from "../node-set";
 import type { Function } from "./function";
-import type { View } from "./view";
 
 export type BlockId = number;
 
@@ -26,7 +25,7 @@ export type CFGEdge =
 
 /** Synthetic blocks (entry/exit/joins) have empty `nodeIds` and are not
  *  valid `subscribe` interests. */
-export interface BasicBlock extends View {
+export interface BasicBlock extends NodeSet {
   readonly id: BlockId;
   readonly stmts: StmtNS.Stmt[];
   readonly successorEdges: CFGEdge[];

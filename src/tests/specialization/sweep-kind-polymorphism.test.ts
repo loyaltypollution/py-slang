@@ -8,13 +8,13 @@
 import { setup } from "./harness/compile-pipelines";
 import type { SweepKind } from "../../specialization/framework/sweep-kind";
 import type { TransformRule } from "../../specialization/framework/analysis";
-import type { View } from "../../specialization/program/views/view";
+import type { NodeSet } from "../../specialization/program/node-set";
 import {
   ROOT_CONTEXT,
   type AssumptionChain,
 } from "../../specialization/assumption/chain";
 
-interface SynthView extends View {
+interface SynthView extends NodeSet {
   readonly id: string;
 }
 

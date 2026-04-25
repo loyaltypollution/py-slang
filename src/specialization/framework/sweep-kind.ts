@@ -1,12 +1,11 @@
 import type { AssumptionChain } from "../assumption";
-import type { View } from "../program/views/view";
+import type { NodeSet } from "../program/node-set";
 
 /** Per-root-view-kind transform-sweep granularity: dirty-set keying,
  *  mint/rebuild wiring, sweep-time chain selection, and post-fire rebuild
- *  scheduling. Distinct from analysis-key dirtying (`subscribe` /
- *  `subscribeOnAdvance` / `onMint` / `onRebuildDirty` / `onSpecRev`),
- *  which is keyed by `K extends NodeSet`, not by view kind. */
-export interface SweepKind<V extends View> {
+ *  scheduling. Slated for deletion in Phase 18 — one consumer
+ *  (`FunctionManager`), no second in sight. */
+export interface SweepKind<V extends NodeSet> {
   /** Must fire immediately against every existing instance so late
    *  subscribers see the mint burst. */
   onMint(cb: (view: V) => void): void;

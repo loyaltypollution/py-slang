@@ -1,11 +1,10 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
-import type { NodeId } from "../node-set";
+import type { NodeId, NodeSet } from "../node-set";
 import type { BasicBlock, BlockId, CFG } from "./basic-block";
 import { buildCFG } from "./basic-block";
 import type { SlotLookup } from "../slot-table";
 import { buildSlotTable } from "../slot-table";
-import type { View } from "./view";
 
 /** Boundary key for runtime/JIT/observation surfaces (counters, channels,
  *  AssumptionChain bindings, ParamKey). Internal view relations should use
@@ -21,7 +20,7 @@ export type FunctionId = NodeId;
 /** Per-scope optimization unit. Owns its CFG materialization in-place:
  *  `cfg`/`blockMap`/`nodeToBlock` are produced by `wireCFG` and replaced
  *  by `FunctionManager.flushPendingRebuilds`. */
-export interface Function extends View {
+export interface Function extends NodeSet {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
