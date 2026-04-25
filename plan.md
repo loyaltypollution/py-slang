@@ -11,24 +11,28 @@ Only `NodeId` is real. `Function`, `BasicBlock`, `Loop`, ad-hoc sets are **named
 ## Queue
 
 ### In progress
-- (none)
+- (none — picking next from smells list)
 
 ### Open — priority order
 
-1. **Kill `FunctionId` from `framework/analysis.ts`.** It's `number` and semantically `NodeId`. Keep a local alias in `program/program-view.ts` for files that want the semantic name. Pure rename.
-2. **Add `NodeSet.intersects(other: NodeSet): boolean`** with optional size hint so impl picks the smaller side.
-3. **Change `onFactDirtyNodeSet` interest from `Iterable<NodeId>` to `NodeSet`.** Singleton callers keep working.
-4. **Audit producers; add `delta: NodeSet` at every `ctx.write`** whose advance is naturally per-node (typeAnalysis, constAnalysis, livenessAnalysis).
-5. **Collapse `onFactDirty` and `onFactDirtyNodeSet` into one API** — `subscribe(from, interest: NodeSet, fire, opts?)` with an `ANY_NODESET` sentinel for whole-key.
-6. **Rewrite `dfa-query.ts` as a thin facade** over `analysis.store.{tryRead, readDeepest}`. Drop `scopeId: FunctionId` privilege.
-7. **Phase 5.E (deferred): kind-discriminated lifecycle subs OR remove Worklist's Function-typed wrappers.** Current `worklist.onMint/onRebuildDirty/onSpecRev` are Function-shaped wrappers around `functionViews.on*`. Either generalize via `kind` discriminator, or just delete the wrappers and have analyses subscribe via `wl.functionViews.onMint(...)` directly. Pick when a 2nd view kind is in sight.
-8. **Phase 5.G (deferred): `View extends NodeSet { id: NodeId; kind: string }`.** Codify after lifecycle generalization decision.
+7. **Smell: `makeDfaQuery` boilerplate at call sites.** `nodeId => worklist.futureDispatchChainForNode(nodeId)` is duplicated at 3 call sites. Default the chain resolver from the worklist when none is passed.
+8. **Phase 5.E (deferred): lifecycle wrappers.** ~10 callers; defer until 2nd view kind motivates generalization.
+9. **Phase 5.G (deferred): `View extends NodeSet { id: NodeId; kind: string }`.** Codify after lifecycle generalization decision.
 
 ### Done
-- (none yet)
+- Item 1: dropped `FunctionId` from `framework/analysis.ts`; canonical home is `program/program-view.ts`.
+- Item 2: added `NodeSet.size`/`iterate` (both optional) and free `intersects(a, b)`; enriched Function (via `nodeToBlock.keys()`) and BasicBlock (via per-block `nodeIds: Set<NodeId>` populated in `wireCFG`).
+- Item 3: `onFactDirtyNodeSet` interest is now `NodeSet`; routing uses free `intersects`. Purity migrated to `internSingletonNode`.
+- Item 4: `writeAndDispatch` defaults `delta = key`; legacy unconditional-fan-out fallback removed. Per-key transfers now correctly intersection-gate nodeSet subscribers.
+- Item 5: collapsed `onFactDirty`/`onFactDirtyNodeSet` into single `subscribe(from, reader, interest, dirtied)`. `ANY_NODESET` sentinel short-circuits intersection (identity-mode), needed because keys can have empty NodeSet membership (e.g. backward-DFA exit block).
+- Item 6: dfa-query.ts dropped `isPureScope`/`entryRequirementsOf` (zero non-test consumers, bifurcated API by view kind). `FunctionView` handle retained — it's the legitimate seam for `perExpr` block-keyed → node-keyed materialization.
+- Bonus: folded `factSubs` into `nodeSetSubs`. `onTransformFactDirty` now routes through the same delta-aware machinery (with ANY_NODESET interest); transforms can opt into narrower interest if/when useful.
 
 ### Newly-spotted smells (investigate later)
-- (add as encountered)
+- **`ANY_NODESET` is a two-mode sentinel.** It signals "identity-mode subscription" (fire on every advance), not "set with all node ids." This is a real concept — a cell-identity dependency vs a node-membership dependency. Worth promoting to a named distinction in the API (`subscribe` vs `subscribeOnAdvance`?), or at least documenting the two-mode contract on `subscribe` more visibly. Consider when next touching the subscription primitive.
+- **Block exit/entry have empty `nodeIds`.** Block NodeSet membership = AST nodes inside. Synthetic blocks (entry, exit, loop joins) have no AST nodes, so their NodeSet is empty. Anyone using a block as `interest` for a *node-level* subscription gets vacuously-false intersections at synthetic blocks. Document in `BasicBlock` interface or rethink: should synthetic blocks include a synthetic id in their NodeSet?
+- **`Worklist.onMint`/`onRebuildDirty`/`onSpecRev`/`onRefute` wrappers.** Function-typed thin wrappers around `functionViews.on*`. ~10 callers. With one view kind, generalizing is premature; deleting forces boilerplate at call sites. Revisit when a 2nd view kind exists OR when consolidating subscription primitives (could lifecycle events be modeled as `subscribe` over a synthetic "lifecycle" analysis?).
+- **`SVMLCompiler.fromProgramUnit` ergonomic.** 3 call sites (PySvmlJitEvaluator, two test runners) all pass `(ast, environments, makeDfaQuery(worklist, nodeId => worklist.futureDispatchChainForNode(nodeId)))`. The `nodeId => worklist.futureDispatchChainForNode(nodeId)` is verbatim repetition. Either bake it into `makeDfaQuery(worklist)` (default the chain resolver from the worklist), or make it a method `worklist.makeDfaQuery()`. The lambda is duplication that should disappear.
 
 ## Notes / decisions log
 - (kept thin; commit messages carry per-step rationale)
