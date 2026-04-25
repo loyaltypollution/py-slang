@@ -35,7 +35,14 @@ export interface BasicBlock {
    *  NodeSets; ownership is data, not structure. */
   readonly unitId: FunctionId;
   /** Node ids owned by this block. Populated by `wireCFG`. Backs both
-   *  `contains` (membership) and the `NodeSet` iteration contract. */
+   *  `contains` (membership) and the `NodeSet` iteration contract.
+   *
+   *  Synthetic blocks (the function entry, the function exit, and the joins
+   *  emitted for `if`/`while`/`for`) hold no AST statements and therefore
+   *  have an empty `nodeIds` set. They are still legitimate CFG nodes, but
+   *  callers MUST NOT use a synthetic block as `subscribe` interest — the
+   *  intersection would be vacuously false. Use `subscribeOnAdvance` for
+   *  cell-identity wakes on such blocks. */
   readonly nodeIds: Set<NodeId>;
   /** NodeSet conformance: O(1) via this block's own `nodeIds` set. */
   contains(n: NodeId): boolean;

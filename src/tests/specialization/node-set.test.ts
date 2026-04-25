@@ -48,4 +48,43 @@ f()
     expect(nested.contains(nestedStmt.id)).toBe(true);
     expect(worklist.functionOfNode(nestedStmt.id)).toBe(nested);
   });
+
+  // Pins the documented hazard on `BasicBlock.nodeIds` and on
+  // `Worklist.subscribe`: synthetic blocks (entry, exit, if/loop joins)
+  // carry no AST statements and so have an empty NodeSet. Anyone wiring a
+  // node-intersection subscription must not use them as `interest`.
+  test("synthetic blocks (entry/exit/joins) have empty nodeIds", () => {
+    const { ast, worklist } = setup(`
+x = True
+if x:
+    y = 1
+else:
+    y = 2
+z = 3
+i = 0
+while i < 3:
+    i = i + 1
+`);
+
+    const unit = worklist.functions.get(ast.id)!;
+    // Exit block is always synthetic — only ever link-targeted, never has
+    // stmts pushed onto it.
+    expect(unit.cfg.exit.stmts.length).toBe(0);
+    expect(unit.cfg.exit.nodeIds.size).toBe(0);
+
+    // Every block that has no `stmts` (synthetic) must have empty nodeIds;
+    // every block that owns at least one stmt must have at least one node.
+    for (const block of unit.cfg.blocks) {
+      if (block.stmts.length === 0) {
+        expect(block.nodeIds.size).toBe(0);
+      } else {
+        expect(block.nodeIds.size).toBeGreaterThan(0);
+      }
+    }
+
+    // The if-join and the while loopExit are both synthetic, so the program
+    // produces multiple stmts-empty blocks.
+    const synthetic = unit.cfg.blocks.filter(b => b.stmts.length === 0);
+    expect(synthetic.length).toBeGreaterThanOrEqual(2);
+  });
 });

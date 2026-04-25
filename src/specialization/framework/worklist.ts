@@ -305,7 +305,12 @@ export class Worklist {
    *  When the reader cares about a strict subset of the source's value space
    *  (the IMPURE_SENTINEL pattern), the reader should read the source via
    *  `analysis.store` directly inside `transfer` so it doesn't ALSO record an
-   *  auto read-edge — that would defeat the delta-routing savings. */
+   *  auto read-edge — that would defeat the delta-routing savings.
+   *
+   *  HAZARD: synthetic CFG blocks (entry, exit, if/loop joins) have empty
+   *  `nodeIds` because they carry no AST statements; passing one as `interest`
+   *  yields vacuously-false intersections. If you want to fire on every
+   *  advance to that block's cell, use `subscribeOnAdvance` instead. */
   subscribe<K extends NodeSet>(
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
