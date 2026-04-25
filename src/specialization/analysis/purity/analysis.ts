@@ -22,7 +22,7 @@ import type {
   AnalysisCtx,
   JoinSemiLattice,
 } from "../../framework/analysis";
-import { composeBind, defineAnalysis } from "../../framework/analysis";
+import { defineAnalysis } from "../../framework/analysis";
 import type { BasicBlock } from "../../framework/cfg";
 import { type AssumptionChain } from "../../assumption/chain";
 import {
@@ -57,19 +57,19 @@ class BlockState {
   env!: MutableEnv<AbsVal>;
   slotLookup!: SlotLookup;
   selfName: string | undefined;
-  chain!: AssumptionChain;
+  ctx!: AnalysisCtx;
 
   reset(
     env: MutableEnv<AbsVal>,
     slotLookup: SlotLookup,
     selfName: string | undefined,
-    chain: AssumptionChain,
+    ctx: AnalysisCtx,
   ): this {
     this.impure = false;
     this.env = env;
     this.slotLookup = slotLookup;
     this.selfName = selfName;
-    this.chain = chain;
+    this.ctx = ctx;
     return this;
   }
 }
@@ -274,8 +274,9 @@ function transferStmt(
       const info = state.slotLookup(fd.name);
       if (!isLocal(info)) { state.impure = true; return; }
       // Deepest verdict wins; `undefined` = pending until the scope→block
-      // reads-edge wakes this block with a definite verdict.
-      const innerPure = purityScopeAnalysis.store.readDeepest(state.chain, fd.id)?.value;
+      // reads-edge wakes this block with a definite verdict. ctx.readDeepest
+      // records the dependency, so no manual onFactDirty wiring is needed.
+      const innerPure = state.ctx.readDeepest(purityScopeAnalysis, fd.id)?.value;
       state.env.set(info.slot, { kind: "closure", functionId: fd.id, pure: innerPure });
       return;
     }
@@ -314,7 +315,7 @@ export const purityBlockAnalysis: BlockFixpointAnalysis<AbsVal> =
       inEnv,
       unit.slotLookup,
       selfName,
-      ctx.currentContext,
+      ctx,
     );
     for (const stmt of block.stmts) transferStmt(stmt, state, POOLED_PURITY_VISITOR);
     const exprFacts = state.impure
@@ -350,11 +351,11 @@ export const purityScopeAnalysis: Analysis<number, boolean | undefined> = define
     // Per-context reachability: a block reached only via a const-dead edge
     // under `ctx.currentContext` must not contribute its impure sentinel
     // (e.g. Collatz joining IMPURE under `x : pos-int`).
-    const reachable = reachableBlocks(unit, ctx.topology, ctx.currentContext);
+    const reachable = reachableBlocks(ctx, unit);
     let anyVisited = false;
     for (const block of unit.cfg.blocks) {
       if (!reachable.has(block)) continue;
-      const reading = purityBlockAnalysis.facts.store.readDeepest(ctx.currentContext, block);
+      const reading = ctx.readDeepest(purityBlockAnalysis.facts, block);
       if (reading === undefined) continue;
       anyVisited = true;
       if (reading.value.has(IMPURE_SENTINEL_NODE_ID)) return false;
@@ -366,22 +367,15 @@ export const purityScopeAnalysis: Analysis<number, boolean | undefined> = define
       const fd = unit.funcAst;
       return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
     };
-    // Subscribe to `.facts` only — `.env` changes don't move the sentinel.
-    wl.onFactDirty(purityBlockAnalysis.facts, purityScopeAnalysis, (_ctx, key) => {
-      const fd = (key as BasicBlock).unit.funcAst;
-      return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
-    });
+    // Block.facts → scope verdict edge is now auto-recorded via
+    // ctx.readDeepest(purityBlockAnalysis.facts, block) in transfer.
     wl.onMint(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
     wl.onRebuildDirty(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
     wl.onSpecRev(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
   },
 });
 
-function reachableBlocks(
-  unit: Unit,
-  topology: ProgramTopology,
-  context: AssumptionChain,
-): Set<BasicBlock> {
+function reachableBlocks(ctx: AnalysisCtx, unit: Unit): Set<BasicBlock> {
   const reached = new Set<BasicBlock>([unit.cfg.entry]);
   const queue: BasicBlock[] = [unit.cfg.entry];
   // Head cursor (O(1) amortized) vs shift() which is O(n) in V8.
@@ -390,7 +384,7 @@ function reachableBlocks(
     const block = queue[head++];
     for (const edge of block.successorEdges) {
       if (edge.kind !== "unconditional") {
-        const truth = conditionTruth(edge.condition.id, topology, context);
+        const truth = conditionTruth(ctx, edge.condition.id);
         if (truth !== undefined
           && (edge.kind === "branch-true" ? truth === false : truth === true)) continue;
       }
@@ -406,14 +400,12 @@ function reachableBlocks(
 // constAnalysis covers `if True:` literals; typeAnalysis covers predicates
 // like `x <= 0` that fold to BOOL_FALSE under a sign-narrowed param.
 // Surfaces must agree or be absent; disagreement stays conservative.
-function conditionTruth(
-  nodeId: number,
-  topology: ProgramTopology,
-  context: AssumptionChain,
-): boolean | undefined {
-  const cVal = constAnalysis.perExpr(topology).readDeepest(context, nodeId)?.value;
+// Both reads route through ctx.readPerExprDeepest so the worklist auto-
+// invalidates this transfer when the underlying block-facts cell advances.
+function conditionTruth(ctx: AnalysisCtx, nodeId: number): boolean | undefined {
+  const cVal = constAnalysis.readPerExprDeepest(ctx, nodeId)?.value;
   if (cVal?.tag === "const" && typeof cVal.value === "boolean") return cVal.value;
-  const tVal = typeAnalysis.perExpr(topology).readDeepest(context, nodeId)?.value;
+  const tVal = typeAnalysis.readPerExprDeepest(ctx, nodeId)?.value;
   if (tVal?.kinds === BOOL_BIT) {
     if (tVal.boolRef === BoolRef.True) return true;
     if (tVal.boolRef === BoolRef.False) return false;
@@ -421,15 +413,6 @@ function conditionTruth(
   return undefined;
 }
 
-// Scope→block mutual dependency installed at bind time: outer block's
-// FunctionDef transfer reads purityScopeAnalysis for nested fd verdicts; the
-// fd.id write is projected to the outer block via `topology.blockOfNode`.
-// SpecRev re-seeds block facts under the new speculative context.
-purityBlockAnalysis.env.bind = composeBind(purityBlockAnalysis.env.bind, (wl) => {
-  wl.onFactDirty(purityScopeAnalysis, purityBlockAnalysis.env, (ctx, key) => {
-    if (typeof key !== "number") return [];
-    const block = ctx.unitOfNode(key)?.blockOfNode(key);
-    return block === undefined ? [] : [block];
-  });
-  wl.onSpecRev(purityBlockAnalysis.env, (_ctx, unit) => [purityBlockAnalysis.seed(unit)]);
-});
+// Scope→block dependency is auto-recorded via ctx.readDeepest(purityScopeAnalysis,
+// fd.id) in the FunctionDef transfer above. SpecRev re-seed is intrinsic to
+// makeBlockFixpointAnalysis. No post-hoc bind patch needed.

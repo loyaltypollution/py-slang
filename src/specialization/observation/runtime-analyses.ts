@@ -37,13 +37,15 @@ const rawValueLattice: JoinSemiLattice<RawKind> = {
   eq: (a, b) => a === b || rawKindEquals(a, b),
 };
 
+const rawIsUnknown = (v: RawKind): boolean => v.kind === "unknown";
+
 /** Per-parameter entry-value observations. Feeds paramKey-scoped narrowings. */
 export const runtimeParamChannel: ObservationChannel<ParamKey, RawKind> =
-  new ObservationChannel<ParamKey, RawKind>(rawValueLattice);
+  new ObservationChannel<ParamKey, RawKind>(rawValueLattice, rawIsUnknown);
 
 /** Per-function return-kind observations. Feeds the return-kind narrowing. */
 export const runtimeReturnChannel: ObservationChannel<FunctionId, RawKind> =
-  new ObservationChannel<FunctionId, RawKind>(rawValueLattice);
+  new ObservationChannel<FunctionId, RawKind>(rawValueLattice, rawIsUnknown);
 
 /** Runtime call-count counter, keyed by FunctionDef.id. */
 export const runtimeCallCounter: CounterStore<FunctionId> =

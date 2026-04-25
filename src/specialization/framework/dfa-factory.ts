@@ -107,8 +107,18 @@ export interface BlockFixpointAnalysis<L> {
   readonly env: Analysis<BasicBlock, MutableEnv<L>>;
   readonly facts: Analysis<BasicBlock, ReadonlyMap<number, L>>;
   /** Node-keyed view over `facts`. Canonical read surface for per-expression
-   *  consumers. */
+   *  consumers. NOT edge-recording — use `readPerExprDeepest(ctx, nodeId)`
+   *  from inside a transfer if you want auto-invalidation when the cell
+   *  changes. */
   perExpr(topology: ReadonlyProgramTopology): ReadonlyAnalysisStore<number, L>;
+  /** Edge-recording per-expression read. Walks the chain at `ctx.currentContext`,
+   *  returning the deepest ancestor whose facts map contains `nodeId`.
+   *  Records a read edge on `(facts, blockOfNode(nodeId))` so that any
+   *  advancing write to the block's facts map re-enqueues the caller. */
+  readPerExprDeepest(
+    ctx: AnalysisCtx,
+    nodeId: number,
+  ): { value: L; witness: AssumptionChain } | undefined;
   seed(unit: Unit): BasicBlock;
 }
 
@@ -265,6 +275,12 @@ export function makeBlockFixpointAnalysis<L>(
     wl.onMint(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
     wl.onRebuildDirty(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
     wl.onRebuildEvict((unit) => evictStaleBlockCells(envAnalysis.store, unit));
+    // Spec-context revision invalidates the block fixpoint under the old
+    // context; re-seed the entry/exit block so the new context's fixpoint
+    // starts from the seed env rather than stale successor envs. Intrinsic
+    // to context-sensitive block-DFA; every makeBlockFixpointAnalysis caller
+    // needs it, so the factory owns it.
+    wl.onSpecRev(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
     // Self-wake: block OUT env change → CFG successors recompute IN.
     wl.onFactDirty(envAnalysis as Analysis<any, any>, envAnalysis, (_ctx, key) =>
       downstreamBlocks(key as BasicBlock),
@@ -308,10 +324,33 @@ export function makeBlockFixpointAnalysis<L>(
     return store;
   }
 
+  function readPerExprDeepest(
+    ctx: AnalysisCtx,
+    nodeId: number,
+  ): { value: L; witness: AssumptionChain } | undefined {
+    const block = ctx.unitOfNode(nodeId)?.blockOfNode(nodeId);
+    if (block === undefined) return undefined;
+    // Single edge on (factsAnalysis, block) — invalidation fires on any
+    // advancing write to that block's facts map. Walk via store.tryRead so
+    // we get a per-context view; the edge dedup means we record once.
+    ctx.tryRead(factsAnalysis, block);
+    let cur: AssumptionChain | undefined = ctx.currentContext;
+    while (cur !== undefined) {
+      const map = factsAnalysis.store.tryRead(block, cur);
+      if (map !== undefined) {
+        const value = map.get(nodeId);
+        if (value !== undefined) return { value, witness: cur };
+      }
+      cur = cur.parent;
+    }
+    return undefined;
+  }
+
   return {
     env: envAnalysis,
     facts: factsAnalysis,
     perExpr,
+    readPerExprDeepest,
     seed: seedKey,
   };
 }

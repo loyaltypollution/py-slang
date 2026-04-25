@@ -18,6 +18,7 @@ import type { Unit } from "../../framework/function-unit";
 import type { FunctionId } from "../../framework/analysis";
 import { MutableEnv } from "../../framework/mutable-env";
 import type { ObservationBinding } from "../../observation/observation-binding";
+import type { RawKind } from "../../observation/raw-value";
 import { runtimeReturnChannel } from "../../observation/runtime-analyses";
 import { isLocal, type SlotLookup } from "../../framework/slot-table";
 import { liftType } from "../type/analysis";
@@ -190,7 +191,7 @@ export const returnKindNarrowing: Narrowing<FunctionId, TypeLattice> = {
  *  above consumes that at Return statements. `resolveUnit` maps the
  *  functionId to the function's own unit so the extension lands where the
  *  body's requirement-propagation runs. */
-export const returnKindBinding: ObservationBinding<FunctionId, TypeLattice> = {
+export const returnKindBinding: ObservationBinding<FunctionId, TypeLattice, RawKind> = {
   narrowing: returnKindNarrowing,
   source: runtimeReturnChannel,
   lift: liftType,

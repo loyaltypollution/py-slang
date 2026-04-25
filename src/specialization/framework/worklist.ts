@@ -18,7 +18,6 @@ import {
 import type { CounterStore } from "../observation/counter-store";
 import type { ObservationBinding } from "../observation/observation-binding";
 import type { ObservationChannel } from "../observation/observation-channel";
-import type { RawKind } from "../observation/raw-value";
 import type { FunctionId, NodeId } from "./analysis";
 import {
   unitOfNodeId,
@@ -75,6 +74,25 @@ class TripleQueue {
     }
     return true;
   }
+}
+
+/** Construction payload for `Worklist`. Keeping this an object avoids the
+ *  positional-argument cliff for a constructor with this many conceptually
+ *  independent wiring inputs. */
+export interface WorklistConfig {
+  readonly ast: StmtNS.FileInput;
+  readonly functionEnvironments: FunctionEnvironments;
+  readonly analyses: ReadonlyArray<Analysis<any, any>>;
+  readonly transforms: ReadonlyArray<TransformRule>;
+  readonly narrowings?: ReadonlyArray<Narrowing<any, any>>;
+  readonly counters?: ReadonlyArray<CounterStore<any>>;
+  readonly channels?: ReadonlyArray<ObservationChannel<any, any>>;
+  /** Context-sensitive block analyses re-seeded at every narrowing-entry
+   *  alongside each narrowing's own `blockAnalysis()`. Carries verdicts
+   *  (e.g. purity) that must track each specialization context but whose
+   *  analyses aren't themselves narrowings. Policy-owned by the caller. */
+  readonly extraEntryBlockAnalyses?: ReadonlyArray<BlockFixpointAnalysis<any>>;
+  readonly observationBindings?: ReadonlyArray<ObservationBinding<any, any>>;
 }
 
 export class Worklist {
@@ -162,34 +180,35 @@ export class Worklist {
   private readonly extraEntryBlockAnalyses: ReadonlyArray<BlockFixpointAnalysis<any>>;
   /** Per-source unit resolver; all bindings on a source must agree. */
   private readonly unitResolverBySource: Map<
-    ObservationChannel<any, RawKind>,
+    ObservationChannel<any, any>,
     UnitResolver<any>
   >;
   /** Per-source observation bindings, indexed for ingress dispatch. */
   private readonly bindingsBySource: ReadonlyMap<
-    ObservationChannel<any, RawKind>,
+    ObservationChannel<any, any>,
     ReadonlyArray<ObservationBinding<any, any>>
   >;
 
   private readonly registeredChannels = new Set<ObservationChannel<any, any>>();
 
-  constructor(
-    ast: StmtNS.FileInput,
-    functionEnvironments: FunctionEnvironments,
-    analyses: ReadonlyArray<Analysis<any, any>>,
-    transforms: ReadonlyArray<TransformRule>,
-    narrowings: ReadonlyArray<Narrowing<any, any>> = [],
-    counters: ReadonlyArray<CounterStore<any>> = [],
-    channels: ReadonlyArray<ObservationChannel<any, any>> = [],
-    extraEntryBlockAnalyses: ReadonlyArray<BlockFixpointAnalysis<any>> = [],
-    observationBindings: ReadonlyArray<ObservationBinding<any, any>> = [],
-  ) {
+  constructor(config: WorklistConfig) {
+    const {
+      ast,
+      functionEnvironments,
+      analyses,
+      transforms,
+      narrowings = [],
+      counters = [],
+      channels = [],
+      extraEntryBlockAnalyses = [],
+      observationBindings = [],
+    } = config;
     this.narrowings = narrowings;
     this.extraEntryBlockAnalyses = extraEntryBlockAnalyses;
     // Group bindings by `source`. Each group must agree on `resolveUnit`
     // so registration bugs surface at construction.
-    const unitResolverBySource = new Map<ObservationChannel<any, RawKind>, UnitResolver<any>>();
-    const bindingsBySource = new Map<ObservationChannel<any, RawKind>, ObservationBinding<any, any>[]>();
+    const unitResolverBySource = new Map<ObservationChannel<any, any>, UnitResolver<any>>();
+    const bindingsBySource = new Map<ObservationChannel<any, any>, ObservationBinding<any, any>[]>();
     for (const b of observationBindings) {
       const source = b.source;
       const resolver: UnitResolver<any> = b.resolveUnit ?? unitOfNodeId;
@@ -440,17 +459,16 @@ export class Worklist {
     return analysis.store.tryRead(key, context);
   }
 
-  /** Record a runtime observation made under `context`. Two side effects:
-   *  1. `channel` shadow-writes `value` at `context` (for dedup).
-   *  2. `handleObservationForSpec` extends or prunes the owning unit's
-   *     speculation context via every narrowing on `channel`.
+  /** Record a runtime observation made under `context`. Extends or prunes
+   *  the owning unit's speculation context via every narrowing bound on
+   *  `channel`, then drives analyses to fixpoint.
    *
    *  Returns the caller's next frame-local provenance chain (extended or
-   *  pruned). The shadow write lands at the incoming `context` regardless. */
-  publish<K>(
-    channel: ObservationChannel<K, RawKind>,
+   *  pruned). */
+  publish<K, V>(
+    channel: ObservationChannel<K, V>,
     key: K,
-    value: RawKind,
+    value: V,
     context: AssumptionChain,
   ): AssumptionChain {
     if (this.inTransformSweep) {
@@ -460,7 +478,6 @@ export class Worklist {
         `means rules generate code against a chain that has already widened.`,
       );
     }
-    channel._writeShadow(context, key, value);
     const nextContext = this.handleObservationForSpec(channel, key, value, context);
     this.processAnalysesToFixpoint();
     return nextContext;
@@ -498,6 +515,43 @@ export class Worklist {
     q.push(p, key, context);
   }
 
+  /** Scratch set for the currently-transferring (analysis, key) so `ctx.read`
+   *  can record the edge `(sourceAnalysis, sourceKey) → reader` without
+   *  threading the reader through the AnalysisCtx surface. Context is
+   *  intentionally NOT recorded: the reader is re-enqueued at the WRITE
+   *  context (matching `onFactDirty`'s default), which is what propagates
+   *  fact changes across speculation contexts. `undefined` outside transfer. */
+  private currentReader: { analysis: Analysis<any, any>; key: unknown } | undefined;
+
+  /** Read-tracking edges: `(source, sourceKey) → list of (reader, readerKey)`.
+   *  Populated as a side effect of `ctx.read`/`ctx.tryRead`/`ctx.readDeepest`/
+   *  `ctx.readMinimal` during transfer; consulted by `writeAndDispatch` after
+   *  an advancing write to enqueue readers at the WRITE context. */
+  private readonly readEdges = new Map<
+    Analysis<any, any>,
+    Map<unknown, Array<{ readonly analysis: Analysis<any, any>; readonly key: unknown }>>
+  >();
+
+  private recordReadEdge(source: Analysis<any, any>, sourceKey: unknown): void {
+    const reader = this.currentReader;
+    if (reader === undefined) return;
+    let byKey = this.readEdges.get(source);
+    if (byKey === undefined) {
+      byKey = new Map();
+      this.readEdges.set(source, byKey);
+    }
+    let list = byKey.get(sourceKey);
+    if (list === undefined) {
+      list = [];
+      byKey.set(sourceKey, list);
+    }
+    // Linear dedup: readers per source-key are expected to be few.
+    for (const e of list) {
+      if (e.analysis === reader.analysis && e.key === reader.key) return;
+    }
+    list.push(reader);
+  }
+
   /** Drain both queues to empty. Runtime tier preempts analysis tier. */
   private processAnalysesToFixpoint(): void {
     const out = this.dequeued;
@@ -506,8 +560,14 @@ export class Worklist {
       if (!q.pop(out)) break;
       const { analysis, key, context } = out;
       this.pendingKeysByAnalysis.get(analysis)?.get(context)?.delete(key);
-      const value = analysis.transfer(this.ctxFor(context), key);
-      if (value !== undefined) this.writeAndDispatch(analysis, key, value, context);
+      this.currentReader = { analysis, key };
+      let value: unknown;
+      try {
+        value = analysis.transfer(this.ctxFor(context), key);
+      } finally {
+        this.currentReader = undefined;
+      }
+      if (value !== undefined) this.writeAndDispatch(analysis, key, value as any, context);
     }
   }
 
@@ -521,6 +581,14 @@ export class Worklist {
   ): boolean {
     const result = storeWrite(analysis.store, key, value, context);
     if (result === null) return false;
+    // Read-tracked readers of (analysis, key) — re-enqueue at the WRITE
+    // context, matching `onFactDirty`'s default. This is what propagates
+    // fact changes across speculation contexts: a reader originally run at
+    // ROOT gets re-enqueued at specCtx when its input advances at specCtx.
+    const readers = this.readEdges.get(analysis as Analysis<any, any>)?.get(key);
+    if (readers !== undefined) {
+      for (const r of readers) this.enqueue(r.analysis, r.key, context);
+    }
     const subs = this.factSubs.get(analysis as Analysis<any, any>);
     if (subs === undefined) return true;
     const ctx = this.ctxFor(context);
@@ -575,13 +643,35 @@ export class Worklist {
       unitOfNode: (nodeId) => topology.unitOfNode(nodeId),
       currentContext: context,
       read<K, V>(analysis: Analysis<K, V>, key: K): V {
+        worklist.recordReadEdge(analysis as Analysis<any, any>, key);
         return analysis.store.read(key, context);
       },
       tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined {
+        worklist.recordReadEdge(analysis as Analysis<any, any>, key);
         return analysis.store.tryRead(key, context);
       },
       readAll<K, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V> {
+        // Whole-store read: cannot record per-key edges without knowing the
+        // keyspace. Callers needing fine-grained invalidation should read
+        // individual cells. Today no analysis transfer uses readAll; if that
+        // changes, pair the readAll with explicit onFactDirty until a
+        // "depends on all keys" edge is modeled.
         return analysis.store.readAll(context);
+      },
+      readMinimal<K, V>(
+        analysis: Analysis<K, V>,
+        key: K,
+        accept: (value: V) => boolean,
+      ): { value: V; witness: AssumptionChain } | undefined {
+        worklist.recordReadEdge(analysis as Analysis<any, any>, key);
+        return analysis.store.readMinimal(context, key, accept);
+      },
+      readDeepest<K, V>(
+        analysis: Analysis<K, V>,
+        key: K,
+      ): { value: V; witness: AssumptionChain } | undefined {
+        worklist.recordReadEdge(analysis as Analysis<any, any>, key);
+        return analysis.store.readDeepest(context, key);
       },
       write<K, V>(analysis: Analysis<K, V>, key: K, value: V): boolean {
         return worklist.writeAndDispatch(analysis, key, value, context);
@@ -622,10 +712,10 @@ export class Worklist {
     }
   }
 
-  private handleObservationForSpec(
-    source: ObservationChannel<any, RawKind>,
+  private handleObservationForSpec<V>(
+    source: ObservationChannel<any, V>,
     key: any,
-    observed: RawKind,
+    observed: V,
     context: AssumptionChain,
   ): AssumptionChain {
     const applicable = this.bindingsBySource.get(source);
@@ -637,7 +727,7 @@ export class Worklist {
 
     const parentCtx = context;
 
-    if (observed.kind === "unknown") {
+    if (source.isUnknown(observed)) {
       let pruned = parentCtx;
       for (const b of applicable) {
         const c = carrierOf(pruned, b.narrowing, key);

@@ -5,10 +5,8 @@
 // the old pointwise isRefuted + parent-walk hasAncestor missed.
 
 import type { Narrowing } from "../../specialization/framework/analysis";
-import {
-  empty,
-  extend,
-} from "../../specialization/assumption/algebra";
+import { extend } from "../../specialization/assumption/algebra";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { Refutations } from "../../specialization/assumption/refutation";
 
 function mkN<K, V>(): Narrowing<K, V> {
@@ -19,18 +17,18 @@ function mkN<K, V>(): Narrowing<K, V> {
 }
 
 describe("Refutations", () => {
-  it("empty filter: nothing refuted", () => {
+  it("ROOT_CONTEXT filter: nothing refuted", () => {
     const r = new Refutations();
     const p = mkN<number, number>();
-    const s = extend(empty, p, 1, 10);
-    expect(r.contains(empty)).toBe(false);
+    const s = extend(ROOT_CONTEXT, p, 1, 10);
+    expect(r.contains(ROOT_CONTEXT)).toBe(false);
     expect(r.contains(s)).toBe(false);
   });
 
   it("add(x): contains for x and every superset", () => {
     const r = new Refutations();
     const p = mkN<number, number>();
-    const s = extend(empty, p, 1, 10);
+    const s = extend(ROOT_CONTEXT, p, 1, 10);
     const s2 = extend(s, p, 2, 20);
     const s3 = extend(s2, p, 3, 30);
     r.add(s);
@@ -42,8 +40,8 @@ describe("Refutations", () => {
   it("add(x): not refuted for sibling not containing x", () => {
     const r = new Refutations();
     const p = mkN<number, number>();
-    const sA = extend(empty, p, 1, 10);
-    const sB = extend(empty, p, 1, 20); // different value at same key
+    const sA = extend(ROOT_CONTEXT, p, 1, 10);
+    const sB = extend(ROOT_CONTEXT, p, 1, 20); // different value at same key
     r.add(sA);
     expect(r.contains(sA)).toBe(true);
     expect(r.contains(sB)).toBe(false); // sB does not contain sA's binding
@@ -56,9 +54,9 @@ describe("Refutations", () => {
     const r = new Refutations();
     const p = mkN<number, number>();
     const q = mkN<number, number>();
-    const anchor = extend(empty, p, 1, 10);
-    const forward = extend(extend(empty, p, 1, 10), q, 1, 20);
-    const reverse = extend(extend(empty, q, 1, 20), p, 1, 10);
+    const anchor = extend(ROOT_CONTEXT, p, 1, 10);
+    const forward = extend(extend(ROOT_CONTEXT, p, 1, 10), q, 1, 20);
+    const reverse = extend(extend(ROOT_CONTEXT, q, 1, 20), p, 1, 10);
     expect(forward).toBe(reverse); // interner reconvergence
     r.add(anchor);
     expect(r.contains(forward)).toBe(true);
@@ -68,24 +66,24 @@ describe("Refutations", () => {
   it("add is idempotent; size stays at the minimal-generator count", () => {
     const r = new Refutations();
     const p = mkN<number, number>();
-    const s = extend(empty, p, 1, 10);
+    const s = extend(ROOT_CONTEXT, p, 1, 10);
     r.add(s);
     r.add(s);
     r.add(s);
     expect(r.size()).toBe(1);
   });
 
-  it("add(empty) is a no-op", () => {
+  it("add(ROOT_CONTEXT) is a no-op", () => {
     const r = new Refutations();
-    r.add(empty);
+    r.add(ROOT_CONTEXT);
     expect(r.size()).toBe(0);
-    expect(r.contains(empty)).toBe(false);
+    expect(r.contains(ROOT_CONTEXT)).toBe(false);
   });
 
   it("late arrivals: extending a refuted set yields a refuted superset", () => {
     const r = new Refutations();
     const p = mkN<number, number>();
-    const s = extend(empty, p, 1, 10);
+    const s = extend(ROOT_CONTEXT, p, 1, 10);
     r.add(s);
     // A later extend produces a superset of s, which is algebraically
     // refuted — without any interner hook, without any cascade.
@@ -99,7 +97,7 @@ describe("Refutations", () => {
     // is false.
     const r = new Refutations();
     const p = mkN<number, number>();
-    const A = extend(empty, p, 1, 10);
+    const A = extend(ROOT_CONTEXT, p, 1, 10);
     const B = extend(A, p, 2, 20);
     const C = extend(B, p, 3, 30);
     r.add(B);
@@ -111,7 +109,7 @@ describe("Refutations", () => {
   it("clear() drops all generators", () => {
     const r = new Refutations();
     const p = mkN<number, number>();
-    const s = extend(empty, p, 1, 10);
+    const s = extend(ROOT_CONTEXT, p, 1, 10);
     r.add(s);
     expect(r.contains(s)).toBe(true);
     r.clear();
@@ -125,8 +123,8 @@ describe("Refutations", () => {
     const r = new Refutations();
     const p = mkN<number, number>();
     const q = mkN<number, number>();
-    const superset = extend(extend(empty, p, 1, 10), q, 2, 20);
-    const subset = extend(empty, p, 1, 10);
+    const superset = extend(extend(ROOT_CONTEXT, p, 1, 10), q, 2, 20);
+    const subset = extend(ROOT_CONTEXT, p, 1, 10);
     r.add(superset);
     expect(r.size()).toBe(1);
     r.add(subset);
@@ -142,7 +140,7 @@ describe("Refutations", () => {
     const r = new Refutations();
     const p = mkN<number, number>();
     const q = mkN<number, number>();
-    const subset = extend(empty, p, 1, 10);
+    const subset = extend(ROOT_CONTEXT, p, 1, 10);
     const superset = extend(subset, q, 2, 20);
     r.add(subset);
     expect(r.size()).toBe(1);

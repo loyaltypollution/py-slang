@@ -51,15 +51,13 @@ export function setupWithAnalyses(
   const ast = parse(script) as StmtNS.FileInput;
   const { errors, environments } = analyzeWithEnvironments(ast, script, CHAPTER, GROUPS);
   if (errors.length > 0) throw errors[0];
-  const worklist = new Worklist(
+  const worklist = new Worklist({
     ast,
-    environments,
+    functionEnvironments: environments,
     analyses,
-    [],
-    [],
-    [],
-    options.channels ?? [],
-  );
+    transforms: [],
+    channels: options.channels ?? [],
+  });
   return { ast, environments, worklist };
 }
 

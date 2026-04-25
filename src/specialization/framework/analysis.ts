@@ -89,23 +89,6 @@ export interface Analysis<K, V> {
   bind?(worklist: Worklist): void;
 }
 
-/** Sequentially compose an existing `bind` with an extension. Throws when
- *  `base` is undefined to catch "decorate a never-bound analysis" bugs. */
-export function composeBind(
-  base: ((wl: Worklist) => void) | undefined,
-  extra: (wl: Worklist) => void,
-): (wl: Worklist) => void {
-  if (base === undefined) {
-    throw new Error(
-      "[composeBind] base bind is undefined — analysis has no prior bind to compose with.",
-    );
-  }
-  return (wl) => {
-    base(wl);
-    extra(wl);
-  };
-}
-
 /** Typed axis for extending an `AssumptionChain`. Carries no lattice or
  *  store of its own — only the identity used to look up chain bindings at
  *  transfer time via the paired `blockAnalysis()`. Observation glue lives
@@ -126,6 +109,22 @@ export interface AnalysisCtx {
   read<K, V>(analysis: Analysis<K, V>, key: K): V;
   tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined;
   readAll<K, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V>;
+  /** Chain-walking read: shallowest ancestor with a hit satisfying `accept`,
+   *  or `undefined`. Records a per-(analysis, key) read edge so the worklist
+   *  re-enqueues this transfer when the cell at `key` advances in any
+   *  context. Use instead of `analysis.store.readMinimal` from inside a
+   *  transfer. */
+  readMinimal<K, V>(
+    analysis: Analysis<K, V>,
+    key: K,
+    accept: (value: V) => boolean,
+  ): { value: V; witness: AssumptionChain } | undefined;
+  /** Chain-walking read: deepest ancestor with any hit. Same edge-recording
+   *  contract as `readMinimal`. */
+  readDeepest<K, V>(
+    analysis: Analysis<K, V>,
+    key: K,
+  ): { value: V; witness: AssumptionChain } | undefined;
   /** Write at `currentContext` and publish a `FactChange`. Use this for
    *  paired-cell side-effect writes (e.g. DFA `.facts` from inside `.env`'s
    *  transfer) — bypassing would skip listener fan-out. Transfer return

@@ -50,7 +50,7 @@ export const DEFAULT_NARROWINGS: ReadonlyArray<Narrowing<any, unknown>> = [
 ];
 
 /** Runtime ingress paths that drive chain extension; mirrors DEFAULT_NARROWINGS. */
-const DEFAULT_OBSERVATION_BINDINGS: ReadonlyArray<ObservationBinding<any, any>> = [
+const DEFAULT_OBSERVATION_BINDINGS: ReadonlyArray<ObservationBinding<any, any, any>> = [
   paramTypeBinding,
   returnKindBinding,
 ];
@@ -59,15 +59,15 @@ export function createDefaultWorklist(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
 ): Worklist {
-  return new Worklist(
+  return new Worklist({
     ast,
     functionEnvironments,
-    DEFAULT_PASSES,
-    [deadBranchRule, constantFoldingRule, algebraicSimplifyRule, deadStoreRule, memoizationRule],
-    DEFAULT_NARROWINGS,
-    [runtimeCallCounter],
-    [runtimeParamChannel, runtimeReturnChannel],
-    [purityBlockAnalysis],
-    DEFAULT_OBSERVATION_BINDINGS,
-  );
+    analyses: DEFAULT_PASSES,
+    transforms: [deadBranchRule, constantFoldingRule, algebraicSimplifyRule, deadStoreRule, memoizationRule],
+    narrowings: DEFAULT_NARROWINGS,
+    counters: [runtimeCallCounter],
+    channels: [runtimeParamChannel, runtimeReturnChannel],
+    extraEntryBlockAnalyses: [purityBlockAnalysis],
+    observationBindings: DEFAULT_OBSERVATION_BINDINGS,
+  });
 }

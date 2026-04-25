@@ -7,8 +7,6 @@ import { defaultInterner } from "./interner";
 
 export type { AssumptionChain } from "./chain";
 
-export const empty: AssumptionChain = ROOT_CONTEXT;
-
 export function extend<K, V>(
   s: AssumptionChain,
   narrowing: NarrowingId<K, V>,

@@ -91,6 +91,6 @@ def f(x):
     const unit = worklist.units.get(fd.id)!;
     // ROOT_CONTEXT has no entry guards → dispatchValid === false.
     expect(() => bodyToCompile(unit, ROOT_CONTEXT, worklist.topology))
-      .toThrow(/precondition violated/);
+      .toThrow(/dispatchValid.*must hold/);
   });
 });
