@@ -9,11 +9,9 @@ import { shadowNode } from "../framework/variant-body-clone";
 import { type AssumptionChain } from "../assumption";
 import { forkBody } from "../speculation/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
-import { RUNTIME_CALL_COUNT_SAT, runtimeCallCounter } from "../observation/runtime-analyses";
-import type { ProgramTopology } from "../framework/topology";
+import { runtimeCallCounter } from "../observation/runtime-analyses";
+import type { UnitView } from "../framework/analysis";
 import { purityScopeAnalysis } from "../analysis";
-
-export const MEMOIZATION_THRESHOLD = RUNTIME_CALL_COUNT_SAT - 1;
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
@@ -94,15 +92,6 @@ function memoWrappedBody(
   return [prelude, ...rewriteReturnsCloned(body, fd, id, params)];
 }
 
-function memoizationWitnessFor(
-  fd: StmtNS.FunctionDef,
-  chain: AssumptionChain,
-): { value: true; witness: AssumptionChain } | undefined {
-  return purityScopeAnalysis.store.readMinimal(chain, fd.id, value => value === true) as
-    | { value: true; witness: AssumptionChain }
-    | undefined;
-}
-
 function mkTok(fd: StmtNS.FunctionDef, type: TokenType, lexeme: string): Token {
   return new Token(type, lexeme, fd.name.line, fd.name.col, fd.name.indexInSource);
 }
@@ -142,15 +131,17 @@ export const memoizationRule: TransformRule = {
       clearMemoId(memoIdFor(fd, guardKeyFromGuards(directParamEntryGuardsFor(unit, carrier))));
     });
   },
-  sweep(unit: Unit, chain: AssumptionChain, _topology: ProgramTopology): boolean {
+  sweep(unit: Unit, chain: AssumptionChain, _view: UnitView): boolean {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
-    if (runtimeCallCounter.at(fd.id) < MEMOIZATION_THRESHOLD) return false;
-    const witnessInfo = memoizationWitnessFor(fd, chain);
-    if (witnessInfo === undefined) return false;
-    const body = forkBody(unit, witnessInfo.witness);
+    // Fire one call before saturation so the memo wrapper is installed before
+    // the runtime would otherwise refute on the next call.
+    if (runtimeCallCounter.at(fd.id) < runtimeCallCounter.saturation - 1) return false;
+    const pureWitness = purityScopeAnalysis.store.readMinimal(chain, fd.id, v => v === true);
+    if (pureWitness === undefined) return false;
+    const body = forkBody(unit, pureWitness.witness);
     if (bodyHasMemoPrelude(body)) return false;
-    const variant = guardKeyFromGuards(directParamEntryGuardsFor(unit, witnessInfo.witness));
+    const variant = guardKeyFromGuards(directParamEntryGuardsFor(unit, pureWitness.witness));
     const rewritten = memoWrappedBody(fd, body, variant);
     // In-place: preserve array identity so descendants inherit via bodyFor.
     body.length = 0;

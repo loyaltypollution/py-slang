@@ -1,7 +1,3 @@
-// Single JIT orchestrator. Owns observe-push → observe-params → sweep →
-// chain → gate → body pipeline; consumers map the outcome to their own
-// compile policy.
-
 import type { StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption";
 import type { FunctionId } from "../framework/analysis";
@@ -10,8 +6,6 @@ import type { Worklist } from "../framework/worklist";
 import { bodyToCompile, dispatchValid } from "../speculation/chain-dispatch";
 import { makeJitObservers } from "./runtime-analyses";
 
-/** Outcome of one dispatched CALL. `undefined` from `onCall` means the
- *  scope has no Unit in topology (no compilation to perform). */
 export type DispatchOutcome =
   | { kind: "specialized"; unit: Unit; body: readonly StmtNS.Stmt[] }
   | { kind: "baseline"; unit: Unit }
@@ -24,6 +18,7 @@ export interface JitDispatch {
 
 export function makeJitDispatch(worklist: Worklist): JitDispatch {
   const observers = makeJitObservers(worklist);
+  const isRefuted = (n: AssumptionChain) => worklist.isRefuted(n);
   return {
     onCall(scopeId, args) {
       observers.observeScopeCall(scopeId);
@@ -32,12 +27,10 @@ export function makeJitDispatch(worklist: Worklist): JitDispatch {
       for (let i = 0; i < args.length; i++) {
         observers.observeParamEntry(scopeId, i, args[i]);
       }
-      // Sweep before reading body: publish/bump defer transforms to drain.
       worklist.sweepTransforms();
       const chain = observers.currentChainFor(scopeId);
-      const isRefuted = (n: AssumptionChain) => worklist.isRefuted(n);
       if (!dispatchValid(unit, chain, isRefuted)) return { kind: "skip", unit };
-      const body = bodyToCompile(unit, chain, worklist.topology, isRefuted);
+      const body = bodyToCompile(unit, chain, worklist, isRefuted);
       if (body === unit.body) return { kind: "baseline", unit };
       return { kind: "specialized", unit, body };
     },

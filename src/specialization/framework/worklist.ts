@@ -10,6 +10,7 @@ import type { FunctionEnvironments } from "../../resolver";
 import {
   carrier as carrierOf,
   extend,
+  isRoot,
   Refutations,
   ROOT_CONTEXT,
   without,
@@ -38,8 +39,16 @@ import {
   wireCFG,
   type Unit,
 } from "./function-unit";
-import { isRoot } from "../assumption/chain";
-import { ProgramTopology } from "./topology";
+
+/** Catches misregistration: only Analyses carry `polarity`. */
+function assertNoPolarity(thing: object, site: string, kind: string): void {
+  if ("polarity" in thing) {
+    throw new Error(
+      `[Worklist.${site}] ${kind} must not carry \`polarity\` — that field is Analysis-only.`,
+    );
+  }
+}
+
 /** A `(analysis, key, context)` triple as the worklist enqueues it. */
 interface AnalysisTriple {
   analysis: Analysis<any, any>;
@@ -96,7 +105,13 @@ export interface WorklistConfig {
 }
 
 export class Worklist {
-  private readonly _topology = new ProgramTopology();
+  /** Program-wide unit/node indices. The worklist is the only writer.
+   *  `units` is the FunctionId → Unit map; `unitByNode` is the inverse of
+   *  every unit's `nodeToBlock` (only the keys); `nodesByUnit` lets us
+   *  drop the inverse index when a unit is reindexed. */
+  private readonly unitsByFunctionId = new Map<FunctionId, Unit>();
+  private readonly unitByNode = new Map<NodeId, Unit>();
+  private readonly nodesByUnit = new Map<Unit, Set<NodeId>>();
 
   /** Units awaiting CFG rebuild after a transform fire. */
   private readonly pendingRebuilds = new Set<Unit>();
@@ -160,16 +175,41 @@ export class Worklist {
 
   private readonly functionEnvironments: FunctionEnvironments;
 
-  get topology(): ProgramTopology {
-    return this._topology;
-  }
-
   get units(): ReadonlyMap<FunctionId, Unit> {
-    return this._topology.units;
+    return this.unitsByFunctionId;
   }
 
   unitOfNode(nodeId: NodeId): Unit | undefined {
-    return this._topology.unitOfNode(nodeId);
+    return this.unitByNode.get(nodeId);
+  }
+
+  /** Register a newly-built unit. `unit.cfg` must already be populated. */
+  private registerUnit(unit: Unit): void {
+    this.unitsByFunctionId.set(unit.funcAst.id, unit);
+    this.indexUnitNodes(unit);
+  }
+
+  /** Called after `wireCFG` rebuilds a unit's CFG. Unit identity is
+   *  preserved; node→unit mapping may change if nodes were added/removed. */
+  private reindexUnit(unit: Unit): void {
+    this.dropUnitNodes(unit);
+    this.indexUnitNodes(unit);
+  }
+
+  private indexUnitNodes(unit: Unit): void {
+    const ids = new Set<NodeId>();
+    this.nodesByUnit.set(unit, ids);
+    for (const id of unit.nodeToBlock.keys()) {
+      this.unitByNode.set(id, unit);
+      ids.add(id);
+    }
+  }
+
+  private dropUnitNodes(unit: Unit): void {
+    const ids = this.nodesByUnit.get(unit);
+    if (ids === undefined) return;
+    for (const id of ids) this.unitByNode.delete(id);
+    this.nodesByUnit.delete(unit);
   }
 
   private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
@@ -228,7 +268,7 @@ export class Worklist {
     this.bindingsBySource = bindingsBySource;
     this.functionEnvironments = functionEnvironments;
     for (const [, unit] of buildUnits(ast, functionEnvironments)) {
-      this._topology.registerUnit(unit);
+      this.registerUnit(unit);
     }
 
     for (const p of analyses) this.register(p);
@@ -248,7 +288,7 @@ export class Worklist {
       );
     }
     const unit = buildOneUnit(node, this.functionEnvironments);
-    this._topology.registerUnit(unit);
+    this.registerUnit(unit);
     for (const sub of this.mintSubs) sub(this.passCtx, unit);
     return unit;
   }
@@ -332,7 +372,7 @@ export class Worklist {
     this.mintSubs.push((_ctx, unit) => {
       for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
-    for (const unit of this._topology.units.values()) {
+    for (const unit of this.unitsByFunctionId.values()) {
       for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     }
   }
@@ -376,17 +416,12 @@ export class Worklist {
   /** Register a transform rule. Idempotent. Auto-installs mint/rebuild
    *  dirtying for the rule's own unit, then lets the rule subscribe via `bind`. */
   registerTransform(rule: TransformRule): void {
-    if ("polarity" in (rule as object)) {
-      throw new Error(
-        "[Worklist.registerTransform] rule carries `polarity` — polarity is an Analysis-only field. " +
-        "If this rule really is an Analysis, register it via `register`; otherwise drop the field.",
-      );
-    }
+    assertNoPolarity(rule, "registerTransform", "rules");
     if (this.transformsSet.has(rule)) return;
     this.transformsSet.add(rule);
     this.transforms.push(rule);
     const dirty = new Set<Unit>();
-    for (const u of this._topology.units.values()) dirty.add(u);
+    for (const u of this.unitsByFunctionId.values()) dirty.add(u);
     this.transformDirty.set(rule, dirty);
 
     const addUnit = (_ctx: AnalysisCtx, unit: Unit): void => { dirty.add(unit); };
@@ -409,12 +444,7 @@ export class Worklist {
 
   /** Register a counter. Idempotent. */
   registerCounter<K>(counter: CounterStore<K>): void {
-    if ("polarity" in (counter as object)) {
-      throw new Error(
-        "[Worklist.registerCounter] counter carries `polarity` — polarity is an Analysis-only field. " +
-        "Counters are monotonic, not fixpoint-iterated; they have no merge polarity.",
-      );
-    }
+    assertNoPolarity(counter, "registerCounter", "counters");
     const c = counter as CounterStore<any>;
     if (this.registeredCounters.has(c)) return;
     this.registeredCounters.add(c);
@@ -485,12 +515,7 @@ export class Worklist {
 
   /** Register a channel. Idempotent. */
   registerChannel<K, V>(channel: ObservationChannel<K, V>): void {
-    if ("polarity" in (channel as object)) {
-      throw new Error(
-        "[Worklist.registerChannel] channel carries `polarity` — polarity is an Analysis-only field. " +
-        "Channels are observation sinks, not facts; they have no merge polarity.",
-      );
-    }
+    assertNoPolarity(channel, "registerChannel", "channels");
     const c = channel as ObservationChannel<any, any>;
     if (this.registeredChannels.has(c)) return;
     this.registeredChannels.add(c);
@@ -616,7 +641,7 @@ export class Worklist {
           const chain = this.futureDispatchChainFor(unit);
           // Refutation guard: defense in case a refuted chain is ever stored.
           if (this.isRefuted(chain)) continue;
-          const fired = r.sweep(unit, chain, this._topology);
+          const fired = r.sweep(unit, chain, this);
           if (fired) {
             this.pendingRebuilds.add(unit);
             anyFired = true;
@@ -635,12 +660,10 @@ export class Worklist {
    *  `write`/`evict` go through the worklist so side-effect writes fan out
    *  to subscribers. */
   private makeCtx(context: AssumptionChain): AnalysisCtx {
-    const topology = this._topology;
     const worklist = this;
     return {
-      topology,
-      units: topology.units,
-      unitOfNode: (nodeId) => topology.unitOfNode(nodeId),
+      units: worklist.units,
+      unitOfNode: (nodeId) => worklist.unitOfNode(nodeId),
       currentContext: context,
       read<K, V>(analysis: Analysis<K, V>, key: K): V {
         worklist.recordReadEdge(analysis as Analysis<any, any>, key);
@@ -780,7 +803,7 @@ export class Worklist {
 
   /** Same as `futureDispatchChainFor`, keyed by nodeId. */
   futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
-    const unit = this._topology.unitOfNode(nodeId);
+    const unit = this.unitOfNode(nodeId);
     return unit === undefined ? ROOT_CONTEXT : this.futureDispatchChainFor(unit);
   }
 
@@ -790,7 +813,7 @@ export class Worklist {
     const rebuilt: Unit[] = [];
     for (const unit of this.pendingRebuilds) {
       wireCFG(unit);
-      this._topology.reindexUnit(unit);
+      this.reindexUnit(unit);
       rebuilt.push(unit);
     }
     this.pendingRebuilds.clear();

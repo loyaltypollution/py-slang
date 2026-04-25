@@ -1,7 +1,6 @@
 import type { Lattice } from "../../framework/analysis";
 
-/** One-point liveness lattice. `true` = live; absence in `MutableEnv` = dead.
- *  Kills via `env.clear(slot)`, gens via `env.set(slot, LIVE)`. */
+/** One-point liveness lattice. `true` = live; absence in `MutableEnv` = dead. */
 export type LiveVal = true;
 
 export const LIVE: LiveVal = true;

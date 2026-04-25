@@ -1,6 +1,3 @@
-// AssumptionChain: canonical finite partial map (Narrowing, Key) ⇀ Value,
-// interned into a trie by the default interner.
-
 export interface NarrowingId<K = unknown, V = unknown> {
   eq(a: V, b: V): boolean;
   readonly __narrowingBrand?: () => readonly [K, V];

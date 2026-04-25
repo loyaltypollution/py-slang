@@ -27,7 +27,7 @@ export async function runSvmlJit(code: string): Promise<string[]> {
     ast,
     environments,
     makeDfaQuery(
-      worklist.topology,
+      worklist,
       id => worklist.futureDispatchChainForNode(id),
       u => worklist.futureDispatchChainFor(u),
     ),
@@ -67,7 +67,7 @@ export async function runSvmlNoJit(code: string): Promise<string[]> {
     ast,
     environments,
     makeDfaQuery(
-      worklist.topology,
+      worklist,
       id => worklist.futureDispatchChainForNode(id),
       u => worklist.futureDispatchChainFor(u),
     ),

@@ -28,7 +28,7 @@ function build(code: string) {
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(engine.topology),
+    makeDfaQuery(engine),
   );
   return { ast, environments, units, compiler };
 }

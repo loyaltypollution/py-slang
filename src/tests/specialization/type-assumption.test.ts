@@ -18,7 +18,7 @@ def hot(x):
     const block = worklist.unitOfNode(xRead.id)?.blockOfNode(xRead.id)!;
 
     // ROOT-context fact: x is a parameter slot → TOP.
-    expect(typeAnalysis.perExpr(worklist.topology).tryRead(xRead.id, ROOT_CONTEXT)?.kinds)
+    expect(typeAnalysis.perExpr(worklist).tryRead(xRead.id, ROOT_CONTEXT)?.kinds)
       .not.toBe(INT_BIT);
 
     // Build a Context with a single assumption: x at `xRead.id` is INT_POS.
@@ -33,7 +33,7 @@ def hot(x):
     expect(narrowed?.kinds).toBe(INT_BIT);
 
     // The ROOT cell is unaffected — independent Kildall per context.
-    const rootStill = typeAnalysis.perExpr(worklist.topology).tryRead(xRead.id, ROOT_CONTEXT);
+    const rootStill = typeAnalysis.perExpr(worklist).tryRead(xRead.id, ROOT_CONTEXT);
     expect(rootStill?.kinds).not.toBe(INT_BIT);
   });
 

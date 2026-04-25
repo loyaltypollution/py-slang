@@ -16,7 +16,7 @@ import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
-import type { ProgramTopology } from "../framework/topology";
+import type { UnitView } from "../framework/analysis";
 import {
   DescendingExprVisitor,
   ExprDrivenStmtVisitor,
@@ -27,28 +27,20 @@ import {
 
 type RewritePlan = { witness: AssumptionChain; replacement: ExprNS.Expr };
 
-function typeInfo(
+function readType(
   chain: AssumptionChain,
-  topology: ProgramTopology,
+  view: UnitView,
   node: ExprNS.Expr,
 ): Witnessed<TypeLattice> | undefined {
-  return typeAnalysis.perExpr(topology).readMinimal(chain, node.id, () => true);
+  return typeAnalysis.perExpr(view).readMinimal(chain, node.id, () => true);
 }
 
-function constInfo(
+function readConst(
   chain: AssumptionChain,
-  topology: ProgramTopology,
+  view: UnitView,
   node: ExprNS.Expr,
 ): Witnessed<ConstLattice> | undefined {
-  return constAnalysis.perExpr(topology).readMinimal(chain, node.id, () => true);
-}
-
-function pureIntWitness(info: Witnessed<TypeLattice> | undefined): AssumptionChain | undefined {
-  return info?.value.kinds === INT_BIT ? info.witness : undefined;
-}
-
-function boolWitness(info: Witnessed<TypeLattice> | undefined): AssumptionChain | undefined {
-  return info?.value.kinds === BOOL_BIT ? info.witness : undefined;
+  return constAnalysis.perExpr(view).readMinimal(chain, node.id, () => true);
 }
 
 function intZeroWitness(
@@ -62,18 +54,6 @@ function intZeroWitness(
   if (fromType === undefined) return fromConst;
   if (fromConst === undefined) return fromType;
   return fromType.depth < fromConst.depth ? fromType : fromConst;
-}
-
-function intOneWitness(konst: Witnessed<ConstLattice> | undefined): AssumptionChain | undefined {
-  return konst?.value.tag === "const" && konst.value.value === 1 ? konst.witness : undefined;
-}
-
-function truthWitness(
-  type: Witnessed<TypeLattice> | undefined,
-  wanted: BoolRef,
-): AssumptionChain | undefined {
-  if (type === undefined) return undefined;
-  return truthiness(type.value) === wanted ? type.witness : undefined;
 }
 
 function unwrapGrouping(e: ExprNS.Expr): ExprNS.Expr {
@@ -102,20 +82,20 @@ function planWhen(
 
 function planBinary(
   chain: AssumptionChain,
-  topology: ProgramTopology,
+  view: UnitView,
   expr: ExprNS.Binary,
 ): RewritePlan | undefined {
-  const lt = typeInfo(chain, topology, expr.left);
-  const rt = typeInfo(chain, topology, expr.right);
-  const lc = constInfo(chain, topology, expr.left);
-  const rc = constInfo(chain, topology, expr.right);
+  const lt = readType(chain, view, expr.left);
+  const rt = readType(chain, view, expr.right);
+  const lc = readConst(chain, view, expr.left);
+  const rc = readConst(chain, view, expr.right);
 
-  const leftPureInt = pureIntWitness(lt);
-  const rightPureInt = pureIntWitness(rt);
+  const leftPureInt = lt?.value.kinds === INT_BIT ? lt.witness : undefined;
+  const rightPureInt = rt?.value.kinds === INT_BIT ? rt.witness : undefined;
   const leftZero = intZeroWitness(lt, lc);
   const rightZero = intZeroWitness(rt, rc);
-  const leftOne = intOneWitness(lc);
-  const rightOne = intOneWitness(rc);
+  const leftOne = lc?.value.tag === "const" && lc.value.value === 1 ? lc.witness : undefined;
+  const rightOne = rc?.value.tag === "const" && rc.value.value === 1 ? rc.witness : undefined;
 
   switch (expr.operator.type) {
     case TokenType.PLUS:
@@ -150,27 +130,27 @@ function planBinary(
 
 function planBoolOp(
   chain: AssumptionChain,
-  topology: ProgramTopology,
+  view: UnitView,
   expr: ExprNS.BoolOp,
 ): RewritePlan | undefined {
-  const lt = typeInfo(chain, topology, expr.left);
-  if (expr.operator.type === TokenType.AND) {
-    const falseW = truthWitness(lt, BoolRef.False);
-    if (falseW !== undefined) return { witness: falseW, replacement: expr.left };
-    const trueW = truthWitness(lt, BoolRef.True);
-    if (trueW !== undefined) return { witness: trueW, replacement: expr.right };
-  } else if (expr.operator.type === TokenType.OR) {
-    const trueW = truthWitness(lt, BoolRef.True);
-    if (trueW !== undefined) return { witness: trueW, replacement: expr.left };
-    const falseW = truthWitness(lt, BoolRef.False);
-    if (falseW !== undefined) return { witness: falseW, replacement: expr.right };
+  const lt = readType(chain, view, expr.left);
+  if (lt === undefined) return undefined;
+  const truth = truthiness(lt.value);
+  const isAnd = expr.operator.type === TokenType.AND;
+  const isOr = expr.operator.type === TokenType.OR;
+  if (!isAnd && !isOr) return undefined;
+  if (truth === BoolRef.False) {
+    return { witness: lt.witness, replacement: isAnd ? expr.left : expr.right };
+  }
+  if (truth === BoolRef.True) {
+    return { witness: lt.witness, replacement: isAnd ? expr.right : expr.left };
   }
   return undefined;
 }
 
 function planUnary(
   chain: AssumptionChain,
-  topology: ProgramTopology,
+  view: UnitView,
   expr: ExprNS.Unary,
 ): RewritePlan | undefined {
   const inner = unwrapGrouping(expr.right);
@@ -187,20 +167,22 @@ function planUnary(
     inner.operator.type === TokenType.NOT
   ) {
     const body = inner.right;
-    const bodyBool = boolWitness(typeInfo(chain, topology, body));
-    if (bodyBool !== undefined) return { witness: bodyBool, replacement: body };
+    const bodyType = readType(chain, view, body);
+    if (bodyType?.value.kinds === BOOL_BIT) {
+      return { witness: bodyType.witness, replacement: body };
+    }
   }
   return undefined;
 }
 
 function rewritePlan(
   chain: AssumptionChain,
-  topology: ProgramTopology,
+  view: UnitView,
   expr: ExprNS.Expr,
 ): RewritePlan | undefined {
-  if (expr instanceof ExprNS.Binary) return planBinary(chain, topology, expr);
-  if (expr instanceof ExprNS.BoolOp) return planBoolOp(chain, topology, expr);
-  if (expr instanceof ExprNS.Unary) return planUnary(chain, topology, expr);
+  if (expr instanceof ExprNS.Binary) return planBinary(chain, view, expr);
+  if (expr instanceof ExprNS.BoolOp) return planBoolOp(chain, view, expr);
+  if (expr instanceof ExprNS.Unary) return planUnary(chain, view, expr);
   return undefined;
 }
 
@@ -208,13 +190,13 @@ class AlgebraicSimplifyVisitor extends DescendingExprVisitor {
   changed = false;
   constructor(
     private readonly chain: AssumptionChain,
-    private readonly topology: ProgramTopology,
+    private readonly view: UnitView,
   ) {
     super();
   }
 
   private maybeRewrite(expr: ExprNS.Expr): ExprNS.Expr {
-    const plan = rewritePlan(this.chain, this.topology, expr);
+    const plan = rewritePlan(this.chain, this.view, expr);
     if (plan === undefined || plan.witness !== this.chain) return expr;
     this.changed = true;
     return plan.replacement;
@@ -241,16 +223,16 @@ export const algebraicSimplifyRule: TransformRule = {
       wakeOwningUnit(unitOfBlock),
     );
   },
-  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
+  sweep(unit: Unit, chain: AssumptionChain, view: UnitView): boolean {
     const witnesses = new Set<AssumptionChain>();
     walkExprs(visibleBody(unit, chain), (expr) => {
-      const plan = rewritePlan(chain, topology, expr);
+      const plan = rewritePlan(chain, view, expr);
       if (plan !== undefined) witnesses.add(plan.witness);
     });
     return runWitnessSweep(
       unit,
       witnesses,
-      (witness) => new ExprDrivenStmtVisitor(new AlgebraicSimplifyVisitor(witness, topology)),
+      (witness) => new ExprDrivenStmtVisitor(new AlgebraicSimplifyVisitor(witness, view)),
     );
   },
 };

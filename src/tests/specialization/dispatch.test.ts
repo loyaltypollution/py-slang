@@ -73,7 +73,7 @@ def f(x):
 
     const specContext = worklist.futureDispatchChainFor(unit);
     expect(dispatchValid(unit, specContext)).toBe(true);
-    const body = bodyToCompile(unit, specContext, worklist.topology);
+    const body = bodyToCompile(unit, specContext, worklist);
     expect(body).not.toBe(unit.body);
     // Shared AST is untouched — the pruned body is a clone.
     expect(fd.body).toBe(originalBody);
@@ -90,7 +90,7 @@ def f(x):
     const fd = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.units.get(fd.id)!;
     // ROOT_CONTEXT has no entry guards → dispatchValid === false.
-    expect(() => bodyToCompile(unit, ROOT_CONTEXT, worklist.topology))
+    expect(() => bodyToCompile(unit, ROOT_CONTEXT, worklist))
       .toThrow(/dispatchValid.*must hold/);
   });
 });

@@ -1,6 +1,8 @@
 // Forward + must "definitely-bound locals". Transfer binds at Assign/AnnAssign
-// target, For target, and FunctionDef name. Branch-condition narrowing is
-// intentionally absent: `if x == 10` tells us nothing about whether x is bound.
+// target, For target, and FunctionDef name. Branch conditions don't refine
+// boundness: `if x == 10` tells us nothing about whether x is bound.
+// `MutableEnv.meetWith` treats absent slots as top, so seedEnv writes every
+// slot at entry and transfer never clears.
 
 import { ExprNS, StmtNS } from "../../../ast-types";
 import {

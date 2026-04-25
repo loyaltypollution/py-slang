@@ -1,34 +1,23 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
-import type { FunctionId, Narrowing, NodeId, ParamKey } from "../../framework/analysis";
 import { at, type AssumptionChain, isRoot } from "../../assumption";
-import { MutableEnv } from "../../framework/mutable-env";
-import { paramTypeNarrowing } from "../../narrowing-policy/param-handles";
+import type { FunctionId, Narrowing, NodeId, ParamKey } from "../../framework/analysis";
 import type { BlockDfaSpec, BlockFixpointAnalysis } from "../../framework/dfa-factory";
-import type { RawKind } from "../../observation/raw-value";
+import { MutableEnv } from "../../framework/mutable-env";
 import { isLocal, type SlotLookup } from "../../framework/slot-table";
 import { blockFixpointFromSpec } from "../../framework/stmt-transfer";
-
-/** Interned `${fid}:${i}` ParamKeys, grown on demand. */
-const PARAM_KEYS: Map<FunctionId, ParamKey[]> = new Map();
-function paramKeysFor(fid: FunctionId, count: number): readonly ParamKey[] {
-  let arr = PARAM_KEYS.get(fid);
-  if (arr === undefined) { arr = []; PARAM_KEYS.set(fid, arr); }
-  while (arr.length < count) arr.push(`${fid}:${arr.length}` as ParamKey);
-  return arr;
-}
+import { paramTypeNarrowing } from "../../narrowing-policy/param-handles";
+import type { RawKind } from "../../observation/raw-value";
 import {
-  type TypeLattice,
   ALL_KINDS_MASK,
-  boolValue,
   BOOL_BIT,
   BOOL_FALSE,
   BOOL_TRUE,
   BoolRef,
-  BOTTOM,
   CLOSURE,
   CLOSURE_BIT,
   COMPLEX,
+  eq,
   FLOAT_BIT,
   FLOAT_NEG,
   FLOAT_POS,
@@ -40,15 +29,15 @@ import {
   INT_ZERO,
   IntRef,
   join,
-  leq,
-  eq,
   meet,
   NULL,
   NULL_BIT,
   STR_BIT,
-  typeLattice,
   STRING,
   TOP,
+  type TypeLattice,
+  typeLattice,
+  boolValue,
 } from "./lattice";
 import {
   transferBinaryOp,
@@ -57,6 +46,15 @@ import {
   transferUnaryNeg,
   truthiness,
 } from "./transfer";
+
+/** Interned `${fid}:${i}` ParamKeys, grown on demand. */
+const PARAM_KEYS: Map<FunctionId, ParamKey[]> = new Map();
+function paramKeysFor(fid: FunctionId, count: number): readonly ParamKey[] {
+  let arr = PARAM_KEYS.get(fid);
+  if (arr === undefined) { arr = []; PARAM_KEYS.set(fid, arr); }
+  while (arr.length < count) arr.push(`${fid}:${arr.length}` as ParamKey);
+  return arr;
+}
 
 const BINARY_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
   [TokenType.PLUS, "+"],

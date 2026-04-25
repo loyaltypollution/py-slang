@@ -1,22 +1,10 @@
-// Intraprocedural purity analysis. Axes the block transfer decomposes over:
-//   - arithmetic / local assignment   — pure by default.
-//   - whitelisted builtins            — `range`, `len`, … stay pure despite
-//                                       being calls.
-//   - subscript read vs store         — read is pure; store is impure unless
-//                                       the target is a fresh (locally-
-//                                       allocated, non-escaped) container.
-//   - nested FunctionDef              — analyzed as its own Unit and read
-//                                       back via `purityScopeAnalysis`.
-//                                       Lambda / MultiLambda: sticky-impure.
-//   - speculation composition         — branches pruned by a chain's param
-//                                       narrowings drop their impurity
-//                                       contributors at the specialized
-//                                       context.
-//   - capture reads                   — a nested fn reading an outer local
-//                                       is a dependency, not an effect.
+// Intraprocedural purity. Two-tier:
+//   - purityBlockAnalysis: per-block dataflow over AbsVal slots, emitting an
+//     IMPURE_SENTINEL fact in any block that performs an observable effect.
+//   - purityScopeAnalysis: per-FunctionDef verdict, joining the block facts
+//     over reachable blocks under the current speculation context.
 
 import { ExprNS, StmtNS } from "../../../ast-types";
-import { constAnalysis } from "../const/analysis";
 import type {
   Analysis,
   AnalysisCtx,
@@ -24,7 +12,6 @@ import type {
 } from "../../framework/analysis";
 import { defineAnalysis } from "../../framework/analysis";
 import type { BasicBlock } from "../../framework/cfg";
-import { type AssumptionChain } from "../../assumption/chain";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
@@ -32,21 +19,18 @@ import {
 import type { Unit } from "../../framework/function-unit";
 import { MutableEnv } from "../../framework/mutable-env";
 import { isCapture, isLocal, type SlotLookup } from "../../framework/slot-table";
-import type { ProgramTopology } from "../../framework/topology";
+import { constAnalysis } from "../const/analysis";
 import { typeAnalysis } from "../type/analysis";
 import { BOOL_BIT, BoolRef } from "../type/lattice";
 import {
   absValLattice,
-  BOTTOM,
   GLOBAL,
   IMPURE_MARKER,
   IMPURE_SENTINEL_NODE_ID,
   UNKNOWN,
-  type AbsVal,
+  type AbsVal
 } from "./lattice";
 
-// Deterministic, no I/O, don't capture or mutate args. __memo_* keep rewritten
-// bodies pure.
 const WHITELISTED_BUILTINS: ReadonlySet<string> = new Set([
   "range", "len", "abs", "min", "max", "int", "float", "str", "bool", "round",
   "__memo_has", "__memo_get", "__memo_put",
@@ -85,8 +69,8 @@ class PurityExprVisitor implements ExprNS.Visitor<AbsVal> {
   visitVariableExpr(expr: ExprNS.Variable): AbsVal {
     const info = this.state.slotLookup(expr.name);
     if (isLocal(info)) return this.state.env.get(info.slot) ?? UNKNOWN;
-    // Closure capture: a dependency on enclosing locals, not a side effect.
-    // We don't plumb cross-frame env lookup, so widen to Unknown.
+    // Capture reads depend on enclosing locals but are not an effect; we don't
+    // plumb cross-frame env lookup so widen to Unknown.
     if (isCapture(info)) return UNKNOWN;
     this.state.impure = true;
     return GLOBAL;
@@ -145,21 +129,15 @@ class PurityExprVisitor implements ExprNS.Visitor<AbsVal> {
       state.impure = true;
     }
 
-    // Closure.pure: true = resolved pure, false = resolved impure, undefined =
-    // not a closure call OR inner not yet analyzed (pending defers impurity
-    // to stay monotone).
-    const closurePure =
-      calleeAbs?.kind === "closure" ? calleeAbs.pure : undefined;
-    const isClosureCallee = calleeAbs?.kind === "closure";
-    const isPureClosureCall = isClosureCallee && closurePure === true;
-    const isPendingClosureCall = isClosureCallee && closurePure === undefined;
-    const isImpureClosureCall = isClosureCallee && closurePure === false;
+    // closure.pure tri-state: true = resolved pure, false = resolved impure,
+    // undefined = not yet analyzed (pending defers impurity to stay monotone).
+    const closure = calleeAbs?.kind === "closure" ? calleeAbs : undefined;
+    const isPureClosureCall = closure?.pure === true;
+    const isPendingClosureCall = closure?.pure === undefined && closure !== undefined;
+    const isImpureClosureCall = closure?.pure === false;
     const isWhitelistedBuiltin =
       calleeName !== undefined && WHITELISTED_BUILTINS.has(calleeName);
     const isSelfRecursion = calleeName !== undefined && calleeName === state.selfName;
-    // A named call is assumed impure unless it's a builtin, self-recursion, or
-    // a closure we've either resolved-pure or not yet analyzed (pending is
-    // monotone-deferred). An indirect callee already tainted `impure` above.
     const isKnownSafeNamedCall =
       isWhitelistedBuiltin || isSelfRecursion || isPureClosureCall || isPendingClosureCall;
 
@@ -167,9 +145,8 @@ class PurityExprVisitor implements ExprNS.Visitor<AbsVal> {
       state.impure = true;
     }
 
-    // Self-recursion is NOT exempt from arg escape: without an interprocedural
-    // summary the callee could mutate its params, so a Fresh alias passed to
-    // self must widen post-call.
+    // Without an interprocedural summary, args may escape into mutation —
+    // including via self-recursion.
     const argsEscape = !isWhitelistedBuiltin && !isPureClosureCall && !isPendingClosureCall;
     for (const arg of expr.args) {
       arg.accept(this);
@@ -273,9 +250,8 @@ function transferStmt(
       const fd = stmt as StmtNS.FunctionDef;
       const info = state.slotLookup(fd.name);
       if (!isLocal(info)) { state.impure = true; return; }
-      // Deepest verdict wins; `undefined` = pending until the scope→block
-      // reads-edge wakes this block with a definite verdict. ctx.readDeepest
-      // records the dependency, so no manual onFactDirty wiring is needed.
+      // `undefined` = scope verdict pending; readDeepest records the dep so
+      // this block re-runs when the verdict lands.
       const innerPure = state.ctx.readDeepest(purityScopeAnalysis, fd.id)?.value;
       state.env.set(info.slot, { kind: "closure", functionId: fd.id, pure: innerPure });
       return;
@@ -367,8 +343,6 @@ export const purityScopeAnalysis: Analysis<number, boolean | undefined> = define
       const fd = unit.funcAst;
       return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
     };
-    // Block.facts → scope verdict edge is now auto-recorded via
-    // ctx.readDeepest(purityBlockAnalysis.facts, block) in transfer.
     wl.onMint(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
     wl.onRebuildDirty(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
     wl.onSpecRev(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
@@ -397,11 +371,9 @@ function reachableBlocks(ctx: AnalysisCtx, unit: Unit): Set<BasicBlock> {
   return reached;
 }
 
-// constAnalysis covers `if True:` literals; typeAnalysis covers predicates
-// like `x <= 0` that fold to BOOL_FALSE under a sign-narrowed param.
-// Surfaces must agree or be absent; disagreement stays conservative.
-// Both reads route through ctx.readPerExprDeepest so the worklist auto-
-// invalidates this transfer when the underlying block-facts cell advances.
+// constAnalysis catches `if True:`; typeAnalysis catches predicates that fold
+// to BOOL_FALSE under a sign-narrowed param. readPerExprDeepest auto-records
+// the dep so this rebuilds when either fact tightens.
 function conditionTruth(ctx: AnalysisCtx, nodeId: number): boolean | undefined {
   const cVal = constAnalysis.readPerExprDeepest(ctx, nodeId)?.value;
   if (cVal?.tag === "const" && typeof cVal.value === "boolean") return cVal.value;
@@ -412,7 +384,3 @@ function conditionTruth(ctx: AnalysisCtx, nodeId: number): boolean | undefined {
   }
   return undefined;
 }
-
-// Scope→block dependency is auto-recorded via ctx.readDeepest(purityScopeAnalysis,
-// fd.id) in the FunctionDef transfer above. SpecRev re-seed is intrinsic to
-// makeBlockFixpointAnalysis. No post-hoc bind patch needed.

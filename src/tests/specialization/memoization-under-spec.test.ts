@@ -30,7 +30,7 @@ async function runJitWithIntrospection(code: string, functionName: string) {
     ast,
     environments,
     makeDfaQuery(
-      worklist.topology,
+      worklist,
       id => worklist.futureDispatchChainForNode(id),
       u => worklist.futureDispatchChainFor(u),
     ),
@@ -48,7 +48,7 @@ async function runJitWithIntrospection(code: string, functionName: string) {
       const chain = observers.currentChainFor(scopeId);
       const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
       if (!dispatchValid(unit, chain, isRefuted)) return undefined;
-      const body = bodyToCompile(unit, chain, worklist.topology, isRefuted);
+      const body = bodyToCompile(unit, chain, worklist, isRefuted);
       if (body === unit.body) return undefined;
       return compiler.compileFunction(unit, body);
     },

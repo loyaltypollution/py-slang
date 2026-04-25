@@ -4,13 +4,13 @@ import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
-import type { ProgramTopology } from "../framework/topology";
+import type { UnitView } from "../framework/analysis";
 import { BOOL_BIT, BoolRef, type TypeLattice, typeAnalysis } from "../analysis";
 import { BaseStmtVisitor, runWitnessSweep } from "./witness-utils";
 
-function boolCondition(chain: AssumptionChain, topology: ProgramTopology, nodeId: number) {
+function boolCondition(chain: AssumptionChain, view: UnitView, nodeId: number) {
   return typeAnalysis
-    .perExpr(topology)
+    .perExpr(view)
     .readMinimal(
       chain,
       nodeId,
@@ -22,19 +22,19 @@ function boolCondition(chain: AssumptionChain, topology: ProgramTopology, nodeId
 function collectConstCondWitnesses(
   stmts: readonly StmtNS.Stmt[],
   chain: AssumptionChain,
-  topology: ProgramTopology,
+  view: UnitView,
   out: Set<AssumptionChain>,
 ): void {
   for (const s of stmts) {
     if (s instanceof StmtNS.If) {
-      const r = boolCondition(chain, topology, s.condition.id);
+      const r = boolCondition(chain, view, s.condition.id);
       if (r !== undefined) out.add(r.witness);
-      collectConstCondWitnesses(s.body, chain, topology, out);
-      if (s.elseBlock) collectConstCondWitnesses(s.elseBlock, chain, topology, out);
+      collectConstCondWitnesses(s.body, chain, view, out);
+      if (s.elseBlock) collectConstCondWitnesses(s.elseBlock, chain, view, out);
     } else if (s instanceof StmtNS.While || s instanceof StmtNS.For) {
-      collectConstCondWitnesses(s.body, chain, topology, out);
+      collectConstCondWitnesses(s.body, chain, view, out);
     } else if (s instanceof StmtNS.FileInput) {
-      collectConstCondWitnesses(s.statements, chain, topology, out);
+      collectConstCondWitnesses(s.statements, chain, view, out);
     }
   }
 }
@@ -43,7 +43,7 @@ class DeadBranchVisitor extends BaseStmtVisitor {
   changed = false;
   constructor(
     private readonly chain: AssumptionChain,
-    private readonly topology: ProgramTopology,
+    private readonly view: UnitView,
   ) {
     super();
   }
@@ -66,7 +66,7 @@ class DeadBranchVisitor extends BaseStmtVisitor {
 
   private tryReplaceIf(stmt: StmtNS.Stmt): StmtNS.Stmt[] | null {
     if (!(stmt instanceof StmtNS.If)) return null;
-    const r = boolCondition(this.chain, this.topology, stmt.condition.id);
+    const r = boolCondition(this.chain, this.view, stmt.condition.id);
     if (r === undefined || r.witness !== this.chain) return null;
     return r.value.boolRef === BoolRef.True ? stmt.body : (stmt.elseBlock ?? []);
   }
@@ -87,16 +87,16 @@ class DeadBranchVisitor extends BaseStmtVisitor {
 }
 
 export const deadBranchRule: TransformRule = {
-  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
+  bind(wl) {
+    wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, wakeOwningUnit(unitOfBlock));
+  },
+  sweep(unit: Unit, chain: AssumptionChain, view: UnitView): boolean {
     const witnesses = new Set<AssumptionChain>();
-    collectConstCondWitnesses(visibleBody(unit, chain), chain, topology, witnesses);
+    collectConstCondWitnesses(visibleBody(unit, chain), chain, view, witnesses);
     return runWitnessSweep(
       unit,
       witnesses,
-      (witness) => new DeadBranchVisitor(witness, topology),
+      (witness) => new DeadBranchVisitor(witness, view),
     );
-  },
-  bind(wl) {
-    wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, wakeOwningUnit(unitOfBlock));
   },
 };

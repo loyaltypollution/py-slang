@@ -1,8 +1,4 @@
-// Algebraic surface for AssumptionChains: a join-semilattice with bottom
-// (ROOT_CONTEXT). `extend` is partial — throws on conflict at the same axis.
-
 import type { Assumption, AssumptionChain, NarrowingId } from "./chain";
-import { ROOT_CONTEXT } from "./chain";
 import { defaultInterner } from "./interner";
 
 export type { AssumptionChain } from "./chain";
@@ -32,7 +28,6 @@ export function at<K, V>(
   return s.bindings.get(narrowing)?.get(key)?.value as V | undefined;
 }
 
-/** Chain node on `s`'s parent-path whose tip binds `(narrowing, key)`. */
 export function carrier<K>(
   s: AssumptionChain,
   narrowing: NarrowingId<K, any>,
@@ -46,7 +41,6 @@ export function carrier<K>(
   return undefined;
 }
 
-/** `x ⊑ y` iff every binding in `x` is present in `y` with the same value. */
 export function leq(x: AssumptionChain, y: AssumptionChain): boolean {
   if (x === y) return true;
   if (x.depth > y.depth) return false;

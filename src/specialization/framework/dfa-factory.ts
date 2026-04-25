@@ -10,11 +10,11 @@ import type {
   Analysis,
   AnalysisCtx,
   NodeId,
+  UnitView,
 } from "./analysis";
 import { defineAnalysis } from "./analysis";
 import type { ReadonlyAnalysisStore } from "./analysis-store";
 import { EMPTY_MAP, storeContexts, storeEvict, walkChain } from "./analysis-store";
-import type { ProgramTopology, ReadonlyProgramTopology } from "./topology";
 
 /** Expression-level DFA module for block-fixpoint analyses. Extends
  *  `Lattice<L>` so the module itself IS the per-slot value lattice. */
@@ -101,7 +101,7 @@ function evictStaleBlockCells(
  *
  *  The split avoids spurious CFG-successor wakes when only exprFacts change.
  *
- *  `perExpr(topology)` returns a node-keyed adapter. `seed(unit)` returns
+ *  `perExpr(view)` returns a node-keyed adapter. `seed(unit)` returns
  *  the block where the fixpoint is seeded (entry forward, exit backward). */
 export interface BlockFixpointAnalysis<L> {
   readonly env: Analysis<BasicBlock, MutableEnv<L>>;
@@ -110,7 +110,7 @@ export interface BlockFixpointAnalysis<L> {
    *  consumers. NOT edge-recording — use `readPerExprDeepest(ctx, nodeId)`
    *  from inside a transfer if you want auto-invalidation when the cell
    *  changes. */
-  perExpr(topology: ReadonlyProgramTopology): ReadonlyAnalysisStore<number, L>;
+  perExpr(view: UnitView): ReadonlyAnalysisStore<number, L>;
   /** Edge-recording per-expression read. Walks the chain at `ctx.currentContext`,
    *  returning the deepest ancestor whose facts map contains `nodeId`.
    *  Records a read edge on `(facts, blockOfNode(nodeId))` so that any
@@ -293,12 +293,12 @@ export function makeBlockFixpointAnalysis<L>(
     wl.onRebuildEvict((unit) => evictStaleBlockCells(factsAnalysis.store, unit));
   };
 
-  const perExprCache = new WeakMap<ReadonlyProgramTopology, ReadonlyAnalysisStore<number, L>>();
-  function perExpr(topology: ReadonlyProgramTopology): ReadonlyAnalysisStore<number, L> {
-    const cached = perExprCache.get(topology);
+  const perExprCache = new WeakMap<UnitView, ReadonlyAnalysisStore<number, L>>();
+  function perExpr(view: UnitView): ReadonlyAnalysisStore<number, L> {
+    const cached = perExprCache.get(view);
     if (cached !== undefined) return cached;
     const tryReadNode = (nodeId: number, context: AssumptionChain): L | undefined => {
-      const block = topology.unitOfNode(nodeId)?.blockOfNode(nodeId);
+      const block = view.unitOfNode(nodeId)?.blockOfNode(nodeId);
       return block === undefined ? undefined : factsAnalysis.store.tryRead(block, context)?.get(nodeId);
     };
     const store: ReadonlyAnalysisStore<number, L> = {
@@ -320,7 +320,7 @@ export function makeBlockFixpointAnalysis<L>(
         return walkChain(chain, key, tryReadNode, "deepest");
       },
     };
-    perExprCache.set(topology, store);
+    perExprCache.set(view, store);
     return store;
   }
 

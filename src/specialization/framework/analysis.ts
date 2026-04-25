@@ -3,17 +3,24 @@ import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
 import type { BasicBlock } from "./cfg";
 import type { BlockFixpointAnalysis } from "./dfa-factory";
 import type { Unit } from "./function-unit";
-import type { ProgramTopology } from "./topology";
 import type { Worklist } from "./worklist";
 
 /** AST node id. Indexes individual expression/statement nodes. */
 export type NodeId = number;
 
 /** `FunctionDef.id` or `FileInput.id` — node id of a scope-owning AST node
- *  whose optimization unit is registered with the topology. Every
+ *  whose optimization unit is registered with the worklist. Every
  *  `FunctionId` is also a `NodeId`; the distinction is semantic
- *  (topology.unitOfNode vs. AnalysisCtx.units.get). */
+ *  (`unitOfNode` vs. `units.get`). */
 export type FunctionId = number;
+
+/** Read-only program-wide unit index. Worklist is the canonical implementer;
+ *  consumers (DFA factory, transforms, dfa-query) take this narrow surface
+ *  rather than the full Worklist so they can't reach for orchestration APIs. */
+export interface UnitView {
+  readonly units: ReadonlyMap<FunctionId, Unit>;
+  unitOfNode(nodeId: NodeId): Unit | undefined;
+}
 
 /** Function-entry parameter identity, encoded as `${functionId}:${paramIndex}`
  *  so it is usable directly as a Context/store key. */
@@ -98,9 +105,7 @@ export interface Narrowing<K = any, V = unknown> extends NarrowingId<K, V> {
 }
 
 export interface AnalysisCtx {
-  readonly topology: ProgramTopology;
-  /** FunctionId → Unit view. Analyses look up owning units by scope id
-   *  through this map rather than through topology. */
+  /** FunctionId → Unit view. Analyses look up owning units by scope id. */
   readonly units: ReadonlyMap<FunctionId, Unit>;
   /** NodeId → owning Unit. Block-level lookup is on the resulting Unit
    *  (`unit.blockOfNode`). */
@@ -147,7 +152,7 @@ export interface TransformRule {
   sweep(
     unit: Unit,
     chain: AssumptionChain,
-    topology: ProgramTopology,
+    view: UnitView,
   ): boolean;
   bind?(worklist: Worklist): void;
 }

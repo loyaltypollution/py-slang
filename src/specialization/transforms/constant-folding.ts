@@ -5,7 +5,7 @@ import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Unit } from "../framework/function-unit";
-import type { ProgramTopology } from "../framework/topology";
+import type { UnitView } from "../framework/analysis";
 import {
   DescendingExprVisitor,
   ExprDrivenStmtVisitor,
@@ -14,18 +14,14 @@ import {
   type Witnessed,
 } from "./witness-utils";
 
-type ConstWitness = Witnessed<Extract<ConstLattice, { tag: "const" }>>;
+type ConstHit = Witnessed<Extract<ConstLattice, { tag: "const" }>>;
 
-function constInfo(
-  chain: AssumptionChain,
-  topology: ProgramTopology,
-  nodeId: number,
-): ConstWitness | undefined {
-  return constAnalysis
-    .perExpr(topology)
-    .readMinimal(chain, nodeId, (cv: ConstLattice) => cv.tag === "const") as
-    | ConstWitness
-    | undefined;
+function readConst(chain: AssumptionChain, view: UnitView, nodeId: number): ConstHit | undefined {
+  return constAnalysis.perExpr(view).readMinimal(
+    chain,
+    nodeId,
+    (cv: ConstLattice) => cv.tag === "const",
+  ) as ConstHit | undefined;
 }
 
 class ConstFoldExprVisitor extends DescendingExprVisitor {
@@ -33,14 +29,14 @@ class ConstFoldExprVisitor extends DescendingExprVisitor {
 
   constructor(
     private readonly chain: AssumptionChain,
-    private readonly topology: ProgramTopology,
+    private readonly view: UnitView,
   ) {
     super();
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
     super.visitBinaryExpr(expr);
-    const cv = constInfo(this.chain, this.topology, expr.id);
+    const cv = readConst(this.chain, this.view, expr.id);
     if (cv === undefined || cv.witness !== this.chain) return expr;
     this.changed = true;
     return new ExprNS.Literal(expr.startToken, expr.endToken, cv.value.value);
@@ -48,24 +44,24 @@ class ConstFoldExprVisitor extends DescendingExprVisitor {
 }
 
 export const constantFoldingRule: TransformRule = {
-  sweep(unit: Unit, chain: AssumptionChain, topology: ProgramTopology): boolean {
-    const witnesses = new Set<AssumptionChain>();
-    walkExprs(visibleBody(unit, chain), (e) => {
-      if (!(e instanceof ExprNS.Binary)) return;
-      const info = constInfo(chain, topology, e.id);
-      if (info !== undefined) witnesses.add(info.witness);
-    });
-    return runWitnessSweep(
-      unit,
-      witnesses,
-      (witness) => new ExprDrivenStmtVisitor(new ConstFoldExprVisitor(witness, topology)),
-    );
-  },
   bind(wl) {
     wl.onTransformFactDirty(
       constantFoldingRule,
       constAnalysis.facts,
       wakeOwningUnit(unitOfBlock),
+    );
+  },
+  sweep(unit: Unit, chain: AssumptionChain, view: UnitView): boolean {
+    const witnesses = new Set<AssumptionChain>();
+    walkExprs(visibleBody(unit, chain), (e) => {
+      if (!(e instanceof ExprNS.Binary)) return;
+      const info = readConst(chain, view, e.id);
+      if (info !== undefined) witnesses.add(info.witness);
+    });
+    return runWitnessSweep(
+      unit,
+      witnesses,
+      (witness) => new ExprDrivenStmtVisitor(new ConstFoldExprVisitor(witness, view)),
     );
   },
 };

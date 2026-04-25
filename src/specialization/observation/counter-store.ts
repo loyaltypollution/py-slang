@@ -1,6 +1,3 @@
-// Key → saturating count. Profiler/evidence surface: no transfer, no
-// lattice, no context — just an opaque counter the worklist bumps.
-
 import type { Worklist } from "../framework/worklist";
 
 export class CounterStore<K> {

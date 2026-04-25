@@ -17,8 +17,8 @@ import {
   type ConstLattice,
 } from "./lattice";
 
-/** Chain-invariant const propagation. No param speculation (recursive
- *  value thrash); param speculation lives on `paramTypeNarrowing`. */
+// Chain-invariant const propagation. Param speculation lives on
+// `paramTypeNarrowing`; folding it in here causes recursive value thrash.
 
 function foldBinary(op: TokenType, left: ConstLattice, right: ConstLattice): ConstLattice {
   if (left.tag !== "const" || right.tag !== "const") return CONST_TOP;
@@ -67,7 +67,7 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     return val;
   }
 
-  /** Recurse into children for side effects (fact recording) but yield TOP. */
+  /** Recurse into children for fact recording, yield TOP. */
   private visitChildrenAsTop(node: ExprNS.Expr, children: ExprNS.Expr[]): ConstLattice {
     for (const child of children) child.accept(this);
     return this.annotate(node, CONST_TOP);
@@ -103,12 +103,11 @@ class ConstAnalysisVisitor implements ExprNS.Visitor<ConstLattice> {
     return this.annotate(expr, expr.expression.accept(this));
   }
 
-  // Compare produces a boolean; boolean facts live in TypeAnalysis (BoolRef).
+  // Compare/BoolOp boolean reasoning lives in TypeAnalysis (BoolRef), not here.
   visitCompareExpr(expr: ExprNS.Compare): ConstLattice {
     return this.visitChildrenAsTop(expr, [expr.left, expr.right]);
   }
 
-  // `and`/`or` truthiness reasoning lives in TypeAnalysis's BoolRef transfer.
   visitBoolOpExpr(expr: ExprNS.BoolOp): ConstLattice {
     return this.visitChildrenAsTop(expr, [expr.left, expr.right]);
   }

@@ -2,9 +2,6 @@
 // context, propagates the required return type backward to produce per-slot
 // requirements at every program point. Polarity on `TypeLattice`: TOP = no
 // constraint, BOTTOM = contradiction.
-//
-// Bypasses `BlockDfaSpec` (like liveness) because requirements flow *down*
-// into operand slots, not up through `ExprNS.Visitor<L>`.
 
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";

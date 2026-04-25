@@ -19,7 +19,7 @@ describe("DfaQuery / StaticDfaQuery split", () => {
     const resolver = new Resolver("x = 1\n", ast);
     resolver.resolve(ast);
     const wl = createDefaultWorklist(ast, resolver.functionEnvironments);
-    const full: DfaQuery = makeDfaQuery(wl.topology);
+    const full: DfaQuery = makeDfaQuery(wl);
     // Structural widening — a DfaQuery IS a StaticDfaQuery.
     const restricted: StaticDfaQuery = full;
 

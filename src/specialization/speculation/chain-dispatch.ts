@@ -7,15 +7,15 @@ import type { AssumptionChain } from "../assumption";
 import { visibleBody } from "./assumption-bodies";
 import { shadowNode } from "../framework/variant-body-clone";
 import type { Unit } from "../framework/function-unit";
-import type { ReadonlyProgramTopology } from "../framework/topology";
+import type { UnitView } from "../framework/analysis";
 import { BOOL_BIT, BoolRef, typeAnalysis } from "../analysis";
 
 function conditionTruth(
   condId: number,
-  topology: ReadonlyProgramTopology,
+  view: UnitView,
   context: AssumptionChain,
 ): boolean | undefined {
-  const fact = typeAnalysis.perExpr(topology).tryRead(condId, context);
+  const fact = typeAnalysis.perExpr(view).tryRead(condId, context);
   if (fact === undefined || fact.kinds !== BOOL_BIT) return undefined;
   if (fact.boolRef === BoolRef.True) return true;
   if (fact.boolRef === BoolRef.False) return false;
@@ -26,7 +26,7 @@ function conditionTruth(
 function pruneWithFactsAt(
   stmts: readonly StmtNS.Stmt[],
   context: AssumptionChain,
-  topology: ReadonlyProgramTopology,
+  view: UnitView,
 ): readonly StmtNS.Stmt[] {
   let changed = false;
   const out: StmtNS.Stmt[] = [];
@@ -35,20 +35,20 @@ function pruneWithFactsAt(
       out.push(stmt);
       continue;
     }
-    const truth = conditionTruth(stmt.condition.id, topology, context);
+    const truth = conditionTruth(stmt.condition.id, view, context);
     if (truth === true) {
       changed = true;
-      out.push(...pruneWithFactsAt(stmt.body, context, topology));
+      out.push(...pruneWithFactsAt(stmt.body, context, view));
       continue;
     }
     if (truth === false) {
       changed = true;
-      if (stmt.elseBlock) out.push(...pruneWithFactsAt(stmt.elseBlock, context, topology));
+      if (stmt.elseBlock) out.push(...pruneWithFactsAt(stmt.elseBlock, context, view));
       continue;
     }
-    const newBody = pruneWithFactsAt(stmt.body, context, topology);
+    const newBody = pruneWithFactsAt(stmt.body, context, view);
     const newElse = stmt.elseBlock
-      ? pruneWithFactsAt(stmt.elseBlock, context, topology)
+      ? pruneWithFactsAt(stmt.elseBlock, context, view)
       : stmt.elseBlock;
     if (newBody !== stmt.body || newElse !== stmt.elseBlock) {
       changed = true;
@@ -83,11 +83,11 @@ export function dispatchValid(
 export function bodyToCompile(
   unit: Unit,
   s: AssumptionChain,
-  topology: ReadonlyProgramTopology,
+  view: UnitView,
   isRefuted?: (s: AssumptionChain) => boolean,
 ): readonly StmtNS.Stmt[] {
   if (!dispatchValid(unit, s, isRefuted)) {
     throw new Error("[bodyToCompile] dispatchValid(unit, s, isRefuted) must hold");
   }
-  return pruneWithFactsAt(visibleBody(unit, s, isRefuted), s, topology);
+  return pruneWithFactsAt(visibleBody(unit, s, isRefuted), s, view);
 }

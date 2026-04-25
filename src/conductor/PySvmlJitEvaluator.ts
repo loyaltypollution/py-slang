@@ -45,7 +45,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         ast,
         environments,
         makeDfaQuery(
-          worklist.topology,
+          worklist,
           nodeId => worklist.futureDispatchChainForNode(nodeId),
           unit => worklist.futureDispatchChainFor(unit),
         ),

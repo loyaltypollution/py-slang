@@ -2,7 +2,6 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import { SVMLCompiler } from "../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../engines/svml/svml-interpreter";
 import { makeDfaQuery } from "../../specialization";
-import { MEMOIZATION_THRESHOLD } from "../../specialization/transforms/memoization";
 import {
   clearMemoCache,
   memoCacheSnapshot,
@@ -14,6 +13,8 @@ import { runtimeCallCounter } from "../../specialization/observation/runtime-ana
 import type { Unit } from "../../specialization/framework/function-unit";
 import { setup } from "./harness/compile-pipelines";
 import { findFunctionDef, observeCallsTo } from "./harness/function-observe";
+
+const MEMO_TRIGGER_CALLS = runtimeCallCounter.saturation - 1;
 
 // TODO(plan.md §1): replace with `memoization.didFireOn(unit)` once the
 // transform exposes a public tag; this helper pins the wrapper's private shape.
@@ -53,7 +54,7 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
     const { worklist, fd } = drainAndObserve(
       "def f(x):\n    return x + 1",
       "f",
-      MEMOIZATION_THRESHOLD - 1,
+      MEMO_TRIGGER_CALLS - 1,
     );
     expect(memoFired(worklist.units.get(fd.id)!)).toBe(false);
     expect(fd.body).toHaveLength(1);
@@ -64,7 +65,7 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
     const { worklist, fd } = drainAndObserve(
       "def f(x):\n    return x + 1",
       "f",
-      MEMOIZATION_THRESHOLD,
+      MEMO_TRIGGER_CALLS,
     );
     expect(memoFired(worklist.units.get(fd.id)!)).toBe(true);
     expect(fd.body).toHaveLength(2);
@@ -78,10 +79,10 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
     const { worklist, fd } = drainAndObserve(
       "def f(x):\n    return x + 1",
       "f",
-      MEMOIZATION_THRESHOLD,
+      MEMO_TRIGGER_CALLS,
     );
     const bodyLen = fd.body.length;
-    observeCallsTo(worklist, fd, MEMOIZATION_THRESHOLD);
+    observeCallsTo(worklist, fd, MEMO_TRIGGER_CALLS);
     worklist.drain();
     expect(fd.body.length).toBe(bodyLen);
   });
@@ -94,7 +95,7 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
       "            return x",
       "    return 0",
     ].join("\n");
-    const { fd } = drainAndObserve(code, "f", MEMOIZATION_THRESHOLD);
+    const { fd } = drainAndObserve(code, "f", MEMO_TRIGGER_CALLS);
 
     const returns: StmtNS.Return[] = [];
     const walk = (stmts: StmtNS.Stmt[]) => {
@@ -125,7 +126,7 @@ describe("memoization: purity gate", () => {
     const { worklist, fd } = drainAndObserve(
       "x = 0\ndef g():\n    return x",
       "g",
-      MEMOIZATION_THRESHOLD * 2,
+      MEMO_TRIGGER_CALLS * 2,
     );
     expect(memoFired(worklist.units.get(fd.id)!)).toBe(false);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.Return);
@@ -135,7 +136,7 @@ describe("memoization: purity gate", () => {
     const { worklist, fd } = drainAndObserve(
       "def f(x):\n    print(x)\n    return x",
       "f",
-      MEMOIZATION_THRESHOLD * 2,
+      MEMO_TRIGGER_CALLS * 2,
     );
     expect(memoFired(worklist.units.get(fd.id)!)).toBe(false);
     expect(fd.body).toHaveLength(2);
@@ -173,7 +174,7 @@ describe("memoization: runtime cache contract", () => {
   });
 
   test("zero-arg wrap puts under empty-string key", () => {
-    drainAndObserve("def answer():\n    return 42", "answer", MEMOIZATION_THRESHOLD);
+    drainAndObserve("def answer():\n    return 42", "answer", MEMO_TRIGGER_CALLS);
     memoPut("answer@L1", [], 42);
     expect(memoLookup("answer@L1", [])).not.toBe(MEMO_MISS);
     expect(Array.from(memoCacheSnapshot().get("answer@L1")!.keys())).toEqual([""]);
@@ -189,7 +190,7 @@ describe("memoization: SVML wiring", () => {
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      makeDfaQuery(worklist.topology),
+      makeDfaQuery(worklist),
     );
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
     worklist.drain();
@@ -210,14 +211,14 @@ f(5)
 `);
     worklist.drain();
     const fd = findFunctionDef(ast, "f");
-    observeCallsTo(worklist, fd, MEMOIZATION_THRESHOLD);
+    observeCallsTo(worklist, fd, MEMO_TRIGGER_CALLS);
     worklist.drain();
     expect(memoFired(worklist.units.get(fd.id)!)).toBe(true);
 
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      makeDfaQuery(worklist.topology),
+      makeDfaQuery(worklist),
     );
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
 

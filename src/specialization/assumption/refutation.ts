@@ -1,6 +1,3 @@
-// Refutations: upward-closed filter over AssumptionChains. Stores minimal
-// generators (an antichain); membership is `∃ r ∈ generators. leq(r, c)`.
-
 import type { AssumptionChain } from "./algebra";
 import { leq } from "./algebra";
 

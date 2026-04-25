@@ -1,5 +1,5 @@
 // Constant-propagation lattice: BOTTOM ≤ const(v) ≤ TOP. Join of disagreeing
-// constants is TOP. mergeKind = "may".
+// constants is TOP.
 import type { Lattice } from "../../framework/analysis";
 
 export type ConstLattice =
@@ -32,7 +32,8 @@ export function constLeq(a: ConstLattice, b: ConstLattice): boolean {
 export function constEq(a: ConstLattice, b: ConstLattice): boolean {
   if (a === b) return true;
   if (a.tag !== b.tag) return false;
-  return a.tag !== "const" || a.value === (b as { value: number }).value;
+  if (a.tag === "const" && b.tag === "const") return a.value === b.value;
+  return true;
 }
 
 export function constMeet(a: ConstLattice, b: ConstLattice): ConstLattice {

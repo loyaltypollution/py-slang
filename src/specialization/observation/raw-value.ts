@@ -1,6 +1,3 @@
-// Normalizes raw runtime-observed values into a tagged union that
-// lattice-lifters can dispatch on.
-
 export type RawKind =
   | { kind: "number"; value: number }
   | { kind: "bool"; value: boolean }
@@ -10,14 +7,12 @@ export type RawKind =
   | { kind: "complex" }
   | { kind: "unknown" };
 
-// Interned no-payload singletons.
 const NONE: RawKind = { kind: "none" };
 const CLOSURE: RawKind = { kind: "closure" };
 const COMPLEX: RawKind = { kind: "complex" };
 export const RAW_UNKNOWN: RawKind = { kind: "unknown" };
 
-// One-slot last-seen memo. SVML re-observes the same primitive every
-// iteration of a hot loop; the memo avoids a fresh wrapper per fire.
+// One-slot last-seen memo: hot loops re-observe the same primitive.
 let lastRaw: unknown = Symbol("cache-miss-sentinel");
 let lastKind: RawKind = RAW_UNKNOWN;
 

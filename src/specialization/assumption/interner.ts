@@ -1,7 +1,3 @@
-// Canonicalizing interner for AssumptionChains.
-// Structural equality ⇒ reference equality; arrival order doesn't matter
-// (chains are sorted by per-interner narrowing ordinal, then key).
-
 import type { Assumption, AssumptionChain, NarrowingId } from "./chain";
 import { ROOT_CONTEXT } from "./chain";
 
@@ -40,7 +36,9 @@ export class ChainInterner {
     if (typeof ka === "number" && typeof kb === "number") return ka - kb;
     const sa = String(ka);
     const sb = String(kb);
-    return sa < sb ? -1 : sa > sb ? 1 : 0;
+    if (sa < sb) return -1;
+    if (sa > sb) return 1;
+    return 0;
   }
 
   extend<K, V>(
