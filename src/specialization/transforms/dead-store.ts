@@ -4,7 +4,6 @@ import { forkBody, visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/views/function";
 import type { FunctionLocator } from "../program/views/function-locator";
 import { isLocal, type SlotLookup } from "../program/slot-table";
-import { functionOfBlock, wakeOwningFunction } from "../program/views/function-resolver";
 import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../analysis";
 import { walkExpr, walkExprs } from "./witness-utils";
@@ -186,7 +185,7 @@ function witnessForRemoval(
 
 export const deadStoreRule: TransformRule = {
   bind(wl) {
-    wl.onTransformFactDirty(deadStoreRule, livenessAnalysis.env, wakeOwningFunction(functionOfBlock));
+    wl.onTransformFactDirty(deadStoreRule, livenessAnalysis.env, (_, b) => [b.unit]);
   },
   sweep(unit: Function, chain: AssumptionChain, _view: FunctionLocator): boolean {
     // Top-level names are observable; only function-scope slots are safe to DSE.

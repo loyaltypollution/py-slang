@@ -12,7 +12,6 @@ import {
   type TypeLattice,
 } from "../analysis";
 import type { TransformRule } from "../framework/analysis";
-import { functionOfBlock, wakeOwningFunction } from "../program/views/function-resolver";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/views/function";
@@ -217,11 +216,7 @@ class AlgebraicSimplifyVisitor extends DescendingExprVisitor {
 
 export const algebraicSimplifyRule: TransformRule = {
   bind(wl) {
-    wl.onTransformFactDirty(
-      algebraicSimplifyRule,
-      typeAnalysis.facts,
-      wakeOwningFunction(functionOfBlock),
-    );
+    wl.onTransformFactDirty(algebraicSimplifyRule, typeAnalysis.facts, (_, b) => [b.unit]);
   },
   sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator): boolean {
     const witnesses = new Set<AssumptionChain>();

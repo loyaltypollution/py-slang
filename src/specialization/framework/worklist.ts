@@ -23,7 +23,6 @@ import {
   type Narrowing,
   type TransformRule,
 } from "./analysis";
-import { functionOfNodeId, type FunctionResolver } from "../program/views/function-resolver";
 import {
   storeEvict,
   storeWrite,
@@ -34,6 +33,17 @@ import type { FunctionLocator } from "../program/views/function-locator";
 import { FunctionSweepKind } from "../program/views/function-sweep-kind";
 import type { SweepKind } from "./sweep-kind";
 import type { View } from "../program/views/view";
+
+/** Resolver supplied per-binding (or the default below): turns the channel's
+ *  key into the owning Function so observation ingress can route narrowings
+ *  to the right unit. */
+type UnitResolver = (locator: FunctionLocator, key: any) => Function | undefined;
+
+/** Default resolver: assumes the binding's key is a NodeId and looks up the
+ *  enclosing function. ObservationBindings whose key is not a NodeId must
+ *  supply their own `resolveUnit`. */
+const defaultUnitResolver: UnitResolver = (locator, key) =>
+  locator.functionContainingNode(key as NodeId);
 
 /** A `(analysis, key, context)` triple as the worklist enqueues it. */
 interface AnalysisTriple {
@@ -172,7 +182,7 @@ export class Worklist {
   /** Per-source unit resolver; all bindings on a source must agree. */
   private readonly unitResolverBySource: Map<
     ObservationChannel<any, any>,
-    FunctionResolver<any>
+    UnitResolver
   >;
   /** Per-source observation bindings, indexed for ingress dispatch. */
   private readonly bindingsBySource: ReadonlyMap<
@@ -198,11 +208,11 @@ export class Worklist {
     this.extraEntrySeeds = extraEntrySeeds;
     // Group bindings by `source`. Each group must agree on `resolveUnit`
     // so registration bugs surface at construction.
-    const unitResolverBySource = new Map<ObservationChannel<any, any>, FunctionResolver<any>>();
+    const unitResolverBySource = new Map<ObservationChannel<any, any>, UnitResolver>();
     const bindingsBySource = new Map<ObservationChannel<any, any>, ObservationBinding<any, any>[]>();
     for (const b of observationBindings) {
       const source = b.source;
-      const resolver: FunctionResolver<any> = b.resolveUnit ?? functionOfNodeId;
+      const resolver: UnitResolver = b.resolveUnit ?? defaultUnitResolver;
       const existing = unitResolverBySource.get(source);
       if (existing === undefined) {
         unitResolverBySource.set(source, resolver);
@@ -681,7 +691,7 @@ export class Worklist {
     const applicable = this.bindingsBySource.get(source);
     if (applicable === undefined || applicable.length === 0) return context;
 
-    const resolveUnit = this.unitResolverBySource.get(source) ?? functionOfNodeId;
+    const resolveUnit = this.unitResolverBySource.get(source) ?? defaultUnitResolver;
     const unit = resolveUnit(this.functionManager, key);
     if (unit === undefined) return context;
 

@@ -1,5 +1,6 @@
 import type { NarrowingId } from "../assumption";
-import type { FunctionResolver } from "../program/views/function-resolver";
+import type { Function } from "../program/views/function";
+import type { FunctionLocator } from "../program/views/function-locator";
 import type { ObservationChannel } from "./observation-channel";
 
 export interface ObservationBinding<K = any, V = unknown, O = unknown> {
@@ -7,6 +8,7 @@ export interface ObservationBinding<K = any, V = unknown, O = unknown> {
   readonly source: ObservationChannel<K, O>;
   /** `undefined` = observation doesn't map (skip without refuting). */
   lift(observed: O): V | undefined;
-  /** Defaults to `functionOfNodeId` at the worklist when omitted. */
-  resolveUnit?: FunctionResolver<K>;
+  /** Defaults at the worklist to `(loc, key) => loc.functionContainingNode(key)`
+   *  when omitted — i.e. the channel key is treated as a NodeId. */
+  resolveUnit?: (locator: FunctionLocator, key: K) => Function | undefined;
 }

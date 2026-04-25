@@ -1,7 +1,6 @@
 import { ExprNS } from "../../ast-types";
 import { constAnalysis, type ConstLattice } from "../analysis";
 import type { TransformRule } from "../framework/analysis";
-import { functionOfBlock, wakeOwningFunction } from "../program/views/function-resolver";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/views/function";
@@ -45,11 +44,7 @@ class ConstFoldExprVisitor extends DescendingExprVisitor {
 
 export const constantFoldingRule: TransformRule = {
   bind(wl) {
-    wl.onTransformFactDirty(
-      constantFoldingRule,
-      constAnalysis.facts,
-      wakeOwningFunction(functionOfBlock),
-    );
+    wl.onTransformFactDirty(constantFoldingRule, constAnalysis.facts, (_, b) => [b.unit]);
   },
   sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator): boolean {
     const witnesses = new Set<AssumptionChain>();

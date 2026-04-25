@@ -4,7 +4,6 @@ import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokenizer";
 import { directParamEntryGuardsFor, guardKeyFromGuards } from "../narrowing-policy/entry-guards";
 import type { TransformRule } from "../framework/analysis";
-import { functionOfFunctionId, wakeOwningFunction } from "../program/views/function-resolver";
 import { shadowNode } from "../framework/variant-body-clone";
 import { type AssumptionChain } from "../assumption";
 import { forkBody } from "../speculation/assumption-bodies";
@@ -121,7 +120,10 @@ function bodyHasMemoPrelude(body: readonly StmtNS.Stmt[]): boolean {
 
 export const memoizationRule: TransformRule = {
   bind(wl) {
-    wl.onTransformCounterBumped(memoizationRule, runtimeCallCounter, wakeOwningFunction(functionOfFunctionId));
+    wl.onTransformCounterBumped(memoizationRule, runtimeCallCounter, (loc, id) => {
+      const f = loc.functionById(id);
+      return f ? [f] : [];
+    });
     // purityFunctionAnalysis is keyed by Function, so the dirtied key already IS the unit.
     wl.onTransformFactDirty(memoizationRule, purityFunctionAnalysis, (_ctx, unit) => [unit]);
     // On refute: evict the memo bucket keyed by the refuted carrier's guards.

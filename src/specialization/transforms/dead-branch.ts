@@ -1,6 +1,5 @@
 import { StmtNS } from "../../ast-types";
 import type { TransformRule } from "../framework/analysis";
-import { functionOfBlock, wakeOwningFunction } from "../program/views/function-resolver";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/views/function";
@@ -92,7 +91,7 @@ class DeadBranchVisitor extends BaseStmtVisitor {
 
 export const deadBranchRule: TransformRule = {
   bind(wl) {
-    wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, wakeOwningFunction(functionOfBlock));
+    wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, (_, b) => [b.unit]);
   },
   sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator): boolean {
     const witnesses = new Set<AssumptionChain>();
