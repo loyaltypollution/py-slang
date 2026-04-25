@@ -89,3 +89,16 @@ export const EMPTY_NODESET: NodeSet = {
   size: 0,
   iterate: () => [],
 };
+
+/** Universal `NodeSet` — `contains` is true for every id. Used as a
+ *  subscriber `interest` to mean "fire on every advance, regardless of
+ *  delta." Pairs only with enumerable `delta`s; `intersects(ANY, delta)`
+ *  is true iff `delta` is non-empty (or undefined, which the dispatcher
+ *  defaults to `key`). */
+export const ANY_NODESET: NodeSet = {
+  contains: () => true,
+  size: Infinity,
+  iterate: () => {
+    throw new Error("[ANY_NODESET] not enumerable; pair with an enumerable delta in `intersects`.");
+  },
+};

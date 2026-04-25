@@ -336,7 +336,7 @@ export const purityFunctionAnalysis: Analysis<Function, boolean | undefined> = d
       if (!reachable.has(block)) continue;
       // Read directly from the store rather than via `ctx.readDeepest` so
       // we don't record a per-block read edge. Invalidation is declared
-      // explicitly through `onFactDirtyNodeSet` at bind time, gated on the
+      // explicitly through `wl.subscribe` at bind time, gated on the
       // single nodeId we actually care about (`IMPURE_SENTINEL_NODE_ID`);
       // the auto-edge would re-fire on any block-fact advance and defeat
       // that gating.
@@ -357,7 +357,7 @@ export const purityFunctionAnalysis: Analysis<Function, boolean | undefined> = d
     // sentinel only — the verdict is a join over reachable blocks of
     // "did any block emit IMPURE_SENTINEL?", so a block-fact advance that
     // doesn't touch that sentinel cannot move the verdict.
-    wl.onFactDirtyNodeSet(
+    wl.subscribe(
       purityBlockAnalysis.facts as Analysis<any, any>,
       purityFunctionAnalysis,
       internSingletonNode(IMPURE_SENTINEL_NODE_ID),
