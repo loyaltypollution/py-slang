@@ -4,6 +4,7 @@
 import { StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
 import { isRoot, ROOT_CONTEXT, type AssumptionChain } from "../../assumption";
+import type { SweepKind } from "../../framework/sweep-kind";
 import type { NodeId } from "../node-set";
 import {
   buildFunctions,
@@ -16,7 +17,7 @@ import type { FunctionLocator } from "./function-locator";
 import type { BasicBlock } from "./basic-block";
 import { FunctionDispatchState } from "./function-dispatch";
 
-export class FunctionManager implements FunctionLocator {
+export class FunctionManager implements FunctionLocator, SweepKind<Function> {
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
   private readonly functionByNode = new Map<NodeId, Function>();
   private readonly pendingRebuilds = new Set<Function>();
@@ -77,8 +78,12 @@ export class FunctionManager implements FunctionLocator {
     return unit;
   }
 
-  schedulePendingRebuild(unit: Function): void {
+  scheduleRebuild(unit: Function): void {
     this.pendingRebuilds.add(unit);
+  }
+
+  chainFor(unit: Function): AssumptionChain {
+    return this.dispatch.futureDispatchChainFor(unit);
   }
 
   hasPendingRebuilds(): boolean {

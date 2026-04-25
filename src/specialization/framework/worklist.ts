@@ -30,7 +30,6 @@ import {
 import { type Function } from "../program/views/function";
 import { FunctionManager } from "../program/views/function-manager";
 import type { FunctionLocator } from "../program/views/function-locator";
-import { FunctionSweepKind } from "../program/views/function-sweep-kind";
 import type { SweepKind } from "./sweep-kind";
 import type { View } from "../program/views/view";
 
@@ -132,6 +131,9 @@ export class Worklist {
     TransformRule<any, any>,
     { kind: SweepKind<any>; dirty: Set<any> }
   >();
+  /** Default SweepKind passed to `registerTransform` when callers omit one.
+   *  FunctionManager directly implements SweepKind<Function>, so this is
+   *  just a typed alias for `this.functionManager` — no wrapper. */
   private readonly functionSweepKind: SweepKind<Function>;
 
   /** Reentrancy guard: set while `sweepTransforms` runs. `publish`/`bump`
@@ -231,7 +233,7 @@ export class Worklist {
     // the initial mint burst it fires when subscribers register via
     // `onMint`. Manager constructor builds Functions from `ast`.
     this.functionManager = new FunctionManager(ast, functionEnvironments);
-    this.functionSweepKind = new FunctionSweepKind(this.functionManager);
+    this.functionSweepKind = this.functionManager;
 
     for (const p of analyses) this.register(p);
     for (const c of counters) this.registerCounter(c);

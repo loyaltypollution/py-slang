@@ -58,7 +58,7 @@ describe("View contract — invariants pinned across the three questions", () =>
     const oldNodeIds = Array.from(unit.nodeToBlock.keys());
     expect(oldNodeIds.length).toBeGreaterThan(0);
 
-    fm.schedulePendingRebuild(unit);
+    fm.scheduleRebuild(unit);
     expect(fm.flushPendingRebuilds()).toContain(unit);
 
     for (const block of unit.cfg.blocks) {
