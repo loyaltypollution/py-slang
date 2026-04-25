@@ -1,6 +1,6 @@
-import { StmtNS } from "../../ast-types";
+import { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
-import type { NodeId } from "../framework/analysis";
+import type { NodeId } from "./node-set";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import type { SlotLookup } from "./slot-table";
@@ -93,8 +93,8 @@ function walkAstNodeIds(
   seen: WeakSet<object> = new WeakSet(),
 ): void {
   if (node === null || typeof node !== "object") return;
-  if (seen.has(node as object)) return;
-  seen.add(node as object);
+  if (seen.has(node)) return;
+  seen.add(node);
   const obj = node as Record<string, unknown>;
   const id = obj.id;
   if (typeof id === "number") {
@@ -102,6 +102,7 @@ function walkAstNodeIds(
     block.nodeIds.add(id);
   }
   for (const key of Object.keys(obj)) {
+    if (isNestedScopeOrCfgBody(node, key)) continue;
     const child = obj[key];
     if (Array.isArray(child)) {
       for (const item of child) walkAstNodeIds(item, block, out, seen);
@@ -109,6 +110,19 @@ function walkAstNodeIds(
       walkAstNodeIds(child, block, out, seen);
     }
   }
+}
+
+/** `BasicBlock` membership is exclusive CFG ownership, not syntactic subtree
+ *  containment. Header blocks own their predicate/iter expression, while body
+ *  statements are owned by the blocks `buildCFG` emitted for those bodies.
+ *  Nested function/lambda bodies are separate scopes and are not owned by the
+ *  enclosing block's NodeSet. */
+function isNestedScopeOrCfgBody(node: unknown, key: string): boolean {
+  if (node instanceof StmtNS.If) return key === "body" || key === "elseBlock";
+  if (node instanceof StmtNS.While || node instanceof StmtNS.For) return key === "body";
+  if (node instanceof StmtNS.FunctionDef) return key === "body" || key === "varDecls";
+  if (node instanceof ExprNS.Lambda || node instanceof ExprNS.MultiLambda) return key === "body";
+  return false;
 }
 
 export function buildFunctions(
