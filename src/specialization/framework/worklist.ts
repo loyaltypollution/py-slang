@@ -96,8 +96,8 @@ export interface WorklistConfig {
 }
 
 export class Worklist {
-  /** Function-shape state lives here. Worklist's vocabulary stops at view-
-   *  agnostic dispatch; everything Function-specific (indices, lifecycle,
+  /** Function-shape state lives here. Worklist's vocabulary stops at NodeSet-
+   *  routed dispatch; everything Function-specific (indices, lifecycle,
    *  speculation context, CFG rebuild) is the manager's concern. */
   readonly functionManager: FunctionManager;
 
@@ -325,13 +325,6 @@ export class Worklist {
     this.functionManager.onExtentChange((unit, _prev, _next) => {
       for (const k of dirtied(this.functionManager, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
-  }
-
-  /** Raw extent-change subscriber — primarily for evict-on-rebuild side
-   *  effects. The callback receives `(unit, prev, next)` where `prev` is
-   *  empty on mint and non-empty on rebuild. */
-  onExtentChangeRaw(cb: (unit: Function, prev: NodeSet, next: NodeSet) => void): void {
-    this.functionManager.onExtentChange(cb);
   }
 
   /** Subscribe `reader` to chain changes on any unit's preferred future-

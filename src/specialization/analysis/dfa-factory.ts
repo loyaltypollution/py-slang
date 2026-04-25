@@ -323,7 +323,7 @@ export function makeBlockFixpointAnalysis<L>(
     // (prev non-empty): re-seed the unit, and on rebuild also evict cells
     // whose blocks no longer belong to the rewired CFG.
     wl.onExtentChange(envAnalysis, (_loc, unit) => [seedKey(unit)]);
-    wl.onExtentChangeRaw((unit, prev) => {
+    wl.functionManager.onExtentChange((unit, prev) => {
       if ((prev.size ?? 0) > 0) evictStaleBlockCells(envAnalysis.store, unit);
     });
     // Chain change invalidates the block fixpoint under the old chain;
@@ -344,7 +344,7 @@ export function makeBlockFixpointAnalysis<L>(
   let boundLocator: FunctionLocator | undefined;
   factsAnalysis.bind = (wl) => {
     boundLocator = wl.locate;
-    wl.onExtentChangeRaw((unit, prev) => {
+    wl.functionManager.onExtentChange((unit, prev) => {
       if ((prev.size ?? 0) > 0) evictStaleBlockCells(factsAnalysis.store, unit);
     });
   };
