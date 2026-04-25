@@ -19,26 +19,23 @@ import {
 import type { CounterStore } from "../observation/counter-store";
 import type { ObservationBinding } from "../observation/observation-binding";
 import type { ObservationChannel } from "../observation/observation-channel";
-import type { FunctionId, NodeId } from "./analysis";
+import type { NodeId, NodeSet } from "./analysis";
+import type { FunctionId } from "../program/program-view";
 import {
-  unitOfNodeId,
   type Analysis,
   type AnalysisCtx,
+  type EntrySeed,
   type Narrowing,
   type TransformRule,
-  type UnitResolver,
 } from "./analysis";
+import { functionOfNodeId, type FunctionResolver } from "../program/program-view";
+import type { ProgramCtx } from "../program/program-ctx";
 import {
   storeEvict,
   storeWrite,
 } from "./analysis-store";
-import type { BlockFixpointAnalysis } from "./dfa-factory";
-import {
-  buildOneUnit,
-  buildUnits,
-  wireCFG,
-  type Unit,
-} from "./function-unit";
+import { type Function } from "../program/function";
+import { FunctionViewManager } from "../program/views/function-view-manager";
 
 /** Catches misregistration: only Analyses carry `polarity`. */
 function assertNoPolarity(thing: object, site: string, kind: string): void {
@@ -96,25 +93,19 @@ export interface WorklistConfig {
   readonly narrowings?: ReadonlyArray<Narrowing<any, any>>;
   readonly counters?: ReadonlyArray<CounterStore<any>>;
   readonly channels?: ReadonlyArray<ObservationChannel<any, any>>;
-  /** Context-sensitive block analyses re-seeded at every narrowing-entry
-   *  alongside each narrowing's own `blockAnalysis()`. Carries verdicts
-   *  (e.g. purity) that must track each specialization context but whose
-   *  analyses aren't themselves narrowings. Policy-owned by the caller. */
-  readonly extraEntryBlockAnalyses?: ReadonlyArray<BlockFixpointAnalysis<any>>;
+  /** Extra entry-seed pairs re-enqueued at every narrowing-entry alongside
+   *  each narrowing's own `blockAnalysis()`. Used for context-sensitive
+   *  analyses (e.g. purity) that must track each specialization context
+   *  but aren't themselves narrowings. Policy-owned by the caller. */
+  readonly extraEntrySeeds?: ReadonlyArray<EntrySeed>;
   readonly observationBindings?: ReadonlyArray<ObservationBinding<any, any>>;
 }
 
 export class Worklist {
-  /** Program-wide unit/node indices. The worklist is the only writer.
-   *  `units` is the FunctionId → Unit map; `unitByNode` is the inverse of
-   *  every unit's `nodeToBlock` (only the keys); `nodesByUnit` lets us
-   *  drop the inverse index when a unit is reindexed. */
-  private readonly unitsByFunctionId = new Map<FunctionId, Unit>();
-  private readonly unitByNode = new Map<NodeId, Unit>();
-  private readonly nodesByUnit = new Map<Unit, Set<NodeId>>();
-
-  /** Units awaiting CFG rebuild after a transform fire. */
-  private readonly pendingRebuilds = new Set<Unit>();
+  /** Function-shape state lives here. Worklist's vocabulary stops at view-
+   *  agnostic dispatch; everything Function-specific (indices, lifecycle,
+   *  speculation context, CFG rebuild) is the manager's concern. */
+  readonly functionViews: FunctionViewManager;
 
   private readonly registeredAnalyses = new Set<Analysis<any, any>>();
   // Two tier-specific FIFOs: the only enforced order is
@@ -139,16 +130,12 @@ export class Worklist {
    *  to; sweep clears it. */
   private readonly transforms: TransformRule[] = [];
   private readonly transformsSet = new Set<TransformRule>();
-  private readonly transformDirty = new Map<TransformRule, Set<Unit>>();
+  private readonly transformDirty = new Map<TransformRule, Set<Function>>();
 
   /** Reentrancy guard: set while `sweepTransforms` runs. `publish`/`bump`
    *  throw when true — observation ingress mid-sweep would shift
    *  `futureDispatchChainFor(unit)` under the sweep's feet. */
   private inTransformSweep = false;
-
-  /** Per-unit preferred chain for future compiles/dispatches. Unset or
-   *  ROOT_CONTEXT means future dispatch is unspecialized for that unit. */
-  private readonly futureDispatchContext: Map<Unit, AssumptionChain> = new Map();
 
   /** Fact-change, counter-bump, and channel-publish dispatch indices.
    *  Analyses' and transforms' subscriptions compile into callbacks here. */
@@ -156,72 +143,48 @@ export class Worklist {
     Analysis<any, any>,
     Array<(ctx: AnalysisCtx, key: unknown) => void>
   >();
+  /** Delta-routed subscribers. Each entry declares an `interest` over node
+   *  ids; the entry fires only when an advancing write to the source publishes
+   *  a `delta` whose membership intersects `interest`, OR when `delta` is
+   *  absent (legacy fan-out fallback for unmigrated producers). Iteration
+   *  direction is interest → `delta.contains` because `NodeSet`'s contract is
+   *  `contains`-only; interests today are small (singleton for purity, a
+   *  handful for transform rules). */
+  private readonly nodeSetSubs = new Map<
+    Analysis<any, any>,
+    Array<{
+      readonly interest: Iterable<NodeId>;
+      readonly fire: (ctx: AnalysisCtx, key: unknown) => void;
+    }>
+  >();
   private readonly counterSubs = new Map<
     CounterStore<any>,
     Array<(ctx: AnalysisCtx, key: unknown) => void>
   >();
   private readonly registeredCounters = new Set<CounterStore<any>>();
-  /** Lifecycle dispatch indices, one array per event kind. */
-  private readonly mintSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
-  private readonly rebuildSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
-  private readonly specRevSubs: Array<(ctx: AnalysisCtx, unit: Unit) => void> = [];
 
   /** Refutation filter (minimal generators; `contains(c) = ∃ r. leq(r, c)`). */
   private readonly refutations: Refutations = new Refutations();
-  /** Subscribers fired after a (unit, carrier) is refuted. Used by layers
-   *  (e.g. memoization) that maintain their own chain-keyed caches and need
-   *  to invalidate them — keeps the framework free of concrete cache knowledge. */
-  private readonly refuteSubs: Array<(unit: Unit, carrier: AssumptionChain) => void> = [];
 
-  private readonly functionEnvironments: FunctionEnvironments;
-
-  get units(): ReadonlyMap<FunctionId, Unit> {
-    return this.unitsByFunctionId;
+  // ── Backward-compat delegates to the function-view manager ─────────
+  get functions(): ReadonlyMap<FunctionId, Function> {
+    return this.functionViews.functions;
   }
 
-  unitOfNode(nodeId: NodeId): Unit | undefined {
-    return this.unitByNode.get(nodeId);
-  }
-
-  /** Register a newly-built unit. `unit.cfg` must already be populated. */
-  private registerUnit(unit: Unit): void {
-    this.unitsByFunctionId.set(unit.funcAst.id, unit);
-    this.indexUnitNodes(unit);
-  }
-
-  /** Called after `wireCFG` rebuilds a unit's CFG. Unit identity is
-   *  preserved; node→unit mapping may change if nodes were added/removed. */
-  private reindexUnit(unit: Unit): void {
-    this.dropUnitNodes(unit);
-    this.indexUnitNodes(unit);
-  }
-
-  private indexUnitNodes(unit: Unit): void {
-    const ids = new Set<NodeId>();
-    this.nodesByUnit.set(unit, ids);
-    for (const id of unit.nodeToBlock.keys()) {
-      this.unitByNode.set(id, unit);
-      ids.add(id);
-    }
-  }
-
-  private dropUnitNodes(unit: Unit): void {
-    const ids = this.nodesByUnit.get(unit);
-    if (ids === undefined) return;
-    for (const id of ids) this.unitByNode.delete(id);
-    this.nodesByUnit.delete(unit);
+  functionOfNode(nodeId: NodeId): Function | undefined {
+    return this.functionViews.functionOfNode(nodeId);
   }
 
   private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
-  /** Context-sensitive block analyses re-seeded at every narrowing-entry
-   *  alongside each narrowing's own `blockAnalysis()`. Carries verdicts
-   *  (e.g. purity) that must track each specialization context but whose
-   *  analyses aren't themselves narrowings. Policy-owned by the caller. */
-  private readonly extraEntryBlockAnalyses: ReadonlyArray<BlockFixpointAnalysis<any>>;
+  /** Extra entry-seed pairs re-enqueued at every narrowing-entry alongside
+   *  each narrowing's own `blockAnalysis()`. Used for context-sensitive
+   *  analyses (e.g. purity) that must track each specialization context
+   *  but aren't themselves narrowings. Policy-owned by the caller. */
+  private readonly extraEntrySeeds: ReadonlyArray<EntrySeed>;
   /** Per-source unit resolver; all bindings on a source must agree. */
   private readonly unitResolverBySource: Map<
     ObservationChannel<any, any>,
-    UnitResolver<any>
+    FunctionResolver<any>
   >;
   /** Per-source observation bindings, indexed for ingress dispatch. */
   private readonly bindingsBySource: ReadonlyMap<
@@ -240,18 +203,18 @@ export class Worklist {
       narrowings = [],
       counters = [],
       channels = [],
-      extraEntryBlockAnalyses = [],
+      extraEntrySeeds = [],
       observationBindings = [],
     } = config;
     this.narrowings = narrowings;
-    this.extraEntryBlockAnalyses = extraEntryBlockAnalyses;
+    this.extraEntrySeeds = extraEntrySeeds;
     // Group bindings by `source`. Each group must agree on `resolveUnit`
     // so registration bugs surface at construction.
-    const unitResolverBySource = new Map<ObservationChannel<any, any>, UnitResolver<any>>();
+    const unitResolverBySource = new Map<ObservationChannel<any, any>, FunctionResolver<any>>();
     const bindingsBySource = new Map<ObservationChannel<any, any>, ObservationBinding<any, any>[]>();
     for (const b of observationBindings) {
       const source = b.source;
-      const resolver: UnitResolver<any> = b.resolveUnit ?? unitOfNodeId;
+      const resolver: FunctionResolver<any> = b.resolveUnit ?? functionOfNodeId;
       const existing = unitResolverBySource.get(source);
       if (existing === undefined) {
         unitResolverBySource.set(source, resolver);
@@ -266,10 +229,10 @@ export class Worklist {
     }
     this.unitResolverBySource = unitResolverBySource;
     this.bindingsBySource = bindingsBySource;
-    this.functionEnvironments = functionEnvironments;
-    for (const [, unit] of buildUnits(ast, functionEnvironments)) {
-      this.registerUnit(unit);
-    }
+    // Build the function-view manager FIRST: registrations below depend on
+    // the initial mint burst it fires when subscribers register via
+    // `onMint`. Manager constructor builds Functions from `ast`.
+    this.functionViews = new FunctionViewManager(ast, functionEnvironments);
 
     for (const p of analyses) this.register(p);
     for (const c of counters) this.registerCounter(c);
@@ -277,23 +240,13 @@ export class Worklist {
     for (const r of transforms) this.registerTransform(r);
   }
 
-  /** Register a structurally-introduced FunctionDef: build its Unit, publish
-   *  to the topology, and fire `onMint` subscribers. ROOT-only — function
-   *  identity has no chain dimension, so a non-ROOT rewrite would publish a
-   *  function visible to every sibling chain. */
-  addFunction(node: StmtNS.FunctionDef, chain: AssumptionChain): Unit {
-    if (!isRoot(chain)) {
-      throw new Error(
-        `[Worklist] addFunction: structural rewrites are ROOT-only (chain depth=${chain.depth}).`,
-      );
-    }
-    const unit = buildOneUnit(node, this.functionEnvironments);
-    this.registerUnit(unit);
-    for (const sub of this.mintSubs) sub(this.passCtx, unit);
-    return unit;
+  /** Register a structurally-introduced FunctionDef. Delegates to the
+   *  function-view manager, which builds the unit and fires its mint subs. */
+  addFunction(node: StmtNS.FunctionDef, chain: AssumptionChain): Function {
+    return this.functionViews.addFunction(node, chain);
   }
 
-  private dirtyFor(rule: TransformRule): Set<Unit> {
+  private dirtyFor(rule: TransformRule): Set<Function> {
     const s = this.transformDirty.get(rule);
     if (s === undefined) {
       throw new Error(`[Worklist] transform has no dirty set — missed registerTransform?`);
@@ -306,18 +259,16 @@ export class Worklist {
     return this.refutations.contains(node);
   }
 
-  /** Subscribe to refutation events. Fires after the refutation is
-   *  recorded, before the future-dispatch context is reconciled. Used by
-   *  layers (memoization, etc.) that hold chain-keyed state. */
-  onRefute(callback: (unit: Unit, carrier: AssumptionChain) => void): void {
-    this.refuteSubs.push(callback);
+  /** Subscribe to refutation events. Delegates to the function-view manager. */
+  onRefute(callback: (unit: Function, carrier: AssumptionChain) => void): void {
+    this.functionViews.onRefute(callback);
   }
 
   /** Refute `carrier` for `unit`: add the minimal singleton of the carrier's
-   *  tip binding, fire `onRefute` subscribers (so external chain-keyed
-   *  caches can invalidate), and drop `futureDispatchContext[unit]` if it
-   *  points into the refuted subtree. Body eviction is lazy. Idempotent. */
-  private refute(unit: Unit, carrier: AssumptionChain): void {
+   *  tip binding, then ask the manager to fire refute subscribers and drop
+   *  the unit's futureDispatchContext if it now points into the refuted
+   *  subtree. Body eviction is lazy. Idempotent. */
+  private refute(unit: Function, carrier: AssumptionChain): void {
     if (carrier === ROOT_CONTEXT) return;
     // MINIMAL generators: storing the full carrier chain would under-refute
     // — sibling chains carrying the same refuted binding under a different
@@ -325,11 +276,7 @@ export class Worklist {
     const a = carrier.assumption!;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
     this.refutations.add(minimal);
-    for (const sub of this.refuteSubs) sub(unit, carrier);
-    const fdCtx = this.futureDispatchContext.get(unit);
-    if (fdCtx !== undefined && this.refutations.contains(fdCtx)) {
-      this.futureDispatchContext.delete(unit);
-    }
+    this.functionViews.refuteSubscribersAndReconcileDispatch(unit, carrier, this.refutations);
   }
 
   private static addSub<S>(
@@ -349,7 +296,7 @@ export class Worklist {
    *  `opts.enqueueAt` projects the source context into the enqueue context;
    *  default is the context the upstream write happened in. Use
    *  `enqueueAt: () => ROOT_CONTEXT` for context-blind readers. */
-  onFactDirty<K>(
+  onFactDirty<K extends NodeSet>(
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, key: unknown) => Iterable<K>,
@@ -362,51 +309,80 @@ export class Worklist {
     });
   }
 
+  /** Same shape as `onFactDirty`, but with an explicit `interest` over node
+   *  ids. The reader fires only when an advancing write to `from` publishes
+   *  a delta whose membership intersects `interest`. Producers that omit the
+   *  delta on `ctx.write(... , delta?)` fall back to unconditional fan-out
+   *  for safety with unmigrated producers.
+   *
+   *  Use over `onFactDirty` when the reader cares about a strict subset of
+   *  the source's value space (e.g. `purityFunctionAnalysis` cares only about
+   *  `IMPURE_SENTINEL_NODE_ID` inside per-block facts). The reader should
+   *  read the source via `analysis.store` directly inside `transfer` so it
+   *  doesn't ALSO record an auto read-edge — that would defeat the
+   *  delta-routing savings. */
+  onFactDirtyNodeSet<K extends NodeSet>(
+    from: Analysis<any, any>,
+    reader: Analysis<K, any>,
+    interest: Iterable<NodeId>,
+    dirtied: (ctx: AnalysisCtx, key: unknown) => Iterable<K>,
+    opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
+  ): void {
+    const project = opts?.enqueueAt;
+    const fire = (ctx: AnalysisCtx, key: unknown): void => {
+      const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
+      for (const k of dirtied(ctx, key)) this.enqueue(reader, k, enqueueCtx);
+    };
+    let list = this.nodeSetSubs.get(from);
+    if (list === undefined) {
+      list = [];
+      this.nodeSetSubs.set(from, list);
+    }
+    list.push({ interest, fire });
+  }
+
   /** Subscribe `reader` to mint of any unit. Fires immediately against every
    *  existing unit at registration so late subscribers pick up the initial
    *  burst. */
-  onMint<K>(
+  onMint<K extends NodeSet>(
     reader: Analysis<K, any>,
-    dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<K>,
+    dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
   ): void {
-    this.mintSubs.push((_ctx, unit) => {
+    this.functionViews.onMint(unit => {
       for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
-    for (const unit of this.unitsByFunctionId.values()) {
-      for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
-    }
   }
 
   /** Subscribe `reader` to rebuild of any unit. Distinct from mint because
    *  rebuild-time invalidation often needs a paired `onRebuildEvict`. */
-  onRebuildDirty<K>(
+  onRebuildDirty<K extends NodeSet>(
     reader: Analysis<K, any>,
-    dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<K>,
+    dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
   ): void {
-    this.rebuildSubs.push((_ctx, unit) => {
+    this.functionViews.onRebuild(unit => {
       for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
   /** Subscribe an evict callback to rebuild. Typically used to drop block-
    *  keyed cells whose `BasicBlock` identities belong to the pre-rebuild CFG. */
-  onRebuildEvict(evict: (unit: Unit) => void): void {
-    this.rebuildSubs.push((_ctx, unit) => evict(unit));
+  onRebuildEvict(evict: (unit: Function) => void): void {
+    this.functionViews.onRebuild(evict);
   }
 
   /** Subscribe `reader` to spec-context bumps on any unit. Fires when
    *  observation-driven extension mutates `futureDispatchContext`. */
-  onSpecRev<K>(
+  onSpecRev<K extends NodeSet>(
     reader: Analysis<K, any>,
-    dirtied: (ctx: AnalysisCtx, unit: Unit) => Iterable<K>,
+    dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
   ): void {
-    this.specRevSubs.push((_ctx, unit) => {
+    this.functionViews.onSpecRev(unit => {
       for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
   /** Register an analysis. Idempotent. */
-  register<K, V>(analysis: Analysis<K, V>): void {
+  register<K extends NodeSet, V>(analysis: Analysis<K, V>): void {
     const a = analysis as Analysis<any, any>;
     if (this.registeredAnalyses.has(a)) return;
     this.registeredAnalyses.add(a);
@@ -420,21 +396,20 @@ export class Worklist {
     if (this.transformsSet.has(rule)) return;
     this.transformsSet.add(rule);
     this.transforms.push(rule);
-    const dirty = new Set<Unit>();
-    for (const u of this.unitsByFunctionId.values()) dirty.add(u);
+    const dirty = new Set<Function>();
     this.transformDirty.set(rule, dirty);
 
-    const addUnit = (_ctx: AnalysisCtx, unit: Unit): void => { dirty.add(unit); };
-    this.mintSubs.push(addUnit);
-    this.rebuildSubs.push(addUnit);
+    const addUnit = (unit: Function): void => { dirty.add(unit); };
+    this.functionViews.onMint(addUnit);
+    this.functionViews.onRebuild(addUnit);
     rule.bind?.(this);
   }
 
   /** Mirror of `onFactDirty` for transforms. */
-  onTransformFactDirty<K>(
+  onTransformFactDirty<K extends NodeSet>(
     rule: TransformRule,
     from: Analysis<K, any>,
-    dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Unit>,
+    dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Function>,
   ): void {
     const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.factSubs, from as Analysis<any, any>, (ctx, key) => {
@@ -471,10 +446,9 @@ export class Worklist {
   }
 
   /** Subscribe a transform to counter bumps. */
-  onTransformCounterBumped<K>(
-    rule: TransformRule,
+  onTransformCounterBumped<K>(rule: TransformRule,
     counter: CounterStore<K>,
-    dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Unit>,
+    dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Function>,
   ): void {
     const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (ctx, key) => {
@@ -485,7 +459,7 @@ export class Worklist {
   /** Public read surface — thin delegation to the analysis's canonical
    *  read method. `context` is mandatory: the worklist does not guess which
    *  chain position a caller meant. */
-  tryRead<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): V | undefined {
+  tryRead<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): V | undefined {
     return analysis.store.tryRead(key, context);
   }
 
@@ -522,7 +496,7 @@ export class Worklist {
     channel.bind?.(this);
   }
 
-  enqueue<K, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): void {
+  enqueue<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): void {
     const p = analysis as Analysis<any, any>;
     let byContext = this.pendingKeysByAnalysis.get(p);
     if (byContext === undefined) {
@@ -597,31 +571,55 @@ export class Worklist {
   }
 
   /** The single site funneling transfer results into the store and fanning
-   *  them out to subscribers. Returns true iff the cell advanced. */
-  private writeAndDispatch<K, V>(
+   *  them out to subscribers. Returns true iff the cell advanced.
+   *
+   *  `delta`, when supplied, scopes nodeSet subscribers: an entry fires only
+   *  if its `interest` intersects `delta`. Whole-key (`onFactDirty`) and
+   *  read-tracked subscribers always fire on advance. When `delta` is
+   *  omitted, nodeSet subscribers fan out unconditionally — the legacy
+   *  fallback for producers that haven't migrated yet. */
+  private writeAndDispatch<K extends NodeSet, V>(
     analysis: Analysis<K, V>,
     key: K,
     value: V,
     context: AssumptionChain,
+    delta?: NodeSet,
   ): boolean {
     const result = storeWrite(analysis.store, key, value, context);
     if (result === null) return false;
+    const source = analysis as Analysis<any, any>;
     // Read-tracked readers of (analysis, key) — re-enqueue at the WRITE
     // context, matching `onFactDirty`'s default. This is what propagates
     // fact changes across speculation contexts: a reader originally run at
     // ROOT gets re-enqueued at specCtx when its input advances at specCtx.
-    const readers = this.readEdges.get(analysis as Analysis<any, any>)?.get(key);
+    const readers = this.readEdges.get(source)?.get(key);
     if (readers !== undefined) {
       for (const r of readers) this.enqueue(r.analysis, r.key, context);
     }
-    const subs = this.factSubs.get(analysis as Analysis<any, any>);
-    if (subs === undefined) return true;
     const ctx = this.ctxFor(context);
-    for (const sub of subs) sub(ctx, key);
+    const subs = this.factSubs.get(source);
+    if (subs !== undefined) {
+      for (const sub of subs) sub(ctx, key);
+    }
+    const nodeSubs = this.nodeSetSubs.get(source);
+    if (nodeSubs !== undefined) {
+      for (const sub of nodeSubs) {
+        if (delta === undefined || Worklist.intersects(sub.interest, delta)) {
+          sub.fire(ctx, key);
+        }
+      }
+    }
     return true;
   }
 
-  /** Sweep every registered transform over its dirty units once. Units that
+  private static intersects(interest: Iterable<NodeId>, delta: NodeSet): boolean {
+    for (const n of interest) {
+      if (delta.contains(n)) return true;
+    }
+    return false;
+  }
+
+  /** Sweep every registered transform over its dirty functions once. Units that
    *  rewrote move to `pendingRebuilds`; CFG rebuild is NOT flushed here.
    *
    *  Public so online participants (e.g. `jitAnalysis`) can run counter-/
@@ -643,7 +641,7 @@ export class Worklist {
           if (this.isRefuted(chain)) continue;
           const fired = r.sweep(unit, chain, this);
           if (fired) {
-            this.pendingRebuilds.add(unit);
+            this.functionViews.schedulePendingRebuild(unit);
             anyFired = true;
           }
         }
@@ -655,25 +653,28 @@ export class Worklist {
     return anyFired;
   }
 
-  /** Allocate an `AnalysisCtx` bound to `context`. `read`/`tryRead`/`readAll`
-   *  delegate to the analysis's canonical read surface at this context;
-   *  `write`/`evict` go through the worklist so side-effect writes fan out
-   *  to subscribers. */
-  private makeCtx(context: AssumptionChain): AnalysisCtx {
+  /** Allocate a `ProgramCtx` bound to `context`. The framework's `Analysis`
+   *  signature only promises `AnalysisCtx`; the runtime constructs the richer
+   *  `ProgramCtx` (which adds `functions` and `functionOfNode`) and analyses
+   *  cast via `asProgramCtx` at access. */
+  private makeCtx(context: AssumptionChain): ProgramCtx {
     const worklist = this;
+    // Use getters for `functions`/`functionOfNode` so the ctx works even
+    // when constructed before `functionViews` is assigned (passCtx is a
+    // class-field initializer that runs before the constructor body).
     return {
-      units: worklist.units,
-      unitOfNode: (nodeId) => worklist.unitOfNode(nodeId),
+      get functions() { return worklist.functions; },
+      functionOfNode: (nodeId: NodeId) => worklist.functionOfNode(nodeId),
       currentContext: context,
-      read<K, V>(analysis: Analysis<K, V>, key: K): V {
+      read<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): V {
         worklist.recordReadEdge(analysis as Analysis<any, any>, key);
         return analysis.store.read(key, context);
       },
-      tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined {
+      tryRead<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): V | undefined {
         worklist.recordReadEdge(analysis as Analysis<any, any>, key);
         return analysis.store.tryRead(key, context);
       },
-      readAll<K, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V> {
+      readAll<K extends NodeSet, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V> {
         // Whole-store read: cannot record per-key edges without knowing the
         // keyspace. Callers needing fine-grained invalidation should read
         // individual cells. Today no analysis transfer uses readAll; if that
@@ -681,7 +682,7 @@ export class Worklist {
         // "depends on all keys" edge is modeled.
         return analysis.store.readAll(context);
       },
-      readMinimal<K, V>(
+      readMinimal<K extends NodeSet, V>(
         analysis: Analysis<K, V>,
         key: K,
         accept: (value: V) => boolean,
@@ -689,17 +690,17 @@ export class Worklist {
         worklist.recordReadEdge(analysis as Analysis<any, any>, key);
         return analysis.store.readMinimal(context, key, accept);
       },
-      readDeepest<K, V>(
+      readDeepest<K extends NodeSet, V>(
         analysis: Analysis<K, V>,
         key: K,
       ): { value: V; witness: AssumptionChain } | undefined {
         worklist.recordReadEdge(analysis as Analysis<any, any>, key);
         return analysis.store.readDeepest(context, key);
       },
-      write<K, V>(analysis: Analysis<K, V>, key: K, value: V): boolean {
-        return worklist.writeAndDispatch(analysis, key, value, context);
+      write<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K, value: V, delta?: NodeSet): boolean {
+        return worklist.writeAndDispatch(analysis, key, value, context, delta);
       },
-      evict<K, V>(analysis: Analysis<K, V>, key: K): void {
+      evict<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): void {
         storeEvict(analysis.store, key, context);
       },
     };
@@ -722,16 +723,16 @@ export class Worklist {
     return ctx;
   }
 
-  /** Re-seed Kildall for every context-sensitive block analysis at `unit`'s
+  /** Re-seed Kildall for every context-sensitive entry-seed at `unit`'s
    *  entry block under `context`. Covers every registered narrowing plus any
-   *  `extraEntryBlockAnalyses` passed in by the caller. */
-  private enqueueNarrowingEntry(unit: Unit, context: AssumptionChain): void {
+   *  `extraEntrySeeds` passed in by the caller. */
+  private enqueueNarrowingEntry(unit: Function, context: AssumptionChain): void {
     for (const n of this.narrowings) {
-      const bfa = n.blockAnalysis();
-      this.enqueue(bfa.env, bfa.seed(unit), context);
+      const seed = n.blockAnalysis();
+      this.enqueue(seed.env, seed.seed(unit), context);
     }
-    for (const bfa of this.extraEntryBlockAnalyses) {
-      this.enqueue(bfa.env, bfa.seed(unit), context);
+    for (const seed of this.extraEntrySeeds) {
+      this.enqueue(seed.env, seed.seed(unit), context);
     }
   }
 
@@ -744,7 +745,7 @@ export class Worklist {
     const applicable = this.bindingsBySource.get(source);
     if (applicable === undefined || applicable.length === 0) return context;
 
-    const resolveUnit = this.unitResolverBySource.get(source) ?? unitOfNodeId;
+    const resolveUnit = this.unitResolverBySource.get(source) ?? functionOfNodeId;
     const unit = resolveUnit(this.passCtx, key);
     if (unit === undefined) return context;
 
@@ -759,13 +760,13 @@ export class Worklist {
       }
       if (pruned === parentCtx) return parentCtx;
       if (this.refutations.contains(pruned)) {
-        this.futureDispatchContext.delete(unit);
+        this.functionViews.clearFutureDispatchContext(unit);
         return ROOT_CONTEXT;
       }
-      if (pruned === ROOT_CONTEXT) this.futureDispatchContext.delete(unit);
-      else this.futureDispatchContext.set(unit, pruned);
+      if (pruned === ROOT_CONTEXT) this.functionViews.clearFutureDispatchContext(unit);
+      else this.functionViews.setFutureDispatchContext(unit, pruned);
       this.enqueueNarrowingEntry(unit, pruned);
-      for (const sub of this.specRevSubs) sub(this.passCtx, unit);
+      this.functionViews.fireSpecRev(unit);
       return pruned;
     }
 
@@ -787,40 +788,23 @@ export class Worklist {
 
     if (newCtx === parentCtx) return parentCtx;
     if (this.refutations.contains(newCtx)) {
-      this.futureDispatchContext.delete(unit);
+      this.functionViews.clearFutureDispatchContext(unit);
       return ROOT_CONTEXT;
     }
-    this.futureDispatchContext.set(unit, newCtx);
+    this.functionViews.setFutureDispatchContext(unit, newCtx);
     this.enqueueNarrowingEntry(unit, newCtx);
-    for (const sub of this.specRevSubs) sub(this.passCtx, unit);
+    this.functionViews.fireSpecRev(unit);
     return newCtx;
   }
 
-  /** Preferred future-dispatch chain for `unit`. Not active-frame provenance. */
-  futureDispatchChainFor(unit: Unit): AssumptionChain {
-    return this.futureDispatchContext.get(unit) ?? ROOT_CONTEXT;
+  /** Preferred future-dispatch chain for `unit`. Delegates to manager. */
+  futureDispatchChainFor(unit: Function): AssumptionChain {
+    return this.functionViews.futureDispatchChainFor(unit);
   }
 
   /** Same as `futureDispatchChainFor`, keyed by nodeId. */
   futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
-    const unit = this.unitOfNode(nodeId);
-    return unit === undefined ? ROOT_CONTEXT : this.futureDispatchChainFor(unit);
-  }
-
-  /** Rebuild CFG for every pending unit, then fire the rebuild hooks. */
-  private flushPendingRebuilds(): Unit[] {
-    if (this.pendingRebuilds.size === 0) return [];
-    const rebuilt: Unit[] = [];
-    for (const unit of this.pendingRebuilds) {
-      wireCFG(unit);
-      this.reindexUnit(unit);
-      rebuilt.push(unit);
-    }
-    this.pendingRebuilds.clear();
-    for (const unit of rebuilt) {
-      for (const sub of this.rebuildSubs) sub(this.passCtx, unit);
-    }
-    return rebuilt;
+    return this.functionViews.futureDispatchChainForNode(nodeId);
   }
 
   /** Drain to fixed point. Each iteration runs analyses to quiescence,
@@ -846,7 +830,7 @@ export class Worklist {
       this.processAnalysesToFixpoint();
       const fired = this.sweepTransforms();
       this.processAnalysesToFixpoint();
-      const rebuilt = this.flushPendingRebuilds();
+      const rebuilt = this.functionViews.flushPendingRebuilds();
 
       if (!fired && rebuilt.length === 0) break;
 

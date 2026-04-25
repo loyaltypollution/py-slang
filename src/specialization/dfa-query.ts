@@ -1,11 +1,12 @@
-import type { Unit } from "./framework/function-unit";
-import type { FunctionId, NodeId, UnitView } from "./framework/analysis";
+import type { Function } from "./program/function";
+import type { NodeId } from "./framework/analysis";
+import type { FunctionId, FunctionView } from "./program/program-view";
 import { ROOT_CONTEXT, type AssumptionChain } from "./assumption/chain";
 import {
   constAnalysis,
   type ConstLattice,
   type EntryRequirement,
-  purityScopeAnalysis,
+  purityFunctionAnalysis,
   requirementAtEntry,
   typeAnalysis,
   type TypeLattice,
@@ -24,9 +25,9 @@ export interface DfaQuery extends StaticDfaQuery {
 }
 
 export function makeDfaQuery(
-  view: UnitView,
+  view: FunctionView,
   futureDispatchChainForNode: (nodeId: NodeId) => AssumptionChain = () => ROOT_CONTEXT,
-  futureDispatchChainForUnit: (unit: Unit) => AssumptionChain = () => ROOT_CONTEXT,
+  futureDispatchChainForUnit: (unit: Function) => AssumptionChain = () => ROOT_CONTEXT,
 ): DfaQuery {
   const typeStore = typeAnalysis.perExpr(view);
   const constStore = constAnalysis.perExpr(view);
@@ -38,14 +39,14 @@ export function makeDfaQuery(
     speculativeConstOf: id =>
       constStore.tryRead(id, futureDispatchChainForNode(id)),
     entryRequirementsOf: scopeId => {
-      const unit = view.units.get(scopeId);
+      const unit = view.functions.get(scopeId);
       if (unit === undefined) return undefined;
       return requirementAtEntry(unit, futureDispatchChainForUnit(unit));
     },
     isPureScope: scopeId => {
-      const unit = view.units.get(scopeId);
-      const context = unit !== undefined ? futureDispatchChainForUnit(unit) : ROOT_CONTEXT;
-      return purityScopeAnalysis.store.readDeepest(context, scopeId)?.value;
+      const unit = view.functions.get(scopeId);
+      if (unit === undefined) return undefined;
+      return purityFunctionAnalysis.store.readDeepest(futureDispatchChainForUnit(unit), unit)?.value;
     },
   };
 }

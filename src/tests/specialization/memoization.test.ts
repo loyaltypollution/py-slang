@@ -10,7 +10,7 @@ import {
   memoPut,
 } from "../../runtime/memo";
 import { runtimeCallCounter } from "../../specialization/observation/runtime-analyses";
-import type { Unit } from "../../specialization/framework/function-unit";
+import type { Function } from "../../specialization/program/function";
 import { setup } from "./harness/compile-pipelines";
 import { findFunctionDef, observeCallsTo } from "./harness/function-observe";
 
@@ -18,7 +18,7 @@ const MEMO_TRIGGER_CALLS = runtimeCallCounter.saturation - 1;
 
 // TODO(plan.md §1): replace with `memoization.didFireOn(unit)` once the
 // transform exposes a public tag; this helper pins the wrapper's private shape.
-function memoFired(unit: Unit): boolean {
+function memoFired(unit: Function): boolean {
   const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return false;
   const first = fd.body[0];
@@ -56,7 +56,7 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
       "f",
       MEMO_TRIGGER_CALLS - 1,
     );
-    expect(memoFired(worklist.units.get(fd.id)!)).toBe(false);
+    expect(memoFired(worklist.functions.get(fd.id)!)).toBe(false);
     expect(fd.body).toHaveLength(1);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.Return);
   });
@@ -67,7 +67,7 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
       "f",
       MEMO_TRIGGER_CALLS,
     );
-    expect(memoFired(worklist.units.get(fd.id)!)).toBe(true);
+    expect(memoFired(worklist.functions.get(fd.id)!)).toBe(true);
     expect(fd.body).toHaveLength(2);
     const guard = fd.body[0] as StmtNS.If;
     expect(((guard.condition as ExprNS.Call).callee as ExprNS.Variable).name.lexeme).toBe("__memo_has");
@@ -128,7 +128,7 @@ describe("memoization: purity gate", () => {
       "g",
       MEMO_TRIGGER_CALLS * 2,
     );
-    expect(memoFired(worklist.units.get(fd.id)!)).toBe(false);
+    expect(memoFired(worklist.functions.get(fd.id)!)).toBe(false);
     expect(fd.body[0]).toBeInstanceOf(StmtNS.Return);
   });
 
@@ -138,7 +138,7 @@ describe("memoization: purity gate", () => {
       "f",
       MEMO_TRIGGER_CALLS * 2,
     );
-    expect(memoFired(worklist.units.get(fd.id)!)).toBe(false);
+    expect(memoFired(worklist.functions.get(fd.id)!)).toBe(false);
     expect(fd.body).toHaveLength(2);
   });
 });
@@ -213,7 +213,7 @@ f(5)
     const fd = findFunctionDef(ast, "f");
     observeCallsTo(worklist, fd, MEMO_TRIGGER_CALLS);
     worklist.drain();
-    expect(memoFired(worklist.units.get(fd.id)!)).toBe(true);
+    expect(memoFired(worklist.functions.get(fd.id)!)).toBe(true);
 
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,

@@ -10,7 +10,7 @@
 import { StmtNS } from "../../ast-types";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { bindings, extend } from "../../specialization/assumption/algebra";
-import { paramKey } from "../../specialization/framework/analysis";
+import { paramKey } from "../../specialization/program/program-view";
 import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
@@ -27,7 +27,7 @@ def f(x, y):
     return x
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fd.id)!;
+    const unit = worklist.functions.get(fd.id)!;
 
     worklist.publish(
       runtimeParamChannel, paramKey(fd.id, 0),

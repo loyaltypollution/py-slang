@@ -1,10 +1,10 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption/chain";
 import { forkBody, visibleBody } from "../speculation/assumption-bodies";
-import type { Unit } from "../framework/function-unit";
-import type { UnitView } from "../framework/analysis";
-import { isLocal, type SlotLookup } from "../framework/slot-table";
-import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
+import type { Function } from "../program/function";
+import type { FunctionView } from "../program/program-view";
+import { isLocal, type SlotLookup } from "../program/slot-table";
+import { functionOfBlock, wakeOwningFunction } from "../program/program-view";
 import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../analysis";
 import { walkExpr, walkExprs } from "./witness-utils";
@@ -66,7 +66,7 @@ function escapedLocalSlotsIn(
   return escaped;
 }
 
-function buildLiveOutMap(unit: Unit, chain: AssumptionChain): Map<number, ReadonlySet<number>> {
+function buildLiveOutMap(unit: Function, chain: AssumptionChain): Map<number, ReadonlySet<number>> {
   const out = new Map<number, ReadonlySet<number>>();
   for (const block of unit.blockMap.values()) {
     const liveOuts = perStatementLiveOut(block, unit.slotLookup, chain);
@@ -165,7 +165,7 @@ function memo<K, V>(cache: Map<K, V>, key: K, compute: (key: K) => V): V {
 }
 
 function witnessForRemoval(
-  unit: Unit,
+  unit: Function,
   lineage: readonly AssumptionChain[],
   stmtId: number,
   liveOutCache: Map<AssumptionChain, ReadonlyMap<number, ReadonlySet<number>>>,
@@ -186,9 +186,9 @@ function witnessForRemoval(
 
 export const deadStoreRule: TransformRule = {
   bind(wl) {
-    wl.onTransformFactDirty(deadStoreRule, livenessAnalysis.env, wakeOwningUnit(unitOfBlock));
+    wl.onTransformFactDirty(deadStoreRule, livenessAnalysis.env, wakeOwningFunction(functionOfBlock));
   },
-  sweep(unit: Unit, chain: AssumptionChain, _view: UnitView): boolean {
+  sweep(unit: Function, chain: AssumptionChain, _view: FunctionView): boolean {
     // Top-level names are observable; only function-scope slots are safe to DSE.
     if (unit.funcAst instanceof StmtNS.FileInput) return false;
 

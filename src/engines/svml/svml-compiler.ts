@@ -2,7 +2,7 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { ConstLattice } from "../../specialization/analysis/const/lattice";
 import type { TypeLattice } from "../../specialization/analysis/type/lattice";
-import type { Unit } from "../../specialization/framework/function-unit";
+import type { Function } from "../../specialization/program/function";
 import type { DfaQuery } from "../../specialization/dfa-query";
 import {
   BOOL_BIT,
@@ -179,7 +179,7 @@ export class SVMLCompiler
     const numArgs = node.parameters.length;
     const childIndex = this.slots.slotOfNode(node);
     const builder = this.builder.createChildBuilder(numArgs, childIndex);
-    // Only FunctionDef bodies are ScopeKeys; Lambda/MultiLambda are not DFA units.
+    // Only FunctionDef bodies are ScopeKeys; Lambda/MultiLambda are not DFA functions.
     if (node instanceof StmtNS.FunctionDef) {
       builder.setScopeKey(node);
     }
@@ -226,15 +226,15 @@ export class SVMLCompiler
   }
 
   /**
-   * Recompile a single `Unit`'s body into fresh SVMLIR, without
+   * Recompile a single `Function`'s body into fresh SVMLIR, without
    * touching any sibling builder. The returned IR's function index matches
    * what `compileProgram` would have assigned, so callers can splice it
    * into an existing `SVMLProgram` via `withSpecializedFunction(index, ir)`
    * and every `NEWC <index>` operand in unaffected siblings remains valid.
    *
-   * Only `FunctionDef` bodies are supported (matches `Unit.funcAst`
+   * Only `FunctionDef` bodies are supported (matches `Function.funcAst`
    * excluding `FileInput`, which is the entry-point program and is rebuilt
-   * via `compileProgram`). Lambdas are never `Unit` keys.
+   * via `compileProgram`). Lambdas are never `Function` keys.
    */
   private emitLiteralGuardValue(value: unknown): boolean {
     if (value === null) {
@@ -271,13 +271,13 @@ export class SVMLCompiler
    *  The caller is responsible for ensuring the body is a valid speculative
    *  clone (NodeId-shadow policy, no topology insertion). */
   compileFunction(
-    unit: Unit,
+    unit: Function,
     specializedBody?: ReadonlyArray<StmtNS.Stmt>,
   ): SVMLIR {
     const funcAst = unit.funcAst;
     if (!(funcAst instanceof StmtNS.FunctionDef)) {
       throw new Error(
-        "compileFunction only supports FunctionDef units; use compileProgram for FileInput",
+        "compileFunction only supports FunctionDef functions; use compileProgram for FileInput",
       );
     }
     const nextEnvironment = this.functionEnvironments.get(funcAst);

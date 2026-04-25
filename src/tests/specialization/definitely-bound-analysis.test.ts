@@ -37,7 +37,7 @@ def f(a, b):
     return a + b
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn.id)!;
+    const unit = worklist.functions.get(fn.id)!;
 
     const entry = unit.cfg.entry;
     const env = definitelyBoundAnalysis.env.store.read(entry, ROOT_CONTEXT);
@@ -56,7 +56,7 @@ def f(flag):
     return flag
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn.id)!;
+    const unit = worklist.functions.get(fn.id)!;
 
     const ifStmt = fn.body[0] as StmtNS.If;
     const assignX = ifStmt.body[0] as StmtNS.Assign;
@@ -75,7 +75,7 @@ def f():
     return x
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn.id)!;
+    const unit = worklist.functions.get(fn.id)!;
 
     // Resolve `x`'s slot via any Variable reference in the body — the
     // slotLookup is keyed by Token, not by name string.
@@ -96,7 +96,7 @@ def f(flag):
     return flag
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn.id)!;
+    const unit = worklist.functions.get(fn.id)!;
 
     // The name `x` exists in the function's slot table even though it's only
     // assigned in the if-branch. Resolve via the Assign target inside the If.
@@ -120,7 +120,7 @@ def f(flag):
     return x
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn.id)!;
+    const unit = worklist.functions.get(fn.id)!;
 
     const ret = fn.body[1] as StmtNS.Return;
     const xRef = ret.value as import("../../ast-types").ExprNS.Variable;
@@ -140,7 +140,7 @@ def f(xs):
     return total
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.units.get(fn.id)!;
+    const unit = worklist.functions.get(fn.id)!;
 
     const forStmt = fn.body[1] as StmtNS.For;
     const slotI = unit.slotLookup(forStmt.target).slot;

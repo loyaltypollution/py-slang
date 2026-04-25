@@ -1,16 +1,16 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { BasicBlock } from "./cfg";
-import type { AssumptionChain } from "../assumption/chain";
 import {
-  makeBlockFixpointAnalysis,
-  type BlockDfaSpec,
-  type BlockFixpointAnalysis,
-  type BlockPassResult,
+    makeBlockFixpointAnalysis,
+    type BlockDfaSpec,
+    type BlockFixpointAnalysis,
+    type BlockPassResult,
 } from "./dfa-factory";
-import type { Unit } from "./function-unit";
-import { EMPTY_MAP } from "./analysis-store";
+import type { AssumptionChain } from "../assumption/chain";
+import { EMPTY_MAP } from "../framework/analysis-store";
+import type { BasicBlock } from "../program/cfg";
+import type { Function } from "../program/function";
 import { MutableEnv } from "./mutable-env";
-import { isLocal, type SlotLookup } from "./slot-table";
+import { isLocal, type SlotLookup } from "../program/slot-table";
 
 /** Statement-level transfer; updates `env` in place. If/While/For headers
  *  evaluate condition/iter only. */
@@ -80,7 +80,7 @@ function transferBlock<L>(
   block: BasicBlock,
   inEnv: MutableEnv<L>,
   module: BlockDfaSpec<L>,
-  unit: Unit,
+  unit: Function,
   context: AssumptionChain,
 ): BlockPassResult<L> {
   const outEnv = inEnv;

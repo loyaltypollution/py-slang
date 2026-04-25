@@ -24,13 +24,13 @@ function build(code: string) {
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
   engine.drain();
-  const units = engine.units;
+  const functions = engine.functions;
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
     makeDfaQuery(engine),
   );
-  return { ast, environments, units, compiler };
+  return { ast, environments, functions, compiler };
 }
 
 describe("SVML stable function indices", () => {
@@ -49,7 +49,7 @@ g(2)
     const a = build(program);
     const programA = a.compiler.compileProgram(a.ast);
     const mapA: Array<[string, number]> = [];
-    for (const unit of a.units.values()) {
+    for (const unit of a.functions.values()) {
       const scope = unit.funcAst;
       const idx = a.compiler.indexOf(scope)!;
       const name = scope instanceof StmtNS.FunctionDef ? scope.name.lexeme : "<file>";
@@ -59,7 +59,7 @@ g(2)
     const b = build(program);
     const programB = b.compiler.compileProgram(b.ast);
     const mapB: Array<[string, number]> = [];
-    for (const unit of b.units.values()) {
+    for (const unit of b.functions.values()) {
       const scope = unit.funcAst;
       const idx = b.compiler.indexOf(scope)!;
       const name = scope instanceof StmtNS.FunctionDef ? scope.name.lexeme : "<file>";
@@ -71,12 +71,12 @@ g(2)
   });
 
   test("compileFunction returns an IR whose bytecode matches compileProgram's slot for the same unit", () => {
-    const { ast, units, compiler } = build(program);
+    const { ast, functions, compiler } = build(program);
     const fullProgram = compiler.compileProgram(ast);
 
     // Pick the `h` unit (nested inside `g`)
-    let hUnit: ReturnType<typeof units.get> | undefined;
-    for (const unit of units.values()) {
+    let hUnit: ReturnType<typeof functions.get> | undefined;
+    for (const unit of functions.values()) {
       const scope = unit.funcAst;
       if (scope instanceof StmtNS.FunctionDef && scope.name.lexeme === "h") {
         hUnit = unit;
@@ -98,14 +98,14 @@ g(2)
   });
 
   test("NEWC operands in sibling functions reference the index compileFunction assigns", () => {
-    const { ast, units, compiler } = build(program);
+    const { ast, functions, compiler } = build(program);
     const fullProgram = compiler.compileProgram(ast);
 
     // g emits NEWC <h-index> when defining inner h. Verify that operand matches
     // the index compileFunction would build for h's unit.
     let gIndex = -1;
     let hIndex = -1;
-    for (const unit of units.values()) {
+    for (const unit of functions.values()) {
       const scope = unit.funcAst;
       if (scope instanceof StmtNS.FunctionDef) {
         if (scope.name.lexeme === "g") gIndex = compiler.indexOf(scope)!;
@@ -203,8 +203,8 @@ g(3)
     const progA = a.compiler.compileProgram(a.ast);
 
     const b = build(program);
-    let hUnitB: ReturnType<typeof b.units.get> | undefined;
-    for (const unit of b.units.values()) {
+    let hUnitB: ReturnType<typeof b.functions.get> | undefined;
+    for (const unit of b.functions.values()) {
       const scope = unit.funcAst;
       if (scope instanceof StmtNS.FunctionDef && scope.name.lexeme === "h") hUnitB = unit;
     }

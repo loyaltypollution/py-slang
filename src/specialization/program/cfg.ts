@@ -2,7 +2,9 @@
 // branch edges carry the `condition` expression for refineOnEdge.
 
 import type { ExprNS, StmtNS } from "../../ast-types";
-import type { Unit } from "./function-unit";
+import type { NodeId } from "./node-set";
+import type { FunctionId } from "./program-view";
+import type { Function } from "./function";
 
 export type BlockId = number;
 
@@ -27,7 +29,13 @@ export interface BasicBlock {
   readonly stmts: StmtNS.Stmt[];
   readonly successorEdges: CFGEdge[];
   readonly predecessorEdges: CFGEdge[];
-  readonly unit: Unit;
+  /** Id of the function-view that owns this block. Resolve to the
+   *  `Function` via the function-view-manager (`view.functions.get(unitId)`).
+   *  An opaque numeric tag, not a typed back-pointer — blocks are pure
+   *  NodeSets; ownership is data, not structure. */
+  readonly unitId: FunctionId;
+  /** NodeSet conformance: O(1) via the owning unit's `nodeToBlock` index. */
+  contains(n: NodeId): boolean;
 }
 
 export interface CFG {
@@ -38,7 +46,7 @@ export interface CFG {
 
 /** Build CFG from a flat stmt list. Single entry/exit; unreachable tails
  *  not represented. */
-export function buildCFG(body: StmtNS.Stmt[], unit: Unit): CFG {
+export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
   let nextId = 0;
   const blocks: BasicBlock[] = [];
 
@@ -48,7 +56,10 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Unit): CFG {
       stmts: [],
       successorEdges: [],
       predecessorEdges: [],
-      unit,
+      unitId: unit.funcAst.id,
+      contains(n: NodeId): boolean {
+        return unit.nodeToBlock.get(n) === this;
+      },
     };
     blocks.push(block);
     return block;

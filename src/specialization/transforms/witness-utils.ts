@@ -1,7 +1,7 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption/chain";
 import { forkBody } from "../speculation/assumption-bodies";
-import type { Unit } from "../framework/function-unit";
+import type { Function } from "../program/function";
 
 export type Witnessed<T> = { value: T; witness: AssumptionChain };
 
@@ -147,7 +147,7 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
 }
 
 export function runWitnessSweep(
-  unit: Unit,
+  unit: Function,
   witnesses: Iterable<AssumptionChain>,
   makeVisitor: (witness: AssumptionChain) => {
     readonly changed: boolean;

@@ -15,7 +15,7 @@ import { makeDfaQuery } from "../../specialization";
 import { makeJitObservers } from "../../specialization/observation/runtime-analyses";
 import { visibleBody } from "../../specialization/speculation/assumption-bodies";
 import { bodyToCompile, dispatchValid } from "../../specialization/speculation/chain-dispatch";
-import type { Unit } from "../../specialization/framework/function-unit";
+import type { Function } from "../../specialization/program/function";
 import type { Worklist } from "../../specialization/framework/worklist";
 import { setup } from "./harness/compile-pipelines";
 
@@ -41,7 +41,7 @@ async function runJitWithIntrospection(code: string, functionName: string) {
   const interpreter = new SVMLInterpreter(program, {
     dispatchCall: (scopeId, args) => {
       observers.observeScopeCall(scopeId);
-      const unit = worklist.units.get(scopeId);
+      const unit = worklist.functions.get(scopeId);
       if (unit === undefined) return undefined;
       for (let i = 0; i < args.length; i++) observers.observeParamEntry(scopeId, i, args[i]);
       worklist.sweepTransforms();
@@ -61,7 +61,7 @@ async function runJitWithIntrospection(code: string, functionName: string) {
       s instanceof StmtNS.FunctionDef && s.name.lexeme === functionName,
   );
   if (!fd) throw new Error(`${functionName} not found`);
-  const unit = worklist.units.get(fd.id)!;
+  const unit = worklist.functions.get(fd.id)!;
   return { fd, unit, worklist };
 }
 
@@ -78,7 +78,7 @@ function memoBucketCount(prefix: string): number {
   return Array.from(memoCacheSnapshot().keys()).filter(k => k.startsWith(`${prefix}@`)).length;
 }
 
-function specBody(unit: Unit, worklist: Worklist): readonly StmtNS.Stmt[] {
+function specBody(unit: Function, worklist: Worklist): readonly StmtNS.Stmt[] {
   return visibleBody(unit, worklist.futureDispatchChainFor(unit));
 }
 

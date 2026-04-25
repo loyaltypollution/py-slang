@@ -1,4 +1,4 @@
-import type { Lattice, JoinSemiLattice } from "./analysis";
+import type { Lattice, JoinSemiLattice } from "../framework/analysis";
 
 /** Lifted per-function slot-map domain over a value lattice `L`.
  *

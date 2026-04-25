@@ -5,13 +5,13 @@ import type {
   JoinSemiLattice,
   Lattice,
 } from "../../../specialization/framework/analysis";
-import type { BasicBlock } from "../../../specialization/framework/cfg";
+import type { BasicBlock } from "../../../specialization/program/cfg";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
-} from "../../../specialization/framework/dfa-factory";
-import type { Unit } from "../../../specialization/framework/function-unit";
-import { MutableEnv } from "../../../specialization/framework/mutable-env";
+} from "../../../specialization/analysis/dfa-factory";
+import type { Function } from "../../../specialization/program/function";
+import { MutableEnv } from "../../../specialization/analysis/mutable-env";
 import type { Worklist } from "../../../specialization/framework/worklist";
 import { setupWithAnalyses } from "./compile-pipelines";
 
@@ -69,9 +69,9 @@ export function syntheticDfa(opts: SyntheticDfaOpts): BlockFixpointAnalysis<numb
 export function buildFirstFunctionUnit(
   code: string,
   analyses: ReadonlyArray<Analysis<any, any>>,
-): { unit: Unit; worklist: Worklist } {
+): { unit: Function; worklist: Worklist } {
   const { ast, worklist } = setupWithAnalyses(code, analyses);
   worklist.drain();
   const fn = ast.statements[0] as StmtNS.FunctionDef;
-  return { unit: worklist.units.get(fn.id)!, worklist };
+  return { unit: worklist.functions.get(fn.id)!, worklist };
 }

@@ -4,14 +4,14 @@ import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokenizer";
 import { directParamEntryGuardsFor, guardKeyFromGuards } from "../narrowing-policy/entry-guards";
 import type { TransformRule } from "../framework/analysis";
-import { unitOfFunctionId, wakeOwningUnit } from "../framework/analysis";
+import { functionOfFunctionId, wakeOwningFunction } from "../program/program-view";
 import { shadowNode } from "../framework/variant-body-clone";
 import { type AssumptionChain } from "../assumption";
 import { forkBody } from "../speculation/assumption-bodies";
-import type { Unit } from "../framework/function-unit";
+import type { Function } from "../program/function";
 import { runtimeCallCounter } from "../observation/runtime-analyses";
-import type { UnitView } from "../framework/analysis";
-import { purityScopeAnalysis } from "../analysis";
+import type { FunctionView } from "../program/program-view";
+import { purityFunctionAnalysis } from "../analysis";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
@@ -121,9 +121,9 @@ function bodyHasMemoPrelude(body: readonly StmtNS.Stmt[]): boolean {
 
 export const memoizationRule: TransformRule = {
   bind(wl) {
-    const wakeUnit = wakeOwningUnit(unitOfFunctionId);
-    wl.onTransformCounterBumped(memoizationRule, runtimeCallCounter, wakeUnit);
-    wl.onTransformFactDirty(memoizationRule, purityScopeAnalysis, wakeUnit);
+    wl.onTransformCounterBumped(memoizationRule, runtimeCallCounter, wakeOwningFunction(functionOfFunctionId));
+    // purityFunctionAnalysis is keyed by Function, so the dirtied key already IS the unit.
+    wl.onTransformFactDirty(memoizationRule, purityFunctionAnalysis, (_ctx, unit) => [unit]);
     // On refute: evict the memo bucket keyed by the refuted carrier's guards.
     wl.onRefute((unit, carrier) => {
       const fd = unit.funcAst;
@@ -131,13 +131,13 @@ export const memoizationRule: TransformRule = {
       clearMemoId(memoIdFor(fd, guardKeyFromGuards(directParamEntryGuardsFor(unit, carrier))));
     });
   },
-  sweep(unit: Unit, chain: AssumptionChain, _view: UnitView): boolean {
+  sweep(unit: Function, chain: AssumptionChain, _view: FunctionView): boolean {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return false;
     // Fire one call before saturation so the memo wrapper is installed before
     // the runtime would otherwise refute on the next call.
     if (runtimeCallCounter.at(fd.id) < runtimeCallCounter.saturation - 1) return false;
-    const pureWitness = purityScopeAnalysis.store.readMinimal(chain, fd.id, v => v === true);
+    const pureWitness = purityFunctionAnalysis.store.readMinimal(chain, unit, v => v === true);
     if (pureWitness === undefined) return false;
     const body = forkBody(unit, pureWitness.witness);
     if (bodyHasMemoPrelude(body)) return false;

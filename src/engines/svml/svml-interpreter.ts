@@ -810,7 +810,7 @@ export class SVMLInterpreter {
 
   /** Emit a per-function return observation for user-defined functions only.
    *  FileInput returns are ignored: return-kind speculation is keyed by
-   *  FunctionDef.id and only narrows function units. */
+   *  FunctionDef.id and only narrows function functions. */
   private dispatchReturnSite(value: SVMLBoxType): void {
     if (!this.currentFrame) return;
     const scopeKey = this.currentFrame.ir.scopeKey;

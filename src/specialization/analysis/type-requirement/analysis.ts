@@ -5,29 +5,29 @@
 
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
-import { unitOfFunctionId, type Narrowing } from "../../framework/analysis";
-import { at, type AssumptionChain, ROOT_CONTEXT } from "../../assumption";
-import {
-  makeBlockFixpointAnalysis,
-  type BlockFixpointAnalysis,
-} from "../../framework/dfa-factory";
-import type { Unit } from "../../framework/function-unit";
-import type { FunctionId } from "../../framework/analysis";
-import { MutableEnv } from "../../framework/mutable-env";
+import { ROOT_CONTEXT, at, type AssumptionChain } from "../../assumption";
+import { type Narrowing } from "../../framework/analysis";
+import { functionOfFunctionId, type FunctionId } from "../../program/program-view";
+import type { Function } from "../../program/function";
+import { MutableEnv } from "../../analysis/mutable-env";
+import { isLocal, type SlotLookup } from "../../program/slot-table";
 import type { ObservationBinding } from "../../observation/observation-binding";
 import type { RawKind } from "../../observation/raw-value";
 import { runtimeReturnChannel } from "../../observation/runtime-analyses";
-import { isLocal, type SlotLookup } from "../../framework/slot-table";
+import {
+    makeBlockFixpointAnalysis,
+    type BlockFixpointAnalysis,
+} from "../dfa-factory";
 import { liftType } from "../type/analysis";
 import {
-  typeLattice,
-  INT_BIT,
-  TOP,
-  eq,
-  integer,
-  isSatisfiableType,
-  meet,
-  type TypeLattice,
+    INT_BIT,
+    TOP,
+    eq,
+    integer,
+    isSatisfiableType,
+    meet,
+    typeLattice,
+    type TypeLattice,
 } from "../type/lattice";
 
 
@@ -192,7 +192,7 @@ export const returnKindBinding: ObservationBinding<FunctionId, TypeLattice, RawK
   narrowing: returnKindNarrowing,
   source: runtimeReturnChannel,
   lift: liftType,
-  resolveUnit: unitOfFunctionId,
+  resolveUnit: functionOfFunctionId,
 };
 
 /** Per-slot entry requirement split by satisfiability. `provable` slots are
@@ -204,7 +204,7 @@ export interface EntryRequirement {
 }
 
 export function requirementAtEntry(
-  unit: Unit,
+  unit: Function,
   context: AssumptionChain = ROOT_CONTEXT,
 ): EntryRequirement {
   const provable = new Map<number, TypeLattice>();

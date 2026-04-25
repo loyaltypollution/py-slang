@@ -5,7 +5,7 @@ import {
   definitelyBoundAnalysis,
   livenessAnalysis,
   purityBlockAnalysis,
-  purityScopeAnalysis,
+  purityFunctionAnalysis,
   returnKindBinding,
   returnKindNarrowing,
   typeAnalysis,
@@ -33,7 +33,7 @@ export const DEFAULT_PASSES: ReadonlyArray<Analysis<any, any>> = [
   constAnalysis.env, constAnalysis.facts,
   typeRequirementAnalysis.env, typeRequirementAnalysis.facts,
   purityBlockAnalysis.env, purityBlockAnalysis.facts,
-  purityScopeAnalysis,
+  purityFunctionAnalysis,
   livenessAnalysis.env, livenessAnalysis.facts,
   definitelyBoundAnalysis.env, definitelyBoundAnalysis.facts,
 ];
@@ -50,7 +50,7 @@ export function createDefaultWorklist(
     narrowings: [paramTypeNarrowing, returnKindNarrowing],
     counters: [runtimeCallCounter],
     channels: [runtimeParamChannel, runtimeReturnChannel],
-    extraEntryBlockAnalyses: [purityBlockAnalysis],
+    extraEntrySeeds: [purityBlockAnalysis],
     observationBindings: [paramTypeBinding, returnKindBinding] as ReadonlyArray<ObservationBinding<any, any>>,
   });
 }

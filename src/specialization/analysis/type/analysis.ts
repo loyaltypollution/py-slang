@@ -1,50 +1,51 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
-import { at, type AssumptionChain, isRoot } from "../../assumption";
-import type { FunctionId, Narrowing, NodeId, ParamKey } from "../../framework/analysis";
-import type { BlockDfaSpec, BlockFixpointAnalysis } from "../../framework/dfa-factory";
-import { MutableEnv } from "../../framework/mutable-env";
-import { isLocal, type SlotLookup } from "../../framework/slot-table";
-import { blockFixpointFromSpec } from "../../framework/stmt-transfer";
+import { type AssumptionChain, at, isRoot } from "../../assumption";
+import type { Narrowing, NodeId } from "../../framework/analysis";
+import type { FunctionId, ParamKey } from "../../program/program-view";
+import { MutableEnv } from "../../analysis/mutable-env";
+import { isLocal, type SlotLookup } from "../../program/slot-table";
+import { blockFixpointFromSpec } from "../../analysis/stmt-transfer";
 import { paramTypeNarrowing } from "../../narrowing-policy/param-handles";
 import type { RawKind } from "../../observation/raw-value";
+import type { BlockDfaSpec, BlockFixpointAnalysis } from "../dfa-factory";
 import {
-  ALL_KINDS_MASK,
-  BOOL_BIT,
-  BOOL_FALSE,
-  BOOL_TRUE,
-  BoolRef,
-  CLOSURE,
-  CLOSURE_BIT,
-  COMPLEX,
-  eq,
-  FLOAT_BIT,
-  FLOAT_NEG,
-  FLOAT_POS,
-  FLOAT_ZERO,
-  floatValue,
-  INT_BIT,
-  INT_NEG,
-  INT_POS,
-  INT_ZERO,
-  IntRef,
-  join,
-  meet,
-  NULL,
-  NULL_BIT,
-  STR_BIT,
-  STRING,
-  TOP,
-  type TypeLattice,
-  typeLattice,
-  boolValue,
+    ALL_KINDS_MASK,
+    BOOL_BIT,
+    BOOL_FALSE,
+    BOOL_TRUE,
+    BoolRef,
+    boolValue,
+    CLOSURE,
+    CLOSURE_BIT,
+    COMPLEX,
+    eq,
+    FLOAT_BIT,
+    FLOAT_NEG,
+    FLOAT_POS,
+    FLOAT_ZERO,
+    floatValue,
+    INT_BIT,
+    INT_NEG,
+    INT_POS,
+    INT_ZERO,
+    IntRef,
+    join,
+    meet,
+    NULL,
+    NULL_BIT,
+    STR_BIT,
+    STRING,
+    TOP,
+    type TypeLattice,
+    typeLattice,
 } from "./lattice";
 import {
-  transferBinaryOp,
-  transferCompare,
-  transferNot,
-  transferUnaryNeg,
-  truthiness,
+    transferBinaryOp,
+    transferCompare,
+    transferNot,
+    transferUnaryNeg,
+    truthiness,
 } from "./transfer";
 
 /** Interned `${fid}:${i}` ParamKeys, grown on demand. */
@@ -306,11 +307,10 @@ const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
   /** Narrow env on branch edge. Handles `slot OP literal` / `literal OP slot`
    *  (six comparison ops) and `not c`. Other predicate shapes return `env`
    *  unchanged — sound no-op. */
-  refineOnEdge(env, edge) {
+  refineOnEdge(env, edge, unit) {
     if (edge.kind === "unconditional") return env;
     const truth = edge.kind === "branch-true";
-    const slotLookup = edge.from.unit.slotLookup;
-    return applyPredicate(env, edge.condition, truth, slotLookup);
+    return applyPredicate(env, edge.condition, truth, unit.slotLookup);
   },
 };
 

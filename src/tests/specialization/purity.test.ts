@@ -4,9 +4,9 @@
  */
 
 import { StmtNS } from "../../ast-types";
-import { purityScopeAnalysis } from "../../specialization/analysis/purity/analysis";
+import { purityFunctionAnalysis } from "../../specialization/analysis/purity/analysis";
 import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
-import { paramKey } from "../../specialization/framework/analysis";
+import { paramKey } from "../../specialization/program/program-view";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
@@ -14,7 +14,7 @@ function purityOf(code: string, fnName: string): boolean | undefined {
   const { ast, worklist } = setupAndDrain(code);
   for (const stmt of ast.statements) {
     if (stmt instanceof StmtNS.FunctionDef && stmt.name.lexeme === fnName) {
-      return worklist.tryRead(purityScopeAnalysis, stmt.id, ROOT_CONTEXT);
+      return worklist.tryRead(purityFunctionAnalysis, worklist.functions.get(stmt.id)!, ROOT_CONTEXT);
     }
   }
   throw new Error(`FunctionDef ${fnName} not found`);
@@ -173,15 +173,15 @@ def hot(x):
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
 
-    expect(worklist.tryRead(purityScopeAnalysis, fn.id, ROOT_CONTEXT)).toBe(false);
+    expect(worklist.tryRead(purityFunctionAnalysis, worklist.functions.get(fn.id)!,ROOT_CONTEXT)).toBe(false);
 
     worklist.publish(runtimeParamChannel, paramKey(fn.id, 0), { kind: "number", value: 8 }, ROOT_CONTEXT);
     worklist.drain();
 
-    const unit = worklist.units.get(fn.id)!;
+    const unit = worklist.functions.get(fn.id)!;
     const specCtx = worklist.futureDispatchChainFor(unit);
     expect(specCtx).not.toBe(ROOT_CONTEXT);
-    expect(worklist.tryRead(purityScopeAnalysis, fn.id, specCtx)).toBe(true);
+    expect(worklist.tryRead(purityFunctionAnalysis, worklist.functions.get(fn.id)!,specCtx)).toBe(true);
   });
 });
 

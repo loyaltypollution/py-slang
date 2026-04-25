@@ -1,55 +1,9 @@
 import type { AssumptionChain, NarrowingId } from "../assumption/chain";
+import type { NodeId, NodeSet } from "../program/node-set";
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
-import type { BasicBlock } from "./cfg";
-import type { BlockFixpointAnalysis } from "./dfa-factory";
-import type { Unit } from "./function-unit";
 import type { Worklist } from "./worklist";
 
-/** AST node id. Indexes individual expression/statement nodes. */
-export type NodeId = number;
-
-/** `FunctionDef.id` or `FileInput.id` — node id of a scope-owning AST node
- *  whose optimization unit is registered with the worklist. Every
- *  `FunctionId` is also a `NodeId`; the distinction is semantic
- *  (`unitOfNode` vs. `units.get`). */
-export type FunctionId = number;
-
-/** Read-only program-wide unit index. Worklist is the canonical implementer;
- *  consumers (DFA factory, transforms, dfa-query) take this narrow surface
- *  rather than the full Worklist so they can't reach for orchestration APIs. */
-export interface UnitView {
-  readonly units: ReadonlyMap<FunctionId, Unit>;
-  unitOfNode(nodeId: NodeId): Unit | undefined;
-}
-
-/** Function-entry parameter identity, encoded as `${functionId}:${paramIndex}`
- *  so it is usable directly as a Context/store key. */
-export type ParamKey = `${FunctionId}:${number}`;
-
-export function paramKey(functionId: FunctionId, paramIndex: number): ParamKey {
-  return `${functionId}:${paramIndex}`;
-}
-
-export function paramKeyFunctionId(key: ParamKey): FunctionId {
-  return Number(key.slice(0, key.indexOf(":")));
-}
-
-export function paramKeyIndex(key: ParamKey): number {
-  return Number(key.slice(key.indexOf(":") + 1));
-}
-
-export type UnitResolver<K> = (ctx: AnalysisCtx, key: K) => Unit | undefined;
-
-export const unitOfBlock: UnitResolver<BasicBlock> = (_ctx, block) => block.unit;
-export const unitOfNodeId: UnitResolver<NodeId> = (ctx, nodeId) => ctx.unitOfNode(nodeId);
-export const unitOfFunctionId: UnitResolver<FunctionId> = (ctx, functionId) => ctx.units.get(functionId);
-
-export function wakeOwningUnit<K>(resolveUnit: UnitResolver<K>): (ctx: AnalysisCtx, key: K) => Iterable<Unit> {
-  return (ctx, key) => {
-    const unit = resolveUnit(ctx, key);
-    return unit ? [unit] : [];
-  };
-}
+export type { NodeId, NodeSet } from "../program/node-set";
 
 /** Algebra over one stored value space `V`. Drives `AnalysisStore`:
  *  `bottom` is the unwritten-cell default, `join` is storage combine,
@@ -68,10 +22,13 @@ export interface Lattice<V> extends JoinSemiLattice<V> {
   meet(a: V, b: V): V;
 }
 
-/** A computation over per-analysis fact cells. `K` is the key space
- *  (nodeId, functionId, `BasicBlock`, `Unit`, etc). `V` is the stored
- *  cell domain. `transfer` returning `undefined` means "no write". */
-export interface Analysis<K, V> {
+/** A computation over per-analysis fact cells. `K` is the key space — must
+ *  be a `NodeSet` so the worklist can route delta-bearing writes by node-id
+ *  intersection. Concrete shapes: `BasicBlock` (per-block), `Function`
+ *  (per-function); singleton wrappers via `internSingletonNode` for per-node.
+ *  `V` is the stored cell domain. `transfer` returning `undefined` means "no
+ *  write". */
+export interface Analysis<K extends NodeSet, V> {
   readonly storeAlgebra: JoinSemiLattice<V>;
   /** Optional explicit value for an unwritten cell. Falls back to
    *  `storeAlgebra.bottom`. */
@@ -96,37 +53,50 @@ export interface Analysis<K, V> {
   bind?(worklist: Worklist): void;
 }
 
+/** Pair of (analysis, seed-key) re-enqueued at every narrowing-entry to
+ *  re-seed Kildall under a freshly extended/pruned context. The seed receives
+ *  the `view` (a `NodeSet` — today always a `FunctionView`, but the type does
+ *  not commit to that) and produces an analysis-specific key to enqueue.
+ *  Structurally satisfied by `BlockFixpointAnalysis` (`.env` + `.seed(view)`). */
+export interface EntrySeed {
+  readonly env: Analysis<any, any>;
+  seed(view: NodeSet): unknown;
+}
+
 /** Typed axis for extending an `AssumptionChain`. Carries no lattice or
  *  store of its own — only the identity used to look up chain bindings at
  *  transfer time via the paired `blockAnalysis()`. Observation glue lives
  *  in `ObservationBinding`. */
 export interface Narrowing<K = any, V = unknown> extends NarrowingId<K, V> {
-  readonly blockAnalysis: () => BlockFixpointAnalysis<any>;
+  readonly blockAnalysis: () => EntrySeed;
 }
 
+/** Generic transfer-time context. The framework knows about: chain-walking
+ *  reads, writes (with optional delta), and evictions. It knows nothing
+ *  about Functions, BasicBlocks, or any specific view kind.
+ *
+ *  Worklist runtime hands transfers a ctx that ALSO carries program-shape
+ *  accessors (function-view-manager methods); analyses that need those cast
+ *  the ctx via `asProgramCtx` from `program/program-ctx.ts`. The cast is
+ *  the boundary: framework's vocabulary stops at `AnalysisCtx`. */
 export interface AnalysisCtx {
-  /** FunctionId → Unit view. Analyses look up owning units by scope id. */
-  readonly units: ReadonlyMap<FunctionId, Unit>;
-  /** NodeId → owning Unit. Block-level lookup is on the resulting Unit
-   *  (`unit.blockOfNode`). */
-  unitOfNode(nodeId: NodeId): Unit | undefined;
   readonly currentContext: AssumptionChain;
-  read<K, V>(analysis: Analysis<K, V>, key: K): V;
-  tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined;
-  readAll<K, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V>;
+  read<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): V;
+  tryRead<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): V | undefined;
+  readAll<K extends NodeSet, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V>;
   /** Chain-walking read: shallowest ancestor with a hit satisfying `accept`,
    *  or `undefined`. Records a per-(analysis, key) read edge so the worklist
    *  re-enqueues this transfer when the cell at `key` advances in any
    *  context. Use instead of `analysis.store.readMinimal` from inside a
    *  transfer. */
-  readMinimal<K, V>(
+  readMinimal<K extends NodeSet, V>(
     analysis: Analysis<K, V>,
     key: K,
     accept: (value: V) => boolean,
   ): { value: V; witness: AssumptionChain } | undefined;
   /** Chain-walking read: deepest ancestor with any hit. Same edge-recording
    *  contract as `readMinimal`. */
-  readDeepest<K, V>(
+  readDeepest<K extends NodeSet, V>(
     analysis: Analysis<K, V>,
     key: K,
   ): { value: V; witness: AssumptionChain } | undefined;
@@ -134,25 +104,38 @@ export interface AnalysisCtx {
    *  paired-cell side-effect writes (e.g. DFA `.facts` from inside `.env`'s
    *  transfer) — bypassing would skip listener fan-out. Transfer return
    *  values are dispatched automatically. Returns `true` iff the cell
-   *  advanced. */
-  write<K, V>(analysis: Analysis<K, V>, key: K, value: V): boolean;
+   *  advanced.
+   *
+   *  `delta` is an optional `NodeSet` describing the nodeIds whose contribution
+   *  to `value` advanced relative to the prior cell. Producers that can compute
+   *  it cheaply should pass it; readers registered via `onFactDirtyNodeSet`
+   *  with a narrower interest set then only fire when `interest ∩ delta` is
+   *  non-empty. When omitted, all subscribers (including nodeSet subscribers)
+   *  fire unconditionally, matching legacy whole-key fan-out. */
+  write<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K, value: V, delta?: NodeSet): boolean;
   /** Evict at `currentContext`. */
-  evict<K, V>(analysis: Analysis<K, V>, key: K): void;
+  evict<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): void;
 }
 
 /** Imperative AST sweep gated on analyses. No lattice, no transfer, no
- *  store write. The worklist dirties a rule on unit mint/rebuild and on
- *  writes to subscribed analyses; `sweep` runs once per dirty unit, and
- *  units that rewrote are scheduled for CFG rebuild. Idempotency across
- *  rebuilds is the rule's responsibility. */
-export interface TransformRule {
+ *  store write. The worklist dirties a rule on view mint/rebuild and on
+ *  writes to subscribed analyses; `sweep` runs once per dirty view; views
+ *  that rewrote are scheduled for rebuild. Idempotency across rebuilds is
+ *  the rule's responsibility.
+ *
+ *  Generic over `V` (view) and `P` (program-wide handle) so the framework
+ *  type doesn't commit to view kind. Today's transforms instantiate as
+ *  `TransformRule<Function, FunctionView>`; the framework treats them as
+ *  `TransformRule<unknown, unknown>` and the worklist's sweep loop casts
+ *  to the concrete pair when invoking. */
+export interface TransformRule<V = unknown, P = unknown> {
   /** Returns `true` iff the body at `chain` was mutated — the worklist
-   *  then schedules a CFG rebuild for `unit`. Worklist always passes
-   *  `chain = futureDispatchChainFor(unit)`. */
+   *  then schedules a rebuild for `view`. Worklist always passes
+   *  `chain = futureDispatchChainFor(view)`. */
   sweep(
-    unit: Unit,
+    view: V,
     chain: AssumptionChain,
-    view: UnitView,
+    program: P,
   ): boolean;
   bind?(worklist: Worklist): void;
 }
@@ -160,7 +143,7 @@ export interface TransformRule {
 /** Construct an Analysis, auto-attaching its `store` from `storeAlgebra`
  *  and `emptyValue`. */
 export function defineAnalysis<
-  K,
+  K extends NodeSet,
   V,
   P extends Analysis<K, V>["polarity"],
 >(

@@ -9,7 +9,7 @@ import { runSpecCase } from "./harness/spec-e2e";
 
 function optimise(code: string): StmtNS.Stmt[] {
   const { ast, worklist } = setupAndDrain(code);
-  return worklist.units.get(ast.id)!.body;
+  return worklist.functions.get(ast.id)!.body;
 }
 
 describe("dead-branch elimination", () => {

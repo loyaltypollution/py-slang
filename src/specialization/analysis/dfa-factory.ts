@@ -1,20 +1,23 @@
 import type { ExprNS } from "../../ast-types";
-import type { BasicBlock, CFGEdge } from "./cfg";
 import type { AssumptionChain } from "../assumption/chain";
-import type { Unit } from "./function-unit";
-import type { SlotLookup } from "./slot-table";
-import { MutableEnv } from "./mutable-env";
 import type {
-  Lattice,
-  JoinSemiLattice,
   Analysis,
   AnalysisCtx,
+  JoinSemiLattice,
+  Lattice,
   NodeId,
-  UnitView,
-} from "./analysis";
-import { defineAnalysis } from "./analysis";
-import type { ReadonlyAnalysisStore } from "./analysis-store";
-import { EMPTY_MAP, storeContexts, storeEvict, walkChain } from "./analysis-store";
+  NodeSet,
+} from "../framework/analysis";
+import { defineAnalysis } from "../framework/analysis";
+import { EMPTY_NODESET, nodeSetOfIds } from "../program/node-set";
+import type { FunctionView } from "../program/program-view";
+import { asProgramCtx } from "../program/program-ctx";
+import type { ReadonlyAnalysisStore } from "../framework/analysis-store";
+import { EMPTY_MAP, storeContexts, storeEvict, walkChain } from "../framework/analysis-store";
+import type { BasicBlock, CFGEdge } from "../program/cfg";
+import type { Function } from "../program/function";
+import { MutableEnv } from "../analysis/mutable-env";
+import type { SlotLookup } from "../program/slot-table";
 
 /** Expression-level DFA module for block-fixpoint analyses. Extends
  *  `Lattice<L>` so the module itself IS the per-slot value lattice. */
@@ -30,7 +33,7 @@ export interface BlockDfaSpec<L> extends Lattice<L> {
    *  AssumptionChain-oblivious modules ignore it. */
   makeExprVisitor(
     env: MutableEnv<L>,
-    unit: Unit,
+    unit: Function,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: L) => void,
     context: AssumptionChain,
@@ -40,7 +43,7 @@ export interface BlockDfaSpec<L> extends Lattice<L> {
    *  merged into the current block's IN env. Must be monotone (result ⊑
    *  input) and MUST NOT mutate `env` in place — `snapshot()` first. When
    *  omitted, the factory treats every edge as identity (no narrowing). */
-  refineOnEdge?(env: MutableEnv<L>, edge: CFGEdge): MutableEnv<L>;
+  refineOnEdge?(env: MutableEnv<L>, edge: CFGEdge, unit: Function): MutableEnv<L>;
 }
 
 /** Self-iterating iterable over block-projected CFG edges. Reused across
@@ -78,15 +81,15 @@ class EdgeBlockIterable implements Iterable<BasicBlock>, Iterator<BasicBlock> {
 }
 
 /** Evict every BasicBlock cell belonging to `unit` across all contexts.
- *  Block cells are keyed by `BasicBlock` (not `Unit`), so the worklist's
+ *  Block cells are keyed by `BasicBlock` (not `Function`), so the worklist's
  *  universal unit-keyed eviction doesn't reach them. */
 function evictStaleBlockCells(
   store: ReadonlyAnalysisStore<BasicBlock, any>,
-  unit: Unit,
+  unit: Function,
 ): void {
   for (const context of storeContexts(store)) {
     for (const b of store.readAll(context).keys()) {
-      if (b.unit === unit) storeEvict(store, b, context);
+      if (b.unitId === unit.funcAst.id) storeEvict(store, b, context);
     }
   }
 }
@@ -110,7 +113,7 @@ export interface BlockFixpointAnalysis<L> {
    *  consumers. NOT edge-recording — use `readPerExprDeepest(ctx, nodeId)`
    *  from inside a transfer if you want auto-invalidation when the cell
    *  changes. */
-  perExpr(view: UnitView): ReadonlyAnalysisStore<number, L>;
+  perExpr(view: FunctionView): ReadonlyAnalysisStore<number, L>;
   /** Edge-recording per-expression read. Walks the chain at `ctx.currentContext`,
    *  returning the deepest ancestor whose facts map contains `nodeId`.
    *  Records a read edge on `(facts, blockOfNode(nodeId))` so that any
@@ -119,7 +122,7 @@ export interface BlockFixpointAnalysis<L> {
     ctx: AnalysisCtx,
     nodeId: number,
   ): { value: L; witness: AssumptionChain } | undefined;
-  seed(unit: Unit): BasicBlock;
+  seed(view: Function): BasicBlock;
 }
 
 /** Result of one block-transfer pass. Negative nodeIds in `exprFacts` are
@@ -138,13 +141,13 @@ type DfaConfig<L> = {
     ctx: AnalysisCtx,
     block: BasicBlock,
     inEnv: MutableEnv<L>,
-    unit: Unit,
+    unit: Function,
   ) => BlockPassResult<L>;
   /** Seed the entry (forward) / exit (backward) block's IN env. */
-  readonly seedEnv: (unit: Unit) => MutableEnv<L>;
+  readonly seedEnv: (unit: Function) => MutableEnv<L>;
   /** Per-edge env refinement. See `BlockDfaSpec.refineOnEdge`. Optional;
    *  omitted means identity (no narrowing on any edge). */
-  readonly refineOnEdge?: (env: MutableEnv<L>, edge: CFGEdge) => MutableEnv<L>;
+  readonly refineOnEdge?: (env: MutableEnv<L>, edge: CFGEdge, unit: Function) => MutableEnv<L>;
 } & (
   | { readonly mergeKind: "may"; readonly valueLattice: JoinSemiLattice<L> }
   | { readonly mergeKind: "must"; readonly valueLattice: Lattice<L> }
@@ -200,6 +203,28 @@ export function makeBlockFixpointAnalysis<L>(
     return true;
   };
 
+  /** NodeIds whose post-join value differs from `prev`. `prev`'s exclusive
+   *  keys can't change under a `factsJoin` (joins retain prev keys), so they
+   *  are not reported. Returns `EMPTY_NODESET` when nothing advanced. */
+  const computeFactsDelta = (
+    prev: ReadonlyMap<number, L> | undefined,
+    next: ReadonlyMap<number, L>,
+  ): NodeSet => {
+    if (prev === next) return EMPTY_NODESET;
+    if (prev === undefined || prev.size === 0) {
+      if (next.size === 0) return EMPTY_NODESET;
+      return nodeSetOfIds(new Set(next.keys()));
+    }
+    const changed = new Set<NodeId>();
+    for (const [k, vNext] of next) {
+      const vPrev = prev.get(k);
+      if (vPrev === undefined || !valueLattice.eq(vPrev, vNext)) {
+        changed.add(k);
+      }
+    }
+    return changed.size === 0 ? EMPTY_NODESET : nodeSetOfIds(changed);
+  };
+
   const factsLattice: JoinSemiLattice<ReadonlyMap<number, L>> = {
     bottom: EMPTY_FACTS,
     leq: factsLeq,
@@ -207,14 +232,14 @@ export function makeBlockFixpointAnalysis<L>(
     eq: (a, b) => a === b || (factsLeq(a, b) && factsLeq(b, a)),
   };
 
-  const seedKey = (unit: Unit): BasicBlock =>
+  const seedKey = (unit: Function): BasicBlock =>
     config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
 
   const isForward = config.direction === "forward";
 
   function inEnvFor(
     block: BasicBlock,
-    unit: Unit,
+    unit: Function,
     context: AssumptionChain,
   ): MutableEnv<L> {
     // Iterate predecessor *edges* so `refineOnEdge` sees the labeled edge.
@@ -225,7 +250,7 @@ export function makeBlockFixpointAnalysis<L>(
     for (const edge of preds) {
       const predBlock = isForward ? edge.from : edge.to;
       const predOut = envAnalysis.store.read(predBlock, context);
-      const refined = config.refineOnEdge ? config.refineOnEdge(predOut, edge) : predOut;
+      const refined = config.refineOnEdge ? config.refineOnEdge(predOut, edge, unit) : predOut;
       if (env === undefined) {
         // Snapshot only when `refineOnEdge` returned the stored env unchanged.
         env = refined === predOut ? predOut.snapshot() : refined;
@@ -244,14 +269,26 @@ export function makeBlockFixpointAnalysis<L>(
     tier: "analysis",
     polarity: config.mergeKind,
     transfer(ctx, block): MutableEnv<L> | undefined {
-      const unit = block.unit;
+      const unit = asProgramCtx(ctx).functions.get(block.unitId);
+      if (unit === undefined) return undefined;
       const inEnv = inEnvFor(block, unit, ctx.currentContext);
       const result = config.transferBlock(ctx, block, inEnv, unit);
       // Paired-cell write: `.facts` has no transfer of its own, so its
       // cell is populated exclusively from here. Route through `ctx.write`
       // (not the store directly) so the eq-gated advance publishes a
       // FactChange to every `factsAnalysis` subscriber.
-      ctx.write(factsAnalysis, block, result.exprFacts);
+      //
+      // Compute a delta NodeSet covering nodeIds whose value advanced
+      // relative to the prior cell at this context. Pre-joining here
+      // mirrors what `storeWrite` will do internally (idempotent), letting
+      // us classify per-key changes against the post-join value rather than
+      // the caller's intent. nodeSet subscribers (e.g. purity scoping on
+      // `IMPURE_SENTINEL_NODE_ID`) consume this delta to suppress wakes
+      // when their interest doesn't intersect the change.
+      const prev = factsAnalysis.store.tryRead(block, ctx.currentContext);
+      const next = prev === undefined ? result.exprFacts : factsJoin(prev, result.exprFacts);
+      const delta = computeFactsDelta(prev, next);
+      ctx.write(factsAnalysis, block, next, delta);
       return result.outEnv;
     },
   });
@@ -293,12 +330,12 @@ export function makeBlockFixpointAnalysis<L>(
     wl.onRebuildEvict((unit) => evictStaleBlockCells(factsAnalysis.store, unit));
   };
 
-  const perExprCache = new WeakMap<UnitView, ReadonlyAnalysisStore<number, L>>();
-  function perExpr(view: UnitView): ReadonlyAnalysisStore<number, L> {
+  const perExprCache = new WeakMap<FunctionView, ReadonlyAnalysisStore<number, L>>();
+  function perExpr(view: FunctionView): ReadonlyAnalysisStore<number, L> {
     const cached = perExprCache.get(view);
     if (cached !== undefined) return cached;
     const tryReadNode = (nodeId: number, context: AssumptionChain): L | undefined => {
-      const block = view.unitOfNode(nodeId)?.blockOfNode(nodeId);
+      const block = view.functionOfNode(nodeId)?.blockOfNode(nodeId);
       return block === undefined ? undefined : factsAnalysis.store.tryRead(block, context)?.get(nodeId);
     };
     const store: ReadonlyAnalysisStore<number, L> = {
@@ -328,7 +365,7 @@ export function makeBlockFixpointAnalysis<L>(
     ctx: AnalysisCtx,
     nodeId: number,
   ): { value: L; witness: AssumptionChain } | undefined {
-    const block = ctx.unitOfNode(nodeId)?.blockOfNode(nodeId);
+    const block = asProgramCtx(ctx).functionOfNode(nodeId)?.blockOfNode(nodeId);
     if (block === undefined) return undefined;
     // Single edge on (factsAnalysis, block) — invalidation fires on any
     // advancing write to that block's facts map. Walk via store.tryRead so

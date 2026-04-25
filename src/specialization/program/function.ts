@@ -1,6 +1,6 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
-import type { NodeId } from "./analysis";
+import type { NodeId } from "../framework/analysis";
 import type { BasicBlock, BlockId, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import type { SlotLookup } from "./slot-table";
@@ -11,7 +11,7 @@ import { buildSlotTable } from "./slot-table";
  *  onto the AST. Function identity lives on `funcAst.id`; bytecode slot
  *  numbering (if any) is a backend concern and lives on the backend's own
  *  table (e.g. `SvmlSlotTable`). */
-export interface Unit {
+export interface Function {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
@@ -20,13 +20,15 @@ export interface Unit {
   /** Node id → enclosing basic block, rebuilt with `wireCFG`. */
   nodeToBlock: Map<NodeId, BasicBlock>;
   blockOfNode(nodeId: NodeId): BasicBlock | undefined;
+  /** NodeSet conformance: O(1) via this unit's `nodeToBlock` keys. */
+  contains(n: NodeId): boolean;
 }
 
-/** Build a single Unit for `funcAst` — no recursion into nested scopes. */
-export function buildOneUnit(
+/** Build a single Function for `funcAst` — no recursion into nested scopes. */
+export function buildOneFunction(
   funcAst: StmtNS.FileInput | StmtNS.FunctionDef,
   functionEnvironments: FunctionEnvironments,
-): Unit {
+): Function {
   const env = functionEnvironments.get(funcAst);
   if (!env) {
     throw new Error(`Environment not found for scope node ${funcAst.kind}`);
@@ -42,9 +44,12 @@ export function buildOneUnit(
       return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
     },
     blockOfNode(nodeId: NodeId): BasicBlock | undefined {
-      return (this as Unit).nodeToBlock.get(nodeId);
+      return (this as Function).nodeToBlock.get(nodeId);
     },
-  } as Omit<Unit, "cfg"> as Unit;
+    contains(nodeId: NodeId): boolean {
+      return (this as Function).nodeToBlock.has(nodeId);
+    },
+  } as Omit<Function, "cfg"> as Function;
   wireCFG(unit);
   return unit;
 }
@@ -52,8 +57,8 @@ export function buildOneUnit(
 // Lambda bodies are separate scopes and not analyzed here.
 
 /** (Re)build `unit.cfg`, refresh `blockMap`, and reindex `nodeToBlock`. The
- *  topology reindexes its own flat `NodeId → Unit` map separately. */
-export function wireCFG(unit: Unit): void {
+ *  topology reindexes its own flat `NodeId → Function` map separately. */
+export function wireCFG(unit: Function): void {
   unit.cfg = buildCFG(unit.body, unit);
   const blockMap = new Map<BlockId, BasicBlock>();
   for (const block of unit.cfg.blocks) {
@@ -91,19 +96,19 @@ function walkAstNodeIds(
   }
 }
 
-export function buildUnits(
+export function buildFunctions(
   ast: StmtNS.FileInput,
   functionEnvironments: FunctionEnvironments,
-): Map<StmtNS.FileInput | StmtNS.FunctionDef, Unit> {
-  const units = new Map<StmtNS.FileInput | StmtNS.FunctionDef, Unit>();
-  const rootUnit = buildOneUnit(ast, functionEnvironments);
-  units.set(ast, rootUnit);
+): Map<StmtNS.FileInput | StmtNS.FunctionDef, Function> {
+  const functions = new Map<StmtNS.FileInput | StmtNS.FunctionDef, Function>();
+  const rootUnit = buildOneFunction(ast, functionEnvironments);
+  functions.set(ast, rootUnit);
 
   const visit = (stmts: ReadonlyArray<StmtNS.Stmt>): void => {
     for (const stmt of stmts) {
       if (stmt instanceof StmtNS.FunctionDef) {
-        const unit = buildOneUnit(stmt, functionEnvironments);
-        units.set(stmt, unit);
+        const unit = buildOneFunction(stmt, functionEnvironments);
+        functions.set(stmt, unit);
         visit(unit.body);
       } else if (stmt instanceof StmtNS.If) {
         visit(stmt.body);
@@ -114,5 +119,5 @@ export function buildUnits(
     }
   };
   visit(rootUnit.body);
-  return units;
+  return functions;
 }

@@ -23,6 +23,6 @@ export {
   type EntryRequirement,
 } from "./type-requirement/analysis";
 
-export { purityBlockAnalysis, purityScopeAnalysis } from "./purity/analysis";
+export { purityBlockAnalysis, purityFunctionAnalysis } from "./purity/analysis";
 export { livenessAnalysis, perStatementLiveOut } from "./liveness/analysis";
 export { definitelyBoundAnalysis } from "./definitely-bound/analysis";

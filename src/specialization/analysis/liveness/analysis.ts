@@ -1,13 +1,13 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import type { Token } from "../../../tokenizer";
 import type { AssumptionChain } from "../../assumption/chain";
-import type { BasicBlock } from "../../framework/cfg";
+import type { BasicBlock } from "../../program/cfg";
+import { MutableEnv } from "../../analysis/mutable-env";
+import { isLocal, type SlotLookup } from "../../program/slot-table";
 import {
-  makeBlockFixpointAnalysis,
-  type BlockFixpointAnalysis,
-} from "../../framework/dfa-factory";
-import { MutableEnv } from "../../framework/mutable-env";
-import { isLocal, type SlotLookup } from "../../framework/slot-table";
+    makeBlockFixpointAnalysis,
+    type BlockFixpointAnalysis,
+} from "../dfa-factory";
 import { LIVE, livenessLattice, type LiveVal } from "./lattice";
 
 /** Marks every `Variable` read live in the shared env; other visits recurse. */

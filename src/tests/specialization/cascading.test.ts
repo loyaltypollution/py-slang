@@ -21,7 +21,7 @@ describe("cascading transform termination", () => {
 
     const before = countNodes((parse(code + "\n") as StmtNS.FileInput).statements);
     const { ast, worklist } = setupAndDrain(code);
-    const stmts = worklist.units.get(ast.id)!.body;
+    const stmts = worklist.functions.get(ast.id)!.body;
 
     expect(stmts).toHaveLength(1);
     expect(stmts[0]).toBeInstanceOf(StmtNS.Assign);

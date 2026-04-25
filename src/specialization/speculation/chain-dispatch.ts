@@ -6,13 +6,13 @@ import { contextIsEntrySpecializable, directParamEntryGuardsFor } from "../narro
 import type { AssumptionChain } from "../assumption";
 import { visibleBody } from "./assumption-bodies";
 import { shadowNode } from "../framework/variant-body-clone";
-import type { Unit } from "../framework/function-unit";
-import type { UnitView } from "../framework/analysis";
+import type { Function } from "../program/function";
+import type { FunctionView } from "../program/program-view";
 import { BOOL_BIT, BoolRef, typeAnalysis } from "../analysis";
 
 function conditionTruth(
   condId: number,
-  view: UnitView,
+  view: FunctionView,
   context: AssumptionChain,
 ): boolean | undefined {
   const fact = typeAnalysis.perExpr(view).tryRead(condId, context);
@@ -26,7 +26,7 @@ function conditionTruth(
 function pruneWithFactsAt(
   stmts: readonly StmtNS.Stmt[],
   context: AssumptionChain,
-  view: UnitView,
+  view: FunctionView,
 ): readonly StmtNS.Stmt[] {
   let changed = false;
   const out: StmtNS.Stmt[] = [];
@@ -65,7 +65,7 @@ function pruneWithFactsAt(
 
 /** Is `(unit, s)` a valid target for speculation-lane dispatch? */
 export function dispatchValid(
-  unit: Unit,
+  unit: Function,
   s: AssumptionChain,
   isRefuted?: (s: AssumptionChain) => boolean,
 ): boolean {
@@ -81,9 +81,9 @@ export function dispatchValid(
  *  Reference equality vs `unit.body` indicates whether speculation contributed.
  *  Requires `dispatchValid(unit, s, isRefuted)`. */
 export function bodyToCompile(
-  unit: Unit,
+  unit: Function,
   s: AssumptionChain,
-  view: UnitView,
+  view: FunctionView,
   isRefuted?: (s: AssumptionChain) => boolean,
 ): readonly StmtNS.Stmt[] {
   if (!dispatchValid(unit, s, isRefuted)) {

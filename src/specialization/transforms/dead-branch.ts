@@ -1,14 +1,14 @@
 import { StmtNS } from "../../ast-types";
 import type { TransformRule } from "../framework/analysis";
-import { unitOfBlock, wakeOwningUnit } from "../framework/analysis";
+import { functionOfBlock, wakeOwningFunction } from "../program/program-view";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
-import type { Unit } from "../framework/function-unit";
-import type { UnitView } from "../framework/analysis";
+import type { Function } from "../program/function";
+import type { FunctionView } from "../program/program-view";
 import { BOOL_BIT, BoolRef, type TypeLattice, typeAnalysis } from "../analysis";
 import { BaseStmtVisitor, runWitnessSweep } from "./witness-utils";
 
-function boolCondition(chain: AssumptionChain, view: UnitView, nodeId: number) {
+function boolCondition(chain: AssumptionChain, view: FunctionView, nodeId: number) {
   return typeAnalysis
     .perExpr(view)
     .readMinimal(
@@ -22,7 +22,7 @@ function boolCondition(chain: AssumptionChain, view: UnitView, nodeId: number) {
 function collectConstCondWitnesses(
   stmts: readonly StmtNS.Stmt[],
   chain: AssumptionChain,
-  view: UnitView,
+  view: FunctionView,
   out: Set<AssumptionChain>,
 ): void {
   for (const s of stmts) {
@@ -43,7 +43,7 @@ class DeadBranchVisitor extends BaseStmtVisitor {
   changed = false;
   constructor(
     private readonly chain: AssumptionChain,
-    private readonly view: UnitView,
+    private readonly view: FunctionView,
   ) {
     super();
   }
@@ -88,9 +88,9 @@ class DeadBranchVisitor extends BaseStmtVisitor {
 
 export const deadBranchRule: TransformRule = {
   bind(wl) {
-    wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, wakeOwningUnit(unitOfBlock));
+    wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, wakeOwningFunction(functionOfBlock));
   },
-  sweep(unit: Unit, chain: AssumptionChain, view: UnitView): boolean {
+  sweep(unit: Function, chain: AssumptionChain, view: FunctionView): boolean {
     const witnesses = new Set<AssumptionChain>();
     collectConstCondWitnesses(visibleBody(unit, chain), chain, view, witnesses);
     return runWitnessSweep(

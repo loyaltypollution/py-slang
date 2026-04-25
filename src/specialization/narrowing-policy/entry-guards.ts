@@ -1,14 +1,14 @@
 import { StmtNS } from "../../ast-types";
 import { at, type AssumptionChain, isRoot } from "../assumption";
-import type { Unit } from "../framework/function-unit";
-import { paramKey, paramKeyIndex, type ParamKey } from "../framework/analysis";
+import type { Function } from "../program/function";
+import { paramKey, paramKeyIndex, type ParamKey } from "../program/program-view";
 import { paramTypeNarrowing } from "./param-handles";
 import { returnKindNarrowing, type TypeLattice } from "../analysis";
 
 type EntryGuard = { paramIndex: number; ty: TypeLattice };
 
 export function directParamEntryGuardsFor(
-  unit: Unit,
+  unit: Function,
   context: AssumptionChain,
 ): readonly EntryGuard[] | undefined {
   if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return undefined;
@@ -21,7 +21,7 @@ export function directParamEntryGuardsFor(
   return guards.length > 0 ? guards : undefined;
 }
 
-export function contextIsEntrySpecializable(unit: Unit, context: AssumptionChain): boolean {
+export function contextIsEntrySpecializable(unit: Function, context: AssumptionChain): boolean {
   if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return false;
   for (let cur: AssumptionChain | undefined = context; cur !== undefined && !isRoot(cur); cur = cur.parent) {
     const a = cur.assumption;

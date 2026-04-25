@@ -1,4 +1,4 @@
-import { MutableEnv } from "../../specialization/framework/mutable-env";
+import { MutableEnv } from "../../specialization/analysis/mutable-env";
 import {
   BOUND,
   UNBOUND,

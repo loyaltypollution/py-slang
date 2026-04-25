@@ -1,20 +1,19 @@
 import { ExprNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
 import type { AssumptionChain } from "../../assumption/chain";
-import { blockFixpointFromSpec } from "../../framework/stmt-transfer";
-import type {
-  BlockDfaSpec,
-  BlockFixpointAnalysis,
-} from "../../framework/dfa-factory";
 import { type NodeId } from "../../framework/analysis";
-import { MutableEnv } from "../../framework/mutable-env";
-import { isLocal, type SlotLookup } from "../../framework/slot-table";
+import { MutableEnv } from "../../analysis/mutable-env";
+import { isLocal, type SlotLookup } from "../../program/slot-table";
+import { blockFixpointFromSpec } from "../../analysis/stmt-transfer";
+import type {
+    BlockDfaSpec,
+    BlockFixpointAnalysis,
+} from "../dfa-factory";
 import {
-  CONST_BOTTOM,
-  CONST_TOP,
-  constLattice,
-  constOf,
-  type ConstLattice,
+    CONST_TOP,
+    constLattice,
+    constOf,
+    type ConstLattice
 } from "./lattice";
 
 // Chain-invariant const propagation. Param speculation lives on

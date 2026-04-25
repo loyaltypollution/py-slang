@@ -1,7 +1,7 @@
 // Intraprocedural purity. Two-tier:
 //   - purityBlockAnalysis: per-block dataflow over AbsVal slots, emitting an
 //     IMPURE_SENTINEL fact in any block that performs an observable effect.
-//   - purityScopeAnalysis: per-FunctionDef verdict, joining the block facts
+//   - purityFunctionAnalysis: per-FunctionDef verdict, joining the block facts
 //     over reachable blocks under the current speculation context.
 
 import { ExprNS, StmtNS } from "../../../ast-types";
@@ -11,15 +11,16 @@ import type {
   JoinSemiLattice,
 } from "../../framework/analysis";
 import { defineAnalysis } from "../../framework/analysis";
-import type { BasicBlock } from "../../framework/cfg";
+import { asProgramCtx } from "../../program/program-ctx";
+import type { BasicBlock } from "../../program/cfg";
+import type { Function } from "../../program/function";
+import { MutableEnv } from "../../analysis/mutable-env";
+import { isCapture, isLocal, type SlotLookup } from "../../program/slot-table";
+import { constAnalysis } from "../const/analysis";
 import {
   makeBlockFixpointAnalysis,
   type BlockFixpointAnalysis,
-} from "../../framework/dfa-factory";
-import type { Unit } from "../../framework/function-unit";
-import { MutableEnv } from "../../framework/mutable-env";
-import { isCapture, isLocal, type SlotLookup } from "../../framework/slot-table";
-import { constAnalysis } from "../const/analysis";
+} from "../dfa-factory";
 import { typeAnalysis } from "../type/analysis";
 import { BOOL_BIT, BoolRef } from "../type/lattice";
 import {
@@ -252,7 +253,10 @@ function transferStmt(
       if (!isLocal(info)) { state.impure = true; return; }
       // `undefined` = scope verdict pending; readDeepest records the dep so
       // this block re-runs when the verdict lands.
-      const innerPure = state.ctx.readDeepest(purityScopeAnalysis, fd.id)?.value;
+      const innerUnit = asProgramCtx(state.ctx).functions.get(fd.id);
+      const innerPure = innerUnit !== undefined
+        ? state.ctx.readDeepest(purityFunctionAnalysis, innerUnit)?.value
+        : undefined;
       state.env.set(info.slot, { kind: "closure", functionId: fd.id, pure: innerPure });
       return;
     }
@@ -315,13 +319,11 @@ const outerLattice: JoinSemiLattice<boolean | undefined> = {
   eq: (a, b) => a === b,
 };
 
-export const purityScopeAnalysis: Analysis<number, boolean | undefined> = defineAnalysis({
+export const purityFunctionAnalysis: Analysis<Function, boolean | undefined> = defineAnalysis({
   storeAlgebra: outerLattice,
   polarity: "may",
   tier: "analysis",
-  transfer(ctx: AnalysisCtx, functionId: number): boolean | undefined {
-    const unit = ctx.units.get(functionId);
-    if (unit === undefined) return undefined;
+  transfer(ctx: AnalysisCtx, unit: Function): boolean | undefined {
     const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
     // Per-context reachability: a block reached only via a const-dead edge
@@ -331,7 +333,13 @@ export const purityScopeAnalysis: Analysis<number, boolean | undefined> = define
     let anyVisited = false;
     for (const block of unit.cfg.blocks) {
       if (!reachable.has(block)) continue;
-      const reading = ctx.readDeepest(purityBlockAnalysis.facts, block);
+      // Read directly from the store rather than via `ctx.readDeepest` so
+      // we don't record a per-block read edge. Invalidation is declared
+      // explicitly through `onFactDirtyNodeSet` at bind time, gated on the
+      // single nodeId we actually care about (`IMPURE_SENTINEL_NODE_ID`);
+      // the auto-edge would re-fire on any block-fact advance and defeat
+      // that gating.
+      const reading = purityBlockAnalysis.facts.store.readDeepest(ctx.currentContext, block);
       if (reading === undefined) continue;
       anyVisited = true;
       if (reading.value.has(IMPURE_SENTINEL_NODE_ID)) return false;
@@ -339,17 +347,28 @@ export const purityScopeAnalysis: Analysis<number, boolean | undefined> = define
     return anyVisited ? true : undefined;
   },
   bind(wl) {
-    const fdIdOf = (unit: Unit): number[] => {
-      const fd = unit.funcAst;
-      return fd instanceof StmtNS.FunctionDef ? [fd.id] : [];
-    };
-    wl.onMint(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
-    wl.onRebuildDirty(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
-    wl.onSpecRev(purityScopeAnalysis, (_ctx, unit) => fdIdOf(unit));
+    const unitOf = (unit: Function): Function[] =>
+      unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
+    wl.onMint(purityFunctionAnalysis, (_ctx, unit) => unitOf(unit));
+    wl.onRebuildDirty(purityFunctionAnalysis, (_ctx, unit) => unitOf(unit));
+    wl.onSpecRev(purityFunctionAnalysis, (_ctx, unit) => unitOf(unit));
+    // Delta-routed wake on per-block purity facts. Interest is the IMPURE
+    // sentinel only — the verdict is a join over reachable blocks of
+    // "did any block emit IMPURE_SENTINEL?", so a block-fact advance that
+    // doesn't touch that sentinel cannot move the verdict.
+    wl.onFactDirtyNodeSet(
+      purityBlockAnalysis.facts as Analysis<any, any>,
+      purityFunctionAnalysis,
+      [IMPURE_SENTINEL_NODE_ID],
+      (ctx, key) => {
+        const owner = asProgramCtx(ctx).functions.get((key as BasicBlock).unitId);
+        return owner !== undefined ? unitOf(owner) : [];
+      },
+    );
   },
 });
 
-function reachableBlocks(ctx: AnalysisCtx, unit: Unit): Set<BasicBlock> {
+function reachableBlocks(ctx: AnalysisCtx, unit: Function): Set<BasicBlock> {
   const reached = new Set<BasicBlock>([unit.cfg.entry]);
   const queue: BasicBlock[] = [unit.cfg.entry];
   // Head cursor (O(1) amortized) vs shift() which is O(n) in V8.

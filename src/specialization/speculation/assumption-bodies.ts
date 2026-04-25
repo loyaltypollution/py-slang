@@ -1,15 +1,15 @@
-// Per-(Unit, AssumptionChain) forked function bodies.
+// Per-(Function, AssumptionChain) forked function bodies.
 
 import type { StmtNS } from "../../ast-types";
 import { cloneStmts } from "../framework/variant-body-clone";
 import { type AssumptionChain, leq } from "../assumption";
-import type { Unit } from "../framework/function-unit";
+import type { Function } from "../program/function";
 
-const bodies: WeakMap<Unit, Map<AssumptionChain, StmtNS.Stmt[]>> = new WeakMap();
+const bodies: WeakMap<Function, Map<AssumptionChain, StmtNS.Stmt[]>> = new WeakMap();
 
 /** Deepest non-refuted stored fork ⊑ `s`, else `unit.body`. */
 export function visibleBody(
-  unit: Unit,
+  unit: Function,
   s: AssumptionChain,
   isRefuted?: (s: AssumptionChain) => boolean,
 ): readonly StmtNS.Stmt[] {
@@ -26,7 +26,7 @@ export function visibleBody(
 }
 
 /** Materialize (or reuse) a forked body at `s`. Returns `unit.body` at root. */
-export function forkBody(unit: Unit, s: AssumptionChain): StmtNS.Stmt[] {
+export function forkBody(unit: Function, s: AssumptionChain): StmtNS.Stmt[] {
   if (s.parent === undefined) return unit.body;
   let m = bodies.get(unit);
   if (m === undefined) {
