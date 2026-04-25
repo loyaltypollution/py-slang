@@ -138,19 +138,18 @@ export class Worklist {
    *  `futureDispatchChainFor(unit)` under the sweep's feet. */
   private inTransformSweep = false;
 
-  /** Fact-change, counter-bump, and channel-publish dispatch indices.
-   *  Analyses' and transforms' subscriptions compile into callbacks here. */
-  private readonly factSubs = new Map<
-    Analysis<any, any>,
-    Array<(ctx: AnalysisCtx, key: unknown) => void>
-  >();
   /** Delta-routed subscribers. Each entry declares an `interest` as a
    *  `NodeSet` (typically a view: a block, a function, or an interned
    *  singleton over a sentinel node id). The entry fires when an advancing
    *  write to the source publishes a `delta` such that
    *  `intersects(delta, interest)`. When the producer doesn't pass an explicit
    *  delta to `ctx.write`, `writeAndDispatch` defaults `delta = key` — every
-   *  key extends `NodeSet` and self-describes the change. */
+   *  key extends `NodeSet` and self-describes the change.
+   *
+   *  Both analysis subscriptions (`subscribe`) and transform-dirty
+   *  subscriptions (`onTransformFactDirty`) flow through this map; the
+   *  difference is what the `fire` callback does (enqueue analysis vs
+   *  add to a transform's dirty set). */
   private readonly nodeSetSubs = new Map<
     Analysis<any, any>,
     Array<{
@@ -391,16 +390,25 @@ export class Worklist {
     rule.bind?.(this);
   }
 
-  /** Mirror of `onFactDirty` for transforms. */
+  /** Transform-side fact-dirty: when `from` advances, add the projected
+   *  units to `rule`'s dirty set. Routes through `nodeSetSubs` with
+   *  ANY_NODESET interest (transforms today don't declare narrower interest;
+   *  the hook is here when they want to). */
   onTransformFactDirty<K extends NodeSet>(
     rule: TransformRule,
     from: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Function>,
   ): void {
     const dirty = this.dirtyFor(rule);
-    Worklist.addSub(this.factSubs, from as Analysis<any, any>, (ctx, key) => {
+    const fire = (ctx: AnalysisCtx, key: unknown): void => {
       for (const u of dirtied(ctx, key as K)) dirty.add(u);
-    });
+    };
+    let list = this.nodeSetSubs.get(from as Analysis<any, any>);
+    if (list === undefined) {
+      list = [];
+      this.nodeSetSubs.set(from as Analysis<any, any>, list);
+    }
+    list.push({ interest: ANY_NODESET, fire });
   }
 
   /** Register a counter. Idempotent. */
@@ -584,10 +592,6 @@ export class Worklist {
       for (const r of readers) this.enqueue(r.analysis, r.key, context);
     }
     const ctx = this.ctxFor(context);
-    const subs = this.factSubs.get(source);
-    if (subs !== undefined) {
-      for (const sub of subs) sub(ctx, key);
-    }
     const nodeSubs = this.nodeSetSubs.get(source);
     if (nodeSubs !== undefined) {
       for (const sub of nodeSubs) {
