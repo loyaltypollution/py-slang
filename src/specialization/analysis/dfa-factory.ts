@@ -319,15 +319,18 @@ export function makeBlockFixpointAnalysis<L>(
   const downstreamBlocks = (b: BasicBlock): Iterable<BasicBlock> =>
     edgeIter.reset(isForward ? b.successorEdges : b.predecessorEdges);
   envAnalysis.bind = (wl) => {
-    wl.onMint(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
-    wl.onRebuildDirty(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
-    wl.onRebuildEvict((unit) => evictStaleBlockCells(envAnalysis.store, unit));
-    // Spec-context revision invalidates the block fixpoint under the old
-    // context; re-seed the entry/exit block so the new context's fixpoint
-    // starts from the seed env rather than stale successor envs. Intrinsic
-    // to context-sensitive block-DFA; every makeBlockFixpointAnalysis caller
-    // needs it, so the factory owns it.
-    wl.onSpecRev(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
+    // One extent-change subscriber covers both mint (prev empty) and rebuild
+    // (prev non-empty): re-seed the unit, and on rebuild also evict cells
+    // whose blocks no longer belong to the rewired CFG.
+    wl.onExtentChange(envAnalysis, (_loc, unit) => [seedKey(unit)]);
+    wl.onExtentChangeRaw((unit, prev) => {
+      if ((prev.size ?? 0) > 0) evictStaleBlockCells(envAnalysis.store, unit);
+    });
+    // Chain change invalidates the block fixpoint under the old chain;
+    // re-seed the entry/exit block so the new chain's fixpoint starts from
+    // the seed env rather than stale successor envs. Intrinsic to context-
+    // sensitive block-DFA; every makeBlockFixpointAnalysis caller needs it.
+    wl.onChainChange(envAnalysis, (_loc, unit) => [seedKey(unit)]);
     // Self-wake: block OUT env change → CFG successors recompute IN.
     wl.subscribeOnAdvance(envAnalysis, envAnalysis, (_ctx, key) =>
       downstreamBlocks(key as BasicBlock),
@@ -341,7 +344,9 @@ export function makeBlockFixpointAnalysis<L>(
   let boundLocator: FunctionLocator | undefined;
   factsAnalysis.bind = (wl) => {
     boundLocator = wl.locate;
-    wl.onRebuildEvict((unit) => evictStaleBlockCells(factsAnalysis.store, unit));
+    wl.onExtentChangeRaw((unit, prev) => {
+      if ((prev.size ?? 0) > 0) evictStaleBlockCells(factsAnalysis.store, unit);
+    });
   };
 
   const perExprCache = new WeakMap<FunctionLocator, ReadonlyAnalysisStore<number, L>>();

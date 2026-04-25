@@ -101,36 +101,35 @@ export interface AnalysisCtx {
 /** Narrow capability surface offered to a `TransformRule.bind`. Lets a
  *  transform register dirtying subscriptions and refute hooks without
  *  receiving the full `Worklist` (and the read/write powers that come
- *  with it). `V` is inferred from `rule` so the `dirtied` callback's
- *  iterable type matches the rule's sweep kind. */
+ *  with it). */
 export interface TransformBindCtx {
-  onTransformFactDirty<V extends NodeSet, K extends NodeSet>(
-    rule: TransformRule<V, any>,
+  onTransformFactDirty<K extends NodeSet>(
+    rule: TransformRule,
     from: Analysis<K, any>,
-    dirtied: (locator: FunctionLocator, key: K) => Iterable<V>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
   ): void;
-  onTransformCounterBumped<V extends NodeSet, K>(
-    rule: TransformRule<V, any>,
+  onTransformCounterBumped<K>(
+    rule: TransformRule,
     counter: CounterStore<K>,
-    dirtied: (locator: FunctionLocator, key: K) => Iterable<V>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
   ): void;
   onRefute(cb: (unit: Function, carrier: AssumptionChain) => void): void;
 }
 
 /** Imperative AST sweep gated on analyses. No lattice, no transfer, no store
- *  write. The worklist dirties a rule on view mint/rebuild and on writes to
- *  subscribed analyses; `sweep` runs once per dirty view; views that
- *  rewrote are scheduled for rebuild. Idempotency is the rule's
+ *  write. The worklist dirties a rule on extent change (mint or rebuild) and
+ *  on writes to subscribed analyses; `sweep` runs once per dirty unit; units
+ *  that rewrote are scheduled for rebuild. Idempotency is the rule's
  *  responsibility.
  *
- *  Generic over `V extends NodeSet` (root view kind) and `P` (program-wide
- *  handle). Today's transforms all instantiate
- *  `TransformRule<Function, FunctionLocator>`. Phase 18 monomorphizes. */
-export interface TransformRule<V extends NodeSet = Function, P = FunctionLocator> {
+ *  Monomorphic over `Function` today — `Function` is the only root scheduling
+ *  unit. Adding a second root kind reintroduces generics from two consumers,
+ *  not one. */
+export interface TransformRule {
   /** Returns `true` iff the body at `chain` was mutated — the worklist
-   *  then schedules a rebuild for `view`. Worklist always passes
-   *  `chain = futureDispatchChainFor(view)`. */
-  sweep(view: V, chain: AssumptionChain, program: P): boolean;
+   *  then schedules a rebuild for `unit`. Worklist always passes
+   *  `chain = chainFor(unit)`. */
+  sweep(unit: Function, chain: AssumptionChain, locator: FunctionLocator): boolean;
   bind?(ctx: TransformBindCtx): void;
 }
 

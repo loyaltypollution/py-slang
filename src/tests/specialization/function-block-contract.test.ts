@@ -14,7 +14,7 @@ f(1)
 g(2)
 `;
 
-describe("View contract — invariants pinned across the three questions", () => {
+describe("Function/BasicBlock invariants — ownership, locator agreement, rebuild semantics", () => {
   test("BasicBlock.unit references the owning Function for every block in the function's CFG", () => {
     const { worklist } = setup(SRC);
     const units = Array.from(worklist.functionManager.values());

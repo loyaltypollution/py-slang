@@ -30,7 +30,6 @@ import {
 import { type Function } from "../program/views/function";
 import { FunctionManager } from "../program/views/function-manager";
 import type { FunctionLocator } from "../program/views/function-locator";
-import type { SweepKind } from "./sweep-kind";
 
 /** Resolver supplied per-binding (or the default below): turns the channel's
  *  key into the owning Function so observation ingress can route narrowings
@@ -120,20 +119,12 @@ export class Worklist {
     Map<AssumptionChain, Set<unknown>>
   >();
 
-  /** Registered transforms and their per-rule sweep state. A view enters
-   *  `entry.dirty` on mint, rebuild, or a write to an upstream analysis the
-   *  rule subscribes to; sweep clears it. `entry.kind` drives mint/rebuild
-   *  wiring, sweep-time chain selection, and post-fire rebuild scheduling. */
-  private readonly transforms: TransformRule<any, any>[] = [];
-  private readonly transformsSet = new Set<TransformRule<any, any>>();
-  private readonly transformEntries = new Map<
-    TransformRule<any, any>,
-    { kind: SweepKind<any>; dirty: Set<any> }
-  >();
-  /** Default SweepKind passed to `registerTransform` when callers omit one.
-   *  FunctionManager directly implements SweepKind<Function>, so this is
-   *  just a typed alias for `this.functionManager` — no wrapper. */
-  private readonly functionSweepKind: SweepKind<Function>;
+  /** Registered transforms and their per-rule dirty sets. A unit enters its
+   *  set on extent-change (mint or rebuild) or on a write to an upstream
+   *  analysis the rule subscribes to; sweep clears it. */
+  private readonly transforms: TransformRule[] = [];
+  private readonly transformsSet = new Set<TransformRule>();
+  private readonly transformDirty = new Map<TransformRule, Set<Function>>();
 
   /** Reentrancy guard: set while `sweepTransforms` runs. `publish`/`bump`
    *  throw when true — observation ingress mid-sweep would shift
@@ -229,10 +220,9 @@ export class Worklist {
     this.unitResolverBySource = unitResolverBySource;
     this.bindingsBySource = bindingsBySource;
     // Build the function manager FIRST: registrations below depend on
-    // the initial mint burst it fires when subscribers register via
-    // `onMint`. Manager constructor builds Functions from `ast`.
+    // the initial extent-change burst it fires when subscribers register
+    // via `onExtentChange`. Manager constructor builds Functions from `ast`.
     this.functionManager = new FunctionManager(ast, functionEnvironments);
-    this.functionSweepKind = this.functionManager;
 
     for (const p of analyses) this.register(p);
     for (const c of counters) this.registerCounter(c);
@@ -240,12 +230,10 @@ export class Worklist {
     for (const r of transforms) this.registerTransform(r);
   }
 
-  private entryFor<V extends NodeSet>(
-    rule: TransformRule<V, any>,
-  ): { kind: SweepKind<V>; dirty: Set<V> } {
-    const e = this.transformEntries.get(rule);
-    if (e === undefined) throw new Error(`[Worklist] missed registerTransform`);
-    return e;
+  private dirtyFor(rule: TransformRule): Set<Function> {
+    const d = this.transformDirty.get(rule);
+    if (d === undefined) throw new Error(`[Worklist] missed registerTransform`);
+    return d;
   }
 
   /** `c` is refuted iff any generator is an algebraic subset. */
@@ -324,41 +312,36 @@ export class Worklist {
     });
   }
 
-  /** Subscribe `reader` to mint of any unit. Fires against existing units
-   *  at registration so late subscribers see the initial burst. */
-  onMint<K extends NodeSet>(
+  /** Subscribe `reader` to extent changes on any unit. One delta primitive
+   *  covers mint (`prev` empty), rebuild (both non-empty), and retire
+   *  (`next` empty). Fires for every existing unit at registration with
+   *  `prev = EMPTY_NODESET` so late subscribers replay the mint burst.
+   *  Eviction listeners gate on `prev.size > 0` and read `prev` to find
+   *  stale ids. */
+  onExtentChange<K extends NodeSet>(
     reader: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
-    this.functionManager.onMint(unit => {
+    this.functionManager.onExtentChange((unit, _prev, _next) => {
       for (const k of dirtied(this.functionManager, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
-  /** Subscribe `reader` to rebuild of any unit. Often paired with
-   *  `onRebuildEvict` to drop stale block-keyed cells. */
-  onRebuildDirty<K extends NodeSet>(
+  /** Raw extent-change subscriber — primarily for evict-on-rebuild side
+   *  effects. The callback receives `(unit, prev, next)` where `prev` is
+   *  empty on mint and non-empty on rebuild. */
+  onExtentChangeRaw(cb: (unit: Function, prev: NodeSet, next: NodeSet) => void): void {
+    this.functionManager.onExtentChange(cb);
+  }
+
+  /** Subscribe `reader` to chain changes on any unit's preferred future-
+   *  dispatch chain. Fires when observation-driven extension mutates
+   *  `futureDispatchContext`. */
+  onChainChange<K extends NodeSet>(
     reader: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
-    this.functionManager.onRebuild(unit => {
-      for (const k of dirtied(this.functionManager, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
-    });
-  }
-
-  /** Subscribe an evict callback to rebuild. Drops block-keyed cells whose
-   *  `BasicBlock` identities belong to the pre-rebuild CFG. */
-  onRebuildEvict(evict: (unit: Function) => void): void {
-    this.functionManager.onRebuild(evict);
-  }
-
-  /** Subscribe `reader` to spec-context bumps on any unit. Fires when
-   *  observation-driven extension mutates `futureDispatchContext`. */
-  onSpecRev<K extends NodeSet>(
-    reader: Analysis<K, any>,
-    dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
-  ): void {
-    this.functionManager.dispatch.onSpecRev(unit => {
+    this.functionManager.dispatch.onChainChange((unit, _prev, _next) => {
       for (const k of dirtied(this.functionManager, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
@@ -371,37 +354,27 @@ export class Worklist {
     analysis.bind?.(this);
   }
 
-  /** Register a transform rule under a sweep kind. Idempotent. Auto-installs
-   *  mint/rebuild dirtying through `kind`, then lets the rule subscribe via
-   *  `bind`. Function-rooted transforms may omit `kind`. */
-  registerTransform(rule: TransformRule<Function, any>): void;
-  registerTransform<V extends NodeSet>(rule: TransformRule<V, any>, kind: SweepKind<V>): void;
-  registerTransform<V extends NodeSet>(
-    rule: TransformRule<V, any>,
-    kind: SweepKind<V> = this.functionSweepKind as unknown as SweepKind<V>,
-  ): void {
+  /** Register a transform rule. Idempotent. Auto-installs extent-change
+   *  dirtying so each unit enters the rule's dirty set on mint and rebuild,
+   *  then lets the rule subscribe via `bind`. */
+  registerTransform(rule: TransformRule): void {
     if (this.transformsSet.has(rule)) return;
     this.transformsSet.add(rule);
     this.transforms.push(rule);
-    const dirty = new Set<V>();
-    this.transformEntries.set(rule, { kind, dirty });
-
-    const addUnit = (view: V): void => { dirty.add(view); };
-    kind.onMint(addUnit);
-    kind.onRebuild(addUnit);
+    const dirty = new Set<Function>();
+    this.transformDirty.set(rule, dirty);
+    this.functionManager.onExtentChange((unit, _prev, _next) => { dirty.add(unit); });
     rule.bind?.(this);
   }
 
   /** Transform-side fact-dirty: when `from` advances, add the projected
-   *  views to `rule`'s dirty set. This is a cell-identity dependency: most
-   *  transforms decide their own affected views from the source key rather
-   *  than from the producer's node delta. `V` is inferred from `rule`. */
-  onTransformFactDirty<V extends NodeSet, K extends NodeSet>(
-    rule: TransformRule<V, any>,
+   *  units to `rule`'s dirty set. Cell-identity dependency. */
+  onTransformFactDirty<K extends NodeSet>(
+    rule: TransformRule,
     from: Analysis<K, any>,
-    dirtied: (locator: FunctionLocator, key: K) => Iterable<V>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
   ): void {
-    const { dirty } = this.entryFor(rule);
+    const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.advanceSubs, from as Analysis<any, any>, (_ctx, key) => {
       for (const v of dirtied(this.functionManager, key as K)) dirty.add(v);
     });
@@ -430,13 +403,13 @@ export class Worklist {
     this.processAnalysesToFixpoint();
   }
 
-  /** Subscribe a transform to counter bumps. `V` is inferred from `rule`. */
-  onTransformCounterBumped<V extends NodeSet, K>(
-    rule: TransformRule<V, any>,
+  /** Subscribe a transform to counter bumps. */
+  onTransformCounterBumped<K>(
+    rule: TransformRule,
     counter: CounterStore<K>,
-    dirtied: (locator: FunctionLocator, key: K) => Iterable<V>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
   ): void {
-    const { dirty } = this.entryFor(rule);
+    const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (_ctx, key) => {
       for (const v of dirtied(this.functionManager, key as K)) dirty.add(v);
     });
@@ -580,24 +553,23 @@ export class Worklist {
     return true;
   }
 
-  /** Sweep every registered transform over its dirty views once. Views that
-   *  rewrote are scheduled for rebuild via the rule's `SweepKind`; structural
-   *  rebuild itself is NOT flushed here. Public so online participants can
-   *  run transforms before emitting bytecode. Returns true iff any rule
-   *  fired. */
+  /** Sweep every registered transform over its dirty units once. Units that
+   *  rewrote are scheduled for rebuild; structural rebuild itself is NOT
+   *  flushed here. Public so online participants can run transforms before
+   *  emitting bytecode. Returns true iff any rule fired. */
   sweepTransforms(): boolean {
     let anyFired = false;
     this.inTransformSweep = true;
     try {
       for (const r of this.transforms) {
-        const { kind, dirty } = this.entryFor(r);
+        const dirty = this.dirtyFor(r);
         if (dirty.size === 0) continue;
-        for (const view of dirty) {
-          const chain = kind.chainFor(view);
+        for (const unit of dirty) {
+          const chain = this.functionManager.chainFor(unit);
           if (this.isRefuted(chain)) continue;
-          const fired = r.sweep(view, chain, this.functionManager);
+          const fired = r.sweep(unit, chain, this.functionManager);
           if (fired) {
-            kind.scheduleRebuild(view);
+            this.functionManager.scheduleRebuild(unit);
             anyFired = true;
           }
         }
@@ -698,6 +670,8 @@ export class Worklist {
 
     const parentCtx = context;
 
+    const priorChain = this.functionManager.dispatch.futureDispatchChainFor(unit);
+
     if (source.isUnknown(observed)) {
       let pruned = parentCtx;
       for (const b of applicable) {
@@ -713,7 +687,7 @@ export class Worklist {
       if (pruned === ROOT_CONTEXT) this.functionManager.dispatch.clearFutureDispatchContext(unit);
       else this.functionManager.dispatch.setFutureDispatchContext(unit, pruned);
       this.enqueueNarrowingEntry(unit, pruned);
-      this.functionManager.dispatch.fireSpecRev(unit);
+      this.functionManager.dispatch.fireChainChange(unit, priorChain, pruned);
       return pruned;
     }
 
@@ -740,7 +714,7 @@ export class Worklist {
     }
     this.functionManager.dispatch.setFutureDispatchContext(unit, newCtx);
     this.enqueueNarrowingEntry(unit, newCtx);
-    this.functionManager.dispatch.fireSpecRev(unit);
+    this.functionManager.dispatch.fireChainChange(unit, priorChain, newCtx);
     return newCtx;
   }
 

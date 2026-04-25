@@ -4,8 +4,7 @@
 import { StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
 import { isRoot, ROOT_CONTEXT, type AssumptionChain } from "../../assumption";
-import type { SweepKind } from "../../framework/sweep-kind";
-import type { NodeId } from "../node-set";
+import { EMPTY_NODESET, nodeSetOfIds, type NodeId, type NodeSet } from "../node-set";
 import {
   buildFunctions,
   buildOneFunction,
@@ -17,13 +16,14 @@ import type { FunctionLocator } from "./function-locator";
 import type { BasicBlock } from "./basic-block";
 import { FunctionDispatchState } from "./function-dispatch";
 
-export class FunctionManager implements FunctionLocator, SweepKind<Function> {
+export type ExtentListener = (unit: Function, prev: NodeSet, next: NodeSet) => void;
+
+export class FunctionManager implements FunctionLocator {
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
   private readonly functionByNode = new Map<NodeId, Function>();
   private readonly pendingRebuilds = new Set<Function>();
 
-  private readonly mintSubs: Array<(unit: Function) => void> = [];
-  private readonly rebuildSubs: Array<(unit: Function) => void> = [];
+  private readonly extentSubs: ExtentListener[] = [];
 
   readonly dispatch = new FunctionDispatchState();
 
@@ -56,14 +56,18 @@ export class FunctionManager implements FunctionLocator, SweepKind<Function> {
     return this.functionByNode.get(nodeId)?.blockOfNode(nodeId);
   }
 
-  /** Fires immediately against every existing unit so late subscribers
-   *  pick up the initial burst. */
-  onMint(cb: (unit: Function) => void): void {
-    this.mintSubs.push(cb);
-    for (const unit of this.functionsByFunctionId.values()) cb(unit);
+  /** Sole lifecycle primitive. Fires for every existing unit at subscribe
+   *  time with `prev = EMPTY_NODESET` so late subscribers replay the mint
+   *  burst. Subsequent fires:
+   *    - addFunction:  (unit, EMPTY_NODESET, snapshot)
+   *    - flushPendingRebuilds: (unit, prevSnapshot, nextSnapshot)
+   *  Eviction listeners gate on `prev.size > 0`. */
+  onExtentChange(cb: ExtentListener): void {
+    this.extentSubs.push(cb);
+    for (const unit of this.functionsByFunctionId.values()) {
+      cb(unit, EMPTY_NODESET, this.snapshotExtent(unit));
+    }
   }
-
-  onRebuild(cb: (unit: Function) => void): void { this.rebuildSubs.push(cb); }
 
   /** ROOT-only — function identity has no chain dimension. */
   addFunction(node: StmtNS.FunctionDef, chain: AssumptionChain): Function {
@@ -74,7 +78,8 @@ export class FunctionManager implements FunctionLocator, SweepKind<Function> {
     }
     const unit = buildOneFunction(node, this.functionEnvironments);
     this.registerUnit(unit);
-    for (const sub of this.mintSubs) sub(unit);
+    const next = this.snapshotExtent(unit);
+    for (const sub of this.extentSubs) sub(unit, EMPTY_NODESET, next);
     return unit;
   }
 
@@ -92,23 +97,28 @@ export class FunctionManager implements FunctionLocator, SweepKind<Function> {
 
   flushPendingRebuilds(): Function[] {
     if (this.pendingRebuilds.size === 0) return [];
-    const rebuilt: Function[] = [];
+    const rebuilt: { unit: Function; prev: NodeSet; next: NodeSet }[] = [];
     for (const unit of this.pendingRebuilds) {
+      const prev = this.snapshotExtent(unit);
       for (const id of unit.nodeToBlock.keys()) this.functionByNode.delete(id);
       wireCFG(unit);
       this.indexUnitNodes(unit);
-      rebuilt.push(unit);
+      rebuilt.push({ unit, prev, next: this.snapshotExtent(unit) });
     }
     this.pendingRebuilds.clear();
-    for (const unit of rebuilt) {
-      for (const sub of this.rebuildSubs) sub(unit);
+    for (const { unit, prev, next } of rebuilt) {
+      for (const sub of this.extentSubs) sub(unit, prev, next);
     }
-    return rebuilt;
+    return rebuilt.map(r => r.unit);
   }
 
   futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
     const unit = this.functionContainingNode(nodeId);
     return unit === undefined ? ROOT_CONTEXT : this.dispatch.futureDispatchChainFor(unit);
+  }
+
+  private snapshotExtent(unit: Function): NodeSet {
+    return nodeSetOfIds(new Set(unit.nodeToBlock.keys()));
   }
 
   private registerUnit(unit: Function): void {

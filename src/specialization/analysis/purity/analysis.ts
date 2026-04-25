@@ -355,9 +355,8 @@ export const purityFunctionAnalysis: Analysis<Function, boolean | undefined> = d
     boundLocator = wl.locate;
     const unitOf = (unit: Function): Function[] =>
       unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
-    wl.onMint(purityFunctionAnalysis, (_ctx, unit) => unitOf(unit));
-    wl.onRebuildDirty(purityFunctionAnalysis, (_ctx, unit) => unitOf(unit));
-    wl.onSpecRev(purityFunctionAnalysis, (_ctx, unit) => unitOf(unit));
+    wl.onExtentChange(purityFunctionAnalysis, (_loc, unit) => unitOf(unit));
+    wl.onChainChange(purityFunctionAnalysis, (_loc, unit) => unitOf(unit));
     // Delta-routed wake on per-block purity facts. Interest is the IMPURE
     // sentinel only — the verdict is a join over reachable blocks of
     // "did any block emit IMPURE_SENTINEL?", so a block-fact advance that

@@ -512,9 +512,128 @@ Adding a new root view kind today means:
 3. Register transforms with `registerTransform(rule, mySweepKind)`.
 4. No worklist surgery.
 
+## Phase 14 — done (delete `View` marker)
 
+`interface View extends NodeSet {}` was empty — pure nominal bookkeeping. Its
+stated purpose ("exclude EMPTY/ANY/singleton from transforms") is enforced at
+the registration surface, not by the type. Deleted `view.ts`. `Function` and
+`BasicBlock` now `extends NodeSet` directly.
 
+`SweepKind<V extends View>` and `TransformRule<V extends View, P>` constraints
+relaxed to `V extends NodeSet` as a one-commit transitional step (both were
+removed entirely in Phase 15-18).
 
+814/814 specialization tests green. tsc clean (modulo the 2 pre-existing parser
+errors). One commit.
 
+## Phases 15-18 — done (merged: collapse on*, delete SweepKind, monomorphize TransformRule)
 
+Merged because the four phases are tightly coupled — the on* primitives feed
+into SweepKind which feeds into TransformRule generics. Splitting them
+introduces transitional wrapper types the user explicitly told us to avoid.
 
+### Phase 15: collapse extent stream
+
+`FunctionManager`:
+- `mintSubs` + `rebuildSubs` → one `extentSubs:
+  Array<(unit, prev: NodeSet, next: NodeSet) => void>`.
+- `onMint(cb)` + `onRebuild(cb)` → `onExtentChange(cb)`. Subscribe-time replay
+  fires `(unit, EMPTY_NODESET, snapshot)` for every existing unit so late
+  subscribers still pick up the burst.
+- `addFunction` fires `(unit, EMPTY_NODESET, snapshot)`.
+- `flushPendingRebuilds` snapshots `prev` ids before `wireCFG`, fires
+  `(unit, prev, next)` after.
+
+Snapshots use `nodeSetOfIds(new Set(unit.nodeToBlock.keys()))` — concrete
+NodeSet over the unit's CFG-owned ids at a moment in time.
+
+### Phase 16: collapse chain stream
+
+`FunctionDispatchState`:
+- `specRevSubs` → `chainSubs`.
+- `onSpecRev` → `onChainChange((unit, prev, next) => void)`.
+- `fireSpecRev(unit)` → `fireChainChange(unit, prev, next)`.
+
+Worklist call sites at the two narrowing-driven fire points capture
+`priorChain = futureDispatchChainFor(unit)` before any set/clear, then pass
+`(unit, priorChain, newCtx)` to `fireChainChange`. The implicit clearing in
+`fireRefuteAndReconcile` (when a unit's preferred chain is itself refuted)
+deliberately stays silent — the outer ingress path reconciles and fires the
+explicit chain delta.
+
+`onRefute(unit, carrier)` stays as-is — semantically distinct from a chain
+delta over a unit's preferred chain (the carrier identity matters to
+consumers like memoization).
+
+### Phase 17: rewire Worklist + analyses
+
+Worklist: `onMint` / `onRebuildDirty` / `onRebuildEvict` / `onSpecRev` →
+`onExtentChange` (analysis-keyed) + `onExtentChangeRaw` (side-effect
+listener with `(unit, prev, next)` shape) + `onChainChange`.
+
+`dfa-factory.ts`:
+- envAnalysis: one `onExtentChange` for re-seeding + one `onExtentChangeRaw`
+  for eviction gated on `prev.size > 0`. Plus `onChainChange` for chain re-seed.
+- factsAnalysis: one `onExtentChangeRaw` for eviction.
+
+`purity/analysis.ts`: three on-events collapsed to one `onExtentChange` +
+one `onChainChange`.
+
+### Phase 18: delete SweepKind, monomorphize TransformRule
+
+- Deleted `src/specialization/framework/sweep-kind.ts`.
+- `FunctionManager` no longer `implements SweepKind<Function>`. `chainFor` and
+  `scheduleRebuild` stay as plain methods (already named that way).
+- Worklist: `transformEntries: Map<rule, { kind, dirty }>` →
+  `transformDirty: Map<rule, Set<Function>>` (back to pre-Phase-11 shape).
+  `registerTransform` is single-arg again. `sweepTransforms` calls
+  `functionManager.chainFor` / `scheduleRebuild` directly.
+- `TransformRule<V, P>` → `TransformRule`. `sweep(unit: Function, chain,
+  locator: FunctionLocator) => boolean`.
+- `TransformBindCtx<V>` → `TransformBindCtx`. The on-events it exposes are
+  Function-shaped.
+
+The polymorphism story is now: when a second root scheduling unit appears,
+introduce generics from two consumers, not one. Today there is one root
+(`Function`); the framework reflects that.
+
+## Phase 19 — done (test cleanup)
+
+- Deleted `src/tests/specialization/sweep-kind-polymorphism.test.ts` — pinned a
+  generality the architecture no longer claims.
+- Renamed `view-contract.test.ts` → `function-block-contract.test.ts`. The
+  `describe` label now reads "Function/BasicBlock invariants — ownership,
+  locator agreement, rebuild semantics". The four invariants themselves are
+  unchanged: BasicBlock.unit ownership, locator agreement, rebuild replaces
+  blocks wholesale, makeDfaQuery routes speculative reads explicitly.
+
+814/814 specialization tests green. Out-of-scope: `src/tests/svml-stable-indices.test.ts`
+fails to type-check against `engine.functions` (a property that has not
+existed since Phase 3). Pre-existing rot from a stale call site, not caused
+by this work; fixing that test is its own task.
+
+## Cumulative state after this run
+
+`program/views/`:
+- function.ts (Function + buildOneFunction + wireCFG + extends NodeSet)
+- function-manager.ts (registry + FunctionLocator + extent stream + chainFor
+  + scheduleRebuild + composed FunctionDispatchState)
+- function-locator.ts (read-only narrow interface)
+- function-dispatch.ts (chain stream + refute + futureDispatchContext)
+- basic-block.ts (BasicBlock + buildCFG + extends NodeSet)
+
+`framework/`:
+- worklist.ts (driver, two-stream subscription primitives, monomorphic
+  TransformRule sweep)
+- analysis.ts (Analysis, AnalysisCtx, EntrySeed, Narrowing, TransformRule,
+  TransformBindCtx)
+- analysis-store.ts
+- variant-body-clone.ts
+
+Deleted in this run: view.ts, sweep-kind.ts, sweep-kind-polymorphism.test.ts.
+Renamed: view-contract.test.ts → function-block-contract.test.ts.
+
+The lifecycle-event vocabulary collapsed from five named events
+(`onMint`/`onRebuildDirty`/`onRebuildEvict`/`onSpecRev`/`onRefute`) to two
+delta primitives plus one orthogonal event (extent stream + chain stream +
+refute).
