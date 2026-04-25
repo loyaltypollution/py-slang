@@ -1,14 +1,18 @@
-// Owns Function lifecycle, indexing, locator surface, and per-function
-// dispatch context. The generic `ViewManager<V>` interface captures the
-// kind-agnostic shell (mint/rebuild lifecycle + iteration); kind-specific
-// concerns — building from AST, node-to-function indexing, FunctionLocator
-// lookups, future-dispatch policy — live here.
+// Owns Function lifecycle (build/index/rebuild) and the FunctionLocator
+// read surface. The generic `ViewManager<V>` interface captures the
+// kind-agnostic shell (mint/rebuild + iteration); kind-specific lookups
+// (`functionById`, `blockContaining`, ...) live on the locator.
+//
+// Per-Function speculation policy (futureDispatchContext, refute/spec-rev
+// fan-out) is split out into a composed `FunctionDispatchState` —
+// orthogonal to "what nodes does this function own", and conflating them
+// was the reason `dfa-query` had to duck-type future-dispatch off a
+// registry interface.
 
 import { StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
-import { ROOT_CONTEXT, isRoot, type AssumptionChain } from "../../assumption";
+import { isRoot, ROOT_CONTEXT, type AssumptionChain } from "../../assumption";
 import type { NodeId } from "../node-set";
-import type { Refutations } from "../../assumption/refutation";
 import {
   buildFunctions,
   buildOneFunction,
@@ -19,20 +23,20 @@ import {
 import type { FunctionLocator } from "./function-locator";
 import type { BasicBlock } from "./basic-block";
 import type { ViewManager } from "./view-manager";
+import { FunctionDispatchState } from "./function-dispatch";
 
 export class FunctionManager implements ViewManager<Function>, FunctionLocator {
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
   private readonly functionByNode = new Map<NodeId, Function>();
   private readonly nodesByFunction = new Map<Function, Set<NodeId>>();
   private readonly pendingRebuilds = new Set<Function>();
-  /** Per-unit preferred chain for future compiles/dispatches. Unset or
-   *  `ROOT_CONTEXT` means future dispatch is unspecialized. */
-  private readonly futureDispatchContextByUnit = new Map<Function, AssumptionChain>();
 
   private readonly mintSubs: Array<(unit: Function) => void> = [];
   private readonly rebuildSubs: Array<(unit: Function) => void> = [];
-  private readonly specRevSubs: Array<(unit: Function) => void> = [];
-  private readonly refuteSubs: Array<(unit: Function, carrier: AssumptionChain) => void> = [];
+
+  /** Speculation-policy state. Public so consumers (Worklist, transforms)
+   *  reach speculation concerns through a name that says what it is. */
+  readonly dispatch = new FunctionDispatchState();
 
   constructor(
     ast: StmtNS.FileInput,
@@ -74,10 +78,6 @@ export class FunctionManager implements ViewManager<Function>, FunctionLocator {
   }
 
   onRebuild(cb: (unit: Function) => void): void { this.rebuildSubs.push(cb); }
-  onSpecRev(cb: (unit: Function) => void): void { this.specRevSubs.push(cb); }
-  onRefute(cb: (unit: Function, carrier: AssumptionChain) => void): void {
-    this.refuteSubs.push(cb);
-  }
 
   // ── Unit lifecycle ──────────────────────────────────────────────────
   /** Register a structurally-introduced FunctionDef. ROOT-only — function
@@ -118,40 +118,12 @@ export class FunctionManager implements ViewManager<Function>, FunctionLocator {
     return rebuilt;
   }
 
-  // ── Per-unit speculation context ────────────────────────────────────
-  futureDispatchChainFor(unit: Function): AssumptionChain {
-    return this.futureDispatchContextByUnit.get(unit) ?? ROOT_CONTEXT;
-  }
-
+  /** Bridge between the locator (node→function map) and the dispatch
+   *  state (function→chain map). Lives on the manager because it joins
+   *  two surfaces that the manager already owns and exposes. */
   futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
     const unit = this.functionContainingNode(nodeId);
-    return unit === undefined ? ROOT_CONTEXT : this.futureDispatchChainFor(unit);
-  }
-
-  setFutureDispatchContext(unit: Function, chain: AssumptionChain): void {
-    this.futureDispatchContextByUnit.set(unit, chain);
-  }
-
-  clearFutureDispatchContext(unit: Function): void {
-    this.futureDispatchContextByUnit.delete(unit);
-  }
-
-  fireSpecRev(unit: Function): void {
-    for (const sub of this.specRevSubs) sub(unit);
-  }
-
-  /** Refute `carrier` for `unit`: fire refute subscribers and drop the unit's
-   *  futureDispatchContext entry if it's now refuted. */
-  refuteSubscribersAndReconcileDispatch(
-    unit: Function,
-    carrier: AssumptionChain,
-    refutations: Refutations,
-  ): void {
-    for (const sub of this.refuteSubs) sub(unit, carrier);
-    const fdCtx = this.futureDispatchContextByUnit.get(unit);
-    if (fdCtx !== undefined && refutations.contains(fdCtx)) {
-      this.futureDispatchContextByUnit.delete(unit);
-    }
+    return unit === undefined ? ROOT_CONTEXT : this.dispatch.futureDispatchChainFor(unit);
   }
 
   // ── Internal indexing ───────────────────────────────────────────────

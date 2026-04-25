@@ -187,7 +187,49 @@ Smells noticed:
   `FooLocator` + `FooManager` per kind. Worth revisiting if a second view
   kind ever lands — the locator may want to be inlined into the manager.
 
-## Phase 5 — pending
+## Phase 5 — done
+
+Speculation-policy state extracted into a composed `FunctionDispatchState`
+class living in `program/views/function-dispatch.ts`. The split is the
+honest one: a Function's "what nodes do I own / what's my CFG" is
+orthogonal to "what chain do I want to dispatch under next". Conflating
+them was the structural reason `dfa-query.ts` had to duck-type
+"future dispatch" off the registry interface (already cleaned up in
+Phase 3, now firmed up here).
+
+Moved out of FunctionManager:
+- `futureDispatchContextByUnit` Map
+- `futureDispatchChainFor`, `setFutureDispatchContext`, `clearFutureDispatchContext`
+- `onSpecRev`, `fireSpecRev`
+- `onRefute`, `refuteSubscribersAndReconcileDispatch` (latter renamed to
+  `fireRefuteAndReconcile` — the new name says what it does, not which
+  subscribers it touches)
+
+What stayed on FunctionManager:
+- `futureDispatchChainForNode(nodeId)` — bridges the locator
+  (`functionContainingNode`) and dispatch (`futureDispatchChainFor`).
+  Lives on the manager because that's the one type that already owns
+  both surfaces; the alternative is a free function that takes both.
+
+Worklist call sites now read `this.functionManager.dispatch.foo()` for
+all speculation operations. The extra hop is the point — it makes the
+layer visible at the call site.
+
+Acceptance:
+- speculation policy no longer conflated with registry/lifecycle code ✓
+- dfa-query future-dispatch access is explicit (Phase 3 work) ✓
+
+Smells noticed:
+- `Worklist` still exposes `futureDispatchChainFor` and
+  `futureDispatchChainForNode` as direct methods (line 718-724),
+  forwarding to `functionManager.dispatch.*`. These are convenience
+  forwarders — internal callers in worklist.ts now go direct, but
+  external callers (tests, jit-dispatch) still use them. Could be
+  removed in Phase 6 alongside the broader transform-capability
+  cleanup, or left as a stable Worklist surface. Judgment call.
+
+## Phase 6 — pending
+
 
 
 

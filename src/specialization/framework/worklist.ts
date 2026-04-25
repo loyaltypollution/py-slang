@@ -233,7 +233,7 @@ export class Worklist {
 
   /** Subscribe to refutation events. Delegates to the function manager. */
   onRefute(callback: (unit: Function, carrier: AssumptionChain) => void): void {
-    this.functionManager.onRefute(callback);
+    this.functionManager.dispatch.onRefute(callback);
   }
 
   /** Refute `carrier` for `unit`: add the minimal singleton of the carrier's
@@ -245,7 +245,7 @@ export class Worklist {
     const a = carrier.assumption!;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
     this.refutations.add(minimal);
-    this.functionManager.refuteSubscribersAndReconcileDispatch(unit, carrier, this.refutations);
+    this.functionManager.dispatch.fireRefuteAndReconcile(unit, carrier, this.refutations);
   }
 
   private static addSub<S>(
@@ -336,7 +336,7 @@ export class Worklist {
     reader: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
-    this.functionManager.onSpecRev(unit => {
+    this.functionManager.dispatch.onSpecRev(unit => {
       for (const k of dirtied(this.functionManager, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
@@ -677,13 +677,13 @@ export class Worklist {
       }
       if (pruned === parentCtx) return parentCtx;
       if (this.refutations.contains(pruned)) {
-        this.functionManager.clearFutureDispatchContext(unit);
+        this.functionManager.dispatch.clearFutureDispatchContext(unit);
         return ROOT_CONTEXT;
       }
-      if (pruned === ROOT_CONTEXT) this.functionManager.clearFutureDispatchContext(unit);
-      else this.functionManager.setFutureDispatchContext(unit, pruned);
+      if (pruned === ROOT_CONTEXT) this.functionManager.dispatch.clearFutureDispatchContext(unit);
+      else this.functionManager.dispatch.setFutureDispatchContext(unit, pruned);
       this.enqueueNarrowingEntry(unit, pruned);
-      this.functionManager.fireSpecRev(unit);
+      this.functionManager.dispatch.fireSpecRev(unit);
       return pruned;
     }
 
@@ -705,18 +705,18 @@ export class Worklist {
 
     if (newCtx === parentCtx) return parentCtx;
     if (this.refutations.contains(newCtx)) {
-      this.functionManager.clearFutureDispatchContext(unit);
+      this.functionManager.dispatch.clearFutureDispatchContext(unit);
       return ROOT_CONTEXT;
     }
-    this.functionManager.setFutureDispatchContext(unit, newCtx);
+    this.functionManager.dispatch.setFutureDispatchContext(unit, newCtx);
     this.enqueueNarrowingEntry(unit, newCtx);
-    this.functionManager.fireSpecRev(unit);
+    this.functionManager.dispatch.fireSpecRev(unit);
     return newCtx;
   }
 
   /** Preferred future-dispatch chain for `unit`. Delegates to manager. */
   futureDispatchChainFor(unit: Function): AssumptionChain {
-    return this.functionManager.futureDispatchChainFor(unit);
+    return this.functionManager.dispatch.futureDispatchChainFor(unit);
   }
 
   /** Same as `futureDispatchChainFor`, keyed by nodeId. */
