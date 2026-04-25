@@ -90,11 +90,11 @@ export const EMPTY_NODESET: NodeSet = {
   iterate: () => [],
 };
 
-/** Universal `NodeSet` — `contains` is true for every id. Used as a
- *  subscriber `interest` to mean "fire on every advance, regardless of
- *  delta." Pairs only with enumerable `delta`s; `intersects(ANY, delta)`
- *  is true iff `delta` is non-empty (or undefined, which the dispatcher
- *  defaults to `key`). */
+/** Universal predicate `NodeSet` — `contains` is true for every id. This is
+ *  not a cell-identity subscription; use `Worklist.subscribeOnAdvance` when a
+ *  listener must fire on every advancing write regardless of node delta. Pairs
+ *  only with enumerable sets; `intersects(ANY, delta)` is true iff `delta` is
+ *  non-empty. */
 export const ANY_NODESET: NodeSet = {
   contains: () => true,
   size: Infinity,

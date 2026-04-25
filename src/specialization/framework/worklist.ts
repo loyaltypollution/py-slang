@@ -20,7 +20,7 @@ import type { CounterStore } from "../observation/counter-store";
 import type { ObservationBinding } from "../observation/observation-binding";
 import type { ObservationChannel } from "../observation/observation-channel";
 import type { NodeId, NodeSet } from "./analysis";
-import { ANY_NODESET, intersects } from "../program/node-set";
+import { intersects } from "../program/node-set";
 import type { FunctionId } from "../program/program-view";
 import {
   type Analysis,
@@ -138,24 +138,26 @@ export class Worklist {
    *  `futureDispatchChainFor(unit)` under the sweep's feet. */
   private inTransformSweep = false;
 
-  /** Delta-routed subscribers. Each entry declares an `interest` as a
-   *  `NodeSet` (typically a view: a block, a function, or an interned
+  /** Node-intersection-routed subscribers. Each entry declares an `interest`
+   *  as a `NodeSet` (typically a view: a block, a function, or an interned
    *  singleton over a sentinel node id). The entry fires when an advancing
    *  write to the source publishes a `delta` such that
    *  `intersects(delta, interest)`. When the producer doesn't pass an explicit
    *  delta to `ctx.write`, `writeAndDispatch` defaults `delta = key` — every
-   *  key extends `NodeSet` and self-describes the change.
-   *
-   *  Both analysis subscriptions (`subscribe`) and transform-dirty
-   *  subscriptions (`onTransformFactDirty`) flow through this map; the
-   *  difference is what the `fire` callback does (enqueue analysis vs
-   *  add to a transform's dirty set). */
+   *  key extends `NodeSet` and self-describes the change. */
   private readonly nodeSetSubs = new Map<
     Analysis<any, any>,
     Array<{
       readonly interest: NodeSet;
       readonly fire: (ctx: AnalysisCtx, key: unknown) => void;
     }>
+  >();
+  /** Cell-identity subscribers. These fire on every advancing write to the
+   *  source cell regardless of node membership; use for CFG self-wake and
+   *  transform dirtying, not for node-local dependencies. */
+  private readonly advanceSubs = new Map<
+    Analysis<any, any>,
+    Array<(ctx: AnalysisCtx, key: unknown) => void>
   >();
   private readonly counterSubs = new Map<
     CounterStore<any>,
@@ -289,11 +291,9 @@ export class Worklist {
     else list.push(fn);
   }
 
-  /** Subscribe `reader` to advancing writes on `from`. The reader fires
-   *  iff `intersects(interest, delta)` where `delta` defaults to the write's
-   *  key. Pass `ANY_NODESET` for whole-key fan-out (every advance);
-   *  pass a view (block/function) or `internSingletonNode(id)` for narrow
-   *  interest.
+  /** Subscribe `reader` to advancing writes on `from` whose published node
+   *  delta intersects `interest`. Pass a view (block/function) or
+   *  `internSingletonNode(id)` as the interest.
    *
    *  `dirtied(ctx, key)` projects the upstream key-change into the reader's
    *  key space.
@@ -324,6 +324,22 @@ export class Worklist {
       this.nodeSetSubs.set(from, list);
     }
     list.push({ interest, fire });
+  }
+
+  /** Subscribe `reader` to every advancing write on `from`, regardless of the
+   *  write's node delta. This models cell-identity dependencies, not node
+   *  membership dependencies. */
+  subscribeOnAdvance<K extends NodeSet>(
+    from: Analysis<any, any>,
+    reader: Analysis<K, any>,
+    dirtied: (ctx: AnalysisCtx, key: unknown) => Iterable<K>,
+    opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
+  ): void {
+    const project = opts?.enqueueAt;
+    Worklist.addSub(this.advanceSubs, from, (ctx, key) => {
+      const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
+      for (const k of dirtied(ctx, key)) this.enqueue(reader, k, enqueueCtx);
+    });
   }
 
   /** Subscribe `reader` to mint of any unit. Fires immediately against every
@@ -391,24 +407,18 @@ export class Worklist {
   }
 
   /** Transform-side fact-dirty: when `from` advances, add the projected
-   *  units to `rule`'s dirty set. Routes through `nodeSetSubs` with
-   *  ANY_NODESET interest (transforms today don't declare narrower interest;
-   *  the hook is here when they want to). */
+   *  units to `rule`'s dirty set. This is a cell-identity dependency: most
+   *  transforms decide their own affected units from the source key rather
+   *  than from the producer's node delta. */
   onTransformFactDirty<K extends NodeSet>(
     rule: TransformRule,
     from: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, key: K) => Iterable<Function>,
   ): void {
     const dirty = this.dirtyFor(rule);
-    const fire = (ctx: AnalysisCtx, key: unknown): void => {
+    Worklist.addSub(this.advanceSubs, from as Analysis<any, any>, (ctx, key) => {
       for (const u of dirtied(ctx, key as K)) dirty.add(u);
-    };
-    let list = this.nodeSetSubs.get(from as Analysis<any, any>);
-    if (list === undefined) {
-      list = [];
-      this.nodeSetSubs.set(from as Analysis<any, any>, list);
-    }
-    list.push({ interest: ANY_NODESET, fire });
+    });
   }
 
   /** Register a counter. Idempotent. */
@@ -592,17 +602,14 @@ export class Worklist {
       for (const r of readers) this.enqueue(r.analysis, r.key, context);
     }
     const ctx = this.ctxFor(context);
+    const advanceSubs = this.advanceSubs.get(source);
+    if (advanceSubs !== undefined) {
+      for (const sub of advanceSubs) sub(ctx, key);
+    }
     const nodeSubs = this.nodeSetSubs.get(source);
     if (nodeSubs !== undefined) {
       for (const sub of nodeSubs) {
-        // ANY_NODESET means "fire on every advance, regardless of which
-        // nodes changed" — used for cell-identity dependencies (e.g. CFG
-        // self-wake) where the key is a graph node, not a NodeSet membership
-        // claim. Skip the intersection so empty-nodeIds keys (e.g. an
-        // exit block with no statements) still fire downstream.
-        if (sub.interest === ANY_NODESET || intersects(sub.interest, delta)) {
-          sub.fire(ctx, key);
-        }
+        if (intersects(sub.interest, delta)) sub.fire(ctx, key);
       }
     }
     return true;

@@ -3,7 +3,6 @@ import {
   type Analysis,
 } from "../../specialization/framework/analysis";
 import type { BasicBlock } from "../../specialization/program/cfg";
-import { ANY_NODESET } from "../../specialization/program/node-set";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import {
   buildFirstFunctionUnit,
@@ -63,7 +62,7 @@ describe("makeBlockFixpointAnalysis quadrant coverage", () => {
         return 1;
       },
       bind(wl) {
-        wl.subscribe(analysis.facts, factsReader, ANY_NODESET, (_ctx, key) => [key as BasicBlock]);
+        wl.subscribeOnAdvance(analysis.facts, factsReader, (_ctx, key) => [key as BasicBlock]);
       },
     });
 

@@ -9,7 +9,7 @@
 import { StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
 import { ROOT_CONTEXT, isRoot, type AssumptionChain } from "../../assumption";
-import type { NodeId } from "../../framework/analysis";
+import type { NodeId } from "../node-set";
 import type { FunctionId } from "../program-view";
 import type { Refutations } from "../../assumption/refutation";
 import { buildFunctions, buildOneFunction, wireCFG, type Function } from "../function";

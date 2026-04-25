@@ -9,7 +9,7 @@ import type {
   NodeSet,
 } from "../framework/analysis";
 import { defineAnalysis } from "../framework/analysis";
-import { ANY_NODESET, EMPTY_NODESET, nodeSetOfIds } from "../program/node-set";
+import { EMPTY_NODESET, nodeSetOfIds } from "../program/node-set";
 import type { FunctionView } from "../program/program-view";
 import { asProgramCtx } from "../program/program-ctx";
 import type { ReadonlyAnalysisStore } from "../framework/analysis-store";
@@ -319,7 +319,7 @@ export function makeBlockFixpointAnalysis<L>(
     // needs it, so the factory owns it.
     wl.onSpecRev(envAnalysis, (_ctx, unit) => [seedKey(unit)]);
     // Self-wake: block OUT env change → CFG successors recompute IN.
-    wl.subscribe(envAnalysis as Analysis<any, any>, envAnalysis, ANY_NODESET, (_ctx, key) =>
+    wl.subscribeOnAdvance(envAnalysis, envAnalysis, (_ctx, key) =>
       downstreamBlocks(key as BasicBlock),
     );
   };

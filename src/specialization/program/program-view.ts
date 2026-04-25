@@ -2,11 +2,11 @@ import type { AnalysisCtx } from "../framework/analysis";
 import type { BasicBlock } from "./cfg";
 import type { Function } from "./function";
 import { asProgramCtx } from "./program-ctx";
+import type { NodeId } from "./node-set";
 
-/** AST node id (re-exported here so `program/` doesn't pull from `framework/analysis`). */
-export type NodeId = number;
+export type { NodeId } from "./node-set";
 /** `FunctionDef.id` or `FileInput.id` (alias of NodeId, semantic only). */
-export type FunctionId = number;
+export type FunctionId = NodeId;
 
 /** Read-only program-wide unit index. `Worklist` is the canonical implementer.
  *  This is the public read surface for consumers that need to enumerate

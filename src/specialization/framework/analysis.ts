@@ -110,8 +110,9 @@ export interface AnalysisCtx {
    *  to `value` advanced relative to the prior cell. Producers that can compute
    *  a narrower delta cheaply should pass it; otherwise the dispatcher uses
    *  `key` itself as the delta (every key extends `NodeSet`, and an advance at
-   *  K naturally covers K's nodes). Readers registered via `onFactDirtyNodeSet`
-   *  fire iff `intersects(interest, delta)`. */
+   *  K naturally covers K's nodes). Node-intersection subscribers registered
+   *  via `subscribe` fire iff `intersects(interest, delta)`; cell-identity
+   *  subscribers registered via `subscribeOnAdvance` fire on every advance. */
   write<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K, value: V, delta?: NodeSet): boolean;
   /** Evict at `currentContext`. */
   evict<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): void;
