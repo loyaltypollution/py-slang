@@ -309,6 +309,84 @@ Cross-cutting smell observations to revisit:
   in the sweep path. Worth a closer look as part of a future sweep
   cleanup, not as part of this view-contract pass.
 
+## Phase 7 — done
+
+Walked back the speculative `ViewManager<V>` abstraction. plan.md (the
+post-Phase-6 doc) explicitly rejects "every view kind gets a universal
+manager interface", and ViewManager had exactly one consumer
+(`FunctionManager`) plus a docstring promising future LoopManager /
+RegionManager kinds — textbook speculative genericity.
+
+Changes:
+- Deleted `src/specialization/program/views/view-manager.ts`.
+- `FunctionManager` drops `implements ViewManager<Function>`. The methods
+  it exposed for the interface (`values()`, `onMint`, `onRebuild`) stay
+  as plain methods. When a real second view kind arrives, the right
+  shared shape will be extracted from two consumers, not from one.
+- Header comment on `FunctionManager` now states the three-question
+  contract for `Function` (materialized by manager / looked up via
+  FunctionLocator / rebuilt as the root scheduling unit) and explicitly
+  calls itself the *concrete* owner of the function-rooted world, not
+  a generic template.
+- Header comment on `BasicBlock` states the subordinate version
+  (materialized by `buildCFG` inside the owning function / looked up by
+  direct reference or per-function index / rebuilt wholesale on function
+  rebuild).
+- Header comment on `View` itself now says explicitly that View is the
+  only universal contract and per-kind machinery is answered separately.
+
+No behavior change. tsc clean (modulo the 2 pre-existing parser errors).
+810/810 specialization tests still green.
+
+Smells noticed:
+- The doc tightening on `View` / `BasicBlock` / `FunctionManager` was
+  load-bearing precisely because the previous phase's comments
+  over-promised. Phase 4's "this generic shell exists so a hypothetical
+  LoopManager reuses the lifecycle vocabulary" was speculative
+  architecture preserved as a comment — the kind of thing that becomes
+  a trap the next reader takes as a blessing.
+
+## Phase 8 — done (decision: document in-place, no extraction)
+
+plan.md asked whether the CFG/block apparatus deserves its own per-function
+owner (`FunctionCfg` or similar). Decision: no extraction. `wireCFG` plus
+`cfg`, `blockMap`, and `nodeToBlock` are a 30-line invariant that is
+tighter to read in one place than across two. There is no live consumer
+that benefits from the split — `FunctionManager.flushPendingRebuilds`
+already drives rebuild, and block lookups already go through the owning
+function. Extracting now would be moving things around to satisfy a
+hypothetical future need.
+
+Folded into the Phase 7 commit. The Function header now states the
+in-place CFG ownership decision explicitly so a future reader knows it
+was a deliberate choice, not an accident.
+
+## Phase 9 — done
+
+Added `src/tests/specialization/view-contract.test.ts`. Four invariants
+tied to specific call sites:
+
+1. `BasicBlock.unit` references the owning `Function` for every block
+   in the function's CFG.
+2. `FunctionLocator.blockContaining(n)` agrees with
+   `functionContainingNode(n)?.blockOfNode(n)` for every CFG-owned node.
+3. `FunctionManager.flushPendingRebuilds` replaces block instances
+   wholesale: old block references drop out of `cfg.blocks` and out of
+   the locator index; the function reference itself stays stable.
+4. `makeDfaQuery` routes speculative reads only through the explicit
+   future-dispatch callback — a call-count spy distinguishes static vs.
+   speculative reads, pinning that there is no hidden registry
+   back-channel.
+
+814/814 specialization tests green (810 prior + 4 new).
+
+## Phase 10 — deferred (correctly)
+
+Triggered only when an actual `Loop` view is introduced. Plan.md is
+explicit: don't begin by designing a generic hierarchy; begin by writing
+the three answers (materialized / looked up / rebuilt) for Loop. Nothing
+to do until that work lands.
+
 
 
 
