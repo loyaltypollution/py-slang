@@ -25,7 +25,7 @@ def hot(x):
     const ctx = extend(ROOT_CONTEXT, typeNarrowing, xRead.id, INT_POS);
 
     // Re-run typeAnalysis under the context.
-    worklist.enqueue(typeAnalysis.env, worklist.functions.get(block.unitId)!.cfg.entry, ctx);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctx);
     worklist.drain();
 
     // The non-ROOT cell holds the narrowed fact.
@@ -64,7 +64,7 @@ def hot(x, z):
 
     // Assumption only at xRead.id, not zRead.id.
     const ctx = extend(ROOT_CONTEXT, typeNarrowing, xRead.id, INT_POS);
-    worklist.enqueue(typeAnalysis.env, worklist.functions.get(block.unitId)!.cfg.entry, ctx);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctx);
     worklist.drain();
 
     const xFact = worklist.tryRead(typeAnalysis.facts, block, ctx)?.get(xRead.id);
@@ -93,8 +93,8 @@ def hot(x):
       intRef: 1, // IntRef.Neg
     });
 
-    worklist.enqueue(typeAnalysis.env, worklist.functions.get(block.unitId)!.cfg.entry, ctxIntPos);
-    worklist.enqueue(typeAnalysis.env, worklist.functions.get(block.unitId)!.cfg.entry, ctxNeg);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctxIntPos);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctxNeg);
     worklist.drain();
 
     const posFact = worklist.tryRead(typeAnalysis.facts, block, ctxIntPos)?.get(xRead.id);

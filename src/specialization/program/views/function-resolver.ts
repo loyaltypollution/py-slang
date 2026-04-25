@@ -11,8 +11,7 @@ import type { FunctionId } from "./function-view";
  *  the framework's generic surface just does not promise that capability. */
 export type FunctionResolver<K> = (ctx: AnalysisCtx, key: K) => Function | undefined;
 
-export const functionOfBlock: FunctionResolver<BasicBlock> = (ctx, block) =>
-  asProgramCtx(ctx).functions.get(block.unitId);
+export const functionOfBlock: FunctionResolver<BasicBlock> = (_ctx, block) => block.unit;
 export const functionOfNodeId: FunctionResolver<NodeId> = (ctx, nodeId) =>
   asProgramCtx(ctx).functionOfNode(nodeId);
 export const functionOfFunctionId: FunctionResolver<FunctionId> = (ctx, functionId) =>

@@ -29,5 +29,35 @@ Smells noticed (not yet acted on):
   shape; every helper is a one-line `asProgramCtx(ctx).functions.get(...)` cast.
   Once Phase 3 adds explicit locators this file becomes pure forwarding.
 
-## Phase 1 — pending
+## Phase 1 — done
+
+- `BasicBlock.unitId: FunctionId` → `unit: Function`. Direct reference replaces
+  the foreign key. Builder in `buildCFG` already had `unit` in scope, so the
+  field initialisation is just `unit` instead of `unit.funcAst.id`.
+- All 4 internal call sites updated:
+  - `dfa-factory.ts` stale-block eviction now compares `b.unit === unit`.
+  - `dfa-factory.ts` envAnalysis `transfer` reads `block.unit` directly,
+    eliminating one `asProgramCtx` cast and the `undefined` guard that could
+    never fire (a block always has an owning function — that was an
+    impossible-state branch).
+  - `purity/analysis.ts` block-fact subscription wake collapses to
+    `unitOf((key as BasicBlock).unit)`; the `owner !== undefined ? … : []`
+    branch was likewise dead.
+  - `function-resolver.ts` `functionOfBlock` is now `(_ctx, block) => block.unit`.
+    The whole resolver helper is now ceremony — Phase 3 will inline it away.
+- Tests: `type-assumption.test.ts` × 4 sites replaced
+  `worklist.functions.get(block.unitId)!.cfg.entry` with `block.unit.cfg.entry`.
+
+Smells noticed:
+- Two impossible-state branches went away with the reference change. That's
+  evidence: foreign-key indirection had been forcing defensive `undefined`
+  handling at every call site even though the structural invariant guaranteed
+  the lookup would succeed. Generalising: where you're forced to write code
+  for a state that "can't happen", the data shape is usually wrong.
+- `function-resolver.ts` is now nearly content-free — every helper is a
+  one-liner over a direct reference or a single map lookup. Slated for
+  inlining/removal in Phase 3.
+
+## Phase 2 — pending
+
 

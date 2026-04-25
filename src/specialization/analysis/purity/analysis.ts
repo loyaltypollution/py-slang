@@ -361,10 +361,7 @@ export const purityFunctionAnalysis: Analysis<Function, boolean | undefined> = d
       purityBlockAnalysis.facts as Analysis<any, any>,
       purityFunctionAnalysis,
       internSingletonNode(IMPURE_SENTINEL_NODE_ID),
-      (ctx, key) => {
-        const owner = asProgramCtx(ctx).functions.get((key as BasicBlock).unitId);
-        return owner !== undefined ? unitOf(owner) : [];
-      },
+      (_ctx, key) => unitOf((key as BasicBlock).unit),
     );
   },
 });

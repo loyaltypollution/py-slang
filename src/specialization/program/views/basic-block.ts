@@ -3,7 +3,6 @@
 
 import type { ExprNS, StmtNS } from "../../../ast-types";
 import type { NodeId } from "../node-set";
-import type { FunctionId } from "./function-view";
 import type { Function } from "./function";
 import type { View } from "./view";
 
@@ -32,7 +31,9 @@ export interface BasicBlock extends View {
   readonly stmts: StmtNS.Stmt[];
   readonly successorEdges: CFGEdge[];
   readonly predecessorEdges: CFGEdge[];
-  readonly unitId: FunctionId;
+  /** Direct reference to the owning Function. Use `unit.funcAst.id` when a
+   *  FunctionId boundary key is required (runtime/JIT/observation surfaces). */
+  readonly unit: Function;
   readonly nodeIds: Set<NodeId>;
   contains(n: NodeId): boolean;
   readonly size: number;
@@ -57,7 +58,7 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
       stmts: [],
       successorEdges: [],
       predecessorEdges: [],
-      unitId: unit.funcAst.id,
+      unit,
       nodeIds,
       contains: (n) => nodeIds.has(n),
       get size(): number {

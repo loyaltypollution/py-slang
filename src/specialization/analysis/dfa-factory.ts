@@ -99,7 +99,7 @@ function evictStaleBlockCells(
 ): void {
   for (const context of storeContexts(store)) {
     for (const b of store.readAll(context).keys()) {
-      if (b.unitId === unit.funcAst.id) storeEvict(store, b, context);
+      if (b.unit === unit) storeEvict(store, b, context);
     }
   }
 }
@@ -281,8 +281,7 @@ export function makeBlockFixpointAnalysis<L>(
     tier: "analysis",
     polarity: config.mergeKind,
     transfer(ctx, block): MutableEnv<L> | undefined {
-      const unit = asProgramCtx(ctx).functions.get(block.unitId);
-      if (unit === undefined) return undefined;
+      const unit = block.unit;
       const inEnv = inEnvFor(block, unit, ctx.currentContext);
       const result = config.transferBlock(ctx, block, inEnv, unit);
       // Paired-cell write: `.facts` has no transfer of its own, so its
