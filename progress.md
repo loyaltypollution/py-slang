@@ -58,6 +58,25 @@ Smells noticed:
   one-liner over a direct reference or a single map lookup. Slated for
   inlining/removal in Phase 3.
 
-## Phase 2 — pending
+## Phase 2 — done
+
+Doc-only. Re-read every `FunctionId` and `ParamKey` use. Both are already
+respected as boundary keys at the implementation level — the gap was that the
+*definitions* didn't say so explicitly, so a future reader could plausibly
+"helpfully" replace `funcAst.id` with a `Function` reference at a counter or
+channel call site and break the stable-serialisable-identity contract.
+
+Updates:
+- `FunctionId` doc now explicitly labels it a boundary key, lists the
+  surfaces (counters, channels, AssumptionChain, ParamKey), and states the
+  rule: internal relations use references, boundaries use ids.
+- `ParamKey` doc gains a "do not migrate to a Function reference" line with
+  the reason (encoding survives across observation channels and chain
+  bindings whose stable identity is the contract).
+
+No code change. Tests still 810/810.
+
+## Phase 3 — pending
+
 
 

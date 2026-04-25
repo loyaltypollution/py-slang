@@ -3,9 +3,12 @@ import type { FunctionId } from "../program/views/function-view";
 /** Function-entry parameter identity, encoded as `${functionId}:${paramIndex}`
  *  so it is usable directly as an AssumptionChain / observation key.
  *
- *  This is not a NodeSet and not an analysis key: it identifies a runtime
- *  parameter observation axis. The corresponding owning function is recovered
- *  from the encoded FunctionId by the param observation binding. */
+ *  Boundary key — paired with FunctionId at the runtime/observation surface.
+ *  Not a NodeSet, not an analysis key, not a structural relation inside the
+ *  IR. The owning function is recovered from the encoded FunctionId by the
+ *  param observation binding. Do not migrate to a `Function` reference: the
+ *  encoding has to survive across observation channels and AssumptionChain
+ *  bindings whose stable identity is the whole point. */
 export type ParamKey = `${FunctionId}:${number}`;
 
 export function paramKey(functionId: FunctionId, paramIndex: number): ParamKey {
