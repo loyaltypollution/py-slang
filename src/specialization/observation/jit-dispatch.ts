@@ -1,7 +1,6 @@
 import type { StmtNS } from "../../ast-types";
-import type { AssumptionChain } from "../assumption";
-import type { FunctionId } from "../program/program-view";
-import type { Function } from "../program/function";
+import type { FunctionId } from "../program/views/function-view";
+import type { Function } from "../program/views/function";
 import type { Worklist } from "../framework/worklist";
 import { bodyToCompile, dispatchValid } from "../speculation/chain-dispatch";
 import { makeJitObservers } from "./runtime-analyses";
@@ -18,7 +17,7 @@ export interface JitDispatch {
 
 export function makeJitDispatch(worklist: Worklist): JitDispatch {
   const observers = makeJitObservers(worklist);
-  const isRefuted = (n: AssumptionChain) => worklist.isRefuted(n);
+  const isRefuted = worklist.isRefuted.bind(worklist);
   return {
     onCall(scopeId, args) {
       observers.observeScopeCall(scopeId);
@@ -31,8 +30,7 @@ export function makeJitDispatch(worklist: Worklist): JitDispatch {
       const chain = observers.currentChainFor(scopeId);
       if (!dispatchValid(unit, chain, isRefuted)) return { kind: "skip", unit };
       const body = bodyToCompile(unit, chain, worklist, isRefuted);
-      if (body === unit.body) return { kind: "baseline", unit };
-      return { kind: "specialized", unit, body };
+      return body === unit.body ? { kind: "baseline", unit } : { kind: "specialized", unit, body };
     },
     onReturn(scopeId, value) {
       observers.observeScopeReturn(scopeId, value);

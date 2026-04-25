@@ -1,7 +1,7 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import type { Token } from "../../../tokenizer";
 import type { AssumptionChain } from "../../assumption/chain";
-import type { BasicBlock } from "../../program/cfg";
+import type { BasicBlock } from "../../program/views/basic-block";
 import { MutableEnv } from "../../analysis/mutable-env";
 import { isLocal, type SlotLookup } from "../../program/slot-table";
 import {

@@ -2,7 +2,7 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { ConstLattice } from "../../specialization/analysis/const/lattice";
 import type { TypeLattice } from "../../specialization/analysis/type/lattice";
-import type { Function } from "../../specialization/program/function";
+import type { Function } from "../../specialization/program/views/function";
 import type { DfaQuery } from "../../specialization/dfa-query";
 import {
   BOOL_BIT,

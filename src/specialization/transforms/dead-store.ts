@@ -1,10 +1,10 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption/chain";
 import { forkBody, visibleBody } from "../speculation/assumption-bodies";
-import type { Function } from "../program/function";
-import type { FunctionView } from "../program/program-view";
+import type { Function } from "../program/views/function";
+import type { FunctionView } from "../program/views/function-view";
 import { isLocal, type SlotLookup } from "../program/slot-table";
-import { functionOfBlock, wakeOwningFunction } from "../program/program-view";
+import { functionOfBlock, wakeOwningFunction } from "../program/views/function-resolver";
 import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../analysis";
 import { walkExpr, walkExprs } from "./witness-utils";

@@ -1,5 +1,5 @@
 import type { NarrowingId } from "../assumption";
-import type { FunctionResolver } from "../program/program-view";
+import type { FunctionResolver } from "../program/views/function-resolver";
 import type { ObservationChannel } from "./observation-channel";
 
 export interface ObservationBinding<K = any, V = unknown, O = unknown> {

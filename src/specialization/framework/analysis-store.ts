@@ -1,5 +1,5 @@
-// Per-Analysis, context-partitioned storage. Public `analysis.store` is the
-// readonly surface; framework-owned writes go through `storeWrite(...)`.
+// Per-Analysis, context-partitioned storage. `analysis.store` is the public
+// readonly surface; framework writes go through `storeWrite`.
 
 import type { JoinSemiLattice } from "./analysis";
 import type { AssumptionChain } from "../assumption/chain";
@@ -25,10 +25,7 @@ interface StoreWriteResult<V> {
   readonly next: V;
 }
 
-/** Shared readonly empty-map singleton. Used as the fallback for unwritten
- *  contexts in `AnalysisStore.readAll`, as the `bottom` / `emptyValue` for
- *  per-block expr-fact lattices in `dfa-factory`, and as the "no facts
- *  recorded" sentinel returned by statement transfer. Never mutated. */
+/** Shared readonly empty-map sentinel. Never mutated. */
 export const EMPTY_MAP: ReadonlyMap<unknown, unknown> = new Map();
 
 /** Walk `chain → ROOT`, returning either the shallowest ancestor whose
@@ -70,12 +67,10 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
     return this.emptyValue ?? this.algebra.bottom;
   }
 
-  /** Cell value under `context`, or `undefined` if unwritten. */
   tryRead(key: K, context: AssumptionChain): V | undefined {
     return this.cellsByContext.get(context)?.get(key);
   }
 
-  /** Every written cell under `context` as a readonly view. */
   readAll(context: AssumptionChain): ReadonlyMap<K, V> {
     return (this.cellsByContext.get(context) ?? EMPTY_MAP) as ReadonlyMap<K, V>;
   }
@@ -96,8 +91,7 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
   }
 
   /** Combine `value` with the existing cell via `algebra.join` and store.
-   *  Returns `{prev, next}` when the cell advanced, or `null` when
-   *  `eq(next, prev)`. Gating is eq-based, not leq-based. */
+   *  Returns `{prev, next}` when the cell advanced (eq-gated), else `null`. */
   write(key: K, value: V, context: AssumptionChain): StoreWriteResult<V> | null {
     let cells = this.cellsByContext.get(context);
     if (cells === undefined) {
@@ -130,8 +124,7 @@ export class AnalysisStore<K, V> implements ReadonlyAnalysisStore<K, V> {
   }
 }
 
-/** Framework-internal mutation hook. Public `Analysis.store` is the
- *  readonly surface; internal write paths go through this helper. */
+/** Framework-internal write hook. Public `Analysis.store` is readonly. */
 export function storeWrite<K, V>(
   store: ReadonlyAnalysisStore<K, V>,
   key: K,
@@ -150,7 +143,7 @@ export function storeEvict<K, V>(
   (store as AnalysisStore<K, V>).evict(key, context);
 }
 
-/** Framework-internal enumeration of context partitions. */
+/** Framework-internal context enumeration hook. */
 export function storeContexts<K, V>(
   store: ReadonlyAnalysisStore<K, V>,
 ): IterableIterator<AssumptionChain> {

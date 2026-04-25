@@ -4,13 +4,13 @@ import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokenizer";
 import { directParamEntryGuardsFor, guardKeyFromGuards } from "../narrowing-policy/entry-guards";
 import type { TransformRule } from "../framework/analysis";
-import { functionOfFunctionId, wakeOwningFunction } from "../program/program-view";
+import { functionOfFunctionId, wakeOwningFunction } from "../program/views/function-resolver";
 import { shadowNode } from "../framework/variant-body-clone";
 import { type AssumptionChain } from "../assumption";
 import { forkBody } from "../speculation/assumption-bodies";
-import type { Function } from "../program/function";
+import type { Function } from "../program/views/function";
 import { runtimeCallCounter } from "../observation/runtime-analyses";
-import type { FunctionView } from "../program/program-view";
+import type { FunctionView } from "../program/views/function-view";
 import { purityFunctionAnalysis } from "../analysis";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;

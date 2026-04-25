@@ -1,35 +1,17 @@
 /** AST node id. Indexes individual expression/statement nodes. */
 export type NodeId = number;
 
-/** A set of AST nodes addressed by id. The framework's hot path needs only
- *  membership; iteration is intentionally not part of the contract until a
- *  consumer demands it.
- *
- *  `size` and `iterate` are optional so abstract sets (e.g. predicate-only)
- *  remain valid `NodeSet`s. They exist so `intersects(a, b)` can pick the
- *  cheaper iteration direction. At least one side of an `intersects` test
- *  must be enumerable.
- *
- *  Owned by `program/` because "set of AST nodes" is a program-layer concept.
- *  The framework imports the type only for the `Analysis<K extends NodeSet, V>`
- *  constraint and the `delta?: NodeSet` parameter on `ctx.write` — it does
- *  not own the concept. */
+/** A set of AST nodes addressed by id. The hot path needs only membership.
+ *  `size` and `iterate` are optional so abstract sets (predicate-only) remain
+ *  valid; `intersects(a, b)` requires at least one enumerable side. */
 export interface NodeSet {
   contains(n: NodeId): boolean;
-  /** Optional: number of nodes in the set. Used by `intersects` to pick
-   *  the smaller side. Producers that can compute it cheaply should expose
-   *  it; callers must not rely on its presence. */
   readonly size?: number;
-  /** Optional: iterate the set's members. Required when this `NodeSet` is
-   *  used on either side of an `intersects` test where the other side is
-   *  abstract (contains-only). */
   iterate?(): Iterable<NodeId>;
 }
 
 /** Non-empty intersection test. Picks the cheaper iteration direction by
- *  `size`; falls back to whichever side is enumerable. Throws if neither
- *  side exposes `iterate` — `intersects` cannot answer over two abstract
- *  predicate sets. */
+ *  `size`. Throws if neither side is enumerable. */
 export function intersects(a: NodeSet, b: NodeSet): boolean {
   const aIt = a.iterate;
   const bIt = b.iterate;
@@ -63,7 +45,7 @@ export function internSingletonNode(id: NodeId): NodeSet {
   if (existing === undefined) {
     const ids: readonly NodeId[] = [id];
     existing = {
-      contains: (n: NodeId) => n === id,
+      contains: (n) => n === id,
       size: 1,
       iterate: () => ids,
     };
@@ -72,12 +54,11 @@ export function internSingletonNode(id: NodeId): NodeSet {
   return existing;
 }
 
-/** A `NodeSet` view over a backing `ReadonlySet<NodeId>`. The producer is
- *  expected to keep `ids` immutable for the lifetime of the dispatch fan-out;
- *  no defensive copy is taken. */
+/** A `NodeSet` view over a backing `ReadonlySet<NodeId>`. The producer must
+ *  keep `ids` immutable for the lifetime of the dispatch fan-out. */
 export function nodeSetOfIds(ids: ReadonlySet<NodeId>): NodeSet {
   return {
-    contains: (n: NodeId) => ids.has(n),
+    contains: (n) => ids.has(n),
     size: ids.size,
     iterate: () => ids,
   };
@@ -90,11 +71,10 @@ export const EMPTY_NODESET: NodeSet = {
   iterate: () => [],
 };
 
-/** Universal predicate `NodeSet` — `contains` is true for every id. This is
- *  not a cell-identity subscription; use `Worklist.subscribeOnAdvance` when a
- *  listener must fire on every advancing write regardless of node delta. Pairs
- *  only with enumerable sets; `intersects(ANY, delta)` is true iff `delta` is
- *  non-empty. */
+/** Universal predicate `NodeSet` — `contains` is true for every id. Pairs
+ *  only with enumerable sets; `intersects(ANY, delta)` is true iff `delta`
+ *  is non-empty. Not a cell-identity subscription — use
+ *  `Worklist.subscribeOnAdvance` for that. */
 export const ANY_NODESET: NodeSet = {
   contains: () => true,
   size: Infinity,

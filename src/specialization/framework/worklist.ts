@@ -1,16 +1,11 @@
-// Driver for analysis-graph dispatch. Single class — the registration
-// façade, the fan-out maps, the transform sweep, the speculation-context
-// machinery, and the fixpoint driver share enough state through narrow
-// channels (`enqueue`, `futureDispatchChainFor`, `isRefuted`, the AnalysisCtx
-// cache) that splitting them creates more accidental coupling than it
-// removes.
+// Driver for analysis-graph dispatch: registration façade, fan-out maps,
+// transform sweep, speculation-context machinery, and fixpoint driver.
 
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import {
   carrier as carrierOf,
   extend,
-  isRoot,
   Refutations,
   ROOT_CONTEXT,
   without,
@@ -21,7 +16,7 @@ import type { ObservationBinding } from "../observation/observation-binding";
 import type { ObservationChannel } from "../observation/observation-channel";
 import type { NodeId, NodeSet } from "./analysis";
 import { intersects } from "../program/node-set";
-import type { FunctionId } from "../program/program-view";
+import type { FunctionId } from "../program/views/function-view";
 import {
   type Analysis,
   type AnalysisCtx,
@@ -29,23 +24,14 @@ import {
   type Narrowing,
   type TransformRule,
 } from "./analysis";
-import { functionOfNodeId, type FunctionResolver } from "../program/program-view";
+import { functionOfNodeId, type FunctionResolver } from "../program/views/function-resolver";
 import type { ProgramCtx } from "../program/program-ctx";
 import {
   storeEvict,
   storeWrite,
 } from "./analysis-store";
-import { type Function } from "../program/function";
+import { type Function } from "../program/views/function";
 import { FunctionViewManager } from "../program/views/function-view-manager";
-
-/** Catches misregistration: only Analyses carry `polarity`. */
-function assertNoPolarity(thing: object, site: string, kind: string): void {
-  if ("polarity" in thing) {
-    throw new Error(
-      `[Worklist.${site}] ${kind} must not carry \`polarity\` — that field is Analysis-only.`,
-    );
-  }
-}
 
 /** A `(analysis, key, context)` triple as the worklist enqueues it. */
 interface AnalysisTriple {
@@ -83,9 +69,7 @@ class TripleQueue {
   }
 }
 
-/** Construction payload for `Worklist`. Keeping this an object avoids the
- *  positional-argument cliff for a constructor with this many conceptually
- *  independent wiring inputs. */
+/** Construction payload for `Worklist`. */
 export interface WorklistConfig {
   readonly ast: StmtNS.FileInput;
   readonly functionEnvironments: FunctionEnvironments;
@@ -168,7 +152,7 @@ export class Worklist {
   /** Refutation filter (minimal generators; `contains(c) = ∃ r. leq(r, c)`). */
   private readonly refutations: Refutations = new Refutations();
 
-  // ── Backward-compat delegates to the function-view manager ─────────
+  // Convenience accessors delegating to the function-view manager.
   get functions(): ReadonlyMap<FunctionId, Function> {
     return this.functionViews.functions;
   }
@@ -178,10 +162,6 @@ export class Worklist {
   }
 
   private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
-  /** Extra entry-seed pairs re-enqueued at every narrowing-entry alongside
-   *  each narrowing's own `blockAnalysis()`. Used for context-sensitive
-   *  analyses (e.g. purity) that must track each specialization context
-   *  but aren't themselves narrowings. Policy-owned by the caller. */
   private readonly extraEntrySeeds: ReadonlyArray<EntrySeed>;
   /** Per-source unit resolver; all bindings on a source must agree. */
   private readonly unitResolverBySource: Map<
@@ -242,17 +222,9 @@ export class Worklist {
     for (const r of transforms) this.registerTransform(r);
   }
 
-  /** Register a structurally-introduced FunctionDef. Delegates to the
-   *  function-view manager, which builds the unit and fires its mint subs. */
-  addFunction(node: StmtNS.FunctionDef, chain: AssumptionChain): Function {
-    return this.functionViews.addFunction(node, chain);
-  }
-
   private dirtyFor(rule: TransformRule): Set<Function> {
     const s = this.transformDirty.get(rule);
-    if (s === undefined) {
-      throw new Error(`[Worklist] transform has no dirty set — missed registerTransform?`);
-    }
+    if (s === undefined) throw new Error(`[Worklist] missed registerTransform`);
     return s;
   }
 
@@ -267,14 +239,11 @@ export class Worklist {
   }
 
   /** Refute `carrier` for `unit`: add the minimal singleton of the carrier's
-   *  tip binding, then ask the manager to fire refute subscribers and drop
-   *  the unit's futureDispatchContext if it now points into the refuted
-   *  subtree. Body eviction is lazy. Idempotent. */
+   *  tip binding (full chain would under-refute — siblings carrying the same
+   *  binding under a different prefix would escape `isRefuted`), then fire
+   *  refute subscribers and reconcile dispatch context. Idempotent. */
   private refute(unit: Function, carrier: AssumptionChain): void {
     if (carrier === ROOT_CONTEXT) return;
-    // MINIMAL generators: storing the full carrier chain would under-refute
-    // — sibling chains carrying the same refuted binding under a different
-    // prefix would escape `isRefuted`.
     const a = carrier.assumption!;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
     this.refutations.add(minimal);
@@ -292,25 +261,14 @@ export class Worklist {
   }
 
   /** Subscribe `reader` to advancing writes on `from` whose published node
-   *  delta intersects `interest`. Pass a view (block/function) or
-   *  `internSingletonNode(id)` as the interest.
+   *  delta intersects `interest` (typically a view, or
+   *  `internSingletonNode(id)`). `dirtied` projects the source key-change
+   *  into reader keys. `opts.enqueueAt` projects the source context into
+   *  the enqueue context (default: the source write context).
    *
-   *  `dirtied(ctx, key)` projects the upstream key-change into the reader's
-   *  key space.
-   *
-   *  `opts.enqueueAt` projects the source context into the enqueue context;
-   *  default is the context the upstream write happened in. Use
-   *  `enqueueAt: () => ROOT_CONTEXT` for context-blind readers.
-   *
-   *  When the reader cares about a strict subset of the source's value space
-   *  (the IMPURE_SENTINEL pattern), the reader should read the source via
-   *  `analysis.store` directly inside `transfer` so it doesn't ALSO record an
-   *  auto read-edge — that would defeat the delta-routing savings.
-   *
-   *  HAZARD: synthetic CFG blocks (entry, exit, if/loop joins) have empty
-   *  `nodeIds` because they carry no AST statements; passing one as `interest`
-   *  yields vacuously-false intersections. If you want to fire on every
-   *  advance to that block's cell, use `subscribeOnAdvance` instead. */
+   *  HAZARD: synthetic CFG blocks (entry/exit/joins) have empty `nodeIds`,
+   *  yielding vacuously-false intersections. Use `subscribeOnAdvance` for
+   *  cell-identity wakes on those. */
   subscribe<K extends NodeSet>(
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
@@ -331,9 +289,8 @@ export class Worklist {
     list.push({ interest, fire });
   }
 
-  /** Subscribe `reader` to every advancing write on `from`, regardless of the
-   *  write's node delta. This models cell-identity dependencies, not node
-   *  membership dependencies. */
+  /** Subscribe `reader` to every advancing write on `from`, regardless of
+   *  node delta. Cell-identity dependency, not node-membership. */
   subscribeOnAdvance<K extends NodeSet>(
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
@@ -347,9 +304,8 @@ export class Worklist {
     });
   }
 
-  /** Subscribe `reader` to mint of any unit. Fires immediately against every
-   *  existing unit at registration so late subscribers pick up the initial
-   *  burst. */
+  /** Subscribe `reader` to mint of any unit. Fires against existing units
+   *  at registration so late subscribers see the initial burst. */
   onMint<K extends NodeSet>(
     reader: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
@@ -359,8 +315,8 @@ export class Worklist {
     });
   }
 
-  /** Subscribe `reader` to rebuild of any unit. Distinct from mint because
-   *  rebuild-time invalidation often needs a paired `onRebuildEvict`. */
+  /** Subscribe `reader` to rebuild of any unit. Often paired with
+   *  `onRebuildEvict` to drop stale block-keyed cells. */
   onRebuildDirty<K extends NodeSet>(
     reader: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
@@ -370,8 +326,8 @@ export class Worklist {
     });
   }
 
-  /** Subscribe an evict callback to rebuild. Typically used to drop block-
-   *  keyed cells whose `BasicBlock` identities belong to the pre-rebuild CFG. */
+  /** Subscribe an evict callback to rebuild. Drops block-keyed cells whose
+   *  `BasicBlock` identities belong to the pre-rebuild CFG. */
   onRebuildEvict(evict: (unit: Function) => void): void {
     this.functionViews.onRebuild(evict);
   }
@@ -388,7 +344,7 @@ export class Worklist {
   }
 
   /** Register an analysis. Idempotent. */
-  register<K extends NodeSet, V>(analysis: Analysis<K, V>): void {
+  private register<K extends NodeSet, V>(analysis: Analysis<K, V>): void {
     const a = analysis as Analysis<any, any>;
     if (this.registeredAnalyses.has(a)) return;
     this.registeredAnalyses.add(a);
@@ -398,7 +354,6 @@ export class Worklist {
   /** Register a transform rule. Idempotent. Auto-installs mint/rebuild
    *  dirtying for the rule's own unit, then lets the rule subscribe via `bind`. */
   registerTransform(rule: TransformRule): void {
-    assertNoPolarity(rule, "registerTransform", "rules");
     if (this.transformsSet.has(rule)) return;
     this.transformsSet.add(rule);
     this.transforms.push(rule);
@@ -428,7 +383,6 @@ export class Worklist {
 
   /** Register a counter. Idempotent. */
   registerCounter<K>(counter: CounterStore<K>): void {
-    assertNoPolarity(counter, "registerCounter", "counters");
     const c = counter as CounterStore<any>;
     if (this.registeredCounters.has(c)) return;
     this.registeredCounters.add(c);
@@ -439,11 +393,7 @@ export class Worklist {
    *  subscribers on advancing bumps; post-saturation bumps are no-ops. */
   bump<K>(counter: CounterStore<K>, key: K): void {
     if (this.inTransformSweep) {
-      throw new Error(
-        `[Worklist.bump] called during transform sweep. ` +
-        `Observation ingress must fire outside drain — mid-sweep bumps can shift subscribers ` +
-        `while rules are reading them.`,
-      );
+      throw new Error(`[Worklist.bump] mid-sweep observation ingress is forbidden`);
     }
     const r = counter._applyBump(key);
     if (r === null) return;
@@ -465,9 +415,7 @@ export class Worklist {
     });
   }
 
-  /** Public read surface — thin delegation to the analysis's canonical
-   *  read method. `context` is mandatory: the worklist does not guess which
-   *  chain position a caller meant. */
+  /** Public read surface — delegates to `analysis.store.tryRead`. */
   tryRead<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): V | undefined {
     return analysis.store.tryRead(key, context);
   }
@@ -485,11 +433,7 @@ export class Worklist {
     context: AssumptionChain,
   ): AssumptionChain {
     if (this.inTransformSweep) {
-      throw new Error(
-        `[Worklist.publish] called during transform sweep. ` +
-        `Observations extend futureDispatchChainFor(unit); allowing them mid-sweep ` +
-        `means rules generate code against a chain that has already widened.`,
-      );
+      throw new Error(`[Worklist.publish] mid-sweep observation ingress is forbidden`);
     }
     const nextContext = this.handleObservationForSpec(channel, key, value, context);
     this.processAnalysesToFixpoint();
@@ -498,7 +442,6 @@ export class Worklist {
 
   /** Register a channel. Idempotent. */
   registerChannel<K, V>(channel: ObservationChannel<K, V>): void {
-    assertNoPolarity(channel, "registerChannel", "channels");
     const c = channel as ObservationChannel<any, any>;
     if (this.registeredChannels.has(c)) return;
     this.registeredChannels.add(c);
@@ -523,18 +466,14 @@ export class Worklist {
     q.push(p, key, context);
   }
 
-  /** Scratch set for the currently-transferring (analysis, key) so `ctx.read`
-   *  can record the edge `(sourceAnalysis, sourceKey) → reader` without
-   *  threading the reader through the AnalysisCtx surface. Context is
-   *  intentionally NOT recorded: the reader is re-enqueued at the WRITE
-   *  context (matching `onFactDirty`'s default), which is what propagates
-   *  fact changes across speculation contexts. `undefined` outside transfer. */
+  /** The currently-transferring (analysis, key); lets `ctx.read*` record
+   *  read-edges without threading the reader through `AnalysisCtx`. Context
+   *  is NOT recorded: readers re-enqueue at the WRITE context, which is
+   *  what propagates facts across speculation contexts. */
   private currentReader: { analysis: Analysis<any, any>; key: unknown } | undefined;
 
-  /** Read-tracking edges: `(source, sourceKey) → list of (reader, readerKey)`.
-   *  Populated as a side effect of `ctx.read`/`ctx.tryRead`/`ctx.readDeepest`/
-   *  `ctx.readMinimal` during transfer; consulted by `writeAndDispatch` after
-   *  an advancing write to enqueue readers at the WRITE context. */
+  /** `(source, sourceKey) → readers`. Populated by `ctx.read*` during
+   *  transfer; consulted by `writeAndDispatch` to re-enqueue readers. */
   private readonly readEdges = new Map<
     Analysis<any, any>,
     Map<unknown, Array<{ readonly analysis: Analysis<any, any>; readonly key: unknown }>>
@@ -579,15 +518,11 @@ export class Worklist {
     }
   }
 
-  /** The single site funneling transfer results into the store and fanning
-   *  them out to subscribers. Returns true iff the cell advanced.
-   *
-   *  `delta` scopes nodeSet subscribers: an entry fires only if its
-   *  `interest` intersects `delta`. Default is `key` itself — every
-   *  analysis key already extends `NodeSet`, and an advance at key K is
-   *  by construction an advance over the nodes K covers. Producers can
-   *  pass a narrower `delta` when they know the change touches only a
-   *  subset of the key's nodes (e.g. dfa-factory's per-fact delta). */
+  /** Single site funneling transfer results into the store and fanning out
+   *  to subscribers. Returns true iff the cell advanced. `delta` scopes
+   *  nodeSet subscribers (default `key`); producers may pass a narrower
+   *  delta when they know the change touches only a subset of `key`'s
+   *  nodes. */
   private writeAndDispatch<K extends NodeSet, V>(
     analysis: Analysis<K, V>,
     key: K,
@@ -598,10 +533,8 @@ export class Worklist {
     const result = storeWrite(analysis.store, key, value, context);
     if (result === null) return false;
     const source = analysis as Analysis<any, any>;
-    // Read-tracked readers of (analysis, key) — re-enqueue at the WRITE
-    // context, matching `onFactDirty`'s default. This is what propagates
-    // fact changes across speculation contexts: a reader originally run at
-    // ROOT gets re-enqueued at specCtx when its input advances at specCtx.
+    // Re-enqueue read-tracked readers at the WRITE context — propagates
+    // fact changes across speculation contexts.
     const readers = this.readEdges.get(source)?.get(key);
     if (readers !== undefined) {
       for (const r of readers) this.enqueue(r.analysis, r.key, context);
@@ -620,12 +553,10 @@ export class Worklist {
     return true;
   }
 
-  /** Sweep every registered transform over its dirty functions once. Units that
-   *  rewrote move to `pendingRebuilds`; CFG rebuild is NOT flushed here.
-   *
-   *  Public so online participants (e.g. `jitAnalysis`) can run counter-/
-   *  fact-driven transforms before emitting bytecode. Returns true iff any
-   *  rule fired. */
+  /** Sweep every registered transform over its dirty functions once. Units
+   *  that rewrote enter `pendingRebuilds`; CFG rebuild is NOT flushed here.
+   *  Public so online participants can run transforms before emitting
+   *  bytecode. Returns true iff any rule fired. */
   sweepTransforms(): boolean {
     let anyFired = false;
     this.inTransformSweep = true;
@@ -633,12 +564,8 @@ export class Worklist {
       for (const r of this.transforms) {
         const dirty = this.dirtyFor(r);
         if (dirty.size === 0) continue;
-        // `dirty` cannot grow during iteration: sweep bodies receive no
-        // worklist/AnalysisCtx, and `publish`/`bump` are guarded by
-        // `inTransformSweep`. Iterate, then clear at the end.
         for (const unit of dirty) {
           const chain = this.futureDispatchChainFor(unit);
-          // Refutation guard: defense in case a refuted chain is ever stored.
           if (this.isRefuted(chain)) continue;
           const fired = r.sweep(unit, chain, this);
           if (fired) {
@@ -654,15 +581,13 @@ export class Worklist {
     return anyFired;
   }
 
-  /** Allocate a `ProgramCtx` bound to `context`. The framework's `Analysis`
-   *  signature only promises `AnalysisCtx`; the runtime constructs the richer
-   *  `ProgramCtx` (which adds `functions` and `functionOfNode`) and analyses
-   *  cast via `asProgramCtx` at access. */
+  /** Allocate a `ProgramCtx` bound to `context`. Framework's `Analysis`
+   *  signature only promises `AnalysisCtx`; the richer ctx (with view
+   *  accessors) is reached via `asProgramCtx`. Getters on `functions` /
+   *  `functionOfNode` keep `passCtx` (a class-field initializer) working
+   *  before the constructor body runs. */
   private makeCtx(context: AssumptionChain): ProgramCtx {
     const worklist = this;
-    // Use getters for `functions`/`functionOfNode` so the ctx works even
-    // when constructed before `functionViews` is assigned (passCtx is a
-    // class-field initializer that runs before the constructor body).
     return {
       get functions() { return worklist.functions; },
       functionOfNode: (nodeId: NodeId) => worklist.functionOfNode(nodeId),
@@ -676,11 +601,8 @@ export class Worklist {
         return analysis.store.tryRead(key, context);
       },
       readAll<K extends NodeSet, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V> {
-        // Whole-store read: cannot record per-key edges without knowing the
-        // keyspace. Callers needing fine-grained invalidation should read
-        // individual cells. Today no analysis transfer uses readAll; if that
-        // changes, pair the readAll with explicit onFactDirty until a
-        // "depends on all keys" edge is modeled.
+        // Whole-store read: cannot record per-key edges. Callers needing
+        // fine-grained invalidation should read individual cells.
         return analysis.store.readAll(context);
       },
       readMinimal<K extends NodeSet, V>(
@@ -808,21 +730,10 @@ export class Worklist {
     return this.functionViews.futureDispatchChainForNode(nodeId);
   }
 
-  /** Drain to fixed point. Each iteration runs analyses to quiescence,
-   *  sweeps transforms, runs analyses again for transform-emitted writes,
-   *  then rebuilds any mutated CFGs. Terminates when no transform fires
-   *  and no rebuild occurs.
-   *
-   *  **Idempotency.** A redundant call returns an empty set.
-   *
-   *  **Reentrancy guard.** `publish`/`bump` throw if invoked during the
-   *  `sweepTransforms` step.
-   *
-   *  **Return value.** The `FileInput | FunctionDef` nodes whose CFGs were
-   *  rewired during this drain.
-   *
-   *  **Non-termination.** Throws if `limit` rebuilds occur without
-   *  converging. */
+  /** Drain to fixed point: analyses → transforms → analyses → CFG rebuild,
+   *  iterated until no transform fires and no rebuild occurs. Returns the
+   *  `FileInput | FunctionDef` nodes whose CFGs were rewired. Throws if
+   *  `limit` rebuilds occur without converging. */
   drain(limit: number = Worklist.DEFAULT_DRAIN_LIMIT): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
     const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
     let processed = 0;
@@ -842,8 +753,7 @@ export class Worklist {
 
       if (processed >= limit) {
         throw new Error(
-          `[Worklist] drain exceeded ${limit} CFG rebuilds — likely a non-terminating transform cascade. ` +
-          `Raise the limit explicitly via drain(n) only if you've verified convergence.`,
+          `[Worklist] drain exceeded ${limit} CFG rebuilds — likely a non-terminating transform cascade.`,
         );
       }
     }

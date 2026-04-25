@@ -1,11 +1,11 @@
 import { ExprNS } from "../../ast-types";
 import { constAnalysis, type ConstLattice } from "../analysis";
 import type { TransformRule } from "../framework/analysis";
-import { functionOfBlock, wakeOwningFunction } from "../program/program-view";
+import { functionOfBlock, wakeOwningFunction } from "../program/views/function-resolver";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
-import type { Function } from "../program/function";
-import type { FunctionView } from "../program/program-view";
+import type { Function } from "../program/views/function";
+import type { FunctionView } from "../program/views/function-view";
 import {
   DescendingExprVisitor,
   ExprDrivenStmtVisitor,

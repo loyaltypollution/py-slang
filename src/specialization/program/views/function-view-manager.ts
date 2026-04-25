@@ -1,24 +1,17 @@
-// Owns everything Function-shaped that used to live in `Worklist`:
-// the function-id → Function index, node→function inverse, pending CFG
-// rebuilds, per-function speculation context, and lifecycle subscriptions.
-//
-// Worklist holds an instance and delegates Function-specific orchestration
-// here. The framework's vocabulary stops at `View` / `NodeSet`; this file is
-// where Function semantics live.
+// Owns Function lifecycle, indexing, and per-function dispatch context.
+// Worklist delegates Function-shape orchestration here; the framework's
+// vocabulary stops at `View` / `NodeSet`.
 
 import { StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
 import { ROOT_CONTEXT, isRoot, type AssumptionChain } from "../../assumption";
 import type { NodeId } from "../node-set";
-import type { FunctionId } from "../program-view";
+import type { FunctionId } from "./function-view";
 import type { Refutations } from "../../assumption/refutation";
-import { buildFunctions, buildOneFunction, wireCFG, type Function } from "../function";
-import type { FunctionView } from "../program-view";
+import { buildFunctions, buildOneFunction, wireCFG, type Function } from "./function";
+import type { FunctionView } from "./function-view";
 
-/** Owns Function lifecycle, indexing, and per-function dispatch context.
- *  Worklist delegates all Function-shape orchestration here; this file is
- *  the home for Function semantics that the framework deliberately doesn't
- *  know about. Implements `FunctionView` so it's the runtime backing for
+/** Implements `FunctionView` so it's the runtime backing for
  *  `ProgramCtx.functions` / `ProgramCtx.functionOfNode`. */
 export class FunctionViewManager implements FunctionView {
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
@@ -26,12 +19,9 @@ export class FunctionViewManager implements FunctionView {
   private readonly nodesByFunction = new Map<Function, Set<NodeId>>();
   private readonly pendingRebuilds = new Set<Function>();
   /** Per-unit preferred chain for future compiles/dispatches. Unset or
-   *  `ROOT_CONTEXT` means future dispatch is unspecialized for that unit. */
+   *  `ROOT_CONTEXT` means future dispatch is unspecialized. */
   private readonly futureDispatchContextByUnit = new Map<Function, AssumptionChain>();
 
-  /** Lifecycle subscriber lists. Worklist registers wrappers here that
-   *  re-enqueue analyses on view-mint / view-rebuild / view-specrev events;
-   *  external consumers (e.g. memoization for refute) can subscribe directly. */
   private readonly mintSubs: Array<(unit: Function) => void> = [];
   private readonly rebuildSubs: Array<(unit: Function) => void> = [];
   private readonly specRevSubs: Array<(unit: Function) => void> = [];
@@ -84,8 +74,6 @@ export class FunctionViewManager implements FunctionView {
     return unit;
   }
 
-  /** Mark a unit for CFG rebuild after a transform fire. Worklist drains
-   *  these via `flushPendingRebuilds`. */
   schedulePendingRebuild(unit: Function): void {
     this.pendingRebuilds.add(unit);
   }
@@ -94,8 +82,7 @@ export class FunctionViewManager implements FunctionView {
     return this.pendingRebuilds.size > 0;
   }
 
-  /** Rebuild every pending unit's CFG, refresh indices, fire rebuild subs.
-   *  Returns the rebuilt units in iteration order. */
+  /** Rebuild every pending unit's CFG, refresh indices, fire rebuild subs. */
   flushPendingRebuilds(): Function[] {
     if (this.pendingRebuilds.size === 0) return [];
     const rebuilt: Function[] = [];
@@ -129,16 +116,12 @@ export class FunctionViewManager implements FunctionView {
     this.futureDispatchContextByUnit.delete(unit);
   }
 
-  /** Fire spec-rev subscribers for `unit`. Called by Worklist after
-   *  observation-driven `futureDispatchContext` mutation. */
   fireSpecRev(unit: Function): void {
     for (const sub of this.specRevSubs) sub(unit);
   }
 
-  /** Refute `carrier` for `unit`: fire refute subscribers and drop the
-   *  unit's futureDispatchContext entry if it's now refuted. The caller
-   *  (Worklist) owns the `Refutations` filter and the minimal-generator
-   *  mutation; this method just handles the manager-side bookkeeping. */
+  /** Refute `carrier` for `unit`: fire refute subscribers and drop the unit's
+   *  futureDispatchContext entry if it's now refuted. */
   refuteSubscribersAndReconcileDispatch(
     unit: Function,
     carrier: AssumptionChain,

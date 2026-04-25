@@ -33,7 +33,6 @@ export function carrier<K>(
   narrowing: NarrowingId<K, any>,
   key: K,
 ): AssumptionChain | undefined {
-  if (at(s, narrowing, key) === undefined) return undefined;
   for (let cur: AssumptionChain | undefined = s; cur !== undefined; cur = cur.parent) {
     const a = cur.assumption;
     if (a !== undefined && a.narrowing === narrowing && a.key === key) return cur;

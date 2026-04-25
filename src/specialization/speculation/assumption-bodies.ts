@@ -3,7 +3,7 @@
 import type { StmtNS } from "../../ast-types";
 import { cloneStmts } from "../framework/variant-body-clone";
 import { type AssumptionChain, leq } from "../assumption";
-import type { Function } from "../program/function";
+import type { Function } from "../program/views/function";
 
 const bodies: WeakMap<Function, Map<AssumptionChain, StmtNS.Stmt[]>> = new WeakMap();
 

@@ -1,5 +1,5 @@
 import type { NodeId } from "./framework/analysis";
-import type { FunctionView } from "./program/program-view";
+import type { FunctionView } from "./program/views/function-view";
 import { ROOT_CONTEXT, type AssumptionChain } from "./assumption/chain";
 import {
   constAnalysis,

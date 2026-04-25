@@ -7,8 +7,9 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
 import { ROOT_CONTEXT, at, type AssumptionChain } from "../../assumption";
 import { type Narrowing } from "../../framework/analysis";
-import { functionOfFunctionId, type FunctionId } from "../../program/program-view";
-import type { Function } from "../../program/function";
+import type { FunctionId } from "../../program/views/function-view";
+import { functionOfFunctionId } from "../../program/views/function-resolver";
+import type { Function } from "../../program/views/function";
 import { MutableEnv } from "../../analysis/mutable-env";
 import { isLocal, type SlotLookup } from "../../program/slot-table";
 import type { ObservationBinding } from "../../observation/observation-binding";
@@ -31,8 +32,7 @@ import {
 } from "../type/lattice";
 
 
-/** Unconstrained int requirement — kind INT, sign Top. Kind-axis inverse
- *  of `int ⊗ int = int`; sign-level inverse is deferred. */
+/** Unconstrained int requirement — kind INT, sign Top. */
 const INT_ANY: TypeLattice = integer();
 
 /** Binary ops where `int ⊗ int = int` (kind-closed). Excludes `/` — Python 3

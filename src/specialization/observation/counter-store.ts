@@ -3,13 +3,7 @@ import type { Worklist } from "../framework/worklist";
 export class CounterStore<K> {
   private readonly counts = new Map<K, number>();
 
-  constructor(readonly saturation: number) {
-    if (!Number.isInteger(saturation) || saturation <= 0) {
-      throw new Error(
-        `[CounterStore] saturation must be a positive integer, got ${saturation}`,
-      );
-    }
-  }
+  constructor(readonly saturation: number) {}
 
   at(key: K): number {
     return this.counts.get(key) ?? 0;

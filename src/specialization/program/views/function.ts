@@ -1,30 +1,24 @@
-import { ExprNS, StmtNS } from "../../ast-types";
-import type { FunctionEnvironments } from "../../resolver";
-import type { NodeId } from "./node-set";
-import type { BasicBlock, BlockId, CFG } from "./cfg";
-import { buildCFG } from "./cfg";
-import type { SlotLookup } from "./slot-table";
-import { buildSlotTable } from "./slot-table";
+import { ExprNS, StmtNS } from "../../../ast-types";
+import type { FunctionEnvironments } from "../../../resolver";
+import type { NodeId } from "../node-set";
+import type { BasicBlock, BlockId, CFG } from "./basic-block";
+import { buildCFG } from "./basic-block";
+import type { SlotLookup } from "../slot-table";
+import { buildSlotTable } from "../slot-table";
 
 /** Per-scope optimization unit. `cfg` and `blockMap` are scheduler-owned
  *  and replaced by `Worklist.flushPendingRebuilds`. `body` is a live getter
- *  onto the AST. Function identity lives on `funcAst.id`; bytecode slot
- *  numbering (if any) is a backend concern and lives on the backend's own
- *  table (e.g. `SvmlSlotTable`). */
+ *  onto the AST. Function identity is `funcAst.id`. */
 export interface Function {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
   cfg: CFG;
   blockMap: Map<BlockId, BasicBlock>;
-  /** Node id → enclosing basic block, rebuilt with `wireCFG`. */
   nodeToBlock: Map<NodeId, BasicBlock>;
   blockOfNode(nodeId: NodeId): BasicBlock | undefined;
-  /** NodeSet conformance: O(1) via this unit's `nodeToBlock` keys. */
   contains(n: NodeId): boolean;
-  /** NodeSet conformance: number of nodes owned by this function-view. */
   readonly size: number;
-  /** NodeSet conformance: iterate node ids owned by this function-view. */
   iterate(): Iterable<NodeId>;
 }
 
@@ -39,32 +33,31 @@ export function buildOneFunction(
   }
   const paramNames =
     funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
-  const unit = {
+  const unit: Function = {
     funcAst,
     slotLookup: buildSlotTable(env, paramNames),
+    cfg: undefined as unknown as CFG,
     blockMap: new Map(),
     nodeToBlock: new Map<NodeId, BasicBlock>(),
     get body(): StmtNS.Stmt[] {
       return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
     },
-    blockOfNode(nodeId: NodeId): BasicBlock | undefined {
-      return (this as Function).nodeToBlock.get(nodeId);
+    blockOfNode(nodeId) {
+      return unit.nodeToBlock.get(nodeId);
     },
-    contains(nodeId: NodeId): boolean {
-      return (this as Function).nodeToBlock.has(nodeId);
+    contains(nodeId) {
+      return unit.nodeToBlock.has(nodeId);
     },
     get size(): number {
-      return (this as Function).nodeToBlock.size;
+      return unit.nodeToBlock.size;
     },
-    iterate(): Iterable<NodeId> {
-      return (this as Function).nodeToBlock.keys();
+    iterate() {
+      return unit.nodeToBlock.keys();
     },
-  } as Omit<Function, "cfg"> as Function;
+  };
   wireCFG(unit);
   return unit;
 }
-
-// Lambda bodies are separate scopes and not analyzed here.
 
 /** (Re)build `unit.cfg`, refresh `blockMap`, and reindex `nodeToBlock`. The
  *  topology reindexes its own flat `NodeId → Function` map separately. */
@@ -82,8 +75,6 @@ export function wireCFG(unit: Function): void {
     }
   }
   unit.nodeToBlock = nodeToBlock;
-  // `block.nodeIds` is filled in lockstep by `walkAstNodeIds`, so each
-  // block's NodeSet view becomes enumerable for `intersects`.
 }
 
 function walkAstNodeIds(
@@ -113,10 +104,9 @@ function walkAstNodeIds(
 }
 
 /** `BasicBlock` membership is exclusive CFG ownership, not syntactic subtree
- *  containment. Header blocks own their predicate/iter expression, while body
- *  statements are owned by the blocks `buildCFG` emitted for those bodies.
- *  Nested function/lambda bodies are separate scopes and are not owned by the
- *  enclosing block's NodeSet. */
+ *  containment. Header blocks own their predicate/iter expression; body
+ *  statements belong to the blocks `buildCFG` emitted for those bodies.
+ *  Nested function/lambda bodies are separate scopes. */
 function isNestedScopeOrCfgBody(node: unknown, key: string): boolean {
   if (node instanceof StmtNS.If) return key === "body" || key === "elseBlock";
   if (node instanceof StmtNS.While || node instanceof StmtNS.For) return key === "body";

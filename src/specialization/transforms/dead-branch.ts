@@ -1,14 +1,18 @@
 import { StmtNS } from "../../ast-types";
 import type { TransformRule } from "../framework/analysis";
-import { functionOfBlock, wakeOwningFunction } from "../program/program-view";
+import { functionOfBlock, wakeOwningFunction } from "../program/views/function-resolver";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
-import type { Function } from "../program/function";
-import type { FunctionView } from "../program/program-view";
+import type { Function } from "../program/views/function";
+import type { FunctionView } from "../program/views/function-view";
 import { BOOL_BIT, BoolRef, type TypeLattice, typeAnalysis } from "../analysis";
-import { BaseStmtVisitor, runWitnessSweep } from "./witness-utils";
+import { BaseStmtVisitor, runWitnessSweep, type Witnessed } from "./witness-utils";
 
-function boolCondition(chain: AssumptionChain, view: FunctionView, nodeId: number) {
+function boolCondition(
+  chain: AssumptionChain,
+  view: FunctionView,
+  nodeId: number,
+): Witnessed<TypeLattice> | undefined {
   return typeAnalysis
     .perExpr(view)
     .readMinimal(

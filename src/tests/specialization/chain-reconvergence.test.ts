@@ -8,7 +8,7 @@ import {
   extend,
   without,
 } from "../../specialization/assumption/algebra";
-import { paramKey } from "../../specialization/program/program-view";
+import { paramKey } from "../../specialization/narrowing-policy/param-key";
 import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
 import { paramTypeBinding, paramTypeNarrowing } from "../../specialization/narrowing-policy/param-handles";
 import { setupAndDrain } from "./harness/compile-pipelines";

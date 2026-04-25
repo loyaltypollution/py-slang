@@ -13,8 +13,8 @@ import type {
 import { defineAnalysis } from "../../framework/analysis";
 import { internSingletonNode } from "../../program/node-set";
 import { asProgramCtx } from "../../program/program-ctx";
-import type { BasicBlock } from "../../program/cfg";
-import type { Function } from "../../program/function";
+import type { BasicBlock } from "../../program/views/basic-block";
+import type { Function } from "../../program/views/function";
 import { MutableEnv } from "../../analysis/mutable-env";
 import { isCapture, isLocal, type SlotLookup } from "../../program/slot-table";
 import { constAnalysis } from "../const/analysis";

@@ -10,7 +10,7 @@
 import { StmtNS } from "../../ast-types";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { bindings, extend } from "../../specialization/assumption/algebra";
-import { paramKey } from "../../specialization/program/program-view";
+import { paramKey } from "../../specialization/narrowing-policy/param-key";
 import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
 import { setupAndDrain } from "./harness/compile-pipelines";
 

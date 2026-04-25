@@ -6,8 +6,8 @@ import { contextIsEntrySpecializable, directParamEntryGuardsFor } from "../narro
 import type { AssumptionChain } from "../assumption";
 import { visibleBody } from "./assumption-bodies";
 import { shadowNode } from "../framework/variant-body-clone";
-import type { Function } from "../program/function";
-import type { FunctionView } from "../program/program-view";
+import type { Function } from "../program/views/function";
+import type { FunctionView } from "../program/views/function-view";
 import { BOOL_BIT, BoolRef, typeAnalysis } from "../analysis";
 
 function conditionTruth(

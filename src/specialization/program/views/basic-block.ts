@@ -1,9 +1,9 @@
-// BasicBlock / CFG types + builder. Edges are first-class values:
-// branch edges carry the `condition` expression for refineOnEdge.
+// BasicBlock / CFG types + builder. Branch edges carry the `condition`
+// expression for refineOnEdge.
 
-import type { ExprNS, StmtNS } from "../../ast-types";
-import type { NodeId } from "./node-set";
-import type { FunctionId } from "./program-view";
+import type { ExprNS, StmtNS } from "../../../ast-types";
+import type { NodeId } from "../node-set";
+import type { FunctionId } from "./function-view";
 import type { Function } from "./function";
 
 export type BlockId = number;
@@ -25,30 +25,15 @@ export type CFGEdge =
 
 export interface BasicBlock {
   readonly id: BlockId;
-  /** View into the AST's statement arrays; do not mutate. */
   readonly stmts: StmtNS.Stmt[];
   readonly successorEdges: CFGEdge[];
   readonly predecessorEdges: CFGEdge[];
-  /** Id of the function-view that owns this block. Resolve to the
-   *  `Function` via the function-view-manager (`view.functions.get(unitId)`).
-   *  An opaque numeric tag, not a typed back-pointer — blocks are pure
-   *  NodeSets; ownership is data, not structure. */
   readonly unitId: FunctionId;
-  /** Node ids owned by this block. Populated by `wireCFG`. Backs both
-   *  `contains` (membership) and the `NodeSet` iteration contract.
-   *
-   *  Synthetic blocks (the function entry, the function exit, and the joins
-   *  emitted for `if`/`while`/`for`) hold no AST statements and therefore
-   *  have an empty `nodeIds` set. They are still legitimate CFG nodes, but
-   *  callers MUST NOT use a synthetic block as `subscribe` interest — the
-   *  intersection would be vacuously false. Use `subscribeOnAdvance` for
-   *  cell-identity wakes on such blocks. */
+  /** Node ids owned by this block. Synthetic blocks (entry/exit/joins) have
+   *  empty `nodeIds` and are not valid `subscribe` interests. */
   readonly nodeIds: Set<NodeId>;
-  /** NodeSet conformance: O(1) via this block's own `nodeIds` set. */
   contains(n: NodeId): boolean;
-  /** NodeSet conformance: cardinality of `nodeIds`. */
   readonly size: number;
-  /** NodeSet conformance: iterate this block's node ids. */
   iterate(): Iterable<NodeId>;
 }
 
@@ -58,8 +43,7 @@ export interface CFG {
   readonly blocks: ReadonlyArray<BasicBlock>;
 }
 
-/** Build CFG from a flat stmt list. Single entry/exit; unreachable tails
- *  not represented. */
+/** Build CFG from a flat stmt list. Single entry/exit. */
 export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
   let nextId = 0;
   const blocks: BasicBlock[] = [];
@@ -73,15 +57,11 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
       predecessorEdges: [],
       unitId: unit.funcAst.id,
       nodeIds,
-      contains(n: NodeId): boolean {
-        return nodeIds.has(n);
-      },
+      contains: (n) => nodeIds.has(n),
       get size(): number {
         return nodeIds.size;
       },
-      iterate(): Iterable<NodeId> {
-        return nodeIds;
-      },
+      iterate: () => nodeIds,
     };
     blocks.push(block);
     return block;
@@ -116,7 +96,7 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
       switch (stmt.kind) {
         case "If": {
           const ifStmt = stmt as StmtNS.If;
-          (current.stmts as StmtNS.Stmt[]).push(stmt);
+          current.stmts.push(stmt);
 
           const trueBlock = makeBlock();
           linkBlocks(current, trueBlock, "branch-true", ifStmt.condition);
@@ -145,11 +125,11 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
         case "For": {
           const header = makeBlock();
           linkBlocks(current, header);
-          (header.stmts as StmtNS.Stmt[]).push(stmt);
+          header.stmts.push(stmt);
 
           // `for` has no narrowable predicate; branch edges carry the
-          // iterable as the "condition" placeholder. refineOnEdge should
-          // ignore non-Compare conditions.
+          // iterable as the "condition" placeholder. refineOnEdge ignores
+          // non-Compare conditions.
           const condition = stmt.kind === "While"
             ? (stmt as StmtNS.While).condition
             : (stmt as StmtNS.For).iter;
@@ -177,7 +157,7 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
           if (loopStack.length === 0) {
             throw new Error("Break outside loop — parser should have rejected this");
           }
-          (current.stmts as StmtNS.Stmt[]).push(stmt);
+          current.stmts.push(stmt);
           linkBlocks(current, loopStack[loopStack.length - 1].exit);
           return null;
         }
@@ -186,19 +166,19 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
           if (loopStack.length === 0) {
             throw new Error("Continue outside loop — parser should have rejected this");
           }
-          (current.stmts as StmtNS.Stmt[]).push(stmt);
+          current.stmts.push(stmt);
           linkBlocks(current, loopStack[loopStack.length - 1].header);
           return null;
         }
 
         case "Return": {
-          (current.stmts as StmtNS.Stmt[]).push(stmt);
+          current.stmts.push(stmt);
           linkBlocks(current, exit);
           return null;
         }
 
         default:
-          (current.stmts as StmtNS.Stmt[]).push(stmt);
+          current.stmts.push(stmt);
           break;
       }
     }

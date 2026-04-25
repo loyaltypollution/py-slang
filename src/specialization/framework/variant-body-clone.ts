@@ -1,14 +1,8 @@
-// Structural deep-clone for Stmt / Expr trees — the backing primitive for
-// variant bodies (per-AssumptionChain forks and compile-only dispatch-lane
-// rewrites). Preserves `id` and prototype on every node so analysis stores
-// keyed by `nodeId` continue to apply to the clone.
-//
-// Arrays with no Stmt/Expr elements (token lists, identifier arrays,
-// literal lists) are shared by reference — transforms never mutate them.
-// Arrays that contain Stmt/Expr elements get a fresh outer array because
-// transforms mutate them (`body.splice`, `body[i] = …`).
-//
-// Tokens / PyComplexNumber / literal-value fields are shared by reference.
+// Structural deep-clone for Stmt/Expr trees. Per-AssumptionChain variant
+// bodies share fact cells with the original via preserved `nodeId`s and
+// preserved prototypes (so `instanceof` keeps working). Arrays containing
+// Stmt/Expr get fresh outer arrays (transforms mutate them); other arrays,
+// tokens, and literal-value fields share by reference.
 
 import { ExprNS, StmtNS } from "../../ast-types";
 
@@ -16,9 +10,7 @@ export function cloneStmts(stmts: readonly StmtNS.Stmt[]): StmtNS.Stmt[] {
   return stmts.map(s => cloneNode(s) as StmtNS.Stmt);
 }
 
-/** Prototype-preserving shallow copy with field overrides. `instanceof`
- *  keeps working and `id` is preserved, so fact cells keyed by `nodeId`
- *  continue to apply. */
+/** Prototype-preserving shallow copy with field overrides. */
 export function shadowNode<T extends object>(orig: T, patch: Partial<T>): T {
   const shadow = Object.create(Object.getPrototypeOf(orig)) as T;
   Object.assign(shadow, orig, patch);

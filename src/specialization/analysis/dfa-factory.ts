@@ -10,17 +10,27 @@ import type {
 } from "../framework/analysis";
 import { defineAnalysis } from "../framework/analysis";
 import { EMPTY_NODESET, nodeSetOfIds } from "../program/node-set";
-import type { FunctionView } from "../program/program-view";
+import type { FunctionView } from "../program/views/function-view";
 import { asProgramCtx } from "../program/program-ctx";
 import type { ReadonlyAnalysisStore } from "../framework/analysis-store";
 import { EMPTY_MAP, storeContexts, storeEvict, walkChain } from "../framework/analysis-store";
-import type { BasicBlock, CFGEdge } from "../program/cfg";
-import type { Function } from "../program/function";
+import type { BasicBlock, CFGEdge } from "../program/views/basic-block";
+import type { Function } from "../program/views/function";
 import { MutableEnv } from "../analysis/mutable-env";
 import type { SlotLookup } from "../program/slot-table";
 
-/** Expression-level DFA module for block-fixpoint analyses. Extends
- *  `Lattice<L>` so the module itself IS the per-slot value lattice. */
+/** Author-facing spec for statement/expression analyses that run over a
+ *  function's CFG blocks.
+ *
+ *  This is a program-layer adapter, not a framework primitive and not a
+ *  `View`: callers describe how to transfer statements/expressions and the
+ *  factory turns that into the real block-keyed analyses:
+ *    - `env:   Analysis<BasicBlock, MutableEnv<L>>`
+ *    - `facts: Analysis<BasicBlock, ReadonlyMap<NodeId, L>>`
+ *
+ *  The spec extends `Lattice<L>` so one object names both the per-slot value
+ *  lattice and the expression visitor/refinement behavior. Convenient, but
+ *  cognitively dense; keep generic framework concepts out of this type. */
 export interface BlockDfaSpec<L> extends Lattice<L> {
   readonly mergeKind: "may" | "must";
   readonly direction: "forward" | "backward";
@@ -94,18 +104,20 @@ function evictStaleBlockCells(
   }
 }
 
-/** Paired block-DFA analyses produced by `makeBlockFixpointAnalysis`.
+/** Paired analyses produced by `makeBlockFixpointAnalysis`.
  *
- *    - `.env`   stores block OUT env. Owns the fixpoint: CFG-successor
- *               propagation, seed on mint/rebuild, eviction on rebuild.
- *    - `.facts` stores per-block `ReadonlyMap<nodeId, L>` plus any
- *               analysis-specific sentinel keys. Populated as a side
- *               effect of `.env`'s transfer; its own transfer is a no-op.
+ *    - `.env`   is the CFG fixpoint: block OUT env, successor propagation,
+ *               mint/rebuild seeding, and stale-block eviction.
+ *    - `.facts` is a block-keyed container for node facts emitted during
+ *               `.env` transfer. Its own transfer is a no-op.
  *
- *  The split avoids spurious CFG-successor wakes when only exprFacts change.
+ *  The split keeps CFG propagation tied to env changes only: node fact changes
+ *  can wake interested consumers via NodeSet deltas without self-waking every
+ *  successor block.
  *
- *  `perExpr(view)` returns a node-keyed adapter. `seed(unit)` returns
- *  the block where the fixpoint is seeded (entry forward, exit backward). */
+ *  `perExpr(view)` is the read facade that projects `nodeId -> owning block ->
+ *  block facts`. `seed(unit)` returns the block where the fixpoint starts
+ *  (entry for forward, exit for backward). */
 export interface BlockFixpointAnalysis<L> {
   readonly env: Analysis<BasicBlock, MutableEnv<L>>;
   readonly facts: Analysis<BasicBlock, ReadonlyMap<number, L>>;

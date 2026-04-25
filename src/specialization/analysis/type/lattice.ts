@@ -41,8 +41,6 @@ export function normalizeType(v: TypeLattice): TypeLattice {
   const boolRef = (kinds & BOOL_BIT) !== 0 ? v.boolRef : (0 as BoolRef);
   const floatRef = (kinds & FLOAT_BIT) !== 0 ? v.floatRef : (0 as IntRef);
 
-  // When INT_BIT is absent, `intRef` is already 0 above, so clearing a bit
-  // not in `kinds` is a no-op — the guards simplify to the conjunct.
   if (intRef === IntRef.Bottom) kinds &= ~INT_BIT;
   if (boolRef === BoolRef.Bottom) kinds &= ~BOOL_BIT;
   if (floatRef === IntRef.Bottom) kinds &= ~FLOAT_BIT;
