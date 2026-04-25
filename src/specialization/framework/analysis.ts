@@ -108,10 +108,10 @@ export interface AnalysisCtx {
    *
    *  `delta` is an optional `NodeSet` describing the nodeIds whose contribution
    *  to `value` advanced relative to the prior cell. Producers that can compute
-   *  it cheaply should pass it; readers registered via `onFactDirtyNodeSet`
-   *  with a narrower interest set then only fire when `interest ∩ delta` is
-   *  non-empty. When omitted, all subscribers (including nodeSet subscribers)
-   *  fire unconditionally, matching legacy whole-key fan-out. */
+   *  a narrower delta cheaply should pass it; otherwise the dispatcher uses
+   *  `key` itself as the delta (every key extends `NodeSet`, and an advance at
+   *  K naturally covers K's nodes). Readers registered via `onFactDirtyNodeSet`
+   *  fire iff `intersects(interest, delta)`. */
   write<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K, value: V, delta?: NodeSet): boolean;
   /** Evict at `currentContext`. */
   evict<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): void;

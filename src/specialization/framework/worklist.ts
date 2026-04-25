@@ -146,12 +146,11 @@ export class Worklist {
   >();
   /** Delta-routed subscribers. Each entry declares an `interest` as a
    *  `NodeSet` (typically a view: a block, a function, or an interned
-   *  singleton over a sentinel node id). The entry fires only when an
-   *  advancing write to the source publishes a `delta` such that
-   *  `intersects(delta, interest)`, OR when `delta` is absent (legacy fan-out
-   *  fallback for unmigrated producers). The `intersects` impl picks the
-   *  smaller side; interests are typically small enough that walking
-   *  interest → `delta.contains` wins. */
+   *  singleton over a sentinel node id). The entry fires when an advancing
+   *  write to the source publishes a `delta` such that
+   *  `intersects(delta, interest)`. When the producer doesn't pass an explicit
+   *  delta to `ctx.write`, `writeAndDispatch` defaults `delta = key` — every
+   *  key extends `NodeSet` and self-describes the change. */
   private readonly nodeSetSubs = new Map<
     Analysis<any, any>,
     Array<{
@@ -311,11 +310,10 @@ export class Worklist {
     });
   }
 
-  /** Same shape as `onFactDirty`, but with an explicit `interest` over node
-   *  ids. The reader fires only when an advancing write to `from` publishes
-   *  a delta whose membership intersects `interest`. Producers that omit the
-   *  delta on `ctx.write(... , delta?)` fall back to unconditional fan-out
-   *  for safety with unmigrated producers.
+  /** Same shape as `onFactDirty`, but the reader declares an `interest`
+   *  `NodeSet`. The reader fires only when an advancing write to `from`
+   *  publishes a delta intersecting `interest` (the dispatcher defaults
+   *  delta to the write's key when the producer doesn't pass one).
    *
    *  Use over `onFactDirty` when the reader cares about a strict subset of
    *  the source's value space (e.g. `purityFunctionAnalysis` cares only about
@@ -575,17 +573,18 @@ export class Worklist {
   /** The single site funneling transfer results into the store and fanning
    *  them out to subscribers. Returns true iff the cell advanced.
    *
-   *  `delta`, when supplied, scopes nodeSet subscribers: an entry fires only
-   *  if its `interest` intersects `delta`. Whole-key (`onFactDirty`) and
-   *  read-tracked subscribers always fire on advance. When `delta` is
-   *  omitted, nodeSet subscribers fan out unconditionally — the legacy
-   *  fallback for producers that haven't migrated yet. */
+   *  `delta` scopes nodeSet subscribers: an entry fires only if its
+   *  `interest` intersects `delta`. Default is `key` itself — every
+   *  analysis key already extends `NodeSet`, and an advance at key K is
+   *  by construction an advance over the nodes K covers. Producers can
+   *  pass a narrower `delta` when they know the change touches only a
+   *  subset of the key's nodes (e.g. dfa-factory's per-fact delta). */
   private writeAndDispatch<K extends NodeSet, V>(
     analysis: Analysis<K, V>,
     key: K,
     value: V,
     context: AssumptionChain,
-    delta?: NodeSet,
+    delta: NodeSet = key,
   ): boolean {
     const result = storeWrite(analysis.store, key, value, context);
     if (result === null) return false;
@@ -606,9 +605,7 @@ export class Worklist {
     const nodeSubs = this.nodeSetSubs.get(source);
     if (nodeSubs !== undefined) {
       for (const sub of nodeSubs) {
-        if (delta === undefined || intersects(sub.interest, delta)) {
-          sub.fire(ctx, key);
-        }
+        if (intersects(sub.interest, delta)) sub.fire(ctx, key);
       }
     }
     return true;
