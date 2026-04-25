@@ -11,6 +11,7 @@ import type {
   JoinSemiLattice,
 } from "../../framework/analysis";
 import { defineAnalysis } from "../../framework/analysis";
+import { internSingletonNode } from "../../program/node-set";
 import { asProgramCtx } from "../../program/program-ctx";
 import type { BasicBlock } from "../../program/cfg";
 import type { Function } from "../../program/function";
@@ -359,7 +360,7 @@ export const purityFunctionAnalysis: Analysis<Function, boolean | undefined> = d
     wl.onFactDirtyNodeSet(
       purityBlockAnalysis.facts as Analysis<any, any>,
       purityFunctionAnalysis,
-      [IMPURE_SENTINEL_NODE_ID],
+      internSingletonNode(IMPURE_SENTINEL_NODE_ID),
       (ctx, key) => {
         const owner = asProgramCtx(ctx).functions.get((key as BasicBlock).unitId);
         return owner !== undefined ? unitOf(owner) : [];

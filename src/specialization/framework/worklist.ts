@@ -20,6 +20,7 @@ import type { CounterStore } from "../observation/counter-store";
 import type { ObservationBinding } from "../observation/observation-binding";
 import type { ObservationChannel } from "../observation/observation-channel";
 import type { NodeId, NodeSet } from "./analysis";
+import { intersects } from "../program/node-set";
 import type { FunctionId } from "../program/program-view";
 import {
   type Analysis,
@@ -143,17 +144,18 @@ export class Worklist {
     Analysis<any, any>,
     Array<(ctx: AnalysisCtx, key: unknown) => void>
   >();
-  /** Delta-routed subscribers. Each entry declares an `interest` over node
-   *  ids; the entry fires only when an advancing write to the source publishes
-   *  a `delta` whose membership intersects `interest`, OR when `delta` is
-   *  absent (legacy fan-out fallback for unmigrated producers). Iteration
-   *  direction is interest → `delta.contains` because `NodeSet`'s contract is
-   *  `contains`-only; interests today are small (singleton for purity, a
-   *  handful for transform rules). */
+  /** Delta-routed subscribers. Each entry declares an `interest` as a
+   *  `NodeSet` (typically a view: a block, a function, or an interned
+   *  singleton over a sentinel node id). The entry fires only when an
+   *  advancing write to the source publishes a `delta` such that
+   *  `intersects(delta, interest)`, OR when `delta` is absent (legacy fan-out
+   *  fallback for unmigrated producers). The `intersects` impl picks the
+   *  smaller side; interests are typically small enough that walking
+   *  interest → `delta.contains` wins. */
   private readonly nodeSetSubs = new Map<
     Analysis<any, any>,
     Array<{
-      readonly interest: Iterable<NodeId>;
+      readonly interest: NodeSet;
       readonly fire: (ctx: AnalysisCtx, key: unknown) => void;
     }>
   >();
@@ -324,7 +326,7 @@ export class Worklist {
   onFactDirtyNodeSet<K extends NodeSet>(
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
-    interest: Iterable<NodeId>,
+    interest: NodeSet,
     dirtied: (ctx: AnalysisCtx, key: unknown) => Iterable<K>,
     opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
   ): void {
@@ -604,19 +606,12 @@ export class Worklist {
     const nodeSubs = this.nodeSetSubs.get(source);
     if (nodeSubs !== undefined) {
       for (const sub of nodeSubs) {
-        if (delta === undefined || Worklist.intersects(sub.interest, delta)) {
+        if (delta === undefined || intersects(sub.interest, delta)) {
           sub.fire(ctx, key);
         }
       }
     }
     return true;
-  }
-
-  private static intersects(interest: Iterable<NodeId>, delta: NodeSet): boolean {
-    for (const n of interest) {
-      if (delta.contains(n)) return true;
-    }
-    return false;
   }
 
   /** Sweep every registered transform over its dirty functions once. Units that
