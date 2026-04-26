@@ -194,13 +194,6 @@ export class SVMLProgram {
     this.functions = Object.freeze([...functions]);
     Object.freeze(this);
   }
-
-  /** Return a new program with one function replaced by a specialized variant. */
-  withSpecializedFunction(index: number, newIR: SVMLIR): SVMLProgram {
-    const fns = [...this.functions];
-    fns[index] = newIR;
-    return new SVMLProgram(this.entryPoint, fns);
-  }
 }
 
 export function getSVMLType(value: SVMLBoxType): SVMLType {

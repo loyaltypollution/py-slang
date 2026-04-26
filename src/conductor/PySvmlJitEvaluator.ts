@@ -24,11 +24,7 @@ import { EvaluatorError } from "./errors";
  * Publication: this evaluator IS the `PublicationStrategy` (see
  * `specialization/publication.ts`). The artifact (`SVMLIR`) is captured
  * directly into the new call frame and never installed back into
- * `SVMLProgram`. `SVMLInterpreter.patchFunction` is a dormant hook for a
- * future strategy that pre-compiles and patches slots between runs;
- * switching to it would not require any specialization-framework change,
- * only a different evaluator wiring that drives `worklist.drain()` ahead
- * of execution.
+ * `SVMLProgram` — the only swap channel is the next-call dispatch.
  *
  * Symmetric with `PyCseJitEvaluator.dispatchCall`, modulo the final
  * `compiler.compileFunction` step that lowers the chosen body to bytecode.

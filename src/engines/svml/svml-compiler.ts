@@ -235,9 +235,8 @@ export class SVMLCompiler
   /**
    * Recompile a single `Function`'s body into fresh SVMLIR, without
    * touching any sibling builder. The returned IR's function index matches
-   * what `compileProgram` would have assigned, so callers can splice it
-   * into an existing `SVMLProgram` via `withSpecializedFunction(index, ir)`
-   * and every `NEWC <index>` operand in unaffected siblings remains valid.
+   * what `compileProgram` would have assigned, so every `NEWC <index>`
+   * operand in unaffected siblings remains valid.
    *
    * Only `FunctionDef` bodies are supported (matches `Function.funcAst`
    * excluding `FileInput`, which is the entry-point program and is rebuilt

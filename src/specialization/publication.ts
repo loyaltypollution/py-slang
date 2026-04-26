@@ -19,19 +19,12 @@
 // Today's only strategy recompiles per CALL: each invocation derives the
 // chosen body under the live preferred chain, calls
 // `compiler.compileFunction(unit, body)`, and the new frame captures
-// the resulting artifact directly. No slot patching, no OSR, no enum
-// describing which of those it is — the strategy is its own description.
-//
-// `SVMLInterpreter.patchFunction` is a dormant hook for a future
-// "compile-then-patch-the-slot" strategy; introducing it would not
-// require any framework change, only a different `PublicationStrategy`
-// that drives `worklist.drain()` ahead of execution and patches slots
-// between runs.
+// the resulting artifact directly. No slot patching, no OSR — the
+// strategy is its own description.
 //
 // True OSR — current frames switching mid-execution at safe points — is
-// the genuinely new design and is not in scope for this contract. The
-// current contract promises only that future *dispatch* sees the new
-// artifact.
+// out of scope. The current contract promises only that future *dispatch*
+// sees the new artifact.
 
 import type { AssumptionChain } from "./assumption";
 

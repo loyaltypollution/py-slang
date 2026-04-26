@@ -150,16 +150,6 @@ export class SVMLInterpreter {
   }
 
   /**
-   * Swap function `index`'s IR. Caller must hold the direct-IR-ref
-   * invariant: no `CallFrame.ir` outlives this reassignment, because frames
-   * capture IR at CALL time. Expected caller: the evaluator's JIT dispatch
-   * hook after deciding the IR has actually changed.
-   */
-  patchFunction(index: number, ir: SVMLIR): void {
-    this.program = this.program.withSpecializedFunction(index, ir);
-  }
-
-  /**
    * Execute the program and return the result
    */
   execute(): SVMLBoxType {
