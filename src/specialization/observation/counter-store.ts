@@ -9,7 +9,7 @@ export class CounterStore<K> {
     return this.counts.get(key) ?? 0;
   }
 
-  bind?(worklist: Worklist): void;
+  bind?(worklist: Worklist<any, any>): void;
 
   _applyBump(key: K): { prev: number; next: number } | null {
     const prev = this.counts.get(key) ?? 0;

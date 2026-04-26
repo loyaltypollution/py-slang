@@ -49,7 +49,7 @@ export interface Analysis<K extends NodeSet, V> {
   transfer(ctx: AnalysisCtx, key: K): V | undefined;
 
   /** Optional registration hook. Called by `Worklist.register`. */
-  bind?(worklist: Worklist): void;
+  bind?(worklist: Worklist<any, any>): void;
 }
 
 /** Pair of (analysis, seed-key) re-enqueued at every narrowing-entry to

@@ -13,13 +13,12 @@
 //   - fireRefute fires subs without touching chainFor — reconcile is
 //     external (the worklist owns it; see worklist.refute()).
 //
-// What this test does NOT yet exercise: passing a synthetic domain into
-// the concrete Worklist. Worklist is currently typed on
-// UnitDomain<Function, FunctionLocator> via its FunctionManager-built
-// `units` field; making Worklist parametric on <U, L> is a future change
-// that this test pre-bakes the interface for.
+// Bottom of file also drives a real Worklist<SyntheticUnit, SyntheticLocator>
+// to prove the synthetic domain is sufficient for worklist orchestration.
 
 import { ROOT_CONTEXT, extend, type AssumptionChain, type NarrowingId } from "../../specialization/assumption";
+import { Worklist } from "../../specialization/framework/worklist";
+import type { TransformRule } from "../../specialization/framework/analysis";
 import {
   EMPTY_NODESET,
   nodeSetOfIds,
@@ -278,5 +277,74 @@ describe("UnitDomain contract — satisfiable for a non-Function unit kind", () 
 
     expect(chainFires).toBe(0);
     expect(refuteFires).toBe(0);
+  });
+});
+
+// --- end-to-end: drive a real Worklist with the synthetic domain --------
+
+describe("Worklist<U, L> drives a synthetic domain end-to-end", () => {
+  test("transform sweep + scheduleRebuild + flushPendingRebuilds runs without any Function dependency", () => {
+    const d = new SyntheticDomain();
+    const a = d.addUnit("a", [1, 2]);
+    const b = d.addUnit("b", [10]);
+
+    const swept: SyntheticUnit[] = [];
+    const rule: TransformRule<SyntheticUnit, SyntheticLocator> = {
+      sweep(unit, _chain, _locator) {
+        swept.push(unit);
+        // Don't schedule a rebuild — one-shot per unit; otherwise drain
+        // would loop until the rule reports false.
+        return false;
+      },
+    };
+
+    const wl = new Worklist<SyntheticUnit, SyntheticLocator>({
+      units: d,
+      analyses: [],
+      transforms: [rule],
+    });
+
+    // Both units are seeded into the rule's dirty set by the extent-change
+    // subscribe-time replay.
+    const rebuilt = wl.drain();
+    expect(swept.sort((x, y) => x.id.localeCompare(y.id))).toEqual([a, b].sort((x, y) => x.id.localeCompare(y.id)));
+    expect(rebuilt).toEqual([]);
+
+    // wl.locate is the synthetic locator, not a FunctionLocator.
+    expect(wl.locate.unitContainingNode(2)).toBe(a);
+    expect(wl.locate.unitContainingNode(10)).toBe(b);
+  });
+
+  test("Worklist.drain() returns rebuilt units (in flush order), now generic over U", () => {
+    const d = new SyntheticDomain();
+    const a = d.addUnit("a", [1]);
+    const b = d.addUnit("b", [2]);
+
+    let fires = 0;
+    const rule: TransformRule<SyntheticUnit, SyntheticLocator> = {
+      sweep(_unit, _chain, _locator) {
+        // Fire once total: pretend `a` rewrote on the first sweep, then
+        // nothing more. Must return true to schedule a rebuild.
+        if (fires === 0) {
+          fires++;
+          return true;
+        }
+        return false;
+      },
+    };
+
+    const wl = new Worklist<SyntheticUnit, SyntheticLocator>({
+      units: d,
+      analyses: [],
+      transforms: [rule],
+    });
+
+    // First sweep: rule fires once → one rebuild scheduled, then second
+    // sweep is a no-op so drain converges. Either a or b will be the
+    // dirty unit visited first; the test only asserts that drain returns
+    // the unit that was actually rebuilt.
+    const rebuilt = wl.drain();
+    expect(rebuilt.length).toBe(1);
+    expect([a, b]).toContain(rebuilt[0]);
   });
 });

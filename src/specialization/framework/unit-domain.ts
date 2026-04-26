@@ -51,7 +51,7 @@ export type RefuteListener<U> = (unit: U, carrier: AssumptionChain) => void;
  *  `flushPendingRebuilds()` materializes the change, fires the extent
  *  stream with non-empty (prev, next), and returns the units that were
  *  actually rebuilt (in flush order). */
-export interface UnitDomain<U, L extends UnitLocator<U>> {
+export interface UnitDomain<U, L = UnitLocator<U>> {
   /** The program-shape lookup surface concrete to this domain. */
   readonly locator: L;
 

@@ -1,7 +1,13 @@
 // Driver for analysis-graph dispatch: registration façade, fan-out maps,
 // transform sweep, speculation-context machinery, and fixpoint driver.
+//
+// Generic over `(U, L)` — the unit kind and locator surface this driver
+// orchestrates. Defaults to `(Function, FunctionLocator)`; the existing
+// `new Worklist({ ast, functionEnvironments, ... })` constructor preserves
+// the original Function-flavored ergonomics. A synthetic `UnitDomain` is
+// injected via `WorklistConfig.units` instead.
 
-import { StmtNS } from "../../ast-types";
+import type { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import {
   carrier as carrierOf,
@@ -30,18 +36,20 @@ import {
 import { type Function } from "../program/function";
 import { FunctionManager } from "../program/function-manager";
 import type { FunctionLocator } from "../program/function-locator";
-import type { UnitDomain } from "./unit-domain";
+import type { UnitDomain, UnitLocator } from "./unit-domain";
 
 /** Resolver supplied per-binding (or the default below): turns the channel's
- *  key into the owning Function so observation ingress can route narrowings
- *  to the right unit. */
-type UnitResolver = (locator: FunctionLocator, key: any) => Function | undefined;
+ *  key into the owning unit so observation ingress can route narrowings
+ *  to the right one. */
+type UnitResolver<U, L> = (locator: L, key: any) => U | undefined;
 
 /** Default resolver: assumes the binding's key is a NodeId and looks up the
- *  enclosing function. ObservationBindings whose key is not a NodeId must
- *  supply their own `resolveUnit`. */
-const defaultUnitResolver: UnitResolver = (locator, key) =>
-  locator.unitContainingNode(key as NodeId);
+ *  enclosing unit via the locator's `UnitLocator<U>` surface.
+ *  ObservationBindings whose key is not a NodeId must supply their own
+ *  `resolveUnit`. */
+function defaultUnitResolver<U>(locator: UnitLocator<U>, key: any): U | undefined {
+  return locator.unitContainingNode(key as NodeId);
+}
 
 /** A `(analysis, key, context)` triple as the worklist enqueues it. */
 interface AnalysisTriple {
@@ -79,12 +87,25 @@ class TripleQueue {
   }
 }
 
-/** Construction payload for `Worklist`. */
-export interface WorklistConfig {
-  readonly ast: StmtNS.FileInput;
-  readonly functionEnvironments: FunctionEnvironments;
+/** Construction payload for `Worklist<U, L>`. Two construction modes:
+ *
+ *  - **Function default** (no `units` supplied): pass `ast` and
+ *    `functionEnvironments`; the worklist builds a `FunctionManager` and
+ *    drives `Function` units. This is the path every existing call site
+ *    uses.
+ *  - **Injected domain** (`units` supplied): pass any `UnitDomain<U, L>`
+ *    directly; the worklist drives whatever unit kind it represents.
+ *    `ast`/`functionEnvironments` are ignored if also passed. */
+export interface WorklistConfig<
+  U = Function,
+  L = FunctionLocator,
+> {
+  readonly units?: UnitDomain<U, L>;
+  readonly ast?: StmtNS.FileInput;
+  readonly functionEnvironments?: FunctionEnvironments;
+
   readonly analyses: ReadonlyArray<Analysis<any, any>>;
-  readonly transforms: ReadonlyArray<TransformRule>;
+  readonly transforms: ReadonlyArray<TransformRule<U, L>>;
   readonly narrowings?: ReadonlyArray<Narrowing<any, any>>;
   readonly counters?: ReadonlyArray<CounterStore<any>>;
   readonly channels?: ReadonlyArray<ObservationChannel<any, any>>;
@@ -96,13 +117,16 @@ export interface WorklistConfig {
   readonly observationBindings?: ReadonlyArray<ObservationBinding<any, any>>;
 }
 
-export class Worklist {
+export class Worklist<
+  U = Function,
+  L = FunctionLocator,
+> {
   /** The atomic-unit domain this worklist drives. All lifecycle / chain /
    *  refute / rebuild orchestration routes through this contract, so the
-   *  worklist proper does not depend on `FunctionManager` directly.
-   *  Today this is always built from a `FunctionManager`; Phase 29 makes
-   *  it injectable so a synthetic domain can drive a real worklist. */
-  readonly units: UnitDomain<Function, FunctionLocator>;
+   *  worklist proper does not depend on any concrete domain. Built from a
+   *  `FunctionManager` in the default Function path or supplied directly
+   *  via `WorklistConfig.units`. */
+  readonly units: UnitDomain<U, L>;
 
   private readonly registeredAnalyses = new Set<Analysis<any, any>>();
   // Two tier-specific FIFOs: the only enforced order is
@@ -125,9 +149,9 @@ export class Worklist {
   /** Registered transforms and their per-rule dirty sets. A unit enters its
    *  set on extent-change (mint or rebuild) or on a write to an upstream
    *  analysis the rule subscribes to; sweep clears it. */
-  private readonly transforms: TransformRule[] = [];
-  private readonly transformsSet = new Set<TransformRule>();
-  private readonly transformDirty = new Map<TransformRule, Set<Function>>();
+  private readonly transforms: TransformRule<U, L>[] = [];
+  private readonly transformsSet = new Set<TransformRule<U, L>>();
+  private readonly transformDirty = new Map<TransformRule<U, L>, Set<U>>();
 
   /** Reentrancy guard: set while `sweepTransforms` runs. `publish`/`bump`
    *  throw when true — observation ingress mid-sweep would shift
@@ -164,12 +188,11 @@ export class Worklist {
   /** Refutation filter (minimal generators; `contains(c) = ∃ r. leq(r, c)`). */
   private readonly refutations: Refutations = new Refutations();
 
-  /** Read surface for `Function` lookups — by id, AST node, or enclosing
-   *  node. Generic dispatch does not need this; consumers that genuinely
-   *  require program shape capture it explicitly (typically at
-   *  `Analysis.bind` / `TransformRule.bind`). Convenience over
-   *  `this.units.locator`. */
-  get locate(): FunctionLocator {
+  /** Read surface for unit lookups — convenience over `this.units.locator`.
+   *  Generic dispatch does not need this; consumers that genuinely require
+   *  program shape capture it explicitly (typically at `Analysis.bind` /
+   *  `TransformRule.bind`). */
+  get locate(): L {
     return this.units.locator;
   }
 
@@ -178,7 +201,7 @@ export class Worklist {
   /** Per-source unit resolver; all bindings on a source must agree. */
   private readonly unitResolverBySource: Map<
     ObservationChannel<any, any>,
-    UnitResolver
+    UnitResolver<U, L>
   >;
   /** Per-source observation bindings, indexed for ingress dispatch. */
   private readonly bindingsBySource: ReadonlyMap<
@@ -188,8 +211,9 @@ export class Worklist {
 
   private readonly registeredChannels = new Set<ObservationChannel<any, any>>();
 
-  constructor(config: WorklistConfig) {
+  constructor(config: WorklistConfig<U, L>) {
     const {
+      units,
       ast,
       functionEnvironments,
       analyses,
@@ -204,11 +228,11 @@ export class Worklist {
     this.extraEntrySeeds = extraEntrySeeds;
     // Group bindings by `source`. Each group must agree on `resolveUnit`
     // so registration bugs surface at construction.
-    const unitResolverBySource = new Map<ObservationChannel<any, any>, UnitResolver>();
+    const unitResolverBySource = new Map<ObservationChannel<any, any>, UnitResolver<U, L>>();
     const bindingsBySource = new Map<ObservationChannel<any, any>, ObservationBinding<any, any>[]>();
     for (const b of observationBindings) {
       const source = b.source;
-      const resolver: UnitResolver = b.resolveUnit ?? defaultUnitResolver;
+      const resolver: UnitResolver<U, L> = (b.resolveUnit ?? defaultUnitResolver) as UnitResolver<U, L>;
       const existing = unitResolverBySource.get(source);
       if (existing === undefined) {
         unitResolverBySource.set(source, resolver);
@@ -225,9 +249,19 @@ export class Worklist {
     this.bindingsBySource = bindingsBySource;
     // Build the unit domain FIRST: registrations below depend on the
     // initial extent-change burst it fires when subscribers register
-    // via `onExtentChange`. Today the only domain is `FunctionManager`,
-    // which builds Functions from `ast`.
-    this.units = new FunctionManager(ast, functionEnvironments);
+    // via `onExtentChange`.
+    if (units !== undefined) {
+      this.units = units;
+    } else if (ast !== undefined && functionEnvironments !== undefined) {
+      // Default Function path. The cast is sound: when (U, L) take their
+      // defaults (Function, FunctionLocator), FunctionManager satisfies
+      // UnitDomain<Function, FunctionLocator> exactly.
+      this.units = new FunctionManager(ast, functionEnvironments) as unknown as UnitDomain<U, L>;
+    } else {
+      throw new Error(
+        "[Worklist] WorklistConfig requires either `units` or both `ast` and `functionEnvironments`.",
+      );
+    }
 
     for (const p of analyses) this.register(p);
     for (const c of counters) this.registerCounter(c);
@@ -235,7 +269,7 @@ export class Worklist {
     for (const r of transforms) this.registerTransform(r);
   }
 
-  private dirtyFor(rule: TransformRule): Set<Function> {
+  private dirtyFor(rule: TransformRule<U, L>): Set<U> {
     const d = this.transformDirty.get(rule);
     if (d === undefined) throw new Error(`[Worklist] missed registerTransform`);
     return d;
@@ -247,7 +281,7 @@ export class Worklist {
   }
 
   /** Subscribe to refutation events. Routed through the unit domain. */
-  onRefute(callback: (unit: Function, carrier: AssumptionChain) => void): void {
+  onRefute(callback: (unit: U, carrier: AssumptionChain) => void): void {
     this.units.onRefute(callback);
   }
 
@@ -256,7 +290,7 @@ export class Worklist {
    *  binding under a different prefix would escape `isRefuted`), fire refute
    *  subscribers, then reconcile the unit's preferred dispatch chain by
    *  clearing it if it's now refuted. Idempotent. */
-  private refute(unit: Function, carrier: AssumptionChain): void {
+  private refute(unit: U, carrier: AssumptionChain): void {
     if (carrier === ROOT_CONTEXT) return;
     const a = carrier.assumption!;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
@@ -291,7 +325,7 @@ export class Worklist {
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
     interest: NodeSet,
-    dirtied: (locator: FunctionLocator, key: unknown) => Iterable<K>,
+    dirtied: (locator: L, key: unknown) => Iterable<K>,
     opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
   ): void {
     const project = opts?.enqueueAt;
@@ -312,7 +346,7 @@ export class Worklist {
   subscribeOnAdvance<K extends NodeSet>(
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
-    dirtied: (locator: FunctionLocator, key: unknown) => Iterable<K>,
+    dirtied: (locator: L, key: unknown) => Iterable<K>,
     opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
   ): void {
     const project = opts?.enqueueAt;
@@ -330,7 +364,7 @@ export class Worklist {
    *  stale ids. */
   onExtentChange<K extends NodeSet>(
     reader: Analysis<K, any>,
-    dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
+    dirtied: (locator: L, unit: U) => Iterable<K>,
   ): void {
     this.units.onExtentChange((unit, _prev, _next) => {
       for (const k of dirtied(this.units.locator, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
@@ -342,7 +376,7 @@ export class Worklist {
    *  `futureDispatchContext`. */
   onChainChange<K extends NodeSet>(
     reader: Analysis<K, any>,
-    dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
+    dirtied: (locator: L, unit: U) => Iterable<K>,
   ): void {
     this.units.onChainChange((unit, _prev, _next) => {
       for (const k of dirtied(this.units.locator, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
@@ -360,11 +394,11 @@ export class Worklist {
   /** Register a transform rule. Idempotent. Auto-installs extent-change
    *  dirtying so each unit enters the rule's dirty set on mint and rebuild,
    *  then lets the rule subscribe via `bind`. */
-  registerTransform(rule: TransformRule): void {
+  registerTransform(rule: TransformRule<U, L>): void {
     if (this.transformsSet.has(rule)) return;
     this.transformsSet.add(rule);
     this.transforms.push(rule);
-    const dirty = new Set<Function>();
+    const dirty = new Set<U>();
     this.transformDirty.set(rule, dirty);
     this.units.onExtentChange((unit, _prev, _next) => { dirty.add(unit); });
     rule.bind?.(this);
@@ -373,9 +407,9 @@ export class Worklist {
   /** Transform-side fact-dirty: when `from` advances, add the projected
    *  units to `rule`'s dirty set. Cell-identity dependency. */
   onTransformFactDirty<K extends NodeSet>(
-    rule: TransformRule,
+    rule: TransformRule<U, L>,
     from: Analysis<K, any>,
-    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
+    dirtied: (locator: L, key: K) => Iterable<U>,
   ): void {
     const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.advanceSubs, from as Analysis<any, any>, (_ctx, key) => {
@@ -408,9 +442,9 @@ export class Worklist {
 
   /** Subscribe a transform to counter bumps. */
   onTransformCounterBumped<K>(
-    rule: TransformRule,
+    rule: TransformRule<U, L>,
     counter: CounterStore<K>,
-    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
+    dirtied: (locator: L, key: K) => Iterable<U>,
   ): void {
     const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (_ctx, key) => {
@@ -648,13 +682,19 @@ export class Worklist {
   /** Re-seed Kildall for every context-sensitive entry-seed at `unit`'s
    *  entry block under `context`. Covers every registered narrowing plus any
    *  `extraEntrySeeds` passed in by the caller. */
-  private enqueueNarrowingEntry(unit: Function, context: AssumptionChain): void {
+  private enqueueNarrowingEntry(unit: U, context: AssumptionChain): void {
+    // EntrySeed.seed takes V extends NodeSet — the unit must therefore
+    // be coercible to NodeSet. Function satisfies this by extending
+    // NodeSet directly; synthetic units that participate in chain-change
+    // reseeding satisfy it the same way. The cast pins the contract at
+    // this single site.
+    const seedView = unit as unknown as NodeSet;
     for (const n of this.narrowings) {
       const seed = n.blockAnalysis();
-      this.enqueue(seed.env, seed.seed(unit), context);
+      this.enqueue(seed.env, seed.seed(seedView), context);
     }
     for (const seed of this.extraEntrySeeds) {
-      this.enqueue(seed.env, seed.seed(unit), context);
+      this.enqueue(seed.env, seed.seed(seedView), context);
     }
   }
 
@@ -667,7 +707,8 @@ export class Worklist {
     const applicable = this.bindingsBySource.get(source);
     if (applicable === undefined || applicable.length === 0) return context;
 
-    const resolveUnit = this.unitResolverBySource.get(source) ?? defaultUnitResolver;
+    const resolveUnit = this.unitResolverBySource.get(source)
+      ?? (defaultUnitResolver as UnitResolver<U, L>);
     const unit = resolveUnit(this.units.locator, key);
     if (unit === undefined) return context;
 
@@ -723,17 +764,16 @@ export class Worklist {
 
   /** Preferred future-dispatch chain for `unit`. Delegates to the unit
    *  domain. */
-  futureDispatchChainFor(unit: Function): AssumptionChain {
+  futureDispatchChainFor(unit: U): AssumptionChain {
     return this.units.chainFor(unit);
   }
 
   /** Drain to fixed point: analyses → transforms → analyses → CFG rebuild,
    *  iterated until no transform fires and no rebuild occurs. Returns the
-   *  `FileInput | FunctionDef` nodes whose CFGs were rewired. Throws if
+   *  units that were rebuilt during this drain (in flush order). Throws if
    *  `limit` rebuilds occur without converging. */
-  drain(limit: number = Worklist.DEFAULT_DRAIN_LIMIT): ReadonlySet<StmtNS.FileInput | StmtNS.FunctionDef> {
-    const changed = new Set<StmtNS.FileInput | StmtNS.FunctionDef>();
-    let processed = 0;
+  drain(limit: number = Worklist.DEFAULT_DRAIN_LIMIT): readonly U[] {
+    const changed: U[] = [];
 
     while (true) {
       this.processAnalysesToFixpoint();
@@ -743,12 +783,9 @@ export class Worklist {
 
       if (!fired && rebuilt.length === 0) break;
 
-      for (const unit of rebuilt) {
-        changed.add(unit.funcAst);
-        processed++;
-      }
+      for (const unit of rebuilt) changed.push(unit);
 
-      if (processed >= limit) {
+      if (changed.length >= limit) {
         throw new Error(
           `[Worklist] drain exceeded ${limit} CFG rebuilds — likely a non-terminating transform cascade.`,
         );

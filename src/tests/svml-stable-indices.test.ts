@@ -17,6 +17,7 @@ import memo from "../stdlib/memo";
 import misc from "../stdlib/misc";
 import { traverseAST } from "../validator/traverse";
 import { buildTestWorklist } from "./utils";
+import type { FunctionManager } from "../specialization/program/function-manager";
 
 function build(code: string) {
   const script = code + "\n";
@@ -25,7 +26,12 @@ function build(code: string) {
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
   engine.drain();
-  const functions = engine.functionManager;
+  // For Function-flavored tests we need both the UnitDomain `values()`
+  // surface and the FunctionLocator `functionById` surface — Worklist's
+  // public `units: UnitDomain<Function, FunctionLocator>` typing only
+  // exposes the former. The default constructor uses FunctionManager so
+  // the cast is sound.
+  const functions = engine.units as FunctionManager;
   const typeStore = typeAnalysis.perExpr(engine.locate);
   const constStore = constAnalysis.perExpr(engine.locate);
   const compiler = SVMLCompiler.fromProgramUnit(ast, environments, {
