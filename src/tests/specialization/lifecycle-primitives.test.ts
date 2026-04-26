@@ -22,7 +22,7 @@ g(2)
 describe("Extent stream — onExtentChange", () => {
   test("subscribe-time replay fires (unit, EMPTY_NODESET, snapshot) once per existing unit", () => {
     const { worklist } = setup(SRC);
-    const fm = worklist.functionManager;
+    const fm = worklist.units;
     const events: Array<{ unit: Function; prevSize: number; nextSize: number }> = [];
 
     fm.onExtentChange((unit, prev, next) => {
@@ -41,7 +41,7 @@ describe("Extent stream — onExtentChange", () => {
 
   test("rebuild fires (unit, prev, next) with prev.size > 0 — distinguishes from mint", () => {
     const { worklist } = setup(SRC);
-    const fm = worklist.functionManager;
+    const fm = worklist.units;
 
     // Subscribe AFTER initial build so the replay burst is consumed by a no-op
     // listener; only later events go to `tail`.
@@ -66,7 +66,7 @@ describe("Extent stream — onExtentChange", () => {
 
   test("evict-on-rebuild gate (prev.size > 0) holds across mint and rebuild", () => {
     const { worklist } = setup(SRC);
-    const fm = worklist.functionManager;
+    const fm = worklist.units;
     const evictions: Function[] = [];
 
     fm.onExtentChange((unit, prev, _next) => {
@@ -87,7 +87,7 @@ describe("Chain stream — onChainChange", () => {
   test("ROOT-context unit fires no chain changes during a clean drain", () => {
     const { worklist } = setup(SRC);
     const events: Array<{ unit: Function; prev: AssumptionChain; next: AssumptionChain }> = [];
-    worklist.functionManager.dispatch.onChainChange((unit, prev, next) => {
+    worklist.units.onChainChange((unit, prev, next) => {
       events.push({ unit, prev, next });
     });
 
@@ -99,15 +99,14 @@ describe("Chain stream — onChainChange", () => {
 
   test("explicit fireChainChange carries (prev, next) shape", () => {
     const { worklist } = setup(SRC);
-    const dispatch = worklist.functionManager.dispatch;
-    const target = Array.from(worklist.functionManager.values())[0];
+    const target = Array.from(worklist.units.values())[0];
 
     const seen: Array<{ prev: AssumptionChain; next: AssumptionChain }> = [];
-    dispatch.onChainChange((_unit, prev, next) => seen.push({ prev, next }));
+    worklist.units.onChainChange((_unit, prev, next) => seen.push({ prev, next }));
 
     // Synthesize a chain change without going through observation ingress.
     const fakeNext = ROOT_CONTEXT;
-    dispatch.fireChainChange(target, ROOT_CONTEXT, fakeNext);
+    worklist.units.fireChainChange(target, ROOT_CONTEXT, fakeNext);
 
     expect(seen).toEqual([{ prev: ROOT_CONTEXT, next: fakeNext }]);
   });
@@ -117,7 +116,7 @@ describe("Refute event — orthogonal to chain stream", () => {
   test("onRefute receives (unit, carrier) — carrier identity is preserved (not collapsed into a chain delta)", () => {
     const { worklist } = setup(SRC);
     const refutes: Array<{ unit: Function; carrier: AssumptionChain }> = [];
-    worklist.functionManager.dispatch.onRefute((unit, carrier) => {
+    worklist.units.onRefute((unit, carrier) => {
       refutes.push({ unit, carrier });
     });
 
@@ -139,7 +138,7 @@ describe("Refute event — orthogonal to chain stream", () => {
 describe("Snapshot semantics — extent UnitExtent at moment-in-time", () => {
   test("the `next` UnitExtent on subscribe-time replay enumerates the unit's CFG-owned ids", () => {
     const { worklist } = setup(SRC);
-    const fm = worklist.functionManager;
+    const fm = worklist.units;
 
     let captured: { unit: Function; next: UnitExtent } | undefined;
     fm.onExtentChange((unit, _prev, next) => {
@@ -160,7 +159,7 @@ describe("Snapshot semantics — extent UnitExtent at moment-in-time", () => {
 
   test("UnitExtent contract — listeners receive finite, enumerable snapshots without optionality", () => {
     const { worklist } = setup(SRC);
-    const fm = worklist.functionManager;
+    const fm = worklist.units;
 
     // The listener type must accept (UnitExtent, UnitExtent), not optional-
     // size NodeSets. This is a compile-time assertion: if the framework

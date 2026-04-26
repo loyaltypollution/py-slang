@@ -1,9 +1,9 @@
 // Per-Function speculation policy is split into the composed
 // `FunctionDispatchState` — orthogonal to node ownership.
 
-import { StmtNS } from "../../ast-types";
+import type { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
-import { isRoot, ROOT_CONTEXT, type AssumptionChain } from "../assumption";
+import type { AssumptionChain } from "../assumption";
 import {
   EMPTY_NODESET,
   nodeSetOfIds,
@@ -12,7 +12,6 @@ import {
 } from "./node-set";
 import {
   buildFunctions,
-  buildOneFunction,
   wireCFG,
   type Function,
   type FunctionId,
@@ -36,12 +35,9 @@ export class FunctionManager implements FunctionLocator, UnitDomain<Function, Fu
 
   private readonly extentSubs: ExtentListener[] = [];
 
-  readonly dispatch = new FunctionDispatchState();
+  private readonly dispatch = new FunctionDispatchState();
 
-  constructor(
-    ast: StmtNS.FileInput,
-    private readonly functionEnvironments: FunctionEnvironments,
-  ) {
+  constructor(ast: StmtNS.FileInput, functionEnvironments: FunctionEnvironments) {
     for (const [, unit] of buildFunctions(ast, functionEnvironments)) {
       this.registerUnit(unit);
     }
@@ -70,29 +66,13 @@ export class FunctionManager implements FunctionLocator, UnitDomain<Function, Fu
 
   /** Sole lifecycle primitive. Fires for every existing unit at subscribe
    *  time with `prev = EMPTY_NODESET` so late subscribers replay the mint
-   *  burst. Subsequent fires:
-   *    - addFunction:  (unit, EMPTY_NODESET, snapshot)
-   *    - flushPendingRebuilds: (unit, prevSnapshot, nextSnapshot)
+   *  burst. Rebuild fires `(unit, prevSnapshot, nextSnapshot)`.
    *  Eviction listeners gate on `prev.size > 0`. */
   onExtentChange(cb: ExtentListener): void {
     this.extentSubs.push(cb);
     for (const unit of this.functionsByFunctionId.values()) {
       cb(unit, EMPTY_NODESET, this.snapshotExtent(unit));
     }
-  }
-
-  /** ROOT-only — function identity has no chain dimension. */
-  addFunction(node: StmtNS.FunctionDef, chain: AssumptionChain): Function {
-    if (!isRoot(chain)) {
-      throw new Error(
-        `[FunctionManager.addFunction] structural rewrites are ROOT-only (chain depth=${chain.depth}).`,
-      );
-    }
-    const unit = buildOneFunction(node, this.functionEnvironments);
-    this.registerUnit(unit);
-    const next = this.snapshotExtent(unit);
-    for (const sub of this.extentSubs) sub(unit, EMPTY_NODESET, next);
-    return unit;
   }
 
   scheduleRebuild(unit: Function): void {
@@ -137,10 +117,6 @@ export class FunctionManager implements FunctionLocator, UnitDomain<Function, Fu
     return this.snapshotExtent(unit);
   }
 
-  hasPendingRebuilds(): boolean {
-    return this.pendingRebuilds.size > 0;
-  }
-
   flushPendingRebuilds(): readonly Function[] {
     if (this.pendingRebuilds.size === 0) return [];
     const rebuilt: { unit: Function; prev: UnitExtent; next: UnitExtent }[] = [];
@@ -156,11 +132,6 @@ export class FunctionManager implements FunctionLocator, UnitDomain<Function, Fu
       for (const sub of this.extentSubs) sub(unit, prev, next);
     }
     return rebuilt.map(r => r.unit);
-  }
-
-  futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
-    const unit = this.unitContainingNode(nodeId);
-    return unit === undefined ? ROOT_CONTEXT : this.dispatch.futureDispatchChainFor(unit);
   }
 
   private snapshotExtent(unit: Function): UnitExtent {

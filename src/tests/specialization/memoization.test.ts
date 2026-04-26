@@ -1,7 +1,8 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { SVMLCompiler } from "../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../engines/svml/svml-interpreter";
-import { makeDfaQuery } from "../../specialization";
+import { constAnalysis, typeAnalysis } from "../../specialization/analysis";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import {
   clearMemoCache,
   memoCacheSnapshot,
@@ -11,8 +12,18 @@ import {
 } from "../../runtime/memo";
 import { runtimeCallCounter } from "../../specialization/observation/runtime-analyses";
 import type { Function } from "../../specialization/program/function";
+import type { Worklist } from "../../specialization/framework/worklist";
 import { setup } from "./harness/compile-pipelines";
 import { findFunctionDef, observeCallsTo } from "./harness/function-observe";
+
+function dfaQueryFor(worklist: Worklist) {
+  const typeStore = typeAnalysis.perExpr(worklist.locate);
+  const constStore = constAnalysis.perExpr(worklist.locate);
+  return {
+    typeOf: (id: number) => typeStore.tryRead(id, ROOT_CONTEXT),
+    constOf: (id: number) => constStore.tryRead(id, ROOT_CONTEXT),
+  };
+}
 
 const MEMO_TRIGGER_CALLS = runtimeCallCounter.saturation - 1;
 
@@ -190,7 +201,7 @@ describe("memoization: SVML wiring", () => {
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      makeDfaQuery(worklist.locate),
+      dfaQueryFor(worklist),
     );
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
     worklist.drain();
@@ -218,7 +229,7 @@ f(5)
     const compiler = SVMLCompiler.fromProgramUnit(
       ast,
       environments,
-      makeDfaQuery(worklist.locate),
+      dfaQueryFor(worklist),
     );
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
 

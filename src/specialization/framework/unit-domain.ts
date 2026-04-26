@@ -14,11 +14,13 @@ import type { NodeId, UnitExtent } from "../program/node-set";
 
 /** Minimum program-shape lookup surface generic framework code needs:
  *  given a node id, find the owning unit (used by observation ingress'
- *  default unit resolver and by `futureDispatchChainForNode`).
+ *  default unit resolver).
  *
  *  Concrete locators (e.g. `FunctionLocator`) may expose richer queries
  *  (`functionById`, `blockContaining`, …) for analyses/transforms; those
- *  belong to the consumer-specific surface, not to `UnitLocator<U>`. */
+ *  belong to the consumer-specific surface, not to `UnitLocator<U>`.
+ *
+ *  Used by the worklist's default observation-unit resolver. */
 export interface UnitLocator<U> {
   unitContainingNode(nodeId: NodeId): U | undefined;
 }

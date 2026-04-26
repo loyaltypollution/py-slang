@@ -7,7 +7,8 @@
  */
 import { ExprNS, StmtNS } from "../ast-types";
 import { SVMLCompiler } from "../engines/svml/svml-compiler";
-import { makeDfaQuery } from "../specialization";
+import { constAnalysis, typeAnalysis } from "../specialization/analysis";
+import { ROOT_CONTEXT } from "../specialization/assumption/chain";
 import OpCodes from "../engines/svml/opcodes";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
@@ -25,11 +26,12 @@ function build(code: string) {
   const engine = buildTestWorklist(ast, environments);
   engine.drain();
   const functions = engine.functionManager;
-  const compiler = SVMLCompiler.fromProgramUnit(
-    ast,
-    environments,
-    makeDfaQuery(engine.locate),
-  );
+  const typeStore = typeAnalysis.perExpr(engine.locate);
+  const constStore = constAnalysis.perExpr(engine.locate);
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, {
+    typeOf: id => typeStore.tryRead(id, ROOT_CONTEXT),
+    constOf: id => constStore.tryRead(id, ROOT_CONTEXT),
+  });
   return { ast, environments, functions, compiler };
 }
 

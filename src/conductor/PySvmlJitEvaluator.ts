@@ -5,9 +5,10 @@ import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
 import {
   createDefaultWorklist,
-  makeDfaQuery,
   makeJitDispatch,
 } from "../specialization";
+import { constAnalysis, typeAnalysis } from "../specialization/analysis";
+import { ROOT_CONTEXT } from "../specialization/assumption/chain";
 import math from "../stdlib/math";
 import memo from "../stdlib/memo";
 import misc from "../stdlib/misc";
@@ -50,11 +51,14 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const worklist = createDefaultWorklist(ast, environments);
       worklist.drain();
 
-      const compiler = SVMLCompiler.fromProgramUnit(
-        ast,
-        environments,
-        makeDfaQuery(worklist.locate, (id) => worklist.futureDispatchChainForNode(id)),
-      );
+      // SVML compiler only reads ROOT-context static facts. Per-call
+      // speculative bodies arrive pre-pruned via compileFunction(unit, body).
+      const typeStore = typeAnalysis.perExpr(worklist.locate);
+      const constStore = constAnalysis.perExpr(worklist.locate);
+      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, {
+        typeOf: id => typeStore.tryRead(id, ROOT_CONTEXT),
+        constOf: id => constStore.tryRead(id, ROOT_CONTEXT),
+      });
       const program = compiler.compileProgram(ast);
 
       const dispatch = makeJitDispatch(worklist);

@@ -34,7 +34,7 @@ export interface Function extends NodeSet {
 }
 
 /** No recursion into nested scopes — see `buildFunctions`. */
-export function buildOneFunction(
+function buildOneFunction(
   funcAst: StmtNS.FileInput | StmtNS.FunctionDef,
   functionEnvironments: FunctionEnvironments,
 ): Function {

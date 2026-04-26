@@ -1,6 +1,4 @@
 import { setup } from "./harness/compile-pipelines";
-import { makeDfaQuery } from "../../specialization";
-import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 
 const SRC = `
 def f(x):
@@ -17,7 +15,7 @@ g(2)
 describe("Function/BasicBlock invariants — ownership, locator agreement, rebuild semantics", () => {
   test("BasicBlock.unit references the owning Function for every block in the function's CFG", () => {
     const { worklist } = setup(SRC);
-    const units = Array.from(worklist.functionManager.values());
+    const units = Array.from(worklist.units.values());
 
     expect(units.length).toBeGreaterThanOrEqual(3); // root + f + g
 
@@ -32,7 +30,7 @@ describe("Function/BasicBlock invariants — ownership, locator agreement, rebui
     const { worklist } = setup(SRC);
     const locator = worklist.locate;
 
-    const allUnits = Array.from(worklist.functionManager.values());
+    const allUnits = Array.from(worklist.units.values());
     let checked = 0;
     for (const unit of allUnits) {
       for (const nodeId of unit.nodeToBlock.keys()) {
@@ -47,7 +45,7 @@ describe("Function/BasicBlock invariants — ownership, locator agreement, rebui
 
   test("rebuild replaces BasicBlock instances wholesale; old block references are no longer indexed", () => {
     const { worklist } = setup(SRC);
-    const fm = worklist.functionManager;
+    const fm = worklist.units;
 
     // Pick a non-root function so we can pin both per-function and program-wide indexes.
     const target = Array.from(fm.values()).find(u => u.funcAst.kind === "FunctionDef");
@@ -73,32 +71,4 @@ describe("Function/BasicBlock invariants — ownership, locator agreement, rebui
     }
   });
 
-  test("makeDfaQuery routes speculative reads through the explicit future-dispatch callback (not via worklist back-channel)", () => {
-    const { worklist } = setup(SRC);
-    worklist.drain();
-
-    let staticCallbackHits = 0;
-    let speculativeCallbackHits = 0;
-    const speculativeCallback = (_id: number) => {
-      speculativeCallbackHits++;
-      return ROOT_CONTEXT;
-    };
-    const staticCallback = (_id: number) => {
-      staticCallbackHits++;
-      return ROOT_CONTEXT;
-    };
-
-    // Static query — callback should never fire on typeOf/constOf.
-    const staticQ = makeDfaQuery(worklist.locate, staticCallback);
-    const someNodeId = Array.from(worklist.functionManager.values())[0].nodeToBlock.keys().next().value!;
-    staticQ.typeOf(someNodeId);
-    staticQ.constOf(someNodeId);
-    expect(staticCallbackHits).toBe(0);
-
-    // Speculative readers must hit the callback once per call.
-    const specQ = makeDfaQuery(worklist.locate, speculativeCallback);
-    specQ.speculativeTypeOf(someNodeId);
-    specQ.speculativeConstOf(someNodeId);
-    expect(speculativeCallbackHits).toBe(2);
-  });
 });

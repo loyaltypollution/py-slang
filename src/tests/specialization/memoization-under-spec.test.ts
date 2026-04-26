@@ -11,13 +11,23 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import { SVMLCompiler } from "../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../engines/svml/svml-interpreter";
 import { clearMemoCache, memoCacheSnapshot } from "../../runtime/memo";
-import { makeDfaQuery } from "../../specialization";
+import { constAnalysis, typeAnalysis } from "../../specialization/analysis";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { makeJitObservers } from "../../specialization/observation/runtime-analyses";
 import { visibleBody } from "../../specialization/speculation/assumption-bodies";
 import { bodyToCompile, dispatchValid } from "../../specialization/speculation/chain-dispatch";
 import type { Function } from "../../specialization/program/function";
 import type { Worklist } from "../../specialization/framework/worklist";
 import { setup } from "./harness/compile-pipelines";
+
+function dfaQueryFor(worklist: Worklist) {
+  const typeStore = typeAnalysis.perExpr(worklist.locate);
+  const constStore = constAnalysis.perExpr(worklist.locate);
+  return {
+    typeOf: (id: number) => typeStore.tryRead(id, ROOT_CONTEXT),
+    constOf: (id: number) => constStore.tryRead(id, ROOT_CONTEXT),
+  };
+}
 
 // `runSvmlJit` in harness/jit-runners.ts returns captured stdout only; this
 // test needs worklist/unit introspection to distinguish ROOT body from
@@ -29,7 +39,7 @@ async function runJitWithIntrospection(code: string, functionName: string) {
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(worklist.locate),
+    dfaQueryFor(worklist),
   );
   const program = compiler.compileProgram(ast);
 

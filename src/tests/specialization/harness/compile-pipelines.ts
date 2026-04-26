@@ -2,12 +2,22 @@ import { StmtNS } from "../../../ast-types";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments, type FunctionEnvironments } from "../../../resolver";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
-import { makeDfaQuery } from "../../../specialization";
+import { constAnalysis, typeAnalysis } from "../../../specialization/analysis";
+import { ROOT_CONTEXT } from "../../../specialization/assumption/chain";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import type { SVMLProgram } from "../../../engines/svml/types";
 import type { Analysis } from "../../../specialization/framework/analysis";
 import type { ObservationChannel } from "../../../specialization/observation/observation-channel";
 import { Worklist } from "../../../specialization/framework/worklist";
+
+function dfaQueryFor(worklist: Worklist) {
+  const typeStore = typeAnalysis.perExpr(worklist.locate);
+  const constStore = constAnalysis.perExpr(worklist.locate);
+  return {
+    typeOf: (id: number) => typeStore.tryRead(id, ROOT_CONTEXT),
+    constOf: (id: number) => constStore.tryRead(id, ROOT_CONTEXT),
+  };
+}
 import math from "../../../stdlib/math";
 import memo from "../../../stdlib/memo";
 import misc from "../../../stdlib/misc";
@@ -66,7 +76,7 @@ export function compileOptimized(code: string): SVMLProgram {
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(worklist.locate, (id) => worklist.futureDispatchChainForNode(id)),
+    dfaQueryFor(worklist),
   );
   return compiler.compileProgram(ast);
 }

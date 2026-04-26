@@ -3,11 +3,18 @@ import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { ConstLattice } from "../../specialization/analysis/const/lattice";
 import type { TypeLattice } from "../../specialization/analysis/type/lattice";
 import type { Function } from "../../specialization/program/function";
-import type { DfaQuery } from "../../specialization/dfa-query";
 import {
   BOOL_BIT,
   FLOAT_BIT,
 } from "../../specialization/analysis/type/lattice";
+
+/** Static (ROOT-context) DFA reads the SVML compiler needs. Speculative
+ *  reads are not exposed: the compiler only consults static facts; per-call
+ *  speculative bodies arrive pre-pruned via `compileFunction(unit, body)`. */
+interface DfaQuery {
+  typeOf(nodeId: number): TypeLattice | undefined;
+  constOf(nodeId: number): ConstLattice | undefined;
+}
 import math from "../../stdlib/math";
 import memo from "../../stdlib/memo";
 import misc from "../../stdlib/misc";

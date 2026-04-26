@@ -10,10 +10,6 @@ describe("transform boundary gate", () => {
   test("transforms stay on the analysis-based fact surface", () => {
     for (const file of TRANSFORM_FILES) {
       const src = fs.readFileSync(file, "utf8");
-      // The dfa-query speculative side-channel pre-dates these analysis
-      // reads and must remain forbidden.
-      expect(src).not.toMatch(/\bspeculativeTypeOf\b/);
-      expect(src).not.toMatch(/\bspeculativeConstOf\b/);
       // Transforms never import the dfa-factory directly; block DFA reads
       // go through `analysis.perExpr(topology).readMinimal(chain, ...)`.
       expect(src).not.toMatch(/from\s+["'][^"']*dfa-factory["']/);

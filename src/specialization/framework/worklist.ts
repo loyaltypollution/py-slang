@@ -100,14 +100,9 @@ export class Worklist {
   /** The atomic-unit domain this worklist drives. All lifecycle / chain /
    *  refute / rebuild orchestration routes through this contract, so the
    *  worklist proper does not depend on `FunctionManager` directly.
-   *
-   *  Today this is always a `FunctionManager`; `functionManager` exposes
-   *  the concrete reference for the (still-Function-specific) call sites
-   *  in observation ingress, transforms, and analyses that need richer
-   *  surfaces (e.g. `dispatch.setFutureDispatchContext`, `addFunction`)
-   *  than `UnitDomain` exposes. */
+   *  Today this is always built from a `FunctionManager`; Phase 29 makes
+   *  it injectable so a synthetic domain can drive a real worklist. */
   readonly units: UnitDomain<Function, FunctionLocator>;
-  readonly functionManager: FunctionManager;
 
   private readonly registeredAnalyses = new Set<Analysis<any, any>>();
   // Two tier-specific FIFOs: the only enforced order is
@@ -228,11 +223,11 @@ export class Worklist {
     }
     this.unitResolverBySource = unitResolverBySource;
     this.bindingsBySource = bindingsBySource;
-    // Build the function manager FIRST: registrations below depend on
-    // the initial extent-change burst it fires when subscribers register
-    // via `onExtentChange`. Manager constructor builds Functions from `ast`.
-    this.functionManager = new FunctionManager(ast, functionEnvironments);
-    this.units = this.functionManager;
+    // Build the unit domain FIRST: registrations below depend on the
+    // initial extent-change burst it fires when subscribers register
+    // via `onExtentChange`. Today the only domain is `FunctionManager`,
+    // which builds Functions from `ast`.
+    this.units = new FunctionManager(ast, functionEnvironments);
 
     for (const p of analyses) this.register(p);
     for (const c of counters) this.registerCounter(c);
@@ -730,13 +725,6 @@ export class Worklist {
    *  domain. */
   futureDispatchChainFor(unit: Function): AssumptionChain {
     return this.units.chainFor(unit);
-  }
-
-  /** Same as `futureDispatchChainFor`, keyed by nodeId. Composed from
-   *  the locator + chain query — no Function-specific facade required. */
-  futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
-    const unit = this.units.locator.unitContainingNode(nodeId);
-    return unit === undefined ? ROOT_CONTEXT : this.units.chainFor(unit);
   }
 
   /** Drain to fixed point: analyses → transforms → analyses → CFG rebuild,

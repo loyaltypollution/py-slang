@@ -5,9 +5,21 @@ import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
 import math from "../../../stdlib/math";
 import memo from "../../../stdlib/memo";
 import misc from "../../../stdlib/misc";
-import { createDefaultWorklist, makeDfaQuery, makeJitDispatch } from "../../../specialization";
+import { createDefaultWorklist, makeJitDispatch } from "../../../specialization";
+import { constAnalysis, typeAnalysis } from "../../../specialization/analysis";
+import { ROOT_CONTEXT } from "../../../specialization/assumption/chain";
+import type { Worklist } from "../../../specialization/framework/worklist";
 import { parse } from "../../../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../../../resolver";
+
+function dfaQueryFor(worklist: Worklist) {
+  const typeStore = typeAnalysis.perExpr(worklist.locate);
+  const constStore = constAnalysis.perExpr(worklist.locate);
+  return {
+    typeOf: (id: number) => typeStore.tryRead(id, ROOT_CONTEXT),
+    constOf: (id: number) => constStore.tryRead(id, ROOT_CONTEXT),
+  };
+}
 
 /**
  * Run `code` through the SVML JIT pipeline (live per-call specialization via
@@ -26,7 +38,7 @@ export async function runSvmlJit(code: string): Promise<string[]> {
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(worklist.locate, (id) => worklist.futureDispatchChainForNode(id)),
+    dfaQueryFor(worklist),
   );
   const program = compiler.compileProgram(ast);
 
@@ -62,7 +74,7 @@ export async function runSvmlNoJit(code: string): Promise<string[]> {
   const compiler = SVMLCompiler.fromProgramUnit(
     ast,
     environments,
-    makeDfaQuery(worklist.locate, (id) => worklist.futureDispatchChainForNode(id)),
+    dfaQueryFor(worklist),
   );
   const program = compiler.compileProgram(ast);
   const captured: string[] = [];
