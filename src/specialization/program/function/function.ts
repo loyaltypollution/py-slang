@@ -1,7 +1,7 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
 import type { NodeId, NodeSet } from "../node-set";
-import type { BasicBlock, BlockId, CFG } from "../basic-block";
+import type { BasicBlock, CFG } from "../basic-block";
 import { buildCFG } from "../basic-block";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
@@ -18,14 +18,13 @@ import { buildSlotTable } from "./slot-table";
 export type FunctionId = NodeId;
 
 /** Per-scope optimization unit. Owns its CFG materialization in-place:
- *  `cfg`/`blockMap`/`nodeToBlock` are produced by `wireCFG` and replaced
- *  by `FunctionManager.flushPendingRebuilds`. */
+ *  `cfg` and `nodeToBlock` are produced by `wireCFG` and replaced by
+ *  `FunctionManager.flushPendingRebuilds`. */
 export interface Function extends NodeSet {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
   cfg: CFG;
-  blockMap: Map<BlockId, BasicBlock>;
   nodeToBlock: Map<NodeId, BasicBlock>;
   blockOfNode(nodeId: NodeId): BasicBlock | undefined;
   contains(n: NodeId): boolean;
@@ -48,7 +47,6 @@ function buildOneFunction(
     funcAst,
     slotLookup: buildSlotTable(env, paramNames),
     cfg: undefined as unknown as CFG,
-    blockMap: new Map(),
     nodeToBlock: new Map<NodeId, BasicBlock>(),
     get body(): StmtNS.Stmt[] {
       return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
@@ -72,11 +70,6 @@ function buildOneFunction(
 
 export function wireCFG(unit: Function): void {
   unit.cfg = buildCFG(unit.body, unit);
-  const blockMap = new Map<BlockId, BasicBlock>();
-  for (const block of unit.cfg.blocks) {
-    blockMap.set(block.id, block);
-  }
-  unit.blockMap = blockMap;
   const nodeToBlock = new Map<NodeId, BasicBlock>();
   for (const block of unit.cfg.blocks) {
     for (const stmt of block.stmts) {
