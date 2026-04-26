@@ -30,9 +30,9 @@ import type {
   TransformRule,
 } from "./analysis";
 import { storeEvict, storeWrite } from "./analysis-store";
-import type { Function } from "../program/units/function/function";
-import { FunctionManager, type FunctionLocator } from "../program/units/function/manager";
-import type { FunctionDomain } from "./unit-domain";
+import type { Function } from "../program/function/function";
+import { FunctionManager, type FunctionLocator } from "../program/function/manager";
+import type { FunctionDomain } from "./function-domain";
 
 /** Resolver supplied per-narrowing (or the default below): turns the source
  *  key into the owning function so observation events can route narrowings

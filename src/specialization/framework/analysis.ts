@@ -1,8 +1,8 @@
 import type { AssumptionChain, NarrowingAxis } from "../assumption/chain";
 import type { SaturatingCounter } from "../observation/counter-store";
 import type { ObservationSource } from "../observation/observation-channel";
-import type { Function } from "../program/units/function/function";
-import type { FunctionLocator } from "../program/units/function/manager";
+import type { Function } from "../program/function/function";
+import type { FunctionLocator } from "../program/function/manager";
 import type { NodeId, NodeSet } from "../program/node-set";
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
 import type { Worklist } from "./worklist";

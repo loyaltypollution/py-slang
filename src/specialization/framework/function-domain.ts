@@ -9,9 +9,9 @@
 // the driver.
 
 import type { AssumptionChain } from "../assumption";
-import type { FunctionExtent } from "../program/unit-extent";
-import type { Function } from "../program/units/function/function";
-import type { FunctionLocator } from "../program/units/function/manager";
+import type { FunctionExtent } from "../program/function-extent";
+import type { Function } from "../program/function/function";
+import type { FunctionLocator } from "../program/function/manager";
 
 export type ExtentChangeListener = (
   unit: Function,

@@ -12,10 +12,10 @@ import type {
 } from "../../framework/analysis";
 import { defineAnalysis } from "../../framework/analysis";
 import { internSingletonNode } from "../../program/node-set";
-import type { BasicBlock } from "../../program/regions/basic-block";
-import type { Function } from "../../program/units/function/function";
-import type { FunctionLocator } from "../../program/units/function/manager";
-import { isCapture, isLocal, type SlotLookup } from "../../program/units/function/slot-table";
+import type { BasicBlock } from "../../program/basic-block";
+import type { Function } from "../../program/function/function";
+import type { FunctionLocator } from "../../program/function/manager";
+import { isCapture, isLocal, type SlotLookup } from "../../program/function/slot-table";
 import { MutableEnv } from "../block-env";
 import { constAnalysis } from "../const/analysis";
 import {

@@ -6,8 +6,8 @@ import type { Narrowing, NodeId } from "../../framework/analysis";
 import { paramTypeNarrowing } from "../../narrowing-policy/param-handles";
 import type { ParamKey } from "../../narrowing-policy/param-key";
 import type { RawKind } from "../../observation/raw-value";
-import type { FunctionId } from "../../program/units/function/function";
-import { isLocal, type SlotLookup } from "../../program/units/function/slot-table";
+import type { FunctionId } from "../../program/function/function";
+import { isLocal, type SlotLookup } from "../../program/function/slot-table";
 import { MutableEnv } from "../block-env";
 import type { BlockDfaSpec, BlockFixpointAnalysis } from "../dfa-factory";
 import {

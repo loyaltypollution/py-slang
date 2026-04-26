@@ -17,7 +17,7 @@ import memo from "../stdlib/memo";
 import misc from "../stdlib/misc";
 import { traverseAST } from "../validator/traverse";
 import { buildTestWorklist } from "./utils";
-import type { FunctionManager } from "../specialization/program/units/function/manager";
+import type { FunctionManager } from "../specialization/program/function/manager";
 
 function build(code: string) {
   const script = code + "\n";

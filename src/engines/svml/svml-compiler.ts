@@ -2,7 +2,7 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import { Environment, FunctionEnvironments, Resolver } from "../../resolver";
 import type { ConstLattice } from "../../specialization/analysis/const/lattice";
 import type { TypeLattice } from "../../specialization/analysis/type/lattice";
-import type { Function } from "../../specialization/program/units/function/function";
+import type { Function } from "../../specialization/program/function/function";
 import {
   BOOL_BIT,
   FLOAT_BIT,

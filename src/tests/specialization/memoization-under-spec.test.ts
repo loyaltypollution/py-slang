@@ -15,7 +15,7 @@ import { constAnalysis, typeAnalysis } from "../../specialization/analysis";
 import { isRoot, ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import type { Worklist } from "../../specialization/framework/worklist";
 import { makeJitDispatch } from "../../specialization/observation/jit-dispatch";
-import type { Function } from "../../specialization/program/units/function/function";
+import type { Function } from "../../specialization/program/function/function";
 import { visibleBody } from "../../specialization/speculation/assumption-bodies";
 import { setup } from "./harness/compile-pipelines";
 

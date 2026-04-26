@@ -12,10 +12,10 @@ import { defineAnalysis } from "../framework/analysis";
 import type { ReadonlyAnalysisStore } from "../framework/analysis-store";
 import { EMPTY_MAP, storeContexts, storeEvict, walkChain } from "../framework/analysis-store";
 import { EMPTY_NODESET, nodeSetOfIds } from "../program/node-set";
-import type { BasicBlock, CFGEdge } from "../program/regions/basic-block";
-import type { Function } from "../program/units/function/function";
-import type { BlockLocator } from "../program/regions/basic-block";
-import type { SlotLookup } from "../program/units/function/slot-table";
+import type { BasicBlock, CFGEdge } from "../program/basic-block";
+import type { Function } from "../program/function/function";
+import type { BlockLocator } from "../program/basic-block";
+import type { SlotLookup } from "../program/function/slot-table";
 import { MutableEnv } from "./block-env";
 
 /** Author-facing spec for statement/expression analyses that run over a

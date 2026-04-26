@@ -1,7 +1,7 @@
 import { ROOT_CONTEXT, type AssumptionChain } from "../assumption";
 import type { JoinSemiLattice } from "../framework/analysis";
 import { paramKey, type ParamKey } from "../narrowing-policy/param-key";
-import type { FunctionId } from "../program/units/function/function";
+import type { FunctionId } from "../program/function/function";
 import { SaturatingCounter } from "./counter-store";
 import { ObservationSource } from "./observation-channel";
 import { classifyRawValue, RAW_UNKNOWN, type RawKind } from "./raw-value";

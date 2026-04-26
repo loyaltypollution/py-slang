@@ -14,28 +14,28 @@
 // interface is kept exported because external code takes it as an
 // explicit dependency.
 
-import type { StmtNS } from "../../../../ast-types";
-import type { FunctionEnvironments } from "../../../../resolver";
-import { ROOT_CONTEXT, type AssumptionChain } from "../../../assumption";
+import type { StmtNS } from "../../../ast-types";
+import type { FunctionEnvironments } from "../../../resolver";
+import { ROOT_CONTEXT, type AssumptionChain } from "../../assumption";
 import {
   EMPTY_NODESET,
   nodeSetOfIds,
   type NodeId,
-} from "../../node-set";
-import type { FunctionExtent } from "../../unit-extent";
+} from "../node-set";
+import type { FunctionExtent } from "../function-extent";
 import {
   buildFunctions,
   wireCFG,
   type Function,
   type FunctionId,
 } from "./function";
-import type { BasicBlock, BlockLocator } from "../../regions/basic-block";
+import type { BasicBlock, BlockLocator } from "../basic-block";
 import type {
   ChainChangeListener,
   ExtentChangeListener,
   FunctionDomain,
   RefuteListener,
-} from "../../../framework/unit-domain";
+} from "../../framework/function-domain";
 
 /** Read-only program-wide lookup surface for `Function`. Owned by
  *  `FunctionManager`. Consumers that need program-shape lookup take this

@@ -5,9 +5,9 @@ import {
   invalidateDescendantVariants,
   visibleBody,
 } from "../speculation/assumption-bodies";
-import type { Function } from "../program/units/function/function";
-import type { FunctionLocator } from "../program/units/function/manager";
-import { isLocal, type SlotLookup } from "../program/units/function/slot-table";
+import type { Function } from "../program/function/function";
+import type { FunctionLocator } from "../program/function/manager";
+import { isLocal, type SlotLookup } from "../program/function/slot-table";
 import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../analysis";
 import { transformResultFor, walkExpr, walkExprs } from "./witness-utils";

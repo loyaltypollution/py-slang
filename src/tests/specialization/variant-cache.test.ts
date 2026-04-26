@@ -3,7 +3,7 @@ import { ROOT_CONTEXT, type AssumptionChain } from "../../specialization/assumpt
 import { paramKey } from "../../specialization/narrowing-policy/param-key";
 import { runtimeParamSource } from "../../specialization/observation/runtime-analyses";
 import { forkBody } from "../../specialization/speculation/assumption-bodies";
-import type { Function } from "../../specialization/program/units/function/function";
+import type { Function } from "../../specialization/program/function/function";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 type SpecializedFunction = {

@@ -3,7 +3,7 @@ import { eq as typeEq, type TypeLattice } from "../analysis/type/lattice";
 import type { Narrowing } from "../framework/analysis";
 import type { RawKind } from "../observation/raw-value";
 import { runtimeParamSource } from "../observation/runtime-analyses";
-import type { FunctionLocator } from "../program/units/function/manager";
+import type { FunctionLocator } from "../program/function/manager";
 import { paramKeyFunctionId, type ParamKey } from "./param-key";
 
 /** Per-parameter type narrowing. Runtime parameter observations lift to

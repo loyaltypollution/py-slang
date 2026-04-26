@@ -7,9 +7,9 @@ import type { AssumptionChain } from "../assumption";
 import type { TransformResult, TransformRule } from "../framework/analysis";
 import { shadowNode } from "../speculation/variant-body-clone";
 import { forkBody, invalidateDescendantVariants } from "../speculation/assumption-bodies";
-import type { Function } from "../program/units/function/function";
+import type { Function } from "../program/function/function";
 import { runtimeCallHotness } from "../observation/runtime-analyses";
-import type { FunctionLocator } from "../program/units/function/manager";
+import type { FunctionLocator } from "../program/function/manager";
 import { purityFunctionAnalysis } from "../analysis";
 import { transformResultFor } from "./witness-utils";
 

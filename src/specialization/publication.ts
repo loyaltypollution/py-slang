@@ -20,7 +20,7 @@
 // generalize this interface in anticipation.
 //
 //   Q1 — what unit do we analyze / transform / reschedule?
-//        → Function. See `framework/unit-domain.ts`.
+//        → Function. See `framework/function-domain.ts`.
 //
 //   Q2 — what artifact gets published, and when?
 //        → answered by an implementation of `FunctionSwapStrategy`,
@@ -31,7 +31,7 @@
 //          new frame captures the artifact directly.
 
 import type { AssumptionChain } from "./assumption";
-import type { Function } from "./program/units/function";
+import type { Function } from "./program/function";
 
 /** The compile half of the publication boundary.
  *

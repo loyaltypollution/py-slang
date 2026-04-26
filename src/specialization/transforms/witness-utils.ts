@@ -1,7 +1,7 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { isRoot, type AssumptionChain } from "../assumption/chain";
 import type { TransformResult } from "../framework/analysis";
-import type { Function } from "../program/units/function/function";
+import type { Function } from "../program/function/function";
 import { forkBody, invalidateDescendantVariants } from "../speculation/assumption-bodies";
 
 export type Witnessed<T> = { value: T; witness: AssumptionChain };

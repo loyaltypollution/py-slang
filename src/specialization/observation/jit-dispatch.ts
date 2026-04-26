@@ -1,7 +1,7 @@
 import type { StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption";
-import type { Function, FunctionId } from "../program/units/function/function";
-import type { FunctionLocator } from "../program/units/function/manager";
+import type { Function, FunctionId } from "../program/function/function";
+import type { FunctionLocator } from "../program/function/manager";
 import { bodyToCompile, dispatchValid } from "../speculation/chain-dispatch";
 import { makeJitObservers, type JitObservationRuntime } from "./runtime-analyses";
 

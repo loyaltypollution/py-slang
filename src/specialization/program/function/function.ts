@@ -1,8 +1,8 @@
-import { ExprNS, StmtNS } from "../../../../ast-types";
-import type { FunctionEnvironments } from "../../../../resolver";
-import type { NodeId, NodeSet } from "../../node-set";
-import type { BasicBlock, BlockId, CFG } from "../../regions/basic-block";
-import { buildCFG } from "../../regions/basic-block";
+import { ExprNS, StmtNS } from "../../../ast-types";
+import type { FunctionEnvironments } from "../../../resolver";
+import type { NodeId, NodeSet } from "../node-set";
+import type { BasicBlock, BlockId, CFG } from "../basic-block";
+import { buildCFG } from "../basic-block";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
