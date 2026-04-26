@@ -32,7 +32,11 @@ import type {
 import { storeEvict, storeWrite } from "./analysis-store";
 import type { Function } from "../program/function/function";
 import { FunctionManager, type FunctionLocator } from "../program/function/manager";
-import type { FunctionDomain } from "./function-domain";
+import type {
+  ChainChangeListener,
+  FunctionDomain,
+  RefuteListener,
+} from "./function-domain";
 
 /** Resolver supplied per-narrowing (or the default below): turns the source
  *  key into the owning function so observation events can route narrowings
@@ -169,6 +173,24 @@ export class Worklist {
   /** Refutation filter (minimal generators; `contains(c) = ∃ r. leq(r, c)`). */
   private readonly refutations: Refutations = new Refutations();
 
+  /** Per-unit preferred chain for future compiles/dispatches. Unset or
+   *  ROOT_CONTEXT means future dispatch is unspecialized. */
+  private readonly futureDispatchContextByUnit = new Map<Function, AssumptionChain>();
+  private readonly chainSubs: ChainChangeListener[] = [];
+  private readonly refuteSubs: RefuteListener[] = [];
+
+  private chainFor(unit: Function): AssumptionChain {
+    return this.futureDispatchContextByUnit.get(unit) ?? ROOT_CONTEXT;
+  }
+
+  private fireChainChange(unit: Function, prev: AssumptionChain, next: AssumptionChain): void {
+    for (const sub of this.chainSubs) sub(unit, prev, next);
+  }
+
+  private fireRefute(unit: Function, carrier: AssumptionChain): void {
+    for (const sub of this.refuteSubs) sub(unit, carrier);
+  }
+
   /** Read surface for function lookups — convenience over
    *  `this.units.locator`. Consumers that need program shape typically
    *  capture this explicitly at `Analysis.bind` / `TransformRule.bind`. */
@@ -248,9 +270,9 @@ export class Worklist {
     return this.refutations.contains(node);
   }
 
-  /** Subscribe to refutation events. Routed through the unit domain. */
-  onRefute(callback: (unit: Function, carrier: AssumptionChain) => void): void {
-    this.units.onRefute(callback);
+  /** Subscribe to refutation events. */
+  onRefute(callback: RefuteListener): void {
+    this.refuteSubs.push(callback);
   }
 
   /** Refute `carrier` for `unit`: add the minimal singleton of the carrier's
@@ -263,10 +285,10 @@ export class Worklist {
     const a = carrier.assumption;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
     this.refutations.add(minimal);
-    this.units.fireRefute(unit, carrier);
-    const fdCtx = this.units.chainFor(unit);
+    this.fireRefute(unit, carrier);
+    const fdCtx = this.chainFor(unit);
     if (!isRoot(fdCtx) && this.refutations.contains(fdCtx)) {
-      this.units.clearChainFor(unit);
+      this.futureDispatchContextByUnit.delete(unit);
     }
   }
 
@@ -343,7 +365,7 @@ export class Worklist {
     reader: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
-    this.units.onChainChange((unit, _prev, _next) => {
+    this.chainSubs.push((unit, _prev, _next) => {
       for (const k of dirtied(this.units.locator, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
@@ -560,7 +582,7 @@ export class Worklist {
         const dirty = this.dirtyFor(rule);
         if (dirty.size === 0) continue;
         for (const unit of dirty) {
-          const chain = this.units.chainFor(unit);
+          const chain = this.chainFor(unit);
           if (this.isRefuted(chain)) continue;
           const result = rule.sweep(unit, chain, this.units.locator);
           if (!result.changed) continue;
@@ -675,7 +697,7 @@ export class Worklist {
 
     const parentCtx = context;
 
-    const priorChain = this.units.chainFor(unit);
+    const priorChain = this.chainFor(unit);
 
     if (source.isUnknown(observed)) {
       let pruned = parentCtx;
@@ -686,13 +708,13 @@ export class Worklist {
       }
       if (pruned === parentCtx) return parentCtx;
       if (this.refutations.contains(pruned)) {
-        this.units.clearChainFor(unit);
+        this.futureDispatchContextByUnit.delete(unit);
         return ROOT_CONTEXT;
       }
-      if (isRoot(pruned)) this.units.clearChainFor(unit);
-      else this.units.setChainFor(unit, pruned);
+      if (isRoot(pruned)) this.futureDispatchContextByUnit.delete(unit);
+      else this.futureDispatchContextByUnit.set(unit, pruned);
       this.enqueueNarrowingEntry(unit, pruned);
-      this.units.fireChainChange(unit, priorChain, pruned);
+      this.fireChainChange(unit, priorChain, pruned);
       return pruned;
     }
 
@@ -716,19 +738,18 @@ export class Worklist {
 
     if (newCtx === parentCtx) return parentCtx;
     if (this.refutations.contains(newCtx)) {
-      this.units.clearChainFor(unit);
+      this.futureDispatchContextByUnit.delete(unit);
       return ROOT_CONTEXT;
     }
-    this.units.setChainFor(unit, newCtx);
+    this.futureDispatchContextByUnit.set(unit, newCtx);
     this.enqueueNarrowingEntry(unit, newCtx);
-    this.units.fireChainChange(unit, priorChain, newCtx);
+    this.fireChainChange(unit, priorChain, newCtx);
     return newCtx;
   }
 
-  /** Preferred future-dispatch chain for `unit`. Delegates to the unit
-   *  domain. */
+  /** Preferred future-dispatch chain for `unit`. */
   futureDispatchChainFor(unit: Function): AssumptionChain {
-    return this.units.chainFor(unit);
+    return this.chainFor(unit);
   }
 
   /** Drain to fixed point: analyses → transforms → analyses → CFG rebuild,

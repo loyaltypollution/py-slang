@@ -1,22 +1,18 @@
 // FunctionManager — the concrete `FunctionDomain` implementation.
 //
-// Owns three orthogonal pieces of state, all kept private:
+// Owns two pieces of state:
 //
 //   1. **registry / locator** — by-FunctionId, by-NodeId, blockContaining.
 //   2. **lifecycle** — `onExtentChange` with subscribe-time mint replay,
 //                      `scheduleRebuild` + `flushPendingRebuilds`.
-//   3. **chain** — `futureDispatchContextByUnit` plus the chain-change
-//                  and refute fan-out streams.
 //
-// The split previously lived across `manager.ts` + `locator.ts` +
-// `dispatch.ts`. Each side was small (~20–60 lines) and had no consumer
-// beyond this class, so they're inlined here. The `FunctionLocator`
-// interface is kept exported because external code takes it as an
-// explicit dependency.
+// Chain/refute state used to live here too but those are worklist-owned
+// policy; the manager was a passive proxy. The `FunctionLocator` interface
+// is kept exported because external code takes it as an explicit
+// dependency.
 
 import type { StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
-import { ROOT_CONTEXT, type AssumptionChain } from "../../assumption";
 import {
   EMPTY_NODESET,
   nodeSetOfIds,
@@ -31,10 +27,8 @@ import {
 } from "./function";
 import type { BasicBlock, BlockLocator } from "../basic-block";
 import type {
-  ChainChangeListener,
   ExtentChangeListener,
   FunctionDomain,
-  RefuteListener,
 } from "../../framework/function-domain";
 
 /** Read-only program-wide lookup surface for `Function`. Owned by
@@ -62,13 +56,6 @@ export class FunctionManager implements FunctionLocator, FunctionDomain {
   // --- lifecycle state ---
   private readonly pendingRebuilds = new Set<Function>();
   private readonly extentSubs: ExtentChangeListener[] = [];
-
-  // --- chain / refute state ---
-  /** Per-unit preferred chain for future compiles/dispatches. Unset or
-   *  ROOT_CONTEXT means future dispatch is unspecialized. */
-  private readonly futureDispatchContextByUnit = new Map<Function, AssumptionChain>();
-  private readonly chainSubs: ChainChangeListener[] = [];
-  private readonly refuteSubs: RefuteListener[] = [];
 
   constructor(ast: StmtNS.FileInput, functionEnvironments: FunctionEnvironments) {
     for (const [, unit] of buildFunctions(ast, functionEnvironments)) {
@@ -138,42 +125,6 @@ export class FunctionManager implements FunctionLocator, FunctionDomain {
       for (const sub of this.extentSubs) sub(unit, prev, next);
     }
     return rebuilt.map(r => r.unit);
-  }
-
-  // --- chain (preferred future-dispatch) ---
-
-  chainFor(unit: Function): AssumptionChain {
-    return this.futureDispatchContextByUnit.get(unit) ?? ROOT_CONTEXT;
-  }
-
-  setChainFor(unit: Function, chain: AssumptionChain): void {
-    this.futureDispatchContextByUnit.set(unit, chain);
-  }
-
-  clearChainFor(unit: Function): void {
-    this.futureDispatchContextByUnit.delete(unit);
-  }
-
-  onChainChange(cb: ChainChangeListener): void {
-    this.chainSubs.push(cb);
-  }
-
-  fireChainChange(unit: Function, prev: AssumptionChain, next: AssumptionChain): void {
-    for (const sub of this.chainSubs) sub(unit, prev, next);
-  }
-
-  // --- refute (orthogonal to chain change) ---
-
-  onRefute(cb: RefuteListener): void {
-    this.refuteSubs.push(cb);
-  }
-
-  /** Fire refute subscribers for `(unit, carrier)`. Does not touch
-   *  futureDispatchContext — the worklist owns the reconcile decision
-   *  (clear-if-refuted) so the framework keeps fire and reconcile
-   *  separable. */
-  fireRefute(unit: Function, carrier: AssumptionChain): void {
-    for (const sub of this.refuteSubs) sub(unit, carrier);
   }
 
   // --- internals ---
