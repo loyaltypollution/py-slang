@@ -3,6 +3,37 @@
 History through Phase 19 lives in `progress.md`. This file is the forward
 plan.
 
+> **Status: Phases 20–27 complete.** What landed:
+>
+> - **20** plan.md rewritten around `NodeSet` / `Unit` / publication
+>   separation; FunctionManager and JIT publish path audited.
+> - **21** `UnitExtent` introduced; lifecycle streams now carry it
+>   instead of arbitrary `NodeSet`.
+> - **22** `UnitDomain<U, L>` and `UnitLocator<U>` defined;
+>   `FunctionLocator extends UnitLocator<Function>`; `FunctionManager`
+>   implements `UnitDomain<Function, FunctionLocator>`. Dead
+>   `functionForAst` removed.
+> - **23** `Worklist` injects `units: UnitDomain<Function,
+>   FunctionLocator>` and routes generic lifecycle/scheduling through it.
+> - **24** `TransformRule<U, L>` and `TransformBindCtx<U, L>` are generic
+>   with defaults `(Function, FunctionLocator)`.
+> - **25** Observation ingress (chain mutate / fire / refute) routes
+>   through `UnitDomain` — no `functionManager.dispatch.*` references in
+>   `worklist.ts` outside construction. EntrySeed doc names the unit's
+>   reseed frontier.
+> - **26** `specialization/publication.ts` names the boundary between
+>   framework and execution layer; `PublicationGranularity` makes
+>   today's `"per-call"` choice explicit.
+> - **27** Synthetic non-`Function` `UnitDomain` test proves the contract
+>   is satisfiable without `Function`.
+>
+> Test baseline: 47 suites / 2949 tests pass.
+>
+> The single remaining structural change is making `Worklist` itself
+> parametric on `<U, L>` (today its `units` field is built from a
+> `FunctionManager` in the constructor). The synthetic test of Phase 27
+> is the contract that future change must preserve.
+
 The point of the next round is to make the framework's real contracts explicit
 before more specialization machinery lands.
 
