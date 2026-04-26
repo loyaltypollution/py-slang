@@ -288,17 +288,17 @@ const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
   direction: "forward",
   makeExprVisitor(
     env: MutableEnv<TypeLattice>,
-    unit,
+    function,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: TypeLattice) => void,
     context: AssumptionChain,
   ): ExprNS.Visitor<TypeLattice> {
-    const paramCount = unit.funcAst instanceof StmtNS.FunctionDef
-      ? unit.funcAst.parameters.length
+    const paramCount = function.funcAst instanceof StmtNS.FunctionDef
+      ? function.funcAst.parameters.length
       : 0;
     return POOLED_TYPE_VISITOR.reset(
       env,
-      paramKeysFor(unit.funcAst.id, paramCount),
+      paramKeysFor(function.funcAst.id, paramCount),
       slotLookup,
       recordExprFact,
       context,
@@ -307,10 +307,10 @@ const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
   /** Narrow env on branch edge. Handles `slot OP literal` / `literal OP slot`
    *  (six comparison ops) and `not c`. Other predicate shapes return `env`
    *  unchanged — sound no-op. */
-  refineOnEdge(env, edge, unit) {
+  refineOnEdge(env, edge, function) {
     if (edge.kind === "unconditional") return env;
     const truth = edge.kind === "branch-true";
-    return applyPredicate(env, edge.condition, truth, unit.slotLookup);
+    return applyPredicate(env, edge.condition, truth, function.slotLookup);
   },
 };
 

@@ -154,7 +154,7 @@ const constAnalysisModule: BlockDfaSpec<ConstLattice> = {
   direction: "forward",
   makeExprVisitor(
     env: MutableEnv<ConstLattice>,
-    _unit,
+    _function,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: ConstLattice) => void,
     _context: AssumptionChain,

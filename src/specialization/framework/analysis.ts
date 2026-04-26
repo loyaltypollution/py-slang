@@ -57,11 +57,11 @@ export interface Analysis<K extends NodeSet, V> {
  *  re-seed Kildall under a freshly extended/pruned context. Structurally
  *  satisfied by `BlockFixpointAnalysis` (`.env` + `.seed(view)`).
  *
- *  `seed(view)` is the **reseed frontier** of a unit: the analysis-key the
- *  worklist re-enqueues when chain change reseeds Kildall for that unit.
- *  For `Function` today this is the entry CFG block. Any unit kind that
+ *  `seed(view)` is the **reseed frontier** of a function: the analysis-key the
+ *  worklist re-enqueues when chain change reseeds Kildall for that function.
+ *  For `Function` today this is the entry CFG block. Any function kind that
  *  participates in observation-driven chain change must satisfy
- *  `V extends NodeSet` so `seed(unit)` is well-defined; a unit kind whose
+ *  `V extends NodeSet` so `seed(function)` is well-defined; a function kind whose
  *  reseed frontier differs from "entry block" supplies a different
  *  EntrySeed implementation rather than a special-case worklist branch. */
 export interface EntrySeed<K extends NodeSet = NodeSet, V extends NodeSet = NodeSet> {
@@ -71,23 +71,23 @@ export interface EntrySeed<K extends NodeSet = NodeSet, V extends NodeSet = Node
 
 /** Production narrowing dimension. Extends the algebra-only `NarrowingAxis`
  *  with the worklist's reseed hook (`blockAnalysis`) and the optional
- *  observation glue (`source` + `lift` + `resolveUnit`).
+ *  observation glue (`source` + `lift` + `resolveFunction`).
  *
  *  Test/synthetic axes that don't drive observation can satisfy this with
- *  `source`/`lift`/`resolveUnit` omitted. The worklist only routes ingress
+ *  `source`/`lift`/`resolveFunction` omitted. The worklist only routes ingress
  *  for axes that supply a `source`.
  *
- *  Locator and unit types are loose here; concrete axes type their
- *  `resolveUnit` lambda explicitly, and the worklist casts at the ingress
+ *  Locator and function types are loose here; concrete axes type their
+ *  `resolveFunction` lambda explicitly, and the worklist casts at the ingress
  *  seam (one cast at registration, not per observation). */
 export interface Narrowing<K = any, V = unknown, O = unknown> extends NarrowingAxis<K, V> {
   readonly blockAnalysis: () => EntrySeed;
   readonly source?: ObservationSource<K, O>;
   /** `undefined` = observation doesn't map (skip without refuting). */
   lift?(observed: O): V | undefined;
-  /** Defaults at the worklist to `(loc, key) => loc.unitContainingNode(key)`
+  /** Defaults at the worklist to `(loc, key) => loc.functionContainingNode(key)`
    *  when omitted — i.e. the observation key is treated as a NodeId. */
-  resolveUnit?(locator: FunctionLocator, key: K): Function | undefined;
+  resolveFunction?(locator: FunctionLocator, key: K): Function | undefined;
 }
 
 /** Generic transfer-time context. The framework knows about chain-walking
@@ -142,22 +142,22 @@ export interface TransformBindCtx {
     counter: SaturatingCounter<K>,
     dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
   ): void;
-  onRefute(cb: (unit: Function, carrier: AssumptionChain) => void): void;
+  onRefute(cb: (function: Function, carrier: AssumptionChain) => void): void;
 }
 
 /** Imperative AST sweep gated on analyses. No lattice, no transfer, no store
  *  write. The worklist dirties a rule on extent change (mint or rebuild) and
- *  on writes to subscribed analyses; `sweep` runs once per dirty unit.
+ *  on writes to subscribed analyses; `sweep` runs once per dirty function.
  *
  *  `TransformResult` distinguishes canonical-body mutation from speculative
  *  variant mutation. Only canonical mutation requires CFG rebuild. Variant
  *  sweeps may also update cached speculative bodies; those rules are
  *  responsible for keeping descendant caches coherent while they rewrite. */
 export interface TransformRule {
-  /** Returns the structural effect of one sweep at `chain = chainFor(unit)`.
-   *  `canonicalChanged` means `unit` needs a rebuild; `touchedWitnesses`
+  /** Returns the structural effect of one sweep at `chain = chainFor(function)`.
+   *  `canonicalChanged` means `function` needs a rebuild; `touchedWitnesses`
    *  record which speculative ancestors were rewritten. */
-  sweep(unit: Function, chain: AssumptionChain, locator: FunctionLocator): TransformResult;
+  sweep(function: Function, chain: AssumptionChain, locator: FunctionLocator): TransformResult;
   bind?(ctx: TransformBindCtx): void;
 }
 

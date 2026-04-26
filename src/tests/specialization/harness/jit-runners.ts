@@ -2,15 +2,15 @@ import { Context, type JitHooks } from "../../../engines/cse/context";
 import { evaluate } from "../../../engines/cse/interpreter";
 import { SVMLCompiler } from "../../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../../engines/svml/svml-interpreter";
-import math from "../../../stdlib/math";
-import memo from "../../../stdlib/memo";
-import misc from "../../../stdlib/misc";
+import { parse } from "../../../parser/parser-adapter";
+import { analyzeWithEnvironments } from "../../../resolver";
 import { createDefaultWorklist, makeJitDispatch } from "../../../specialization";
 import { constAnalysis, typeAnalysis } from "../../../specialization/analysis";
 import { ROOT_CONTEXT } from "../../../specialization/assumption/chain";
 import type { Worklist } from "../../../specialization/framework/worklist";
-import { parse } from "../../../parser/parser-adapter";
-import { analyzeWithEnvironments } from "../../../resolver";
+import math from "../../../stdlib/math";
+import memo from "../../../stdlib/memo";
+import misc from "../../../stdlib/misc";
 
 function dfaQueryFor(worklist: Worklist) {
   const typeStore = typeAnalysis.perExpr(worklist.locate);
@@ -35,7 +35,7 @@ export async function runSvmlJit(code: string): Promise<string[]> {
   const worklist = createDefaultWorklist(ast, environments);
   worklist.drain();
 
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, dfaQueryFor(worklist));
+  const compiler = SVMLCompiler.fromProgramFunction(ast, environments, dfaQueryFor(worklist));
   const program = compiler.compileProgram(ast);
 
   const captured: string[] = [];
@@ -47,7 +47,7 @@ export async function runSvmlJit(code: string): Promise<string[]> {
     dispatchCall: (scopeId, args) => {
       const plan = dispatch.onCall(scopeId, args);
       if (plan === undefined) return undefined;
-      return compiler.compileFunction(plan.unit, plan.body);
+      return compiler.compileFunction(plan.function, plan.body);
     },
     dispatchReturn: dispatch.onReturn,
   });
@@ -66,7 +66,7 @@ export async function runSvmlNoJit(code: string): Promise<string[]> {
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4, [misc, math, memo]);
   if (errors.length > 0) throw errors[0];
   const worklist = createDefaultWorklist(ast, environments);
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, dfaQueryFor(worklist));
+  const compiler = SVMLCompiler.fromProgramFunction(ast, environments, dfaQueryFor(worklist));
   const program = compiler.compileProgram(ast);
   const captured: string[] = [];
   const interp = new SVMLInterpreter(program, { sendOutput: m => captured.push(m) });

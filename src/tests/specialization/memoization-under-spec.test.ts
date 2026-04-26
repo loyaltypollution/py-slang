@@ -1,6 +1,6 @@
 // Integration: memoization × speculation chain.
 //
-// `memoization.test.ts` covers the rule's unit-level contract (threshold,
+// `memoization.test.ts` covers the rule's function-level contract (threshold,
 // purity gate, runtime cache, SVML wiring). The one interaction not
 // exercised there is chain-local purity: a function whose impure branch is
 // statically unreachable *only* under a speculation chain. The rule's
@@ -29,13 +29,13 @@ function dfaQueryFor(worklist: Worklist) {
 }
 
 // `runSvmlJit` in harness/jit-runners.ts returns captured stdout only; this
-// test needs worklist/unit introspection to distinguish ROOT body from
+// test needs worklist/function introspection to distinguish ROOT body from
 // spec body, so it runs the pipeline directly.
 async function runJitWithIntrospection(code: string, functionName: string) {
   const { ast, environments, worklist } = setup(code);
   worklist.drain();
 
-  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, dfaQueryFor(worklist));
+  const compiler = SVMLCompiler.fromProgramFunction(ast, environments, dfaQueryFor(worklist));
   const program = compiler.compileProgram(ast);
 
   const dispatch = makeJitDispatch(worklist);
@@ -43,7 +43,7 @@ async function runJitWithIntrospection(code: string, functionName: string) {
     dispatchCall: (scopeId, args) => {
       const plan = dispatch.onCall(scopeId, args);
       if (plan === undefined) return undefined;
-      return compiler.compileFunction(plan.unit, plan.body);
+      return compiler.compileFunction(plan.function, plan.body);
     },
     dispatchReturn: dispatch.onReturn,
   });
@@ -54,8 +54,8 @@ async function runJitWithIntrospection(code: string, functionName: string) {
       s instanceof StmtNS.FunctionDef && s.name.lexeme === functionName,
   );
   if (!fd) throw new Error(`${functionName} not found`);
-  const unit = worklist.locate.functionById(fd.id)!;
-  return { fd, unit, worklist };
+  const function = worklist.locate.functionById(fd.id)!;
+  return { fd, function, worklist };
 }
 
 function startsWithMemoHas(body: readonly StmtNS.Stmt[]): boolean {
@@ -71,8 +71,8 @@ function memoBucketCount(prefix: string): number {
   return Array.from(memoCacheSnapshot().keys()).filter(k => k.startsWith(`${prefix}@`)).length;
 }
 
-function specBody(unit: Function, worklist: Worklist): readonly StmtNS.Stmt[] {
-  return visibleBody(unit, worklist.futureDispatchChainFor(unit));
+function specBody(function: Function, worklist: Worklist): readonly StmtNS.Stmt[] {
+  return visibleBody(function, worklist.futureDispatchChainFor(function));
 }
 
 beforeEach(clearMemoCache);
@@ -82,7 +82,7 @@ beforeEach(clearMemoCache);
 // (but not at ROOT, where `x` could still be non-positive). Memo must
 // fire on the spec body and leave the shared ROOT AST alone.
 test("purity witness only on speculation chain → memo fires on spec body, ROOT untouched", async () => {
-  const { fd, unit, worklist } = await runJitWithIntrospection(
+  const { fd, function, worklist } = await runJitWithIntrospection(
     `
 def collatz(x):
     if x <= 0:
@@ -99,8 +99,8 @@ for i in range(20):
 `,
     "collatz",
   );
-  expect(isRoot(worklist.futureDispatchChainFor(unit))).toBe(false);
-  expect(startsWithMemoHas(specBody(unit, worklist))).toBe(true);
+  expect(isRoot(worklist.futureDispatchChainFor(function))).toBe(false);
+  expect(startsWithMemoHas(specBody(function, worklist))).toBe(true);
   expect(startsWithMemoHas(fd.body)).toBe(false);
   expect(memoBucketCount("collatz")).toBeGreaterThan(0);
 });

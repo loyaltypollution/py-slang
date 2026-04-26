@@ -1,4 +1,4 @@
-// Dispatch lane: validity + body for speculative compilation at (unit, s).
+// Dispatch lane: validity + body for speculative compilation at (function, s).
 // Bodies are compile-only clones; cloned nodes preserve NodeIds.
 
 import { StmtNS } from "../../ast-types";
@@ -63,31 +63,31 @@ function pruneWithFactsAt(
   return changed ? out : stmts;
 }
 
-/** Is `(unit, s)` a valid target for speculation-lane dispatch? */
+/** Is `(function, s)` a valid target for speculation-lane dispatch? */
 export function dispatchValid(
-  unit: Function,
+  function: Function,
   s: AssumptionChain,
   isRefuted?: (s: AssumptionChain) => boolean,
 ): boolean {
-  if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return false;
-  if (!contextIsEntrySpecializable(unit, s)) return false;
+  if (!(function.funcAst instanceof StmtNS.FunctionDef)) return false;
+  if (!contextIsEntrySpecializable(function, s)) return false;
   if (isRefuted?.(s)) return false;
-  if (directParamEntryGuardsFor(unit, s) === undefined) return false;
+  if (directParamEntryGuardsFor(function, s) === undefined) return false;
   return true;
 }
 
-/** Body to compile at `(unit, s)`: nearest non-retired ancestor fork
- *  (or `unit.body`), dead-branch-pruned under `s`'s type facts.
- *  Reference equality vs `unit.body` indicates whether speculation contributed.
- *  Requires `dispatchValid(unit, s, isRefuted)`. */
+/** Body to compile at `(function, s)`: nearest non-retired ancestor fork
+ *  (or `function.body`), dead-branch-pruned under `s`'s type facts.
+ *  Reference equality vs `function.body` indicates whether speculation contributed.
+ *  Requires `dispatchValid(function, s, isRefuted)`. */
 export function bodyToCompile(
-  unit: Function,
+  function: Function,
   s: AssumptionChain,
   view: FunctionLocator,
   isRefuted?: (s: AssumptionChain) => boolean,
 ): readonly StmtNS.Stmt[] {
-  if (!dispatchValid(unit, s, isRefuted)) {
-    throw new Error("[bodyToCompile] dispatchValid(unit, s, isRefuted) must hold");
+  if (!dispatchValid(function, s, isRefuted)) {
+    throw new Error("[bodyToCompile] dispatchValid(function, s, isRefuted) must hold");
   }
-  return pruneWithFactsAt(visibleBody(unit, s, isRefuted), s, view);
+  return pruneWithFactsAt(visibleBody(function, s, isRefuted), s, view);
 }

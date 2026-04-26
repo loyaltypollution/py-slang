@@ -1,14 +1,14 @@
 /**
- * AnalysisStore unit tests.
+ * AnalysisStore function tests.
  *
  * Storage primitive: context-partitioned cells, algebra-gated writes,
  * `{prev, next} | null` return that the worklist lifts into change events.
  * Previously these behaviors lived in `FactStore`; after the citizen split
  * and the FactStore delete, they are anchored on `AnalysisStore` directly.
  */
-import { AnalysisStore } from "../../specialization/framework/analysis-store";
-import type { JoinSemiLattice } from "../../specialization/framework/analysis";
 import { extend, ROOT_CONTEXT, type NarrowingAxis } from "../../specialization/assumption/chain";
+import type { JoinSemiLattice } from "../../specialization/framework/analysis";
+import { AnalysisStore } from "../../specialization/framework/analysis-store";
 
 const intMaxLattice: JoinSemiLattice<number> = {
   bottom: 0,

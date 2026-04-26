@@ -1,9 +1,9 @@
 // Driver for analysis-graph dispatch: registration façade, fan-out maps,
 // transform sweep, speculation-context machinery, and fixpoint driver.
 //
-// Function is the only unit kind — see `../publication.ts` for the
+// Function is the only function kind — see `../publication.ts` for the
 // OSR-impossibility constraint that pins this. The worklist could in
-// principle be parametric over a unit kind, but with no second
+// principle be parametric over a function kind, but with no second
 // inhabitant on the horizon, generality was paying its keep only as
 // type noise.
 
@@ -41,9 +41,9 @@ type FunctionResolver = (locator: FunctionLocator, key: any) => Function | undef
 
 /** Default resolver: assumes the narrowing's key is a NodeId and looks up
  *  the enclosing function. Narrowings whose key is not a NodeId must
- *  supply their own `resolveUnit`. */
+ *  supply their own `resolveFunction`. */
 function defaultFunctionResolver(locator: FunctionLocator, key: any): Function | undefined {
-  return locator.unitContainingNode(key as NodeId);
+  return locator.functionContainingNode(key as NodeId);
 }
 
 /** A `(analysis, key, context)` triple as the worklist enqueues it. */
@@ -93,7 +93,7 @@ export interface WorklistConfig {
   readonly analyses: ReadonlyArray<Analysis<any, any>>;
   readonly transforms: ReadonlyArray<TransformRule>;
   /** Production narrowings. Each carries `blockAnalysis` (worklist reseed)
-   *  plus optional `source`/`lift`/`resolveUnit` (observation ingress glue);
+   *  plus optional `source`/`lift`/`resolveFunction` (observation ingress glue);
    *  axes without a `source` simply don't participate in ingress dispatch. */
   readonly narrowings?: ReadonlyArray<Narrowing<any, any, any>>;
   /** Extra entry-seed pairs re-enqueued at every narrowing-entry alongside
@@ -107,7 +107,7 @@ export class Worklist {
   /** The Function domain this worklist drives. All lifecycle / chain /
    *  refute / rebuild orchestration routes through this contract, so the
    *  worklist proper does not depend on FunctionManager directly. */
-  readonly units: FunctionDomain;
+  readonly functions: FunctionDomain;
 
   private readonly registeredAnalyses = new Set<Analysis<any, any>>();
   // Two tier-specific FIFOs: the only enforced order is
@@ -127,7 +127,7 @@ export class Worklist {
     Map<AssumptionChain, Set<unknown>>
   >();
 
-  /** Registered transforms and their per-rule dirty sets. A unit enters its
+  /** Registered transforms and their per-rule dirty sets. A function enters its
    *  set on extent-change (mint or rebuild) or on a write to an upstream
    *  analysis the rule subscribes to; sweep clears it. */
   private readonly transforms: TransformRule[] = [];
@@ -136,7 +136,7 @@ export class Worklist {
 
   /** Reentrancy guard: set while `sweepTransforms` runs. `observe` and
    *  `incrementPolicyCounter` throw when true — observation ingress
-   *  mid-sweep would shift `futureDispatchChainFor(unit)` under the
+   *  mid-sweep would shift `futureDispatchChainFor(function)` under the
    *  sweep's feet. */
   private inTransformSweep = false;
 
@@ -170,15 +170,15 @@ export class Worklist {
   private readonly refutations: Refutations = new Refutations();
 
   /** Read surface for function lookups — convenience over
-   *  `this.units.locator`. Consumers that need program shape typically
+   *  `this.functions.locator`. Consumers that need program shape typically
    *  capture this explicitly at `Analysis.bind` / `TransformRule.bind`. */
   get locate(): FunctionLocator {
-    return this.units.locator;
+    return this.functions.locator;
   }
 
   private readonly narrowings: ReadonlyArray<Narrowing<any, any, any>>;
   private readonly extraEntrySeeds: ReadonlyArray<EntrySeed>;
-  /** Per-source unit resolver; all narrowings on a source must agree. */
+  /** Per-source function resolver; all narrowings on a source must agree. */
   private readonly functionResolverBySource: Map<ObservationSource<any, any>, FunctionResolver>;
   /** Per-source narrowings, indexed for ingress dispatch. Only narrowings
    *  whose `source` is defined appear here. */
@@ -199,7 +199,7 @@ export class Worklist {
     this.narrowings = narrowings;
     this.extraEntrySeeds = extraEntrySeeds;
     // Group narrowings by observation source. Each group must agree on
-    // `resolveUnit` so registration bugs surface at construction.
+    // `resolveFunction` so registration bugs surface at construction.
     const functionResolverBySource = new Map<ObservationSource<any, any>, FunctionResolver>();
     const bindingsBySource = new Map<
       ObservationSource<any, any>,
@@ -213,13 +213,13 @@ export class Worklist {
         );
       }
       const source = n.source;
-      const resolver: FunctionResolver = (n.resolveUnit ?? defaultFunctionResolver) as FunctionResolver;
+      const resolver: FunctionResolver = (n.resolveFunction ?? defaultFunctionResolver) as FunctionResolver;
       const existing = functionResolverBySource.get(source);
       if (existing === undefined) {
         functionResolverBySource.set(source, resolver);
       } else if (existing !== resolver) {
         throw new Error(
-          `[Worklist] narrowings sharing a source disagree on resolveUnit — all narrowings on one source must resolve to the same unit.`,
+          `[Worklist] narrowings sharing a source disagree on resolveFunction — all narrowings on one source must resolve to the same function.`,
         );
       }
       const group = bindingsBySource.get(source);
@@ -228,10 +228,10 @@ export class Worklist {
     }
     this.functionResolverBySource = functionResolverBySource;
     this.bindingsBySource = bindingsBySource;
-    // Build the unit domain FIRST: registrations below depend on the
+    // Build the function domain FIRST: registrations below depend on the
     // initial extent-change burst it fires when subscribers register
     // via `onExtentChange`.
-    this.units = new FunctionManager(ast, functionEnvironments);
+    this.functions = new FunctionManager(ast, functionEnvironments);
 
     for (const p of analyses) this.register(p);
     for (const r of transforms) this.registerTransform(r);
@@ -248,25 +248,25 @@ export class Worklist {
     return this.refutations.contains(node);
   }
 
-  /** Subscribe to refutation events. Routed through the unit domain. */
-  onRefute(callback: (unit: Function, carrier: AssumptionChain) => void): void {
-    this.units.onRefute(callback);
+  /** Subscribe to refutation events. Routed through the function domain. */
+  onRefute(callback: (function: Function, carrier: AssumptionChain) => void): void {
+    this.functions.onRefute(callback);
   }
 
-  /** Refute `carrier` for `unit`: add the minimal singleton of the carrier's
+  /** Refute `carrier` for `function`: add the minimal singleton of the carrier's
    *  tip binding (full chain would under-refute — siblings carrying the same
    *  binding under a different prefix would escape `isRefuted`), fire refute
-   *  subscribers, then reconcile the unit's preferred dispatch chain by
+   *  subscribers, then reconcile the function's preferred dispatch chain by
    *  clearing it if it's now refuted. Idempotent. */
-  private refute(unit: Function, carrier: AssumptionChain): void {
+  private refute(function: Function, carrier: AssumptionChain): void {
     if (isRoot(carrier)) return;
     const a = carrier.assumption;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
     this.refutations.add(minimal);
-    this.units.fireRefute(unit, carrier);
-    const fdCtx = this.units.chainFor(unit);
+    this.functions.fireRefute(function, carrier);
+    const fdCtx = this.functions.chainFor(function);
     if (!isRoot(fdCtx) && this.refutations.contains(fdCtx)) {
-      this.units.clearChainFor(unit);
+      this.functions.clearChainFor(function);
     }
   }
 
@@ -295,7 +295,7 @@ export class Worklist {
     dirtied: (locator: FunctionLocator, key: unknown) => Iterable<K>,
   ): void {
     const fire = (ctx: AnalysisCtx, key: unknown): void => {
-      for (const k of dirtied(this.units.locator, key)) {
+      for (const k of dirtied(this.functions.locator, key)) {
         this.enqueue(reader, k, ctx.currentContext);
       }
     };
@@ -315,36 +315,36 @@ export class Worklist {
     dirtied: (locator: FunctionLocator, key: unknown) => Iterable<K>,
   ): void {
     Worklist.addSub(this.advanceSubs, from, (ctx, key) => {
-      for (const k of dirtied(this.units.locator, key)) {
+      for (const k of dirtied(this.functions.locator, key)) {
         this.enqueue(reader, k, ctx.currentContext);
       }
     });
   }
 
-  /** Subscribe `reader` to extent changes on any unit. One delta primitive
+  /** Subscribe `reader` to extent changes on any function. One delta primitive
    *  covers mint (`prev` empty), rebuild (both non-empty), and retire
-   *  (`next` empty). Fires for every existing unit at registration with
+   *  (`next` empty). Fires for every existing function at registration with
    *  `prev = EMPTY_NODESET` so late subscribers replay the mint burst.
    *  Eviction listeners gate on `prev.size > 0` and read `prev` to find
    *  stale ids. */
   onExtentChange<K extends NodeSet>(
     reader: Analysis<K, any>,
-    dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
+    dirtied: (locator: FunctionLocator, function: Function) => Iterable<K>,
   ): void {
-    this.units.onExtentChange((unit, _prev, _next) => {
-      for (const k of dirtied(this.units.locator, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+    this.functions.onExtentChange((function, _prev, _next) => {
+      for (const k of dirtied(this.functions.locator, function)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
-  /** Subscribe `reader` to chain changes on any unit's preferred future-
+  /** Subscribe `reader` to chain changes on any function's preferred future-
    *  dispatch chain. Fires when observation-driven extension mutates
    *  `futureDispatchContext`. */
   onChainChange<K extends NodeSet>(
     reader: Analysis<K, any>,
-    dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
+    dirtied: (locator: FunctionLocator, function: Function) => Iterable<K>,
   ): void {
-    this.units.onChainChange((unit, _prev, _next) => {
-      for (const k of dirtied(this.units.locator, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+    this.functions.onChainChange((function, _prev, _next) => {
+      for (const k of dirtied(this.functions.locator, function)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
@@ -357,7 +357,7 @@ export class Worklist {
   }
 
   /** Register a transform rule. Idempotent. Auto-installs extent-change
-   *  dirtying so each unit enters the rule's dirty set on mint and rebuild,
+   *  dirtying so each function enters the rule's dirty set on mint and rebuild,
    *  then lets the rule subscribe via `bind`. */
   registerTransform(rule: TransformRule): void {
     if (this.transformsSet.has(rule)) return;
@@ -365,14 +365,14 @@ export class Worklist {
     this.transforms.push(rule);
     const dirty = new Set<Function>();
     this.transformDirty.set(rule, dirty);
-    this.units.onExtentChange((unit, _prev, _next) => {
-      dirty.add(unit);
+    this.functions.onExtentChange((function, _prev, _next) => {
+      dirty.add(function);
     });
     rule.bind?.(this);
   }
 
   /** Transform-side fact-dirty: when `from` advances, add the projected
-   *  units to `rule`'s dirty set. Cell-identity dependency. */
+   *  functions to `rule`'s dirty set. Cell-identity dependency. */
   onTransformFactDirty<K extends NodeSet>(
     rule: TransformRule,
     from: Analysis<K, any>,
@@ -380,7 +380,7 @@ export class Worklist {
   ): void {
     const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.advanceSubs, from as Analysis<any, any>, (_ctx, key) => {
-      for (const v of dirtied(this.units.locator, key as K)) dirty.add(v);
+      for (const v of dirtied(this.functions.locator, key as K)) dirty.add(v);
     });
   }
 
@@ -409,7 +409,7 @@ export class Worklist {
   ): void {
     const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.policyCounterSubs, counter as SaturatingCounter<any>, (_ctx, key) => {
-      for (const unit of dirtied(this.units.locator, key as K)) dirty.add(unit);
+      for (const function of dirtied(this.functions.locator, key as K)) dirty.add(function);
     });
   }
 
@@ -423,7 +423,7 @@ export class Worklist {
   }
 
   /** Record a runtime observation event made under `context`. Extends or
-   *  prunes the owning unit's speculation context via every narrowing bound
+   *  prunes the owning function's speculation context via every narrowing bound
    *  on `source`, then drives analyses to fixpoint.
    *
    *  Returns the caller's next frame-local provenance chain (extended or
@@ -547,7 +547,7 @@ export class Worklist {
     return true;
   }
 
-  /** Sweep every registered transform over its dirty units once. Canonical
+  /** Sweep every registered transform over its dirty functions once. Canonical
    *  rewrites schedule rebuild; speculative-variant rewrites do not rebuild
    *  CFG state. Structural rebuild itself is NOT flushed here. Public so
    *  online participants can run transforms before emitting bytecode.
@@ -559,14 +559,14 @@ export class Worklist {
       for (const rule of this.transforms) {
         const dirty = this.dirtyFor(rule);
         if (dirty.size === 0) continue;
-        for (const unit of dirty) {
-          const chain = this.units.chainFor(unit);
+        for (const function of dirty) {
+          const chain = this.functions.chainFor(function);
           if (this.isRefuted(chain)) continue;
-          const result = rule.sweep(unit, chain, this.units.locator);
+          const result = rule.sweep(function, chain, this.functions.locator);
           if (!result.changed) continue;
           anyFired = true;
           if (result.canonicalChanged) {
-            this.units.scheduleRebuild(unit);
+            this.functions.scheduleRebuild(function);
           }
         }
         dirty.clear();
@@ -643,13 +643,13 @@ export class Worklist {
     return ctx;
   }
 
-  /** Re-seed Kildall for every context-sensitive entry-seed at `unit`'s
+  /** Re-seed Kildall for every context-sensitive entry-seed at `function`'s
    *  entry block under `context`. Covers every registered narrowing plus any
    *  `extraEntrySeeds` passed in by the caller. */
-  private enqueueNarrowingEntry(unit: Function, context: AssumptionChain): void {
+  private enqueueNarrowingEntry(function: Function, context: AssumptionChain): void {
     // EntrySeed.seed takes V extends NodeSet; Function extends NodeSet,
     // so this coercion is safe at the call site.
-    const seedView = unit as unknown as NodeSet;
+    const seedView = function as unknown as NodeSet;
     for (const n of this.narrowings) {
       const seed = n.blockAnalysis();
       this.enqueue(seed.env, seed.seed(seedView), context);
@@ -668,31 +668,31 @@ export class Worklist {
     const applicable = this.bindingsBySource.get(source);
     if (applicable === undefined || applicable.length === 0) return context;
 
-    const resolveUnit =
+    const resolveFunction =
       this.functionResolverBySource.get(source) ?? defaultFunctionResolver;
-    const unit = resolveUnit(this.units.locator, key);
-    if (unit === undefined) return context;
+    const function = resolveFunction(this.functions.locator, key);
+    if (function === undefined) return context;
 
     const parentCtx = context;
 
-    const priorChain = this.units.chainFor(unit);
+    const priorChain = this.functions.chainFor(function);
 
     if (source.isUnknown(observed)) {
       let pruned = parentCtx;
       for (const n of applicable) {
         const c = carrierOf(pruned, n, key);
-        if (c !== undefined) this.refute(unit, c);
+        if (c !== undefined) this.refute(function, c);
         pruned = without(pruned, n, key);
       }
       if (pruned === parentCtx) return parentCtx;
       if (this.refutations.contains(pruned)) {
-        this.units.clearChainFor(unit);
+        this.functions.clearChainFor(function);
         return ROOT_CONTEXT;
       }
-      if (isRoot(pruned)) this.units.clearChainFor(unit);
-      else this.units.setChainFor(unit, pruned);
-      this.enqueueNarrowingEntry(unit, pruned);
-      this.units.fireChainChange(unit, priorChain, pruned);
+      if (isRoot(pruned)) this.functions.clearChainFor(function);
+      else this.functions.setChainFor(function, pruned);
+      this.enqueueNarrowingEntry(function, pruned);
+      this.functions.fireChainChange(function, priorChain, pruned);
       return pruned;
     }
 
@@ -708,7 +708,7 @@ export class Worklist {
       if (c !== undefined) {
         // Refute the chain node carrying the stale (n, key) binding before
         // splicing it out — a conflicting concrete observation violates it.
-        this.refute(unit, c);
+        this.refute(function, c);
       }
       const cleaned = c !== undefined ? without(newCtx, n, key) : newCtx;
       newCtx = extend(cleaned, n, key, lifted);
@@ -716,24 +716,24 @@ export class Worklist {
 
     if (newCtx === parentCtx) return parentCtx;
     if (this.refutations.contains(newCtx)) {
-      this.units.clearChainFor(unit);
+      this.functions.clearChainFor(function);
       return ROOT_CONTEXT;
     }
-    this.units.setChainFor(unit, newCtx);
-    this.enqueueNarrowingEntry(unit, newCtx);
-    this.units.fireChainChange(unit, priorChain, newCtx);
+    this.functions.setChainFor(function, newCtx);
+    this.enqueueNarrowingEntry(function, newCtx);
+    this.functions.fireChainChange(function, priorChain, newCtx);
     return newCtx;
   }
 
-  /** Preferred future-dispatch chain for `unit`. Delegates to the unit
+  /** Preferred future-dispatch chain for `function`. Delegates to the function
    *  domain. */
-  futureDispatchChainFor(unit: Function): AssumptionChain {
-    return this.units.chainFor(unit);
+  futureDispatchChainFor(function: Function): AssumptionChain {
+    return this.functions.chainFor(function);
   }
 
   /** Drain to fixed point: analyses → transforms → analyses → CFG rebuild,
    *  iterated until no transform fires and no rebuild occurs. Returns the
-   *  units that were rebuilt during this drain (in flush order). Throws if
+   *  functions that were rebuilt during this drain (in flush order). Throws if
    *  `limit` rebuilds occur without converging. */
   drain(limit: number = Worklist.DEFAULT_DRAIN_LIMIT): readonly Function[] {
     const changed: Function[] = [];
@@ -742,11 +742,11 @@ export class Worklist {
       this.processAnalysesToFixpoint();
       const fired = this.sweepTransforms();
       this.processAnalysesToFixpoint();
-      const rebuilt = this.units.flushPendingRebuilds();
+      const rebuilt = this.functions.flushPendingRebuilds();
 
       if (!fired && rebuilt.length === 0) break;
 
-      for (const unit of rebuilt) changed.push(unit);
+      for (const function of rebuilt) changed.push(function);
 
       if (changed.length >= limit) {
         throw new Error(

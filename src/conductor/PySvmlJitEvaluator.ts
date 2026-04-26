@@ -41,10 +41,10 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       worklist.drain();
 
       // SVML compiler only reads ROOT-context static facts. Per-call
-      // speculative bodies arrive pre-pruned via compileFunction(unit, body).
+      // speculative bodies arrive pre-pruned via compileFunction(function, body).
       const typeStore = typeAnalysis.perExpr(worklist.locate);
       const constStore = constAnalysis.perExpr(worklist.locate);
-      const compiler = SVMLCompiler.fromProgramUnit(ast, environments, {
+      const compiler = SVMLCompiler.fromProgramFunction(ast, environments, {
         typeOf: id => typeStore.tryRead(id, ROOT_CONTEXT),
         constOf: id => constStore.tryRead(id, ROOT_CONTEXT),
       });
@@ -54,12 +54,12 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
       const interpreter = new SVMLInterpreter(program, {
         sendOutput: msg => this.conductor.sendOutput(msg),
         // SVML policy is "always recompile": baseline and skip both re-lower
-        // from `unit.funcAst.body`, because transforms may have mutated it
+        // from `function.funcAst.body`, because transforms may have mutated it
         // in place post-load. Only `specialized` passes a speculative body.
         dispatchCall: (scopeId, args) => {
           const plan = dispatch.onCall(scopeId, args);
           if (plan === undefined) return undefined;
-          return compiler.compileFunction(plan.unit, plan.body);
+          return compiler.compileFunction(plan.function, plan.body);
         },
         dispatchReturn: dispatch.onReturn,
       });

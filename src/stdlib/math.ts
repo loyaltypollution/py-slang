@@ -982,7 +982,7 @@ export class MathBuiltins {
     _command: ExprNS.Call,
     _context: Context,
   ): Value {
-    // TODO: Implement math_ulp to return the unit in the last place (ULP) of the given floating-point number.
+    // TODO: Implement math_ulp to return the function in the last place (ULP) of the given floating-point number.
     throw new Error("math_ulp not implemented");
   }
 

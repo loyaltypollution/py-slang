@@ -5,7 +5,7 @@
 //   1. **registry / locator** — by-FunctionId, by-NodeId, blockContaining.
 //   2. **lifecycle** — `onExtentChange` with subscribe-time mint replay,
 //                      `scheduleRebuild` + `flushPendingRebuilds`.
-//   3. **chain** — `futureDispatchContextByUnit` plus the chain-change
+//   3. **chain** — `futureDispatchContextByFunction` plus the chain-change
 //                  and refute fan-out streams.
 //
 // The split previously lived across `manager.ts` + `locator.ts` +
@@ -43,13 +43,13 @@ import type {
  *  richer ctx.
  *
  *  Composes `BlockLocator` (one method block-keyed analyses need),
- *  `unitContainingNode` (the worklist's only required locator query),
- *  and `functionById` for callers that resolve a unit by its
+ *  `functionContainingNode` (the worklist's only required locator query),
+ *  and `functionById` for callers that resolve a function by its
  *  FunctionId boundary key. */
 export interface FunctionLocator extends BlockLocator {
   /** The worklist's only required locator query — observation ingress
    *  uses this to route NodeId-keyed events to their owning function. */
-  unitContainingNode(nodeId: NodeId): Function | undefined;
+  functionContainingNode(nodeId: NodeId): Function | undefined;
   /** Lookup by FunctionId boundary key (typically `funcAst.id`). */
   functionById(id: FunctionId): Function | undefined;
 }
@@ -64,15 +64,15 @@ export class FunctionManager implements FunctionLocator, FunctionDomain {
   private readonly extentSubs: ExtentChangeListener[] = [];
 
   // --- chain / refute state ---
-  /** Per-unit preferred chain for future compiles/dispatches. Unset or
+  /** Per-function preferred chain for future compiles/dispatches. Unset or
    *  ROOT_CONTEXT means future dispatch is unspecialized. */
-  private readonly futureDispatchContextByUnit = new Map<Function, AssumptionChain>();
+  private readonly futureDispatchContextByFunction = new Map<Function, AssumptionChain>();
   private readonly chainSubs: ChainChangeListener[] = [];
   private readonly refuteSubs: RefuteListener[] = [];
 
   constructor(ast: StmtNS.FileInput, functionEnvironments: FunctionEnvironments) {
-    for (const [, unit] of buildFunctions(ast, functionEnvironments)) {
-      this.registerUnit(unit);
+    for (const [, function] of buildFunctions(ast, functionEnvironments)) {
+      this.registerFunction(function);
     }
   }
 
@@ -91,7 +91,7 @@ export class FunctionManager implements FunctionLocator, FunctionDomain {
 
   /** The worklist's only required locator query — used by observation
    *  ingress to route NodeId-keyed events to their owning function. */
-  unitContainingNode(nodeId: NodeId): Function | undefined {
+  functionContainingNode(nodeId: NodeId): Function | undefined {
     return this.functionByNode.get(nodeId);
   }
 
@@ -102,64 +102,64 @@ export class FunctionManager implements FunctionLocator, FunctionDomain {
 
   // --- lifecycle (extent stream + rebuild) ---
 
-  /** Sole lifecycle primitive. Fires for every existing unit at subscribe
+  /** Sole lifecycle primitive. Fires for every existing function at subscribe
    *  time with `prev = EMPTY_NODESET` so late subscribers replay the mint
-   *  burst. Rebuild fires `(unit, prevSnapshot, nextSnapshot)`.
+   *  burst. Rebuild fires `(function, prevSnapshot, nextSnapshot)`.
    *  Eviction listeners gate on `prev.size > 0`. */
   onExtentChange(cb: ExtentChangeListener): void {
     this.extentSubs.push(cb);
-    for (const unit of this.functionsByFunctionId.values()) {
-      cb(unit, EMPTY_NODESET, this.snapshotExtent(unit));
+    for (const function of this.functionsByFunctionId.values()) {
+      cb(function, EMPTY_NODESET, this.snapshotExtent(function));
     }
   }
 
-  /** `FunctionDomain.extentOf(unit)` — public snapshot of `unit`'s current
+  /** `FunctionDomain.extentOf(function)` — public snapshot of `function`'s current
    *  CFG-owned ids. Same shape as the `next` payload on the extent stream. */
-  extentOf(unit: Function): FunctionExtent {
-    return this.snapshotExtent(unit);
+  extentOf(function: Function): FunctionExtent {
+    return this.snapshotExtent(function);
   }
 
-  scheduleRebuild(unit: Function): void {
-    this.pendingRebuilds.add(unit);
+  scheduleRebuild(function: Function): void {
+    this.pendingRebuilds.add(function);
   }
 
   flushPendingRebuilds(): readonly Function[] {
     if (this.pendingRebuilds.size === 0) return [];
-    const rebuilt: { unit: Function; prev: FunctionExtent; next: FunctionExtent }[] = [];
-    for (const unit of this.pendingRebuilds) {
-      const prev = this.snapshotExtent(unit);
-      for (const id of unit.nodeToBlock.keys()) this.functionByNode.delete(id);
-      wireCFG(unit);
-      this.indexUnitNodes(unit);
-      rebuilt.push({ unit, prev, next: this.snapshotExtent(unit) });
+    const rebuilt: { function: Function; prev: FunctionExtent; next: FunctionExtent }[] = [];
+    for (const function of this.pendingRebuilds) {
+      const prev = this.snapshotExtent(function);
+      for (const id of function.nodeToBlock.keys()) this.functionByNode.delete(id);
+      wireCFG(function);
+      this.indexFunctionNodes(function);
+      rebuilt.push({ function, prev, next: this.snapshotExtent(function) });
     }
     this.pendingRebuilds.clear();
-    for (const { unit, prev, next } of rebuilt) {
-      for (const sub of this.extentSubs) sub(unit, prev, next);
+    for (const { function, prev, next } of rebuilt) {
+      for (const sub of this.extentSubs) sub(function, prev, next);
     }
-    return rebuilt.map(r => r.unit);
+    return rebuilt.map(r => r.function);
   }
 
   // --- chain (preferred future-dispatch) ---
 
-  chainFor(unit: Function): AssumptionChain {
-    return this.futureDispatchContextByUnit.get(unit) ?? ROOT_CONTEXT;
+  chainFor(function: Function): AssumptionChain {
+    return this.futureDispatchContextByFunction.get(function) ?? ROOT_CONTEXT;
   }
 
-  setChainFor(unit: Function, chain: AssumptionChain): void {
-    this.futureDispatchContextByUnit.set(unit, chain);
+  setChainFor(function: Function, chain: AssumptionChain): void {
+    this.futureDispatchContextByFunction.set(function, chain);
   }
 
-  clearChainFor(unit: Function): void {
-    this.futureDispatchContextByUnit.delete(unit);
+  clearChainFor(function: Function): void {
+    this.futureDispatchContextByFunction.delete(function);
   }
 
   onChainChange(cb: ChainChangeListener): void {
     this.chainSubs.push(cb);
   }
 
-  fireChainChange(unit: Function, prev: AssumptionChain, next: AssumptionChain): void {
-    for (const sub of this.chainSubs) sub(unit, prev, next);
+  fireChainChange(function: Function, prev: AssumptionChain, next: AssumptionChain): void {
+    for (const sub of this.chainSubs) sub(function, prev, next);
   }
 
   // --- refute (orthogonal to chain change) ---
@@ -168,26 +168,26 @@ export class FunctionManager implements FunctionLocator, FunctionDomain {
     this.refuteSubs.push(cb);
   }
 
-  /** Fire refute subscribers for `(unit, carrier)`. Does not touch
+  /** Fire refute subscribers for `(function, carrier)`. Does not touch
    *  futureDispatchContext — the worklist owns the reconcile decision
    *  (clear-if-refuted) so the framework keeps fire and reconcile
    *  separable. */
-  fireRefute(unit: Function, carrier: AssumptionChain): void {
-    for (const sub of this.refuteSubs) sub(unit, carrier);
+  fireRefute(function: Function, carrier: AssumptionChain): void {
+    for (const sub of this.refuteSubs) sub(function, carrier);
   }
 
   // --- internals ---
 
-  private snapshotExtent(unit: Function): FunctionExtent {
-    return nodeSetOfIds(new Set(unit.nodeToBlock.keys())) as FunctionExtent;
+  private snapshotExtent(function: Function): FunctionExtent {
+    return nodeSetOfIds(new Set(function.nodeToBlock.keys())) as FunctionExtent;
   }
 
-  private registerUnit(unit: Function): void {
-    this.functionsByFunctionId.set(unit.funcAst.id, unit);
-    this.indexUnitNodes(unit);
+  private registerFunction(function: Function): void {
+    this.functionsByFunctionId.set(function.funcAst.id, function);
+    this.indexFunctionNodes(function);
   }
 
-  private indexUnitNodes(unit: Function): void {
-    for (const id of unit.nodeToBlock.keys()) this.functionByNode.set(id, unit);
+  private indexFunctionNodes(function: Function): void {
+    for (const id of function.nodeToBlock.keys()) this.functionByNode.set(id, function);
   }
 }

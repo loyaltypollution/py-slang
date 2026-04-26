@@ -6,10 +6,10 @@ import { runtimeParamSource } from "../../specialization/observation/runtime-ana
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 describe("dispatchValid", () => {
-  test("FileInput unit rejected", () => {
+  test("FileInput function rejected", () => {
     const { ast, worklist } = setupAndDrain("x = 1");
-    const rootUnit = worklist.locate.functionById(ast.id)!;
-    expect(dispatchValid(rootUnit, ROOT_CONTEXT)).toBe(false);
+    const rootFunction = worklist.locate.functionById(ast.id)!;
+    expect(dispatchValid(rootFunction, ROOT_CONTEXT)).toBe(false);
   });
 
   test("FunctionDef with no entry guards rejected", () => {
@@ -20,8 +20,8 @@ def f():
     return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.locate.functionById(fd.id)!;
-    expect(dispatchValid(unit, ROOT_CONTEXT)).toBe(false);
+    const function = worklist.locate.functionById(fd.id)!;
+    expect(dispatchValid(function, ROOT_CONTEXT)).toBe(false);
   });
 
   test("retired context rejected", () => {
@@ -32,7 +32,7 @@ def f(x):
     return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.locate.functionById(fd.id)!;
+    const function = worklist.locate.functionById(fd.id)!;
     worklist.observe(
       runtimeParamSource,
       paramKey(fd.id, 0),
@@ -40,11 +40,11 @@ def f(x):
       ROOT_CONTEXT,
     );
     worklist.drain();
-    const chain = worklist.futureDispatchChainFor(unit);
+    const chain = worklist.futureDispatchChainFor(function);
     // Simulate retirement: observe a conflicting value.
     worklist.observe(runtimeParamSource, paramKey(fd.id, 0), { kind: "bool", value: false }, chain);
     worklist.drain();
-    expect(dispatchValid(unit, chain, n => worklist.isRefuted(n))).toBe(false);
+    expect(dispatchValid(function, chain, n => worklist.isRefuted(n))).toBe(false);
   });
 });
 
@@ -58,7 +58,7 @@ def f(x):
         return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.locate.functionById(fd.id)!;
+    const function = worklist.locate.functionById(fd.id)!;
     const originalBody = fd.body;
     const originalIf = originalBody[0];
 
@@ -70,10 +70,10 @@ def f(x):
     );
     worklist.drain();
 
-    const specContext = worklist.futureDispatchChainFor(unit);
-    expect(dispatchValid(unit, specContext)).toBe(true);
-    const body = bodyToCompile(unit, specContext, worklist.locate);
-    expect(body).not.toBe(unit.body);
+    const specContext = worklist.futureDispatchChainFor(function);
+    expect(dispatchValid(function, specContext)).toBe(true);
+    const body = bodyToCompile(function, specContext, worklist.locate);
+    expect(body).not.toBe(function.body);
     // Shared AST is untouched — the pruned body is a clone.
     expect(fd.body).toBe(originalBody);
     expect(fd.body[0]).toBe(originalIf);
@@ -87,9 +87,9 @@ def f(x):
     return 0
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.locate.functionById(fd.id)!;
+    const function = worklist.locate.functionById(fd.id)!;
     // ROOT_CONTEXT has no entry guards → dispatchValid === false.
-    expect(() => bodyToCompile(unit, ROOT_CONTEXT, worklist.locate)).toThrow(
+    expect(() => bodyToCompile(function, ROOT_CONTEXT, worklist.locate)).toThrow(
       /dispatchValid.*must hold/,
     );
   });

@@ -5,7 +5,7 @@ import {
 import type { BasicBlock } from "../../specialization/program/basic-block";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import {
-  buildFirstFunctionUnit,
+  buildFirstFunctionFunction,
   intMaxLattice,
   syntheticDfa,
 } from "./harness/synthetic-dfa";
@@ -30,10 +30,10 @@ describe("makeBlockFixpointAnalysis quadrant coverage", () => {
         direction,
         mergeKind,
       });
-      const { unit } = buildFirstFunctionUnit(FN_SRC, [analysis.env, analysis.facts]);
+      const { function } = buildFirstFunctionFunction(FN_SRC, [analysis.env, analysis.facts]);
 
-      const expectedSeed = seed === "entry" ? unit.cfg.entry : unit.cfg.exit;
-      expect(analysis.seed(unit)).toBe(expectedSeed);
+      const expectedSeed = seed === "entry" ? function.cfg.entry : function.cfg.exit;
+      expect(analysis.seed(function)).toBe(expectedSeed);
 
       const seededEnv = analysis.env.store.tryRead(expectedSeed, ROOT_CONTEXT);
       expect(seededEnv).toBeDefined();
@@ -66,8 +66,8 @@ describe("makeBlockFixpointAnalysis quadrant coverage", () => {
       },
     });
 
-    const { unit } = buildFirstFunctionUnit(FN_SRC, [analysis.env, analysis.facts, factsReader]);
+    const { function } = buildFirstFunctionFunction(FN_SRC, [analysis.env, analysis.facts, factsReader]);
 
-    expect(seenBlocks).toContain(analysis.seed(unit));
+    expect(seenBlocks).toContain(analysis.seed(function));
   });
 });

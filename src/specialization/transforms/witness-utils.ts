@@ -170,7 +170,7 @@ export function transformResultFor(touchedWitnesses: readonly AssumptionChain[])
 }
 
 export function runWitnessSweep(
-  unit: Function,
+  function: Function,
   witnesses: Iterable<AssumptionChain>,
   makeVisitor: (witness: AssumptionChain) => {
     readonly changed: boolean;
@@ -180,12 +180,12 @@ export function runWitnessSweep(
   const ordered = Array.from(witnesses).sort((a, b) => a.depth - b.depth);
   const touchedWitnesses: AssumptionChain[] = [];
   for (const witness of ordered) {
-    const body = forkBody(unit, witness);
+    const body = forkBody(function, witness);
     const visitor = makeVisitor(witness);
     visitor.sweep(body);
     if (visitor.changed) {
       touchedWitnesses.push(witness);
-      invalidateDescendantVariants(unit, witness);
+      invalidateDescendantVariants(function, witness);
     }
   }
   return transformResultFor(touchedWitnesses);

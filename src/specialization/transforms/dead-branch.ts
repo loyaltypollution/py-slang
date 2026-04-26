@@ -91,11 +91,11 @@ class DeadBranchVisitor extends BaseStmtVisitor {
 
 export const deadBranchRule: TransformRule = {
   bind(wl) {
-    wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, (_, b) => [b.unit]);
+    wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, (_, b) => [b.function]);
   },
-  sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator) {
+  sweep(function: Function, chain: AssumptionChain, view: FunctionLocator) {
     const witnesses = new Set<AssumptionChain>();
-    collectConstCondWitnesses(visibleBody(unit, chain), chain, view, witnesses);
-    return runWitnessSweep(unit, witnesses, witness => new DeadBranchVisitor(witness, view));
+    collectConstCondWitnesses(visibleBody(function, chain), chain, view, witnesses);
+    return runWitnessSweep(function, witnesses, witness => new DeadBranchVisitor(witness, view));
   },
 };

@@ -9,15 +9,15 @@ import { buildSlotTable } from "./slot-table";
 /** Boundary key for runtime/JIT/observation surfaces (counters, sources,
  *  AssumptionChain bindings, ParamKey). Internal view relations should use
  *  a `Function` reference and reach for a FunctionId only at the boundary,
- *  via `unit.funcAst.id`.
+ *  via `function.funcAst.id`.
  *
  *  Two legitimate meanings, kept distinct at call sites:
  *    - `functionLocator.functionById(id)` — function rooted at that node.
- *    - `functionLocator.unitContainingNode(id)` — enclosing function
+ *    - `functionLocator.functionContainingNode(id)` — enclosing function
  *      whose CFG owns the FunctionDef statement. */
 export type FunctionId = NodeId;
 
-/** Per-scope optimization unit. Owns its CFG materialization in-place:
+/** Per-scope optimization function. Owns its CFG materialization in-place:
  *  `cfg` and `nodeToBlock` are produced by `wireCFG` and replaced by
  *  `FunctionManager.flushPendingRebuilds`. */
 export interface Function extends NodeSet {
@@ -43,7 +43,7 @@ function buildOneFunction(
   }
   const paramNames =
     funcAst instanceof StmtNS.FileInput ? [] : funcAst.parameters.map(p => p.lexeme);
-  const unit: Function = {
+  const function: Function = {
     funcAst,
     slotLookup: buildSlotTable(env, paramNames),
     cfg: undefined as unknown as CFG,
@@ -52,31 +52,31 @@ function buildOneFunction(
       return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
     },
     blockOfNode(nodeId) {
-      return unit.nodeToBlock.get(nodeId);
+      return function.nodeToBlock.get(nodeId);
     },
     contains(nodeId) {
-      return unit.nodeToBlock.has(nodeId);
+      return function.nodeToBlock.has(nodeId);
     },
     get size(): number {
-      return unit.nodeToBlock.size;
+      return function.nodeToBlock.size;
     },
     iterate() {
-      return unit.nodeToBlock.keys();
+      return function.nodeToBlock.keys();
     },
   };
-  wireCFG(unit);
-  return unit;
+  wireCFG(function);
+  return function;
 }
 
-export function wireCFG(unit: Function): void {
-  unit.cfg = buildCFG(unit.body, unit);
+export function wireCFG(function: Function): void {
+  function.cfg = buildCFG(function.body, function);
   const nodeToBlock = new Map<NodeId, BasicBlock>();
-  for (const block of unit.cfg.blocks) {
+  for (const block of function.cfg.blocks) {
     for (const stmt of block.stmts) {
       walkAstNodeIds(stmt, block, nodeToBlock);
     }
   }
-  unit.nodeToBlock = nodeToBlock;
+  function.nodeToBlock = nodeToBlock;
 }
 
 function walkAstNodeIds(
@@ -120,15 +120,15 @@ export function buildFunctions(
   functionEnvironments: FunctionEnvironments,
 ): Map<StmtNS.FileInput | StmtNS.FunctionDef, Function> {
   const functions = new Map<StmtNS.FileInput | StmtNS.FunctionDef, Function>();
-  const rootUnit = buildOneFunction(ast, functionEnvironments);
-  functions.set(ast, rootUnit);
+  const rootFunction = buildOneFunction(ast, functionEnvironments);
+  functions.set(ast, rootFunction);
 
   const visit = (stmts: ReadonlyArray<StmtNS.Stmt>): void => {
     for (const stmt of stmts) {
       if (stmt instanceof StmtNS.FunctionDef) {
-        const unit = buildOneFunction(stmt, functionEnvironments);
-        functions.set(stmt, unit);
-        visit(unit.body);
+        const function = buildOneFunction(stmt, functionEnvironments);
+        functions.set(stmt, function);
+        visit(function.body);
       } else if (stmt instanceof StmtNS.If) {
         visit(stmt.body);
         if (stmt.elseBlock) visit(stmt.elseBlock);
@@ -137,6 +137,6 @@ export function buildFunctions(
       }
     }
   };
-  visit(rootUnit.body);
+  visit(rootFunction.body);
   return functions;
 }

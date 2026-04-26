@@ -120,31 +120,31 @@ export const memoizationRule: TransformRule = {
       const f = loc.functionById(id);
       return f ? [f] : [];
     });
-    // purityFunctionAnalysis is keyed by Function, so the dirtied key already IS the unit.
-    wl.onTransformFactDirty(memoizationRule, purityFunctionAnalysis, (_ctx, unit) => [unit]);
+    // purityFunctionAnalysis is keyed by Function, so the dirtied key already IS the function.
+    wl.onTransformFactDirty(memoizationRule, purityFunctionAnalysis, (_ctx, function) => [function]);
     // On refute: evict the memo bucket keyed by the refuted carrier's guards.
-    wl.onRefute((unit, carrier) => {
-      const fd = unit.funcAst;
+    wl.onRefute((function, carrier) => {
+      const fd = function.funcAst;
       if (!(fd instanceof StmtNS.FunctionDef)) return;
-      clearMemoId(memoIdFor(fd, guardKeyFromGuards(directParamEntryGuardsFor(unit, carrier))));
+      clearMemoId(memoIdFor(fd, guardKeyFromGuards(directParamEntryGuardsFor(function, carrier))));
     });
   },
-  sweep(unit: Function, chain: AssumptionChain, _view: FunctionLocator): TransformResult {
-    const fd = unit.funcAst;
+  sweep(function: Function, chain: AssumptionChain, _view: FunctionLocator): TransformResult {
+    const fd = function.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return transformResultFor([]);
     // Fire one call before saturation so the memo wrapper is installed before
     // the runtime would otherwise refute on the next call.
     if (runtimeCallHotness.at(fd.id) < runtimeCallHotness.max - 1) return transformResultFor([]);
-    const pureWitness = purityFunctionAnalysis.store.readMinimal(chain, unit, v => v === true);
+    const pureWitness = purityFunctionAnalysis.store.readMinimal(chain, function, v => v === true);
     if (pureWitness === undefined) return transformResultFor([]);
-    const body = forkBody(unit, pureWitness.witness);
+    const body = forkBody(function, pureWitness.witness);
     if (bodyHasMemoPrelude(body)) return transformResultFor([]);
-    const variant = guardKeyFromGuards(directParamEntryGuardsFor(unit, pureWitness.witness));
+    const variant = guardKeyFromGuards(directParamEntryGuardsFor(function, pureWitness.witness));
     const rewritten = memoWrappedBody(fd, body, variant);
     // In-place: preserve array identity so descendants inherit via bodyFor.
     body.length = 0;
     body.push(...rewritten);
-    invalidateDescendantVariants(unit, pureWitness.witness);
+    invalidateDescendantVariants(function, pureWitness.witness);
     return transformResultFor([pureWitness.witness]);
   },
 };

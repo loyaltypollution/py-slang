@@ -37,13 +37,13 @@ def f(a, b):
     return a + b
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.locate.functionById(fn.id)!;
+    const function = worklist.locate.functionById(fn.id)!;
 
-    const entry = unit.cfg.entry;
+    const entry = function.cfg.entry;
     const env = definitelyBoundAnalysis.env.store.read(entry, ROOT_CONTEXT);
     // After transferBlock runs on entry, all param slots should be BOUND.
-    const slotA = unit.slotLookup(fn.parameters[0]).slot;
-    const slotB = unit.slotLookup(fn.parameters[1]).slot;
+    const slotA = function.slotLookup(fn.parameters[0]).slot;
+    const slotB = function.slotLookup(fn.parameters[1]).slot;
     expect(env.get(slotA)).toBe(BOUND);
     expect(env.get(slotB)).toBe(BOUND);
   });
@@ -56,14 +56,14 @@ def f(flag):
     return flag
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.locate.functionById(fn.id)!;
+    const function = worklist.locate.functionById(fn.id)!;
 
     const ifStmt = fn.body[0] as StmtNS.If;
     const assignX = ifStmt.body[0] as StmtNS.Assign;
     const xTarget = assignX.target as import("../../ast-types").ExprNS.Variable;
-    const slotX = unit.slotLookup(xTarget.name).slot;
+    const slotX = function.slotLookup(xTarget.name).slot;
 
-    const entry = unit.cfg.entry;
+    const entry = function.cfg.entry;
     const env = definitelyBoundAnalysis.env.store.read(entry, ROOT_CONTEXT);
     expect(env.get(slotX)).toBe(UNBOUND);
   });
@@ -75,15 +75,15 @@ def f():
     return x
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.locate.functionById(fn.id)!;
+    const function = worklist.locate.functionById(fn.id)!;
 
     // Resolve `x`'s slot via any Variable reference in the body — the
     // slotLookup is keyed by Token, not by name string.
     const ret = fn.body[1] as StmtNS.Return;
     const xRef = ret.value as import("../../ast-types").ExprNS.Variable;
-    const slotX = unit.slotLookup(xRef.name).slot;
+    const slotX = function.slotLookup(xRef.name).slot;
 
-    const exit = unit.cfg.exit;
+    const exit = function.cfg.exit;
     const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
     expect(env.get(slotX)).toBe(BOUND);
   });
@@ -96,16 +96,16 @@ def f(flag):
     return flag
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.locate.functionById(fn.id)!;
+    const function = worklist.locate.functionById(fn.id)!;
 
     // The name `x` exists in the function's slot table even though it's only
     // assigned in the if-branch. Resolve via the Assign target inside the If.
     const ifStmt = fn.body[0] as StmtNS.If;
     const assignX = ifStmt.body[0] as StmtNS.Assign;
     const xTarget = assignX.target as import("../../ast-types").ExprNS.Variable;
-    const slotX = unit.slotLookup(xTarget.name).slot;
+    const slotX = function.slotLookup(xTarget.name).slot;
 
-    const exit = unit.cfg.exit;
+    const exit = function.cfg.exit;
     const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
     expect(env.get(slotX)).toBe(UNBOUND);
   });
@@ -120,13 +120,13 @@ def f(flag):
     return x
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.locate.functionById(fn.id)!;
+    const function = worklist.locate.functionById(fn.id)!;
 
     const ret = fn.body[1] as StmtNS.Return;
     const xRef = ret.value as import("../../ast-types").ExprNS.Variable;
-    const slotX = unit.slotLookup(xRef.name).slot;
+    const slotX = function.slotLookup(xRef.name).slot;
 
-    const exit = unit.cfg.exit;
+    const exit = function.cfg.exit;
     const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
     expect(env.get(slotX)).toBe(BOUND);
   });
@@ -140,12 +140,12 @@ def f(xs):
     return total
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
-    const unit = worklist.locate.functionById(fn.id)!;
+    const function = worklist.locate.functionById(fn.id)!;
 
     const forStmt = fn.body[1] as StmtNS.For;
-    const slotI = unit.slotLookup(forStmt.target).slot;
+    const slotI = function.slotLookup(forStmt.target).slot;
 
-    const exit = unit.cfg.exit;
+    const exit = function.cfg.exit;
     const env = definitelyBoundAnalysis.env.store.read(exit, ROOT_CONTEXT);
     // `i` is bound by the For header; definitely bound at exit when the body
     // runs at least once. Under must semantics, a zero-iteration path would
