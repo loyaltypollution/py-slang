@@ -4,7 +4,4 @@ export {
   type DispatchOutcome,
   type JitDispatch,
 } from "./observation/jit-dispatch";
-export type {
-  PublicationGranularity,
-  PublicationStrategy,
-} from "./publication";
+export type { PublicationStrategy } from "./publication";
