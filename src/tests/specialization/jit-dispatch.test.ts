@@ -81,14 +81,15 @@ print(fib(8))
 });
 
 // Regression for the saturation short-circuit fix in runtime-analyses.ts.
-// Two distinct POS values saturate the param-channel shadow cell at
-// (chain, paramKey(f,0)) to ⊤. The subsequent NEG call must still publish so
-// `handleObservationForSpec` replaces the POS narrowing with NEG. Before the
-// fix, publish was skipped → POS-specialized body served to the NEG call.
-describe("saturated observation channel still prunes on conflicting type", () => {
+// Two distinct POS values saturate the param-observation shadow state at
+// (chain, paramKey(f,0)) to ⊤. The subsequent NEG call must still be
+// observed so `handleObservationForSpec` replaces the POS narrowing with
+// NEG. Before the fix, observation was skipped → POS-specialized body was
+// served to the NEG call.
+describe("saturated observation source still prunes on conflicting type", () => {
   beforeEach(clearMemoCache);
 
-  test("param channel", async () => {
+  test("param source", async () => {
     const outputs = await runSvmlJit(`
 def f(n):
     if n < 0:
@@ -103,7 +104,7 @@ f(-1)
     expect(outputs).toEqual(["pos", "pos", "neg"]);
   });
 
-  test("return channel", async () => {
+  test("return source", async () => {
     const outputs = await runSvmlJit(`
 def g(n):
     return n

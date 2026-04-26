@@ -13,27 +13,15 @@ export interface NodeSet {
 /** Non-empty intersection test. Picks the cheaper iteration direction by
  *  `size`. Throws if neither side is enumerable. */
 export function intersects(a: NodeSet, b: NodeSet): boolean {
-  const aIt = a.iterate;
-  const bIt = b.iterate;
-  if (aIt !== undefined && bIt !== undefined) {
-    const aSize = a.size ?? Infinity;
-    const bSize = b.size ?? Infinity;
-    if (aSize <= bSize) {
-      for (const n of aIt.call(a)) if (b.contains(n)) return true;
-    } else {
-      for (const n of bIt.call(b)) if (a.contains(n)) return true;
-    }
-    return false;
+  // Pick the side to iterate: prefer the smaller enumerable side.
+  const aSize = a.iterate !== undefined ? (a.size ?? Infinity) : Infinity;
+  const bSize = b.iterate !== undefined ? (b.size ?? Infinity) : Infinity;
+  if (aSize === Infinity && bSize === Infinity) {
+    throw new Error("[intersects] neither NodeSet is enumerable; at least one must expose `iterate`.");
   }
-  if (aIt !== undefined) {
-    for (const n of aIt.call(a)) if (b.contains(n)) return true;
-    return false;
-  }
-  if (bIt !== undefined) {
-    for (const n of bIt.call(b)) if (a.contains(n)) return true;
-    return false;
-  }
-  throw new Error("[intersects] neither NodeSet is enumerable; at least one must expose `iterate`.");
+  const [iter, probe] = aSize <= bSize ? [a, b] : [b, a];
+  for (const n of iter.iterate!()) if (probe.contains(n)) return true;
+  return false;
 }
 
 /** Wrap a `NodeId` as a singleton `NodeSet`. Interned: repeated calls with
@@ -72,16 +60,4 @@ export const EMPTY_NODESET: UnitExtent = {
   contains: () => false,
   size: 0,
   iterate: () => [],
-};
-
-/** Universal predicate `NodeSet` — `contains` is true for every id. Pairs
- *  only with enumerable sets; `intersects(ANY, delta)` is true iff `delta`
- *  is non-empty. Not a cell-identity subscription — use
- *  `Worklist.subscribeOnAdvance` for that. */
-export const ANY_NODESET: NodeSet = {
-  contains: () => true,
-  size: Infinity,
-  iterate: () => {
-    throw new Error("[ANY_NODESET] not enumerable; pair with an enumerable delta in `intersects`.");
-  },
 };

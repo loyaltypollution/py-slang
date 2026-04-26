@@ -6,29 +6,26 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
 import { ROOT_CONTEXT, at, type AssumptionChain } from "../../assumption";
-import { type Narrowing } from "../../framework/analysis";
+import type { Narrowing } from "../../framework/analysis";
 import type { ObservationBinding } from "../../observation/observation-binding";
 import type { RawKind } from "../../observation/raw-value";
-import { runtimeReturnChannel } from "../../observation/runtime-analyses";
+import { runtimeReturnSource } from "../../observation/runtime-analyses";
 import type { Function, FunctionId } from "../../program/units/function/function";
+import type { FunctionLocator } from "../../program/units/function/manager";
 import { isLocal, type SlotLookup } from "../../program/units/function/slot-table";
 import { MutableEnv } from "../block-env";
-import {
-    makeBlockFixpointAnalysis,
-    type BlockFixpointAnalysis,
-} from "../dfa-factory";
+import { makeBlockFixpointAnalysis, type BlockFixpointAnalysis } from "../dfa-factory";
 import { liftType } from "../type/analysis";
 import {
-    INT_BIT,
-    TOP,
-    eq,
-    integer,
-    isSatisfiableType,
-    meet,
-    typeLattice,
-    type TypeLattice,
+  INT_BIT,
+  TOP,
+  eq,
+  integer,
+  isSatisfiableType,
+  meet,
+  typeLattice,
+  type TypeLattice,
 } from "../type/lattice";
-
 
 /** Unconstrained int requirement — kind INT, sign Top. */
 const INT_ANY: TypeLattice = integer();
@@ -160,9 +157,10 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
     seedEnv: () => new MutableEnv<TypeLattice>(),
     transferBlock: (ctx, block, inEnv, unit) => {
       const fd = unit.funcAst;
-      const required = fd instanceof StmtNS.FunctionDef
-        ? at(ctx.currentContext, returnKindNarrowing, fd.id)
-        : undefined;
+      const required =
+        fd instanceof StmtNS.FunctionDef
+          ? at(ctx.currentContext, returnKindNarrowing, fd.id)
+          : undefined;
       const outEnv = inEnv.snapshot();
       const stmts = block.stmts;
       for (let i = stmts.length - 1; i >= 0; i--) {
@@ -186,9 +184,15 @@ export const returnKindNarrowing: Narrowing<FunctionId, TypeLattice> = {
  *  above consumes that at Return statements. `resolveUnit` maps the
  *  functionId to the function's own unit so the extension lands where the
  *  body's requirement-propagation runs. */
-export const returnKindBinding: ObservationBinding<FunctionId, TypeLattice, RawKind> = {
+export const returnKindBinding: ObservationBinding<
+  Function,
+  FunctionLocator,
+  FunctionId,
+  TypeLattice,
+  RawKind
+> = {
   narrowing: returnKindNarrowing,
-  source: runtimeReturnChannel,
+  source: runtimeReturnSource,
   lift: liftType,
   resolveUnit: (loc, id) => loc.functionById(id),
 };

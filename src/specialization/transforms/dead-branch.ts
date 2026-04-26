@@ -93,13 +93,9 @@ export const deadBranchRule: TransformRule = {
   bind(wl) {
     wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, (_, b) => [b.unit]);
   },
-  sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator): boolean {
+  sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator) {
     const witnesses = new Set<AssumptionChain>();
     collectConstCondWitnesses(visibleBody(unit, chain), chain, view, witnesses);
-    return runWitnessSweep(
-      unit,
-      witnesses,
-      (witness) => new DeadBranchVisitor(witness, view),
-    );
+    return runWitnessSweep(unit, witnesses, witness => new DeadBranchVisitor(witness, view));
   },
 };

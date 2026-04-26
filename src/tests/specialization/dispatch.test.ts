@@ -2,7 +2,7 @@ import { StmtNS } from "../../ast-types";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { bodyToCompile, dispatchValid } from "../../specialization/speculation/chain-dispatch";
 import { paramKey } from "../../specialization/narrowing-policy/param-key";
-import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
+import { runtimeParamSource } from "../../specialization/observation/runtime-analyses";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 describe("dispatchValid", () => {
@@ -33,17 +33,16 @@ def f(x):
 `);
     const fd = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.locate.functionById(fd.id)!;
-    worklist.publish(
-      runtimeParamChannel, paramKey(fd.id, 0),
-      { kind: "bool", value: true }, ROOT_CONTEXT,
+    worklist.observe(
+      runtimeParamSource,
+      paramKey(fd.id, 0),
+      { kind: "bool", value: true },
+      ROOT_CONTEXT,
     );
     worklist.drain();
     const chain = worklist.futureDispatchChainFor(unit);
     // Simulate retirement: observe a conflicting value.
-    worklist.publish(
-      runtimeParamChannel, paramKey(fd.id, 0),
-      { kind: "bool", value: false }, chain,
-    );
+    worklist.observe(runtimeParamSource, paramKey(fd.id, 0), { kind: "bool", value: false }, chain);
     worklist.drain();
     expect(dispatchValid(unit, chain, n => worklist.isRefuted(n))).toBe(false);
   });
@@ -63,8 +62,8 @@ def f(x):
     const originalBody = fd.body;
     const originalIf = originalBody[0];
 
-    worklist.publish(
-      runtimeParamChannel,
+    worklist.observe(
+      runtimeParamSource,
       paramKey(fd.id, 0),
       { kind: "bool", value: true },
       ROOT_CONTEXT,
@@ -90,7 +89,8 @@ def f(x):
     const fd = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.locate.functionById(fd.id)!;
     // ROOT_CONTEXT has no entry guards → dispatchValid === false.
-    expect(() => bodyToCompile(unit, ROOT_CONTEXT, worklist.locate))
-      .toThrow(/dispatchValid.*must hold/);
+    expect(() => bodyToCompile(unit, ROOT_CONTEXT, worklist.locate)).toThrow(
+      /dispatchValid.*must hold/,
+    );
   });
 });

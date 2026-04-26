@@ -99,15 +99,13 @@ function planBinary(
   switch (expr.operator.type) {
     case TokenType.PLUS:
       return (
-        planWhen(leftPureInt, rightZero, expr.left) ??
-        planWhen(leftZero, rightPureInt, expr.right)
+        planWhen(leftPureInt, rightZero, expr.left) ?? planWhen(leftZero, rightPureInt, expr.right)
       );
     case TokenType.MINUS:
       return planWhen(leftPureInt, rightZero, expr.left);
     case TokenType.STAR: {
       const oneIdent =
-        planWhen(leftPureInt, rightOne, expr.left) ??
-        planWhen(leftOne, rightPureInt, expr.right);
+        planWhen(leftPureInt, rightOne, expr.left) ?? planWhen(leftOne, rightPureInt, expr.right);
       if (oneIdent !== undefined) return oneIdent;
       const zero = new ExprNS.Literal(expr.startToken, expr.endToken, 0);
       if (isSafeToDrop(expr.left)) {
@@ -218,16 +216,16 @@ export const algebraicSimplifyRule: TransformRule = {
   bind(wl) {
     wl.onTransformFactDirty(algebraicSimplifyRule, typeAnalysis.facts, (_, b) => [b.unit]);
   },
-  sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator): boolean {
+  sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator) {
     const witnesses = new Set<AssumptionChain>();
-    walkExprs(visibleBody(unit, chain), (expr) => {
+    walkExprs(visibleBody(unit, chain), expr => {
       const plan = rewritePlan(chain, view, expr);
       if (plan !== undefined) witnesses.add(plan.witness);
     });
     return runWitnessSweep(
       unit,
       witnesses,
-      (witness) => new ExprDrivenStmtVisitor(new AlgebraicSimplifyVisitor(witness, view)),
+      witness => new ExprDrivenStmtVisitor(new AlgebraicSimplifyVisitor(witness, view)),
     );
   },
 };

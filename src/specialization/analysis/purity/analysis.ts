@@ -134,14 +134,13 @@ class PurityExprVisitor implements ExprNS.Visitor<AbsVal> {
     // closure.pure tri-state: true = resolved pure, false = resolved impure,
     // undefined = not yet analyzed (pending defers impurity to stay monotone).
     const closure = calleeAbs?.kind === "closure" ? calleeAbs : undefined;
-    const isPureClosureCall = closure?.pure === true;
-    const isPendingClosureCall = closure?.pure === undefined && closure !== undefined;
+    const isPureOrPendingClosureCall = closure !== undefined && closure.pure !== false;
     const isImpureClosureCall = closure?.pure === false;
     const isWhitelistedBuiltin =
       calleeName !== undefined && WHITELISTED_BUILTINS.has(calleeName);
     const isSelfRecursion = calleeName !== undefined && calleeName === state.selfName;
     const isKnownSafeNamedCall =
-      isWhitelistedBuiltin || isSelfRecursion || isPureClosureCall || isPendingClosureCall;
+      isWhitelistedBuiltin || isSelfRecursion || isPureOrPendingClosureCall;
 
     if (isImpureClosureCall || (calleeName !== undefined && !isKnownSafeNamedCall)) {
       state.impure = true;
@@ -149,7 +148,7 @@ class PurityExprVisitor implements ExprNS.Visitor<AbsVal> {
 
     // Without an interprocedural summary, args may escape into mutation —
     // including via self-recursion.
-    const argsEscape = !isWhitelistedBuiltin && !isPureClosureCall && !isPendingClosureCall;
+    const argsEscape = !isWhitelistedBuiltin && !isPureOrPendingClosureCall;
     for (const arg of expr.args) {
       arg.accept(this);
       if (!argsEscape || !(arg instanceof ExprNS.Variable)) continue;

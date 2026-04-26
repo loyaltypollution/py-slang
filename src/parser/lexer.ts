@@ -319,5 +319,5 @@ class PythonLexer implements moo.Lexer {
     };
   }
 }
-const pythonLexer = new PythonLexer();
+const pythonLexer: moo.Lexer = new PythonLexer();
 export default pythonLexer;

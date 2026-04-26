@@ -1,5 +1,5 @@
 import { StmtNS } from "../../../ast-types";
-import { runtimeCallCounter } from "../../../specialization/observation/runtime-analyses";
+import { runtimeCallHotness } from "../../../specialization/observation/runtime-analyses";
 import type { Worklist } from "../../../specialization/framework/worklist";
 
 export function findFunctionDef(ast: StmtNS.FileInput, name: string): StmtNS.FunctionDef {
@@ -10,5 +10,5 @@ export function findFunctionDef(ast: StmtNS.FileInput, name: string): StmtNS.Fun
 }
 
 export function observeCallsTo(wl: Worklist, fd: StmtNS.FunctionDef, n: number): void {
-  for (let i = 0; i < n; i++) wl.bump(runtimeCallCounter, fd.id);
+  for (let i = 0; i < n; i++) wl.incrementPolicyCounter(runtimeCallHotness, fd.id);
 }

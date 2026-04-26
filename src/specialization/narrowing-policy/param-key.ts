@@ -7,7 +7,7 @@ import type { FunctionId } from "../program/units/function/function";
  *  Not a NodeSet, not an analysis key, not a structural relation inside the
  *  IR. The owning function is recovered from the encoded FunctionId by the
  *  param observation binding. Do not migrate to a `Function` reference: the
- *  encoding has to survive across observation channels and AssumptionChain
+ *  encoding has to survive across observation sources and AssumptionChain
  *  bindings whose stable identity is the whole point. */
 export type ParamKey = `${FunctionId}:${number}`;
 

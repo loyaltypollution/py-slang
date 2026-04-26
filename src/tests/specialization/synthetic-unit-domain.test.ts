@@ -16,14 +16,15 @@
 // Bottom of file also drives a real Worklist<SyntheticUnit, SyntheticLocator>
 // to prove the synthetic domain is sufficient for worklist orchestration.
 
-import { ROOT_CONTEXT, extend, type AssumptionChain, type NarrowingId } from "../../specialization/assumption";
+import {
+  ROOT_CONTEXT,
+  extend,
+  type AssumptionChain,
+  type NarrowingId,
+} from "../../specialization/assumption";
 import { Worklist } from "../../specialization/framework/worklist";
 import type { TransformRule } from "../../specialization/framework/analysis";
-import {
-  EMPTY_NODESET,
-  nodeSetOfIds,
-  type NodeId,
-} from "../../specialization/program/node-set";
+import { EMPTY_NODESET, nodeSetOfIds, type NodeId } from "../../specialization/program/node-set";
 import type { UnitExtent } from "../../specialization/program/unit-extent";
 import type {
   ChainChangeListener,
@@ -57,7 +58,7 @@ class SyntheticDomain implements UnitDomain<SyntheticUnit, SyntheticLocator> {
 
   readonly locator: SyntheticLocator = {
     all: this.unitsById,
-    unitContainingNode: (nodeId) => {
+    unitContainingNode: nodeId => {
       for (const u of this.unitsById.values()) {
         if (u.nodeIds.has(nodeId)) return u;
       }
@@ -218,7 +219,9 @@ describe("UnitDomain contract — satisfiable for a non-Function unit kind", () 
     const d = new SyntheticDomain();
     d.addUnit("u", [1]);
     let count = 0;
-    d.onExtentChange(() => { count++; });
+    d.onExtentChange(() => {
+      count++;
+    });
     const initial = count;
     expect(d.flushPendingRebuilds()).toEqual([]);
     expect(count).toBe(initial);
@@ -268,8 +271,12 @@ describe("UnitDomain contract — satisfiable for a non-Function unit kind", () 
 
     let chainFires = 0;
     let refuteFires = 0;
-    d.onChainChange(() => { chainFires++; });
-    d.onRefute(() => { refuteFires++; });
+    d.onChainChange(() => {
+      chainFires++;
+    });
+    d.onRefute(() => {
+      refuteFires++;
+    });
 
     d.setNodes(u, [1, 2]);
     d.scheduleRebuild(u);
@@ -293,8 +300,12 @@ describe("Worklist<U, L> drives a synthetic domain end-to-end", () => {
       sweep(unit, _chain, _locator) {
         swept.push(unit);
         // Don't schedule a rebuild — one-shot per unit; otherwise drain
-        // would loop until the rule reports false.
-        return false;
+        // would loop until the rule reports no change.
+        return {
+          changed: false,
+          canonicalChanged: false,
+          touchedWitnesses: [],
+        };
       },
     };
 
@@ -307,7 +318,9 @@ describe("Worklist<U, L> drives a synthetic domain end-to-end", () => {
     // Both units are seeded into the rule's dirty set by the extent-change
     // subscribe-time replay.
     const rebuilt = wl.drain();
-    expect(swept.sort((x, y) => x.id.localeCompare(y.id))).toEqual([a, b].sort((x, y) => x.id.localeCompare(y.id)));
+    expect(swept.sort((x, y) => x.id.localeCompare(y.id))).toEqual(
+      [a, b].sort((x, y) => x.id.localeCompare(y.id)),
+    );
     expect(rebuilt).toEqual([]);
 
     // wl.locate is the synthetic locator, not a FunctionLocator.
@@ -324,12 +337,20 @@ describe("Worklist<U, L> drives a synthetic domain end-to-end", () => {
     const rule: TransformRule<SyntheticUnit, SyntheticLocator> = {
       sweep(_unit, _chain, _locator) {
         // Fire once total: pretend `a` rewrote on the first sweep, then
-        // nothing more. Must return true to schedule a rebuild.
+        // nothing more. Must report canonical change to schedule rebuild.
         if (fires === 0) {
           fires++;
-          return true;
+          return {
+            changed: true,
+            canonicalChanged: true,
+            touchedWitnesses: [ROOT_CONTEXT],
+          };
         }
-        return false;
+        return {
+          changed: false,
+          canonicalChanged: false,
+          touchedWitnesses: [],
+        };
       },
     };
 

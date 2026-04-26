@@ -6,7 +6,7 @@ import { buildCFG } from "../../regions/basic-block";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
-/** Boundary key for runtime/JIT/observation surfaces (counters, channels,
+/** Boundary key for runtime/JIT/observation surfaces (counters, sources,
  *  AssumptionChain bindings, ParamKey). Internal view relations should use
  *  a `Function` reference and reach for a FunctionId only at the boundary,
  *  via `unit.funcAst.id`.

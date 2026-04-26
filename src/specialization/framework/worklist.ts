@@ -15,31 +15,28 @@ import {
   Refutations,
   ROOT_CONTEXT,
   without,
-  type AssumptionChain,
 } from "../assumption";
-import type { CounterStore } from "../observation/counter-store";
+import type { AssumptionChain } from "../assumption";
+import type { SaturatingCounter } from "../observation/counter-store";
 import type { ObservationBinding } from "../observation/observation-binding";
-import type { ObservationChannel } from "../observation/observation-channel";
+import type { ObservationSource } from "../observation/observation-channel";
 import type { NodeId, NodeSet } from "./analysis";
 import { intersects } from "../program/node-set";
-import {
-  type Analysis,
-  type AnalysisCtx,
-  type EntrySeed,
-  type Narrowing,
-  type TransformRule,
+import type {
+  Analysis,
+  AnalysisCtx,
+  EntrySeed,
+  Narrowing,
+  TransformRule,
 } from "./analysis";
-import {
-  storeEvict,
-  storeWrite,
-} from "./analysis-store";
-import { type Function } from "../program/units/function/function";
+import { storeEvict, storeWrite } from "./analysis-store";
+import type { Function } from "../program/units/function/function";
 import { FunctionManager } from "../program/units/function/manager";
 import type { FunctionLocator } from "../program/units/function/manager";
 import type { UnitDomain, UnitLocator } from "./unit-domain";
 
-/** Resolver supplied per-binding (or the default below): turns the channel's
- *  key into the owning unit so observation ingress can route narrowings
+/** Resolver supplied per-binding (or the default below): turns the source
+ *  key into the owning unit so observation events can route narrowings
  *  to the right one. */
 type UnitResolver<U, L> = (locator: L, key: any) => U | undefined;
 
@@ -65,7 +62,9 @@ class TripleQueue {
   private readonly items: (AnalysisTriple | undefined)[] = [];
   private head = 0;
 
-  size(): number { return this.items.length - this.head; }
+  size(): number {
+    return this.items.length - this.head;
+  }
 
   push(analysis: Analysis<any, any>, key: unknown, context: AssumptionChain): void {
     this.items.push({ analysis, key, context });
@@ -96,10 +95,7 @@ class TripleQueue {
  *  - **Injected domain** (`units` supplied): pass any `UnitDomain<U, L>`
  *    directly; the worklist drives whatever unit kind it represents.
  *    `ast`/`functionEnvironments` are ignored if also passed. */
-export interface WorklistConfig<
-  U = Function,
-  L = FunctionLocator,
-> {
+export interface WorklistConfig<U = Function, L = FunctionLocator> {
   readonly units?: UnitDomain<U, L>;
   readonly ast?: StmtNS.FileInput;
   readonly functionEnvironments?: FunctionEnvironments;
@@ -107,20 +103,15 @@ export interface WorklistConfig<
   readonly analyses: ReadonlyArray<Analysis<any, any>>;
   readonly transforms: ReadonlyArray<TransformRule<U, L>>;
   readonly narrowings?: ReadonlyArray<Narrowing<any, any>>;
-  readonly counters?: ReadonlyArray<CounterStore<any>>;
-  readonly channels?: ReadonlyArray<ObservationChannel<any, any>>;
   /** Extra entry-seed pairs re-enqueued at every narrowing-entry alongside
    *  each narrowing's own `blockAnalysis()`. Used for context-sensitive
    *  analyses (e.g. purity) that must track each specialization context
    *  but aren't themselves narrowings. Policy-owned by the caller. */
   readonly extraEntrySeeds?: ReadonlyArray<EntrySeed>;
-  readonly observationBindings?: ReadonlyArray<ObservationBinding<any, any>>;
+  readonly observationBindings?: ReadonlyArray<ObservationBinding<U, L, any, any, any>>;
 }
 
-export class Worklist<
-  U = Function,
-  L = FunctionLocator,
-> {
+export class Worklist<U = Function, L = FunctionLocator> {
   /** The atomic-unit domain this worklist drives. All lifecycle / chain /
    *  refute / rebuild orchestration routes through this contract, so the
    *  worklist proper does not depend on any concrete domain. Built from a
@@ -153,9 +144,10 @@ export class Worklist<
   private readonly transformsSet = new Set<TransformRule<U, L>>();
   private readonly transformDirty = new Map<TransformRule<U, L>, Set<U>>();
 
-  /** Reentrancy guard: set while `sweepTransforms` runs. `publish`/`bump`
-   *  throw when true — observation ingress mid-sweep would shift
-   *  `futureDispatchChainFor(unit)` under the sweep's feet. */
+  /** Reentrancy guard: set while `sweepTransforms` runs. `observe` and
+   *  `incrementPolicyCounter` throw when true — observation ingress
+   *  mid-sweep would shift `futureDispatchChainFor(unit)` under the
+   *  sweep's feet. */
   private inTransformSweep = false;
 
   /** Node-intersection-routed subscribers. Each entry declares an `interest`
@@ -179,11 +171,10 @@ export class Worklist<
     Analysis<any, any>,
     Array<(ctx: AnalysisCtx, key: unknown) => void>
   >();
-  private readonly counterSubs = new Map<
-    CounterStore<any>,
+  private readonly policyCounterSubs = new Map<
+    SaturatingCounter<any>,
     Array<(ctx: AnalysisCtx, key: unknown) => void>
   >();
-  private readonly registeredCounters = new Set<CounterStore<any>>();
 
   /** Refutation filter (minimal generators; `contains(c) = ∃ r. leq(r, c)`). */
   private readonly refutations: Refutations = new Refutations();
@@ -199,17 +190,12 @@ export class Worklist<
   private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
   private readonly extraEntrySeeds: ReadonlyArray<EntrySeed>;
   /** Per-source unit resolver; all bindings on a source must agree. */
-  private readonly unitResolverBySource: Map<
-    ObservationChannel<any, any>,
-    UnitResolver<U, L>
-  >;
+  private readonly unitResolverBySource: Map<ObservationSource<any, any>, UnitResolver<U, L>>;
   /** Per-source observation bindings, indexed for ingress dispatch. */
   private readonly bindingsBySource: ReadonlyMap<
-    ObservationChannel<any, any>,
-    ReadonlyArray<ObservationBinding<any, any>>
+    ObservationSource<any, any>,
+    ReadonlyArray<ObservationBinding<U, L>>
   >;
-
-  private readonly registeredChannels = new Set<ObservationChannel<any, any>>();
 
   constructor(config: WorklistConfig<U, L>) {
     const {
@@ -219,20 +205,22 @@ export class Worklist<
       analyses,
       transforms,
       narrowings = [],
-      counters = [],
-      channels = [],
       extraEntrySeeds = [],
       observationBindings = [],
     } = config;
     this.narrowings = narrowings;
     this.extraEntrySeeds = extraEntrySeeds;
-    // Group bindings by `source`. Each group must agree on `resolveUnit`
+    // Group bindings by observation source. Each group must agree on
+    // `resolveUnit`
     // so registration bugs surface at construction.
-    const unitResolverBySource = new Map<ObservationChannel<any, any>, UnitResolver<U, L>>();
-    const bindingsBySource = new Map<ObservationChannel<any, any>, ObservationBinding<any, any>[]>();
+    const unitResolverBySource = new Map<ObservationSource<any, any>, UnitResolver<U, L>>();
+    const bindingsBySource = new Map<ObservationSource<any, any>, ObservationBinding<U, L>[]>();
     for (const b of observationBindings) {
       const source = b.source;
-      const resolver: UnitResolver<U, L> = (b.resolveUnit ?? defaultUnitResolver) as UnitResolver<U, L>;
+      const resolver: UnitResolver<U, L> = (b.resolveUnit ?? defaultUnitResolver) as UnitResolver<
+        U,
+        L
+      >;
       const existing = unitResolverBySource.get(source);
       if (existing === undefined) {
         unitResolverBySource.set(source, resolver);
@@ -264,8 +252,6 @@ export class Worklist<
     }
 
     for (const p of analyses) this.register(p);
-    for (const c of counters) this.registerCounter(c);
-    for (const ch of channels) this.registerChannel(ch);
     for (const r of transforms) this.registerTransform(r);
   }
 
@@ -315,8 +301,7 @@ export class Worklist<
   /** Subscribe `reader` to advancing writes on `from` whose published node
    *  delta intersects `interest` (typically a view, or
    *  `internSingletonNode(id)`). `dirtied` projects the source key-change
-   *  into reader keys. `opts.enqueueAt` projects the source context into
-   *  the enqueue context (default: the source write context).
+   *  into reader keys. Readers re-enqueue at the source write context.
    *
    *  HAZARD: synthetic CFG blocks (entry/exit/joins) have empty `nodeIds`,
    *  yielding vacuously-false intersections. Use `subscribeOnAdvance` for
@@ -326,12 +311,11 @@ export class Worklist<
     reader: Analysis<K, any>,
     interest: NodeSet,
     dirtied: (locator: L, key: unknown) => Iterable<K>,
-    opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
   ): void {
-    const project = opts?.enqueueAt;
     const fire = (ctx: AnalysisCtx, key: unknown): void => {
-      const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
-      for (const k of dirtied(this.units.locator, key)) this.enqueue(reader, k, enqueueCtx);
+      for (const k of dirtied(this.units.locator, key)) {
+        this.enqueue(reader, k, ctx.currentContext);
+      }
     };
     let list = this.nodeSetSubs.get(from);
     if (list === undefined) {
@@ -347,12 +331,11 @@ export class Worklist<
     from: Analysis<any, any>,
     reader: Analysis<K, any>,
     dirtied: (locator: L, key: unknown) => Iterable<K>,
-    opts?: { enqueueAt?: (sourceCtx: AssumptionChain) => AssumptionChain },
   ): void {
-    const project = opts?.enqueueAt;
     Worklist.addSub(this.advanceSubs, from, (ctx, key) => {
-      const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
-      for (const k of dirtied(this.units.locator, key)) this.enqueue(reader, k, enqueueCtx);
+      for (const k of dirtied(this.units.locator, key)) {
+        this.enqueue(reader, k, ctx.currentContext);
+      }
     });
   }
 
@@ -400,7 +383,9 @@ export class Worklist<
     this.transforms.push(rule);
     const dirty = new Set<U>();
     this.transformDirty.set(rule, dirty);
-    this.units.onExtentChange((unit, _prev, _next) => { dirty.add(unit); });
+    this.units.onExtentChange((unit, _prev, _next) => {
+      dirty.add(unit);
+    });
     rule.bind?.(this);
   }
 
@@ -417,72 +402,62 @@ export class Worklist<
     });
   }
 
-  /** Register a counter. Idempotent. */
-  registerCounter<K>(counter: CounterStore<K>): void {
-    const c = counter as CounterStore<any>;
-    if (this.registeredCounters.has(c)) return;
-    this.registeredCounters.add(c);
-    counter.bind?.(this);
-  }
-
-  /** Increment `counter[key]` by 1 (clamped at `counter.saturation`). Fires
-   *  subscribers on advancing bumps; post-saturation bumps are no-ops. */
-  bump<K>(counter: CounterStore<K>, key: K): void {
+  /** Increment `counter[key]` by 1, clamped at `counter.max`. Fires
+   *  subscribers only when the counter advances. */
+  incrementPolicyCounter<K>(counter: SaturatingCounter<K>, key: K): void {
     if (this.inTransformSweep) {
-      throw new Error(`[Worklist.bump] mid-sweep observation ingress is forbidden`);
+      throw new Error(
+        `[Worklist.incrementPolicyCounter] mid-sweep observation ingress is forbidden`,
+      );
     }
-    const r = counter._applyBump(key);
-    if (r === null) return;
-    const subs = this.counterSubs.get(counter as CounterStore<any>);
+    const advanced = counter.increment(key);
+    if (!advanced) return;
+    const subs = this.policyCounterSubs.get(counter as SaturatingCounter<any>);
     if (subs !== undefined) {
-      for (const s of subs) s(this.passCtx, key);
+      for (const subscriber of subs) subscriber(this.passCtx, key);
     }
     this.processAnalysesToFixpoint();
   }
 
-  /** Subscribe a transform to counter bumps. */
-  onTransformCounterBumped<K>(
+  /** Subscribe a transform to policy-counter advances. */
+  onPolicyCounterAdvance<K>(
     rule: TransformRule<U, L>,
-    counter: CounterStore<K>,
+    counter: SaturatingCounter<K>,
     dirtied: (locator: L, key: K) => Iterable<U>,
   ): void {
     const dirty = this.dirtyFor(rule);
-    Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (_ctx, key) => {
-      for (const v of dirtied(this.units.locator, key as K)) dirty.add(v);
+    Worklist.addSub(this.policyCounterSubs, counter as SaturatingCounter<any>, (_ctx, key) => {
+      for (const unit of dirtied(this.units.locator, key as K)) dirty.add(unit);
     });
   }
 
   /** Public read surface — delegates to `analysis.store.tryRead`. */
-  tryRead<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): V | undefined {
+  tryRead<K extends NodeSet, V>(
+    analysis: Analysis<K, V>,
+    key: K,
+    context: AssumptionChain,
+  ): V | undefined {
     return analysis.store.tryRead(key, context);
   }
 
-  /** Record a runtime observation made under `context`. Extends or prunes
-   *  the owning unit's speculation context via every narrowing bound on
-   *  `channel`, then drives analyses to fixpoint.
+  /** Record a runtime observation event made under `context`. Extends or
+   *  prunes the owning unit's speculation context via every narrowing bound
+   *  on `source`, then drives analyses to fixpoint.
    *
    *  Returns the caller's next frame-local provenance chain (extended or
    *  pruned). */
-  publish<K, V>(
-    channel: ObservationChannel<K, V>,
+  observe<K, V>(
+    source: ObservationSource<K, V>,
     key: K,
-    value: V,
+    observed: V,
     context: AssumptionChain,
   ): AssumptionChain {
     if (this.inTransformSweep) {
-      throw new Error(`[Worklist.publish] mid-sweep observation ingress is forbidden`);
+      throw new Error(`[Worklist.observe] mid-sweep observation ingress is forbidden`);
     }
-    const nextContext = this.handleObservationForSpec(channel, key, value, context);
+    const nextContext = this.handleObservationForSpec(source, key, observed, context);
     this.processAnalysesToFixpoint();
     return nextContext;
-  }
-
-  /** Register a channel. Idempotent. */
-  registerChannel<K, V>(channel: ObservationChannel<K, V>): void {
-    const c = channel as ObservationChannel<any, any>;
-    if (this.registeredChannels.has(c)) return;
-    this.registeredChannels.add(c);
-    channel.bind?.(this);
   }
 
   enqueue<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K, context: AssumptionChain): void {
@@ -590,24 +565,26 @@ export class Worklist<
     return true;
   }
 
-  /** Sweep every registered transform over its dirty units once. Units that
-   *  rewrote are scheduled for rebuild; structural rebuild itself is NOT
-   *  flushed here. Public so online participants can run transforms before
-   *  emitting bytecode. Returns true iff any rule fired. */
+  /** Sweep every registered transform over its dirty units once. Canonical
+   *  rewrites schedule rebuild; speculative-variant rewrites do not rebuild
+   *  CFG state. Structural rebuild itself is NOT flushed here. Public so
+   *  online participants can run transforms before emitting bytecode.
+   *  Returns `true` iff any rule changed any body. */
   sweepTransforms(): boolean {
     let anyFired = false;
     this.inTransformSweep = true;
     try {
-      for (const r of this.transforms) {
-        const dirty = this.dirtyFor(r);
+      for (const rule of this.transforms) {
+        const dirty = this.dirtyFor(rule);
         if (dirty.size === 0) continue;
         for (const unit of dirty) {
           const chain = this.units.chainFor(unit);
           if (this.isRefuted(chain)) continue;
-          const fired = r.sweep(unit, chain, this.units.locator);
-          if (fired) {
+          const result = rule.sweep(unit, chain, this.units.locator);
+          if (!result.changed) continue;
+          anyFired = true;
+          if (result.canonicalChanged) {
             this.units.scheduleRebuild(unit);
-            anyFired = true;
           }
         }
         dirty.clear();
@@ -653,7 +630,12 @@ export class Worklist<
         worklist.recordReadEdge(analysis as Analysis<any, any>, key);
         return analysis.store.readDeepest(context, key);
       },
-      write<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K, value: V, delta?: NodeSet): boolean {
+      write<K extends NodeSet, V>(
+        analysis: Analysis<K, V>,
+        key: K,
+        value: V,
+        delta?: NodeSet,
+      ): boolean {
         return worklist.writeAndDispatch(analysis, key, value, context, delta);
       },
       evict<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): void {
@@ -699,7 +681,7 @@ export class Worklist<
   }
 
   private handleObservationForSpec<V>(
-    source: ObservationChannel<any, V>,
+    source: ObservationSource<any, V>,
     key: any,
     observed: V,
     context: AssumptionChain,
@@ -707,8 +689,8 @@ export class Worklist<
     const applicable = this.bindingsBySource.get(source);
     if (applicable === undefined || applicable.length === 0) return context;
 
-    const resolveUnit = this.unitResolverBySource.get(source)
-      ?? (defaultUnitResolver as UnitResolver<U, L>);
+    const resolveUnit =
+      this.unitResolverBySource.get(source) ?? (defaultUnitResolver as UnitResolver<U, L>);
     const unit = resolveUnit(this.units.locator, key);
     if (unit === undefined) return context;
 
@@ -740,7 +722,7 @@ export class Worklist<
       const lifted = b.lift(observed);
       if (lifted === undefined) continue;
       const c = carrierOf(newCtx, b.narrowing, key);
-      const existing = c?.assumption?.value as unknown;
+      const existing = c?.assumption?.value;
       if (c !== undefined && b.narrowing.eq(existing, lifted)) continue;
       if (c !== undefined) {
         // Refute the chain node carrying the stale (n, key) binding before

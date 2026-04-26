@@ -53,7 +53,7 @@ export interface FunctionLocator extends UnitLocator<Function>, BlockLocator {
   functionById(id: FunctionId): Function | undefined;
 }
 
-export type ExtentListener = ExtentChangeListener<Function>;
+type ExtentListener = ExtentChangeListener<Function>;
 
 export class FunctionManager implements FunctionLocator, UnitDomain<Function, FunctionLocator> {
   // --- registry / locator state ---

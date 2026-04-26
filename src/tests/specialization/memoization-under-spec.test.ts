@@ -13,11 +13,10 @@ import { SVMLInterpreter } from "../../engines/svml/svml-interpreter";
 import { clearMemoCache, memoCacheSnapshot } from "../../runtime/memo";
 import { constAnalysis, typeAnalysis } from "../../specialization/analysis";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
-import { makeJitObservers } from "../../specialization/observation/runtime-analyses";
-import { visibleBody } from "../../specialization/speculation/assumption-bodies";
-import { bodyToCompile, dispatchValid } from "../../specialization/speculation/chain-dispatch";
-import type { Function } from "../../specialization/program/units/function/function";
 import type { Worklist } from "../../specialization/framework/worklist";
+import { makeJitDispatch } from "../../specialization/observation/jit-dispatch";
+import type { Function } from "../../specialization/program/units/function/function";
+import { visibleBody } from "../../specialization/speculation/assumption-bodies";
 import { setup } from "./harness/compile-pipelines";
 
 function dfaQueryFor(worklist: Worklist) {
@@ -36,29 +35,17 @@ async function runJitWithIntrospection(code: string, functionName: string) {
   const { ast, environments, worklist } = setup(code);
   worklist.drain();
 
-  const compiler = SVMLCompiler.fromProgramUnit(
-    ast,
-    environments,
-    dfaQueryFor(worklist),
-  );
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, dfaQueryFor(worklist));
   const program = compiler.compileProgram(ast);
 
-  const observers = makeJitObservers(worklist);
+  const dispatch = makeJitDispatch(worklist);
   const interpreter = new SVMLInterpreter(program, {
     dispatchCall: (scopeId, args) => {
-      observers.observeScopeCall(scopeId);
-      const unit = worklist.locate.functionById(scopeId);
-      if (unit === undefined) return undefined;
-      for (let i = 0; i < args.length; i++) observers.observeParamEntry(scopeId, i, args[i]);
-      worklist.sweepTransforms();
-      const chain = observers.currentChainFor(scopeId);
-      const isRefuted = (n: Parameters<typeof worklist.isRefuted>[0]) => worklist.isRefuted(n);
-      if (!dispatchValid(unit, chain, isRefuted)) return undefined;
-      const body = bodyToCompile(unit, chain, worklist.locate, isRefuted);
-      if (body === unit.body) return undefined;
-      return compiler.compileFunction(unit, body);
+      const plan = dispatch.onCall(scopeId, args);
+      if (plan === undefined) return undefined;
+      return compiler.compileFunction(plan.unit, plan.body);
     },
-    dispatchReturn: (scopeId, value) => observers.observeScopeReturn(scopeId, value),
+    dispatchReturn: dispatch.onReturn,
   });
   await interpreter.execute();
 

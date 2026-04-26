@@ -86,14 +86,14 @@ export class SVMLInterpreter {
    * JIT dispatch hooks. Symmetric with CSE's `JitHooks.dispatchCall` /
    * `dispatchReturn` surface.
    *
-   * `dispatchCall` is atomic at CALL entry: the hook publishes runtime
+   * `dispatchCall` is atomic at CALL entry: the hook records runtime
    * observations (hotness, param kinds), derives a specialized body under
    * the resulting chain, compiles it to fresh SVMLIR, and returns that IR —
    * or `undefined` to signal "use the canonical IR unchanged." The
    * interpreter uses the returned IR directly for this invocation; it does
    * NOT mutate the function table. No caching: compile-per-call.
    *
-   * `dispatchReturn` feeds `runtimeReturnChannel` against the chain this
+   * `dispatchReturn` feeds `runtimeReturnSource` against the chain this
    * call was dispatched under (B1 attribution is automatic because the
    * `dispatchCall` hook's LIFO already pushed the post-observation chain).
    *
@@ -152,7 +152,7 @@ export class SVMLInterpreter {
   /**
    * Swap function `index`'s IR. Caller must hold the direct-IR-ref
    * invariant: no `CallFrame.ir` outlives this reassignment, because frames
-   * capture IR at CALL time. Expected caller: the evaluator's JIT publish
+   * capture IR at CALL time. Expected caller: the evaluator's JIT dispatch
    * hook after deciding the IR has actually changed.
    */
   patchFunction(index: number, ir: SVMLIR): void {
@@ -378,7 +378,7 @@ export class SVMLInterpreter {
             if (right === 0n) throw new ZeroDivisionError("integer division or modulo by zero");
             // Python floor-div for bigint: truncate then adjust for negative remainder
             const q = left / right;
-            const adjusted = left % right !== 0n && ((left < 0n) !== (right < 0n)) ? q - 1n : q;
+            const adjusted = left % right !== 0n && left < 0n !== right < 0n ? q - 1n : q;
             this.push(adjusted);
           } else if (isNumeric(left) && isNumeric(right)) {
             const r = toNumber(right);
@@ -606,8 +606,7 @@ export class SVMLInterpreter {
           let nextValue: SVMLBoxType = undefined;
 
           if (iter.kind === "range") {
-            const going =
-              iter.step! > 0n ? iter.current! < iter.stop! : iter.current! > iter.stop!;
+            const going = iter.step! > 0n ? iter.current! < iter.stop! : iter.current! > iter.stop!;
             if (going) {
               nextValue = iter.current!;
               iter.current = iter.current! + iter.step!;
@@ -928,14 +927,11 @@ export class SVMLInterpreter {
       throw new Error(`Function expects ${canonical.numArgs} arguments but got ${numArgs}`);
     }
 
-    // JIT dispatch: give the hook the chance to observe the call, publish
+    // JIT dispatch: give the hook the chance to observe the call, record
     // param observations, and return a specialized IR compiled under the
     // post-observation chain. `undefined` means "use canonical."
     let funcDef = canonical;
-    if (
-      this.dispatchCall !== undefined &&
-      canonical.scopeKey instanceof StmtNS.FunctionDef
-    ) {
+    if (this.dispatchCall !== undefined && canonical.scopeKey instanceof StmtNS.FunctionDef) {
       const specialized = this.dispatchCall(canonical.scopeKey.id, args);
       if (specialized !== undefined) funcDef = specialized;
     }

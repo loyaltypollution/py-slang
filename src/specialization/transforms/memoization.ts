@@ -3,14 +3,15 @@ import { clearMemoId, MEMO_INTRINSIC_NAMES } from "../../runtime/memo";
 import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokenizer";
 import { directParamEntryGuardsFor, guardKeyFromGuards } from "../narrowing-policy/entry-guards";
-import type { TransformRule } from "../framework/analysis";
+import type { AssumptionChain } from "../assumption";
+import type { TransformResult, TransformRule } from "../framework/analysis";
 import { shadowNode } from "../speculation/variant-body-clone";
-import { type AssumptionChain } from "../assumption";
-import { forkBody } from "../speculation/assumption-bodies";
+import { forkBody, invalidateDescendantVariants } from "../speculation/assumption-bodies";
 import type { Function } from "../program/units/function/function";
-import { runtimeCallCounter } from "../observation/runtime-analyses";
+import { runtimeCallHotness } from "../observation/runtime-analyses";
 import type { FunctionLocator } from "../program/units/function/manager";
 import { purityFunctionAnalysis } from "../analysis";
+import { transformResultFor } from "./witness-utils";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
@@ -29,7 +30,7 @@ function rewriteReturnsCloned(
   fd: StmtNS.FunctionDef,
   id: string,
   params: readonly ExprNS.Variable[],
-): readonly StmtNS.Stmt[] {
+): StmtNS.Stmt[] {
   let changed = false;
   const out: StmtNS.Stmt[] = [];
   for (const s of stmts) {
@@ -37,7 +38,7 @@ function rewriteReturnsCloned(
     if (replacement !== s) changed = true;
     out.push(replacement);
   }
-  return changed ? out : stmts;
+  return changed ? out : (stmts as StmtNS.Stmt[]);
 }
 
 function rewriteStmtReturns(
@@ -53,19 +54,14 @@ function rewriteStmtReturns(
   }
   if (s instanceof StmtNS.If) {
     const body = rewriteReturnsCloned(s.body, fd, id, params);
-    const elseBlock = s.elseBlock
-      ? rewriteReturnsCloned(s.elseBlock, fd, id, params)
-      : s.elseBlock;
+    const elseBlock = s.elseBlock ? rewriteReturnsCloned(s.elseBlock, fd, id, params) : s.elseBlock;
     if (body === s.body && elseBlock === s.elseBlock) return s;
-    return shadowNode(s, {
-      body: body as StmtNS.Stmt[],
-      elseBlock: elseBlock as StmtNS.Stmt[] | null,
-    });
+    return shadowNode(s, { body, elseBlock });
   }
   if (s instanceof StmtNS.While || s instanceof StmtNS.For) {
     const body = rewriteReturnsCloned(s.body, fd, id, params);
     if (body === s.body) return s;
-    return shadowNode(s, { body: body as StmtNS.Stmt[] });
+    return shadowNode(s, { body });
   }
   return s;
 }
@@ -120,7 +116,7 @@ function bodyHasMemoPrelude(body: readonly StmtNS.Stmt[]): boolean {
 
 export const memoizationRule: TransformRule = {
   bind(wl) {
-    wl.onTransformCounterBumped(memoizationRule, runtimeCallCounter, (loc, id) => {
+    wl.onPolicyCounterAdvance(memoizationRule, runtimeCallHotness, (loc, id) => {
       const f = loc.functionById(id);
       return f ? [f] : [];
     });
@@ -133,21 +129,22 @@ export const memoizationRule: TransformRule = {
       clearMemoId(memoIdFor(fd, guardKeyFromGuards(directParamEntryGuardsFor(unit, carrier))));
     });
   },
-  sweep(unit: Function, chain: AssumptionChain, _view: FunctionLocator): boolean {
+  sweep(unit: Function, chain: AssumptionChain, _view: FunctionLocator): TransformResult {
     const fd = unit.funcAst;
-    if (!(fd instanceof StmtNS.FunctionDef)) return false;
+    if (!(fd instanceof StmtNS.FunctionDef)) return transformResultFor([]);
     // Fire one call before saturation so the memo wrapper is installed before
     // the runtime would otherwise refute on the next call.
-    if (runtimeCallCounter.at(fd.id) < runtimeCallCounter.saturation - 1) return false;
+    if (runtimeCallHotness.at(fd.id) < runtimeCallHotness.max - 1) return transformResultFor([]);
     const pureWitness = purityFunctionAnalysis.store.readMinimal(chain, unit, v => v === true);
-    if (pureWitness === undefined) return false;
+    if (pureWitness === undefined) return transformResultFor([]);
     const body = forkBody(unit, pureWitness.witness);
-    if (bodyHasMemoPrelude(body)) return false;
+    if (bodyHasMemoPrelude(body)) return transformResultFor([]);
     const variant = guardKeyFromGuards(directParamEntryGuardsFor(unit, pureWitness.witness));
     const rewritten = memoWrappedBody(fd, body, variant);
     // In-place: preserve array identity so descendants inherit via bodyFor.
     body.length = 0;
     body.push(...rewritten);
-    return true;
+    invalidateDescendantVariants(unit, pureWitness.witness);
+    return transformResultFor([pureWitness.witness]);
   },
 };

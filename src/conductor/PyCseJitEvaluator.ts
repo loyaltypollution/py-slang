@@ -59,10 +59,7 @@ abstract class PyCseJitEvaluatorBase extends PyCseEvaluatorBase {
       // no specialization contribution; only `specialized` returns a body.
       const jitHooks: JitHooks = {
         rootScope: ast,
-        dispatchCall: (scopeId, args) => {
-          const r = dispatch.onCall(scopeId, args);
-          return r?.kind === "specialized" ? r.body : undefined;
-        },
+        dispatchCall: (scopeId, args) => dispatch.onCall(scopeId, args)?.body,
         dispatchReturn: dispatch.onReturn,
       };
       this.context.jitHooks = jitHooks;

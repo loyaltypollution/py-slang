@@ -39,3 +39,26 @@ export function forkBody(unit: Function, s: AssumptionChain): StmtNS.Stmt[] {
   m.set(s, fork);
   return fork;
 }
+
+/** Drop cached descendants of `witness` so they reclone from the updated
+ *  ancestor body on next access. A ROOT update invalidates every cached
+ *  variant because all speculative bodies inherit from the canonical body. */
+export function invalidateDescendantVariants(unit: Function, witness: AssumptionChain): void {
+  const byChain = bodies.get(unit);
+  if (byChain === undefined) return;
+
+  if (witness.parent === undefined) {
+    bodies.delete(unit);
+    return;
+  }
+
+  for (const chain of Array.from(byChain.keys())) {
+    if (chain !== witness && leq(witness, chain)) {
+      byChain.delete(chain);
+    }
+  }
+
+  if (byChain.size === 0) {
+    bodies.delete(unit);
+  }
+}

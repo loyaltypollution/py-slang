@@ -15,10 +15,7 @@ import {
   IMPURE_MARKER,
   UNKNOWN as ABS_UNKNOWN,
 } from "../../specialization/analysis/purity/lattice";
-import {
-  runtimeParamChannel,
-  runtimeReturnChannel,
-} from "../../specialization/observation/runtime-analyses";
+import { rawValueJoinSemiLattice } from "../../specialization/observation/runtime-analyses";
 import type { RawKind } from "../../specialization/observation/raw-value";
 import {
   BOOL_FALSE,
@@ -80,7 +77,8 @@ describe("reusable lattice-law verification", () => {
       },
       {
         values,
-        describeValue: value => `k=${value.kinds};i=${value.intRef};b=${value.boolRef};f=${value.floatRef}`,
+        describeValue: value =>
+          `k=${value.kinds};i=${value.intRef};b=${value.boolRef};f=${value.floatRef}`,
       },
     );
   });
@@ -94,15 +92,9 @@ describe("reusable lattice-law verification", () => {
         eq: constEq,
       },
       {
-        values: [
-          CONST_BOTTOM,
-          CONST_TOP,
-          constOf(0),
-          constOf(1),
-          constOf(-1),
-          constOf(42),
-        ],
-        describeValue: value => value.tag === "const" ? `const(${String(value.value)})` : value.tag,
+        values: [CONST_BOTTOM, CONST_TOP, constOf(0), constOf(1), constOf(-1), constOf(42)],
+        describeValue: value =>
+          value.tag === "const" ? `const(${String(value.value)})` : value.tag,
       },
     );
   });
@@ -121,11 +113,11 @@ describe("reusable lattice-law verification", () => {
       { kind: "complex" },
     ];
 
-    expectJoinSemiLatticeLaws(runtimeParamChannel.lattice, {
+    expectJoinSemiLatticeLaws(rawValueJoinSemiLattice, {
       values: rawValues,
       describeValue: value => JSON.stringify(value),
     });
-    expectJoinSemiLatticeLaws(runtimeReturnChannel.lattice, {
+    expectJoinSemiLatticeLaws(rawValueJoinSemiLattice, {
       values: rawValues,
       describeValue: value => JSON.stringify(value),
     });
@@ -158,10 +150,14 @@ describe("reusable lattice-law verification", () => {
         values,
         describeValue: value => {
           switch (value.kind) {
-            case "fresh": return `fresh(${value.origin})`;
-            case "param": return `param(${value.slot})`;
-            case "closure": return `closure(${value.functionId},${String(value.pure)})`;
-            default: return value.kind;
+            case "fresh":
+              return `fresh(${value.origin})`;
+            case "param":
+              return `param(${value.slot})`;
+            case "closure":
+              return `closure(${value.functionId},${String(value.pure)})`;
+            default:
+              return value.kind;
           }
         },
       },

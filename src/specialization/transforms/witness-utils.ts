@@ -1,7 +1,8 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption/chain";
-import { forkBody } from "../speculation/assumption-bodies";
+import type { TransformResult } from "../framework/analysis";
 import type { Function } from "../program/units/function/function";
+import { forkBody, invalidateDescendantVariants } from "../speculation/assumption-bodies";
 
 export type Witnessed<T> = { value: T; witness: AssumptionChain };
 
@@ -137,13 +138,35 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     expr.value = expr.value.accept(this);
     return expr;
   }
-  visitLambdaExpr(expr: ExprNS.Lambda): ExprNS.Expr { return expr; }
-  visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExprNS.Expr { return expr; }
-  visitLiteralExpr(expr: ExprNS.Literal): ExprNS.Expr { return expr; }
-  visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ExprNS.Expr { return expr; }
-  visitComplexExpr(expr: ExprNS.Complex): ExprNS.Expr { return expr; }
-  visitVariableExpr(expr: ExprNS.Variable): ExprNS.Expr { return expr; }
-  visitNoneExpr(expr: ExprNS.None): ExprNS.Expr { return expr; }
+  visitLambdaExpr(expr: ExprNS.Lambda): ExprNS.Expr {
+    return expr;
+  }
+  visitMultiLambdaExpr(expr: ExprNS.MultiLambda): ExprNS.Expr {
+    return expr;
+  }
+  visitLiteralExpr(expr: ExprNS.Literal): ExprNS.Expr {
+    return expr;
+  }
+  visitBigIntLiteralExpr(expr: ExprNS.BigIntLiteral): ExprNS.Expr {
+    return expr;
+  }
+  visitComplexExpr(expr: ExprNS.Complex): ExprNS.Expr {
+    return expr;
+  }
+  visitVariableExpr(expr: ExprNS.Variable): ExprNS.Expr {
+    return expr;
+  }
+  visitNoneExpr(expr: ExprNS.None): ExprNS.Expr {
+    return expr;
+  }
+}
+
+export function transformResultFor(touchedWitnesses: readonly AssumptionChain[]): TransformResult {
+  return {
+    changed: touchedWitnesses.length > 0,
+    canonicalChanged: touchedWitnesses.some(witness => witness.parent === undefined),
+    touchedWitnesses,
+  };
 }
 
 export function runWitnessSweep(
@@ -153,21 +176,24 @@ export function runWitnessSweep(
     readonly changed: boolean;
     sweep(body: StmtNS.Stmt[]): void;
   },
-): boolean {
+): TransformResult {
   const ordered = Array.from(witnesses).sort((a, b) => a.depth - b.depth);
-  let changed = false;
+  const touchedWitnesses: AssumptionChain[] = [];
   for (const witness of ordered) {
     const body = forkBody(unit, witness);
-    const v = makeVisitor(witness);
-    v.sweep(body);
-    changed = v.changed || changed;
+    const visitor = makeVisitor(witness);
+    visitor.sweep(body);
+    if (visitor.changed) {
+      touchedWitnesses.push(witness);
+      invalidateDescendantVariants(unit, witness);
+    }
   }
-  return changed;
+  return transformResultFor(touchedWitnesses);
 }
 
-export class ExprDrivenStmtVisitor<V extends DescendingExprVisitor & { changed: boolean }>
-  extends BaseStmtVisitor
-{
+export class ExprDrivenStmtVisitor<
+  V extends DescendingExprVisitor & { changed: boolean },
+> extends BaseStmtVisitor {
   constructor(readonly exprVisitor: V) {
     super();
   }

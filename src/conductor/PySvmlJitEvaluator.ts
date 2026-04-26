@@ -3,10 +3,7 @@ import { SVMLCompiler } from "../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../engines/svml/svml-interpreter";
 import { parse } from "../parser/parser-adapter";
 import { analyzeWithEnvironments } from "../resolver";
-import {
-  createDefaultWorklist,
-  makeJitDispatch,
-} from "../specialization";
+import { createDefaultWorklist, makeJitDispatch } from "../specialization";
 import { constAnalysis, typeAnalysis } from "../specialization/analysis";
 import { ROOT_CONTEXT } from "../specialization/assumption/chain";
 import math from "../stdlib/math";
@@ -18,7 +15,7 @@ import { EvaluatorError } from "./errors";
  * SVML evaluator with JIT specialization — V2 collapse.
  *
  * No dispatch tree, no IR cache, no deopt path. Each CALL goes through
- * `dispatchCall`: publish observations, derive the specialized body under
+ * `dispatchCall`: observe runtime events, derive the specialized body under
  * the resulting (live-correct) chain, compile to fresh SVMLIR, return it
  * for this one invocation. Precision drift is impossible by construction:
  * the chain the body was pruned under is the same chain the arguments
@@ -41,11 +38,7 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
     try {
       const script = chunk + "\n";
       const ast = parse(script);
-      const { errors, environments } = analyzeWithEnvironments(ast, script, 4, [
-        misc,
-        math,
-        memo,
-      ]);
+      const { errors, environments } = analyzeWithEnvironments(ast, script, 4, [misc, math, memo]);
       if (errors.length > 0) throw errors[0];
 
       const worklist = createDefaultWorklist(ast, environments);
@@ -68,10 +61,9 @@ export class PySvmlJitEvaluator extends BasicEvaluator {
         // from `unit.funcAst.body`, because transforms may have mutated it
         // in place post-load. Only `specialized` passes a speculative body.
         dispatchCall: (scopeId, args) => {
-          const r = dispatch.onCall(scopeId, args);
-          if (r === undefined) return undefined;
-          const body = r.kind === "specialized" ? r.body : undefined;
-          return compiler.compileFunction(r.unit, body);
+          const plan = dispatch.onCall(scopeId, args);
+          if (plan === undefined) return undefined;
+          return compiler.compileFunction(plan.unit, plan.body);
         },
         dispatchReturn: dispatch.onReturn,
       });

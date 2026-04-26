@@ -1,10 +1,10 @@
 import type { AssumptionChain, NarrowingId } from "../assumption/chain";
+import type { SaturatingCounter } from "../observation/counter-store";
+import type { Function } from "../program/units/function/function";
+import type { FunctionLocator } from "../program/units/function/manager";
 import type { NodeId, NodeSet } from "../program/node-set";
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
 import type { Worklist } from "./worklist";
-import type { Function } from "../program/units/function/function";
-import type { FunctionLocator } from "../program/units/function/manager";
-import type { CounterStore } from "../observation/counter-store";
 
 export type { NodeId, NodeSet } from "../program/node-set";
 
@@ -106,6 +106,12 @@ export interface AnalysisCtx {
   evict<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): void;
 }
 
+export interface TransformResult {
+  readonly changed: boolean;
+  readonly canonicalChanged: boolean;
+  readonly touchedWitnesses: readonly AssumptionChain[];
+}
+
 /** Narrow capability surface offered to a `TransformRule.bind`. Lets a
  *  transform register dirtying subscriptions and refute hooks without
  *  receiving the full `Worklist` (and the read/write powers that come
@@ -120,9 +126,9 @@ export interface TransformBindCtx<U = Function, L = FunctionLocator> {
     from: Analysis<K, any>,
     dirtied: (locator: L, key: K) => Iterable<U>,
   ): void;
-  onTransformCounterBumped<K>(
+  onPolicyCounterAdvance<K>(
     rule: TransformRule<U, L>,
-    counter: CounterStore<K>,
+    counter: SaturatingCounter<K>,
     dirtied: (locator: L, key: K) => Iterable<U>,
   ): void;
   onRefute(cb: (unit: U, carrier: AssumptionChain) => void): void;
@@ -130,9 +136,12 @@ export interface TransformBindCtx<U = Function, L = FunctionLocator> {
 
 /** Imperative AST sweep gated on analyses. No lattice, no transfer, no store
  *  write. The worklist dirties a rule on extent change (mint or rebuild) and
- *  on writes to subscribed analyses; `sweep` runs once per dirty unit; units
- *  that rewrote are scheduled for rebuild. Idempotency is the rule's
- *  responsibility.
+ *  on writes to subscribed analyses; `sweep` runs once per dirty unit.
+ *
+ *  `TransformResult` distinguishes canonical-body mutation from speculative
+ *  variant mutation. Only canonical mutation requires CFG rebuild. Variant
+ *  sweeps may also update cached speculative bodies; those rules are
+ *  responsible for keeping descendant caches coherent while they rewrite.
  *
  *  Generic over `(U, L)` so a single worklist can drive transforms over
  *  any unit kind it owns; defaults to `(Function, FunctionLocator)`.
@@ -140,20 +149,16 @@ export interface TransformBindCtx<U = Function, L = FunctionLocator> {
  *  blocks/loops remain subordinate `NodeSet`s unless they graduate to a
  *  full unit. */
 export interface TransformRule<U = Function, L = FunctionLocator> {
-  /** Returns `true` iff the body at `chain` was mutated — the worklist
-   *  then schedules a rebuild for `unit`. Worklist always passes
-   *  `chain = chainFor(unit)`. */
-  sweep(unit: U, chain: AssumptionChain, locator: L): boolean;
+  /** Returns the structural effect of one sweep at `chain = chainFor(unit)`.
+   *  `canonicalChanged` means `unit` needs a rebuild; `touchedWitnesses`
+   *  record which speculative ancestors were rewritten. */
+  sweep(unit: U, chain: AssumptionChain, locator: L): TransformResult;
   bind?(ctx: TransformBindCtx<U, L>): void;
 }
 
 /** Construct an `Analysis`, auto-attaching its `store` from `storeAlgebra`
  *  and `emptyValue`. */
-export function defineAnalysis<
-  K extends NodeSet,
-  V,
-  P extends Analysis<K, V>["polarity"],
->(
+export function defineAnalysis<K extends NodeSet, V, P extends Analysis<K, V>["polarity"]>(
   spec: Omit<Analysis<K, V>, "store" | "polarity"> & { polarity: P },
 ): Analysis<K, V> & { polarity: P } {
   const store = new AnalysisStore<K, V>(spec.storeAlgebra, spec.emptyValue);

@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 const TRANSFORMS_DIR = path.resolve(__dirname, "../../specialization/transforms");
-const TRANSFORM_FILES = fs.readdirSync(TRANSFORMS_DIR)
+const TRANSFORM_FILES = fs
+  .readdirSync(TRANSFORMS_DIR)
   .filter(name => name.endsWith(".ts"))
   .map(name => path.join(TRANSFORMS_DIR, name));
 
@@ -15,7 +16,7 @@ describe("transform boundary gate", () => {
       expect(src).not.toMatch(/from\s+["'][^"']*dfa-factory["']/);
       // `ROOT_CONTEXT` is legal in transforms — profile/runtime counters
       // are ROOT-keyed by design, and explicit `counter.at(key)` at the call
-      // site makes the policy channel visibly distinct from semantic proof.
+      // site keeps the policy signal visibly distinct from semantic proof.
       // No gate on the identifier.
     }
   });

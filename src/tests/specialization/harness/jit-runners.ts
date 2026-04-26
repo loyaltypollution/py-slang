@@ -35,11 +35,7 @@ export async function runSvmlJit(code: string): Promise<string[]> {
   const worklist = createDefaultWorklist(ast, environments);
   worklist.drain();
 
-  const compiler = SVMLCompiler.fromProgramUnit(
-    ast,
-    environments,
-    dfaQueryFor(worklist),
-  );
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, dfaQueryFor(worklist));
   const program = compiler.compileProgram(ast);
 
   const captured: string[] = [];
@@ -49,10 +45,9 @@ export async function runSvmlJit(code: string): Promise<string[]> {
     // Mirrors PySvmlJitEvaluator: always recompile via compileFunction,
     // passing the speculative body only when dispatch actually specialized.
     dispatchCall: (scopeId, args) => {
-      const r = dispatch.onCall(scopeId, args);
-      if (r === undefined) return undefined;
-      const body = r.kind === "specialized" ? r.body : undefined;
-      return compiler.compileFunction(r.unit, body);
+      const plan = dispatch.onCall(scopeId, args);
+      if (plan === undefined) return undefined;
+      return compiler.compileFunction(plan.unit, plan.body);
     },
     dispatchReturn: dispatch.onReturn,
   });
@@ -71,11 +66,7 @@ export async function runSvmlNoJit(code: string): Promise<string[]> {
   const { errors, environments } = analyzeWithEnvironments(ast, script, 4, [misc, math, memo]);
   if (errors.length > 0) throw errors[0];
   const worklist = createDefaultWorklist(ast, environments);
-  const compiler = SVMLCompiler.fromProgramUnit(
-    ast,
-    environments,
-    dfaQueryFor(worklist),
-  );
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, dfaQueryFor(worklist));
   const program = compiler.compileProgram(ast);
   const captured: string[] = [];
   const interp = new SVMLInterpreter(program, { sendOutput: m => captured.push(m) });
@@ -99,16 +90,17 @@ export async function runCseJit(code: string): Promise<string[]> {
   const dispatch = makeJitDispatch(worklist);
   const jitHooks: JitHooks = {
     rootScope: ast,
-    dispatchCall: (scopeId, args) => {
-      const r = dispatch.onCall(scopeId, args);
-      return r?.kind === "specialized" ? r.body : undefined;
-    },
+    dispatchCall: (scopeId, args) => dispatch.onCall(scopeId, args)?.body,
     dispatchReturn: dispatch.onReturn,
   };
 
   const captured: string[] = [];
   const context = new Context();
-  const outStream = new WritableStream<string>({ write: chunk => { captured.push(chunk); } });
+  const outStream = new WritableStream<string>({
+    write: chunk => {
+      captured.push(chunk);
+    },
+  });
   const errStream = new WritableStream<unknown>({ write: () => {} });
   const inStream = new ReadableStream<string>({});
   context.streams = {

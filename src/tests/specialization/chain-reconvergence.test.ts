@@ -1,16 +1,12 @@
 import { StmtNS } from "../../ast-types";
-import {
-  ROOT_CONTEXT,
-  type AssumptionChain,
-} from "../../specialization/assumption/chain";
-import {
-  at,
-  extend,
-  without,
-} from "../../specialization/assumption/algebra";
+import { ROOT_CONTEXT, type AssumptionChain } from "../../specialization/assumption/chain";
+import { at, extend, without } from "../../specialization/assumption/algebra";
 import { paramKey } from "../../specialization/narrowing-policy/param-key";
-import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
-import { paramTypeBinding, paramTypeNarrowing } from "../../specialization/narrowing-policy/param-handles";
+import { runtimeParamSource } from "../../specialization/observation/runtime-analyses";
+import {
+  paramTypeBinding,
+  paramTypeNarrowing,
+} from "../../specialization/narrowing-policy/param-handles";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 describe("chain reconvergence across widen → re-observe (Python-driven)", () => {
@@ -19,24 +15,24 @@ describe("chain reconvergence across widen → re-observe (Python-driven)", () =
     // wired into `DEFAULT_NARROWINGS` (paramConstNarrowing was disabled —
     // see the comment in const-analysis/analysis.ts about recursive-call
     // thrash), so each param contributes exactly one link per shape.
-    const { ast, worklist } = setupAndDrain(
-      "def f(x, y):\n    return x + y\n",
-    );
+    const { ast, worklist } = setupAndDrain("def f(x, y):\n    return x + y\n");
     const fd = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.locate.functionById(fd.id)!;
     const kx = paramKey(fd.id, 0);
     const ky = paramKey(fd.id, 1);
 
-    // Each publish takes the "active context at observe-time" — thread the
-    // first publish's return value (the extended chain) into the second so
-    // the two publishes stack instead of each starting from ROOT.
-    const afterKx = worklist.publish(
-      runtimeParamChannel, kx, { kind: "number", value: 3 }, ROOT_CONTEXT,
+    // Each observation uses the "active context at observe-time" — thread
+    // the first observe call's return value (the extended chain) into the
+    // second so the two observations stack instead of each starting from
+    // ROOT.
+    const afterKx = worklist.observe(
+      runtimeParamSource,
+      kx,
+      { kind: "number", value: 3 },
+      ROOT_CONTEXT,
     );
     worklist.drain();
-    worklist.publish(
-      runtimeParamChannel, ky, { kind: "number", value: 4 }, afterKx,
-    );
+    worklist.observe(runtimeParamSource, ky, { kind: "number", value: 4 }, afterKx);
     worklist.drain();
 
     const hotChain = worklist.futureDispatchChainFor(unit);
@@ -65,19 +61,21 @@ describe("chain reconvergence across widen → re-observe (Python-driven)", () =
     // intra-interner: `extend` canonicalizes links so that applying the
     // same (narrowing, key, value) triples in opposite orders reaches the
     // same AssumptionChain node.
-    const { ast, worklist } = setupAndDrain(
-      "def f(x, y):\n    return x * y\n",
-    );
+    const { ast, worklist } = setupAndDrain("def f(x, y):\n    return x * y\n");
     const fd = ast.statements[0] as StmtNS.FunctionDef;
     const unit = worklist.locate.functionById(fd.id)!;
 
-    worklist.publish(
-      runtimeParamChannel, paramKey(fd.id, 0),
-      { kind: "number", value: 7 }, ROOT_CONTEXT,
+    worklist.observe(
+      runtimeParamSource,
+      paramKey(fd.id, 0),
+      { kind: "number", value: 7 },
+      ROOT_CONTEXT,
     );
-    worklist.publish(
-      runtimeParamChannel, paramKey(fd.id, 1),
-      { kind: "number", value: 11 }, ROOT_CONTEXT,
+    worklist.observe(
+      runtimeParamSource,
+      paramKey(fd.id, 1),
+      { kind: "number", value: 11 },
+      ROOT_CONTEXT,
     );
     worklist.drain();
 

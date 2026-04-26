@@ -83,7 +83,6 @@ function transferBlock<L>(
   unit: Function,
   context: AssumptionChain,
 ): BlockPassResult<L> {
-  const outEnv = inEnv;
   // Lazy fact-map allocation: most blocks record no per-expr facts.
   let exprFacts: Map<number, L> | undefined;
   const recordExprFact = (nodeId: number, val: L): void => {
@@ -91,19 +90,19 @@ function transferBlock<L>(
     exprFacts.set(nodeId, val);
   };
   const slotLookup = unit.slotLookup;
-  const visitor = module.makeExprVisitor(outEnv, unit, slotLookup, recordExprFact, context);
+  const visitor = module.makeExprVisitor(inEnv, unit, slotLookup, recordExprFact, context);
   const stmts = block.stmts;
   if (module.direction === "backward") {
     for (let i = stmts.length - 1; i >= 0; i--) {
-      transferStmt(stmts[i], outEnv, visitor, module, slotLookup);
+      transferStmt(stmts[i], inEnv, visitor, module, slotLookup);
     }
   } else {
     for (const stmt of stmts) {
-      transferStmt(stmt, outEnv, visitor, module, slotLookup);
+      transferStmt(stmt, inEnv, visitor, module, slotLookup);
     }
   }
   return {
-    outEnv,
+    outEnv: inEnv,
     exprFacts: exprFacts ?? (EMPTY_MAP as ReadonlyMap<number, L>),
   };
 }

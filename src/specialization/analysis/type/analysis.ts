@@ -242,8 +242,7 @@ class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
   }
 
   visitGroupingExpr(expr: ExprNS.Grouping): TypeLattice {
-    const val = expr.expression.accept(this);
-    return this.annotate(expr, val);
+    return this.annotate(expr, expr.expression.accept(this));
   }
 
   visitLambdaExpr(expr: ExprNS.Lambda): TypeLattice {

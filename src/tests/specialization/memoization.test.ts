@@ -10,7 +10,7 @@ import {
   MEMO_MISS,
   memoPut,
 } from "../../runtime/memo";
-import { runtimeCallCounter } from "../../specialization/observation/runtime-analyses";
+import { runtimeCallHotness } from "../../specialization/observation/runtime-analyses";
 import type { Function } from "../../specialization/program/units/function/function";
 import type { Worklist } from "../../specialization/framework/worklist";
 import { setup } from "./harness/compile-pipelines";
@@ -25,7 +25,7 @@ function dfaQueryFor(worklist: Worklist) {
   };
 }
 
-const MEMO_TRIGGER_CALLS = runtimeCallCounter.saturation - 1;
+const MEMO_TRIGGER_CALLS = runtimeCallHotness.max - 1;
 
 // TODO(plan.md §1): replace with `memoization.didFireOn(unit)` once the
 // transform exposes a public tag; this helper pins the wrapper's private shape.
@@ -56,9 +56,9 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
     const { ast, worklist } = setup("def f(x):\n    return x + 1");
     worklist.drain();
     const fd = findFunctionDef(ast, "f");
-    expect(runtimeCallCounter.at(fd.id)).toBe(0);
+    expect(runtimeCallHotness.at(fd.id)).toBe(0);
     observeCallsTo(worklist, fd, 3);
-    expect(runtimeCallCounter.at(fd.id)).toBe(3);
+    expect(runtimeCallHotness.at(fd.id)).toBe(3);
   });
 
   test("below threshold: body unchanged", () => {
@@ -81,7 +81,9 @@ describe("memoization: call-count → threshold → AST rewrite", () => {
     expect(memoFired(worklist.locate.functionById(fd.id)!)).toBe(true);
     expect(fd.body).toHaveLength(2);
     const guard = fd.body[0] as StmtNS.If;
-    expect(((guard.condition as ExprNS.Call).callee as ExprNS.Variable).name.lexeme).toBe("__memo_has");
+    expect(((guard.condition as ExprNS.Call).callee as ExprNS.Variable).name.lexeme).toBe(
+      "__memo_has",
+    );
     const tail = fd.body[1] as StmtNS.Return;
     expect(((tail.value as ExprNS.Call).callee as ExprNS.Variable).name.lexeme).toBe("__memo_put");
   });
@@ -198,11 +200,7 @@ describe("memoization: SVML wiring", () => {
   async function compileAndRun(code: string): Promise<void> {
     const { ast, environments, worklist } = setup(code);
     worklist.drain();
-    const compiler = SVMLCompiler.fromProgramUnit(
-      ast,
-      environments,
-      dfaQueryFor(worklist),
-    );
+    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, dfaQueryFor(worklist));
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
     worklist.drain();
   }
@@ -226,11 +224,7 @@ f(5)
     worklist.drain();
     expect(memoFired(worklist.locate.functionById(fd.id)!)).toBe(true);
 
-    const compiler = SVMLCompiler.fromProgramUnit(
-      ast,
-      environments,
-      dfaQueryFor(worklist),
-    );
+    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, dfaQueryFor(worklist));
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
 
     const fBuckets = Array.from(memoCacheSnapshot().entries()).filter(([k]) => k.startsWith("f@"));

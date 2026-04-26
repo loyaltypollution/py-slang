@@ -5,7 +5,7 @@
 
 import { StmtNS } from "../../ast-types";
 import { purityFunctionAnalysis } from "../../specialization/analysis/purity/analysis";
-import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
+import { runtimeParamSource } from "../../specialization/observation/runtime-analyses";
 import { paramKey } from "../../specialization/narrowing-policy/param-key";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { setupAndDrain } from "./harness/compile-pipelines";
@@ -14,7 +14,11 @@ function purityOf(code: string, fnName: string): boolean | undefined {
   const { ast, worklist } = setupAndDrain(code);
   for (const stmt of ast.statements) {
     if (stmt instanceof StmtNS.FunctionDef && stmt.name.lexeme === fnName) {
-      return worklist.tryRead(purityFunctionAnalysis, worklist.locate.functionById(stmt.id)!, ROOT_CONTEXT);
+      return worklist.tryRead(
+        purityFunctionAnalysis,
+        worklist.locate.functionById(stmt.id)!,
+        ROOT_CONTEXT,
+      );
     }
   }
   throw new Error(`FunctionDef ${fnName} not found`);
@@ -76,12 +80,7 @@ describe("PurityScopeAnalysis — arithmetic, locals, and common impurities", ()
       "f",
       false,
     ],
-    [
-      "impure: subscript store via param",
-      "def f(xs, i):\n    xs[i] = 1\n    return 0",
-      "f",
-      false,
-    ],
+    ["impure: subscript store via param", "def f(xs, i):\n    xs[i] = 1\n    return 0", "f", false],
     ["impure: global declaration", "def f(x):\n    global g\n    return x", "f", false],
     ["pure: bare side-effect-free SimpleExpr", "def f(x):\n    x + 1\n    return x", "f", true],
     ["impure: bare impure-call SimpleExpr", "def f(x):\n    print(x)\n    return x", "f", false],
@@ -130,7 +129,12 @@ describe("PurityScopeAnalysis — freshness", () => {
       "f",
       true,
     ],
-    ["impure: subscript-store through param", "def f(xs):\n    xs[0] = 1\n    return 0", "f", false],
+    [
+      "impure: subscript-store through param",
+      "def f(xs):\n    xs[0] = 1\n    return 0",
+      "f",
+      false,
+    ],
     [
       "direct alias of fresh list",
       "def f(n):\n    xs = [0]\n    a = xs\n    a[0] = n\n    return a[0]",
@@ -173,15 +177,24 @@ def hot(x):
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
 
-    expect(worklist.tryRead(purityFunctionAnalysis, worklist.locate.functionById(fn.id)!,ROOT_CONTEXT)).toBe(false);
+    expect(
+      worklist.tryRead(purityFunctionAnalysis, worklist.locate.functionById(fn.id)!, ROOT_CONTEXT),
+    ).toBe(false);
 
-    worklist.publish(runtimeParamChannel, paramKey(fn.id, 0), { kind: "number", value: 8 }, ROOT_CONTEXT);
+    worklist.observe(
+      runtimeParamSource,
+      paramKey(fn.id, 0),
+      { kind: "number", value: 8 },
+      ROOT_CONTEXT,
+    );
     worklist.drain();
 
     const unit = worklist.locate.functionById(fn.id)!;
     const specCtx = worklist.futureDispatchChainFor(unit);
     expect(specCtx).not.toBe(ROOT_CONTEXT);
-    expect(worklist.tryRead(purityFunctionAnalysis, worklist.locate.functionById(fn.id)!,specCtx)).toBe(true);
+    expect(
+      worklist.tryRead(purityFunctionAnalysis, worklist.locate.functionById(fn.id)!, specCtx),
+    ).toBe(true);
   });
 });
 

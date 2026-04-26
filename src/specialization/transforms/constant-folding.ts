@@ -15,12 +15,14 @@ import {
 
 type ConstHit = Witnessed<Extract<ConstLattice, { tag: "const" }>>;
 
-function readConst(chain: AssumptionChain, view: FunctionLocator, nodeId: number): ConstHit | undefined {
-  return constAnalysis.perExpr(view).readMinimal(
-    chain,
-    nodeId,
-    (cv: ConstLattice) => cv.tag === "const",
-  ) as ConstHit | undefined;
+function readConst(
+  chain: AssumptionChain,
+  view: FunctionLocator,
+  nodeId: number,
+): ConstHit | undefined {
+  return constAnalysis
+    .perExpr(view)
+    .readMinimal(chain, nodeId, (cv: ConstLattice) => cv.tag === "const") as ConstHit | undefined;
 }
 
 class ConstFoldExprVisitor extends DescendingExprVisitor {
@@ -46,9 +48,9 @@ export const constantFoldingRule: TransformRule = {
   bind(wl) {
     wl.onTransformFactDirty(constantFoldingRule, constAnalysis.facts, (_, b) => [b.unit]);
   },
-  sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator): boolean {
+  sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator) {
     const witnesses = new Set<AssumptionChain>();
-    walkExprs(visibleBody(unit, chain), (e) => {
+    walkExprs(visibleBody(unit, chain), e => {
       if (!(e instanceof ExprNS.Binary)) return;
       const info = readConst(chain, view, e.id);
       if (info !== undefined) witnesses.add(info.witness);
@@ -56,7 +58,7 @@ export const constantFoldingRule: TransformRule = {
     return runWitnessSweep(
       unit,
       witnesses,
-      (witness) => new ExprDrivenStmtVisitor(new ConstFoldExprVisitor(witness, view)),
+      witness => new ExprDrivenStmtVisitor(new ConstFoldExprVisitor(witness, view)),
     );
   },
 };

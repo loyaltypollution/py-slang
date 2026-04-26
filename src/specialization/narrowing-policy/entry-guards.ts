@@ -40,11 +40,7 @@ export function guardKeyFromGuards(
   guards: readonly EntryGuard[] | undefined,
 ): string | undefined {
   if (guards === undefined) return undefined;
-  let out = "";
-  for (let i = 0; i < guards.length; i++) {
-    const g = guards[i];
-    if (i > 0) out += "|";
-    out += `t:${g.paramIndex}:${g.ty.kinds}:${g.ty.intRef}:${g.ty.boolRef}:${g.ty.floatRef}`;
-  }
-  return out;
+  return guards
+    .map(g => `t:${g.paramIndex}:${g.ty.kinds}:${g.ty.intRef}:${g.ty.boolRef}:${g.ty.floatRef}`)
+    .join("|");
 }

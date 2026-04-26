@@ -1,12 +1,16 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption/chain";
-import { forkBody, visibleBody } from "../speculation/assumption-bodies";
+import {
+  forkBody,
+  invalidateDescendantVariants,
+  visibleBody,
+} from "../speculation/assumption-bodies";
 import type { Function } from "../program/units/function/function";
 import type { FunctionLocator } from "../program/units/function/manager";
 import { isLocal, type SlotLookup } from "../program/units/function/slot-table";
 import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../analysis";
-import { walkExpr, walkExprs } from "./witness-utils";
+import { transformResultFor, walkExpr, walkExprs } from "./witness-utils";
 
 function isPureRhs(expr: ExprNS.Expr, slotLookup: SlotLookup): boolean {
   if (
@@ -58,7 +62,7 @@ function escapedLocalSlotsIn(
     if (expr instanceof ExprNS.Lambda) walkExpr(expr.body, visitInLambda);
     else if (expr instanceof ExprNS.MultiLambda) walkExprs(expr.body, visitInLambda);
   };
-  walkExprs(stmts, (expr) => {
+  walkExprs(stmts, expr => {
     if (expr instanceof ExprNS.Lambda) walkExpr(expr.body, visitInLambda);
     else if (expr instanceof ExprNS.MultiLambda) walkExprs(expr.body, visitInLambda);
   });
@@ -95,10 +99,7 @@ function removableAssignment(
   );
 }
 
-function forEachNestedBody(
-  stmt: StmtNS.Stmt,
-  visit: (body: readonly StmtNS.Stmt[]) => void,
-): void {
+function forEachNestedBody(stmt: StmtNS.Stmt, visit: (body: readonly StmtNS.Stmt[]) => void): void {
   if (stmt instanceof StmtNS.If) {
     visit(stmt.body);
     if (stmt.elseBlock) visit(stmt.elseBlock);
@@ -118,7 +119,7 @@ function collectRemovableStmtIds(
     if (s instanceof StmtNS.Assign && removableAssignment(s, liveOutMap, slotLookup, escaped)) {
       out.add(s.id);
     }
-    forEachNestedBody(s, (body) =>
+    forEachNestedBody(s, body =>
       collectRemovableStmtIds(body, liveOutMap, slotLookup, escaped, out),
     );
   }
@@ -128,7 +129,7 @@ function findAssignById(stmts: readonly StmtNS.Stmt[], stmtId: number): StmtNS.A
   for (const stmt of stmts) {
     if (stmt instanceof StmtNS.Assign && stmt.id === stmtId) return stmt;
     let found: StmtNS.Assign | undefined;
-    forEachNestedBody(stmt, (body) => {
+    forEachNestedBody(stmt, body => {
       if (found === undefined) found = findAssignById(body, stmtId);
     });
     if (found !== undefined) return found;
@@ -146,7 +147,7 @@ function sweepRemovalsById(stmts: StmtNS.Stmt[], removableIds: ReadonlySet<numbe
       changed = true;
       continue;
     }
-    forEachNestedBody(stmt, (body) => {
+    forEachNestedBody(stmt, body => {
       if (sweepRemovalsById(body as StmtNS.Stmt[], removableIds)) changed = true;
     });
     i++;
@@ -175,7 +176,7 @@ function witnessForRemoval(
     const stmt = findAssignById(body, stmtId);
     if (stmt === undefined) continue;
 
-    const liveOutMap = memo(liveOutCache, witness, (w) => buildLiveOutMap(unit, w));
+    const liveOutMap = memo(liveOutCache, witness, w => buildLiveOutMap(unit, w));
     const escaped = memo(escapedCache, witness, () => escapedLocalSlotsIn(body, unit.slotLookup));
 
     if (removableAssignment(stmt, liveOutMap, unit.slotLookup, escaped)) return witness;
@@ -187,19 +188,19 @@ export const deadStoreRule: TransformRule = {
   bind(wl) {
     wl.onTransformFactDirty(deadStoreRule, livenessAnalysis.env, (_, b) => [b.unit]);
   },
-  sweep(unit: Function, chain: AssumptionChain, _view: FunctionLocator): boolean {
+  sweep(unit: Function, chain: AssumptionChain, _view: FunctionLocator) {
     // Top-level names are observable; only function-scope slots are safe to DSE.
-    if (unit.funcAst instanceof StmtNS.FileInput) return false;
+    if (unit.funcAst instanceof StmtNS.FileInput) return transformResultFor([]);
 
     const body = visibleBody(unit, chain);
     const liveOutCache = new Map<AssumptionChain, ReadonlyMap<number, ReadonlySet<number>>>();
     const escapedCache = new Map<AssumptionChain, ReadonlySet<number>>();
-    const liveOutMap = memo(liveOutCache, chain, (w) => buildLiveOutMap(unit, w));
+    const liveOutMap = memo(liveOutCache, chain, w => buildLiveOutMap(unit, w));
     const escaped = memo(escapedCache, chain, () => escapedLocalSlotsIn(body, unit.slotLookup));
 
     const removableNow = new Set<number>();
     collectRemovableStmtIds(body, liveOutMap, unit.slotLookup, escaped, removableNow);
-    if (removableNow.size === 0) return false;
+    if (removableNow.size === 0) return transformResultFor([]);
 
     const lineage: AssumptionChain[] = [];
     for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
@@ -218,13 +219,16 @@ export const deadStoreRule: TransformRule = {
       bucket.add(stmtId);
     }
 
-    let changed = false;
+    const touchedWitnesses: AssumptionChain[] = [];
     for (const witness of lineage) {
       const removableIds = removalsByWitness.get(witness);
       if (removableIds === undefined || removableIds.size === 0) continue;
       const witnessBody = forkBody(unit, witness);
-      if (sweepRemovalsById(witnessBody, removableIds)) changed = true;
+      if (sweepRemovalsById(witnessBody, removableIds)) {
+        touchedWitnesses.push(witness);
+        invalidateDescendantVariants(unit, witness);
+      }
     }
-    return changed;
+    return transformResultFor(touchedWitnesses);
   },
 };
