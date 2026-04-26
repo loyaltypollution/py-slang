@@ -53,10 +53,10 @@ export function nodeSetOfIds(ids: ReadonlySet<NodeId>): NodeSet {
 }
 
 /** Empty `NodeSet`. Useful as a no-advance delta sentinel; also serves as
- *  the empty `UnitExtent` for subscribe-time mint replay and (eventual)
- *  retirement events. `UnitExtent` lives in `./unit-extent.ts`. */
-import type { UnitExtent } from "./unit-extent";
-export const EMPTY_NODESET: UnitExtent = {
+ *  the empty `FunctionExtent` for subscribe-time mint replay and (eventual)
+ *  retirement events. `FunctionExtent` lives in `./unit-extent.ts`. */
+import type { FunctionExtent } from "./unit-extent";
+export const EMPTY_NODESET: FunctionExtent = {
   contains: () => false,
   size: 0,
   iterate: () => [],

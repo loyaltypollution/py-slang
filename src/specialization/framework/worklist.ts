@@ -37,12 +37,12 @@ import type { FunctionDomain } from "./unit-domain";
 /** Resolver supplied per-narrowing (or the default below): turns the source
  *  key into the owning function so observation events can route narrowings
  *  to the right one. */
-type UnitResolver = (locator: FunctionLocator, key: any) => Function | undefined;
+type FunctionResolver = (locator: FunctionLocator, key: any) => Function | undefined;
 
 /** Default resolver: assumes the narrowing's key is a NodeId and looks up
  *  the enclosing function. Narrowings whose key is not a NodeId must
  *  supply their own `resolveUnit`. */
-function defaultUnitResolver(locator: FunctionLocator, key: any): Function | undefined {
+function defaultFunctionResolver(locator: FunctionLocator, key: any): Function | undefined {
   return locator.unitContainingNode(key as NodeId);
 }
 
@@ -179,7 +179,7 @@ export class Worklist {
   private readonly narrowings: ReadonlyArray<Narrowing<any, any, any>>;
   private readonly extraEntrySeeds: ReadonlyArray<EntrySeed>;
   /** Per-source unit resolver; all narrowings on a source must agree. */
-  private readonly unitResolverBySource: Map<ObservationSource<any, any>, UnitResolver>;
+  private readonly functionResolverBySource: Map<ObservationSource<any, any>, FunctionResolver>;
   /** Per-source narrowings, indexed for ingress dispatch. Only narrowings
    *  whose `source` is defined appear here. */
   private readonly bindingsBySource: ReadonlyMap<
@@ -200,7 +200,7 @@ export class Worklist {
     this.extraEntrySeeds = extraEntrySeeds;
     // Group narrowings by observation source. Each group must agree on
     // `resolveUnit` so registration bugs surface at construction.
-    const unitResolverBySource = new Map<ObservationSource<any, any>, UnitResolver>();
+    const functionResolverBySource = new Map<ObservationSource<any, any>, FunctionResolver>();
     const bindingsBySource = new Map<
       ObservationSource<any, any>,
       Narrowing<any, any, any>[]
@@ -213,10 +213,10 @@ export class Worklist {
         );
       }
       const source = n.source;
-      const resolver: UnitResolver = (n.resolveUnit ?? defaultUnitResolver) as UnitResolver;
-      const existing = unitResolverBySource.get(source);
+      const resolver: FunctionResolver = (n.resolveUnit ?? defaultFunctionResolver) as FunctionResolver;
+      const existing = functionResolverBySource.get(source);
       if (existing === undefined) {
-        unitResolverBySource.set(source, resolver);
+        functionResolverBySource.set(source, resolver);
       } else if (existing !== resolver) {
         throw new Error(
           `[Worklist] narrowings sharing a source disagree on resolveUnit — all narrowings on one source must resolve to the same unit.`,
@@ -226,7 +226,7 @@ export class Worklist {
       if (group === undefined) bindingsBySource.set(source, [n]);
       else group.push(n);
     }
-    this.unitResolverBySource = unitResolverBySource;
+    this.functionResolverBySource = functionResolverBySource;
     this.bindingsBySource = bindingsBySource;
     // Build the unit domain FIRST: registrations below depend on the
     // initial extent-change burst it fires when subscribers register
@@ -669,7 +669,7 @@ export class Worklist {
     if (applicable === undefined || applicable.length === 0) return context;
 
     const resolveUnit =
-      this.unitResolverBySource.get(source) ?? defaultUnitResolver;
+      this.functionResolverBySource.get(source) ?? defaultFunctionResolver;
     const unit = resolveUnit(this.units.locator, key);
     if (unit === undefined) return context;
 

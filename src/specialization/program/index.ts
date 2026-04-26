@@ -1,9 +1,9 @@
 // Public barrel for `specialization/program/`.
 //
 // Three layers, separated by responsibility:
-//   - **primitives** — `NodeSet` (routing) and `UnitExtent` (snapshot).
-//   - **units/**     — atomic unit kinds (Function today).
-//   - **regions/**   — subordinate views of units (BasicBlock today).
+//   - **primitives** — `NodeSet` (routing) and `FunctionExtent` (snapshot).
+//   - **units/**     — Function (the only swap unit; see `../publication.ts`).
+//   - **regions/**   — subordinate views of a Function (BasicBlock).
 
 export * from "./node-set";
 export * from "./unit-extent";

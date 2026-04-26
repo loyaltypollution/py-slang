@@ -22,7 +22,7 @@ import {
   nodeSetOfIds,
   type NodeId,
 } from "../../node-set";
-import type { UnitExtent } from "../../unit-extent";
+import type { FunctionExtent } from "../../unit-extent";
 import {
   buildFunctions,
   wireCFG,
@@ -115,7 +115,7 @@ export class FunctionManager implements FunctionLocator, FunctionDomain {
 
   /** `FunctionDomain.extentOf(unit)` — public snapshot of `unit`'s current
    *  CFG-owned ids. Same shape as the `next` payload on the extent stream. */
-  extentOf(unit: Function): UnitExtent {
+  extentOf(unit: Function): FunctionExtent {
     return this.snapshotExtent(unit);
   }
 
@@ -125,7 +125,7 @@ export class FunctionManager implements FunctionLocator, FunctionDomain {
 
   flushPendingRebuilds(): readonly Function[] {
     if (this.pendingRebuilds.size === 0) return [];
-    const rebuilt: { unit: Function; prev: UnitExtent; next: UnitExtent }[] = [];
+    const rebuilt: { unit: Function; prev: FunctionExtent; next: FunctionExtent }[] = [];
     for (const unit of this.pendingRebuilds) {
       const prev = this.snapshotExtent(unit);
       for (const id of unit.nodeToBlock.keys()) this.functionByNode.delete(id);
@@ -178,8 +178,8 @@ export class FunctionManager implements FunctionLocator, FunctionDomain {
 
   // --- internals ---
 
-  private snapshotExtent(unit: Function): UnitExtent {
-    return nodeSetOfIds(new Set(unit.nodeToBlock.keys())) as UnitExtent;
+  private snapshotExtent(unit: Function): FunctionExtent {
+    return nodeSetOfIds(new Set(unit.nodeToBlock.keys())) as FunctionExtent;
   }
 
   private registerUnit(unit: Function): void {

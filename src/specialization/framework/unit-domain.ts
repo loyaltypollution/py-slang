@@ -9,14 +9,14 @@
 // the driver.
 
 import type { AssumptionChain } from "../assumption";
-import type { UnitExtent } from "../program/unit-extent";
+import type { FunctionExtent } from "../program/unit-extent";
 import type { Function } from "../program/units/function/function";
 import type { FunctionLocator } from "../program/units/function/manager";
 
 export type ExtentChangeListener = (
   unit: Function,
-  prev: UnitExtent,
-  next: UnitExtent,
+  prev: FunctionExtent,
+  next: FunctionExtent,
 ) => void;
 
 export type ChainChangeListener = (
@@ -50,7 +50,7 @@ export interface FunctionDomain {
 
   /** Snapshot of `unit`'s current extent. Same shape as the `next`
    *  payload on the extent stream. */
-  extentOf(unit: Function): UnitExtent;
+  extentOf(unit: Function): FunctionExtent;
 
   onExtentChange(cb: ExtentChangeListener): void;
 
