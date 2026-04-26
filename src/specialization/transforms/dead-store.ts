@@ -2,7 +2,7 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption/chain";
 import { forkBody, visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/units/function/function";
-import type { FunctionLocator } from "../program/units/function/locator";
+import type { FunctionLocator } from "../program/units/function/manager";
 import { isLocal, type SlotLookup } from "../program/units/function/slot-table";
 import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../analysis";

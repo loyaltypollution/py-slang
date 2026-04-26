@@ -1,52 +1,52 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
+import { blockFixpointFromSpec } from "../../analysis/stmt-transfer";
 import { type AssumptionChain, at, isRoot } from "../../assumption";
 import type { Narrowing, NodeId } from "../../framework/analysis";
-import type { FunctionId } from "../../program/units/function/function";
-import type { ParamKey } from "../../narrowing-policy/param-key";
-import { MutableEnv } from "../../analysis/mutable-env";
-import { isLocal, type SlotLookup } from "../../program/units/function/slot-table";
-import { blockFixpointFromSpec } from "../../analysis/stmt-transfer";
 import { paramTypeNarrowing } from "../../narrowing-policy/param-handles";
+import type { ParamKey } from "../../narrowing-policy/param-key";
 import type { RawKind } from "../../observation/raw-value";
+import type { FunctionId } from "../../program/units/function/function";
+import { isLocal, type SlotLookup } from "../../program/units/function/slot-table";
+import { MutableEnv } from "../block-env";
 import type { BlockDfaSpec, BlockFixpointAnalysis } from "../dfa-factory";
 import {
-    ALL_KINDS_MASK,
-    BOOL_BIT,
-    BOOL_FALSE,
-    BOOL_TRUE,
-    BoolRef,
-    boolValue,
-    CLOSURE,
-    CLOSURE_BIT,
-    COMPLEX,
-    eq,
-    FLOAT_BIT,
-    FLOAT_NEG,
-    FLOAT_POS,
-    FLOAT_ZERO,
-    floatValue,
-    INT_BIT,
-    INT_NEG,
-    INT_POS,
-    INT_ZERO,
-    IntRef,
-    join,
-    meet,
-    NULL,
-    NULL_BIT,
-    STR_BIT,
-    STRING,
-    TOP,
-    type TypeLattice,
-    typeLattice,
+  ALL_KINDS_MASK,
+  BOOL_BIT,
+  BOOL_FALSE,
+  BOOL_TRUE,
+  BoolRef,
+  boolValue,
+  CLOSURE,
+  CLOSURE_BIT,
+  COMPLEX,
+  eq,
+  FLOAT_BIT,
+  FLOAT_NEG,
+  FLOAT_POS,
+  FLOAT_ZERO,
+  floatValue,
+  INT_BIT,
+  INT_NEG,
+  INT_POS,
+  INT_ZERO,
+  IntRef,
+  join,
+  meet,
+  NULL,
+  NULL_BIT,
+  STR_BIT,
+  STRING,
+  TOP,
+  type TypeLattice,
+  typeLattice,
 } from "./lattice";
 import {
-    transferBinaryOp,
-    transferCompare,
-    transferNot,
-    transferUnaryNeg,
-    truthiness,
+  transferBinaryOp,
+  transferCompare,
+  transferNot,
+  transferUnaryNeg,
+  truthiness,
 } from "./transfer";
 
 /** Interned `${fid}:${i}` ParamKeys, grown on demand. */

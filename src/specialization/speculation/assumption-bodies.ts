@@ -1,7 +1,7 @@
 // Per-(Function, AssumptionChain) forked function bodies.
 
 import type { StmtNS } from "../../ast-types";
-import { cloneStmts } from "../framework/variant-body-clone";
+import { cloneStmts } from "./variant-body-clone";
 import { type AssumptionChain, leq } from "../assumption";
 import type { Function } from "../program/units/function/function";
 

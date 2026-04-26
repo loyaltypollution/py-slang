@@ -3,7 +3,7 @@ import type { NodeId, NodeSet } from "../program/node-set";
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
 import type { Worklist } from "./worklist";
 import type { Function } from "../program/units/function/function";
-import type { FunctionLocator } from "../program/units/function/locator";
+import type { FunctionLocator } from "../program/units/function/manager";
 import type { CounterStore } from "../observation/counter-store";
 
 export type { NodeId, NodeSet } from "../program/node-set";

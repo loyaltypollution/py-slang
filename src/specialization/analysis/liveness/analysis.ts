@@ -2,11 +2,11 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import type { Token } from "../../../tokenizer";
 import type { AssumptionChain } from "../../assumption/chain";
 import type { BasicBlock } from "../../program/regions/basic-block";
-import { MutableEnv } from "../../analysis/mutable-env";
 import { isLocal, type SlotLookup } from "../../program/units/function/slot-table";
+import { MutableEnv } from "../block-env";
 import {
-    makeBlockFixpointAnalysis,
-    type BlockFixpointAnalysis,
+  makeBlockFixpointAnalysis,
+  type BlockFixpointAnalysis,
 } from "../dfa-factory";
 import { LIVE, livenessLattice, type LiveVal } from "./lattice";
 

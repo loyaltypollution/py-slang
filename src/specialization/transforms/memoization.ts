@@ -4,12 +4,12 @@ import { Token } from "../../tokenizer/tokenizer";
 import { TokenType } from "../../tokenizer";
 import { directParamEntryGuardsFor, guardKeyFromGuards } from "../narrowing-policy/entry-guards";
 import type { TransformRule } from "../framework/analysis";
-import { shadowNode } from "../framework/variant-body-clone";
+import { shadowNode } from "../speculation/variant-body-clone";
 import { type AssumptionChain } from "../assumption";
 import { forkBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/units/function/function";
 import { runtimeCallCounter } from "../observation/runtime-analyses";
-import type { FunctionLocator } from "../program/units/function/locator";
+import type { FunctionLocator } from "../program/units/function/manager";
 import { purityFunctionAnalysis } from "../analysis";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;

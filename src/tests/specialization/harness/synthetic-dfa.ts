@@ -11,7 +11,7 @@ import {
   type BlockFixpointAnalysis,
 } from "../../../specialization/analysis/dfa-factory";
 import type { Function } from "../../../specialization/program/units/function/function";
-import { MutableEnv } from "../../../specialization/analysis/mutable-env";
+import { MutableEnv } from "../../../specialization/analysis/block-env";
 import type { Worklist } from "../../../specialization/framework/worklist";
 import { setupWithAnalyses } from "./compile-pipelines";
 

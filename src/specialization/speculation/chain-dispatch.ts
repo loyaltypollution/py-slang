@@ -5,9 +5,9 @@ import { StmtNS } from "../../ast-types";
 import { contextIsEntrySpecializable, directParamEntryGuardsFor } from "../narrowing-policy/entry-guards";
 import type { AssumptionChain } from "../assumption";
 import { visibleBody } from "./assumption-bodies";
-import { shadowNode } from "../framework/variant-body-clone";
+import { shadowNode } from "./variant-body-clone";
 import type { Function } from "../program/units/function/function";
-import type { FunctionLocator } from "../program/units/function/locator";
+import type { FunctionLocator } from "../program/units/function/manager";
 import { BOOL_BIT, BoolRef, typeAnalysis } from "../analysis";
 
 function conditionTruth(

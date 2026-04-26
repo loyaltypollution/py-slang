@@ -5,11 +5,11 @@
 // slot at entry and transfer never clears.
 
 import { ExprNS, StmtNS } from "../../../ast-types";
-import { MutableEnv } from "../../analysis/mutable-env";
 import { isLocal, type SlotLookup } from "../../program/units/function/slot-table";
+import { MutableEnv } from "../block-env";
 import {
-    makeBlockFixpointAnalysis,
-    type BlockFixpointAnalysis,
+  makeBlockFixpointAnalysis,
+  type BlockFixpointAnalysis,
 } from "../dfa-factory";
 import { BOUND, UNBOUND, boundLattice, type BoundStatus } from "./lattice";
 

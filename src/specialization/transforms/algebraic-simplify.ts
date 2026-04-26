@@ -15,7 +15,7 @@ import type { TransformRule } from "../framework/analysis";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/units/function/function";
-import type { FunctionLocator } from "../program/units/function/locator";
+import type { FunctionLocator } from "../program/units/function/manager";
 import {
   DescendingExprVisitor,
   ExprDrivenStmtVisitor,

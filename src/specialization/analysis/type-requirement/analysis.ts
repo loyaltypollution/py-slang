@@ -7,12 +7,12 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
 import { ROOT_CONTEXT, at, type AssumptionChain } from "../../assumption";
 import { type Narrowing } from "../../framework/analysis";
-import type { Function, FunctionId } from "../../program/units/function/function";
-import { MutableEnv } from "../../analysis/mutable-env";
-import { isLocal, type SlotLookup } from "../../program/units/function/slot-table";
 import type { ObservationBinding } from "../../observation/observation-binding";
 import type { RawKind } from "../../observation/raw-value";
 import { runtimeReturnChannel } from "../../observation/runtime-analyses";
+import type { Function, FunctionId } from "../../program/units/function/function";
+import { isLocal, type SlotLookup } from "../../program/units/function/slot-table";
+import { MutableEnv } from "../block-env";
 import {
     makeBlockFixpointAnalysis,
     type BlockFixpointAnalysis,
