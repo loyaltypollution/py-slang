@@ -4,10 +4,10 @@
 // "refutation is transitive across rebuild-path supersets" — the bug
 // the old pointwise isRefuted + parent-walk hasAncestor missed.
 
-import { extend, ROOT_CONTEXT, type NarrowingId } from "../../specialization/assumption/chain";
+import { extend, ROOT_CONTEXT, type NarrowingAxis } from "../../specialization/assumption/chain";
 import { Refutations } from "../../specialization/assumption/refutation";
 
-function mkN<K, V>(): NarrowingId<K, V> {
+function mkN<K, V>(): NarrowingAxis<K, V> {
   return { eq: (a, b) => a === b };
 }
 

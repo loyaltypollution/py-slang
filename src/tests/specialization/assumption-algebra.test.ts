@@ -10,10 +10,10 @@ import {
   leq,
   ROOT_CONTEXT,
   without,
-  type NarrowingId,
+  type NarrowingAxis,
 } from "../../specialization/assumption/chain";
 
-function mkN<K, V>(eq: (a: V, b: V) => boolean = (a, b) => a === b): NarrowingId<K, V> {
+function mkN<K, V>(eq: (a: V, b: V) => boolean = (a, b) => a === b): NarrowingAxis<K, V> {
   return { eq };
 }
 

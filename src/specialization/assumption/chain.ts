@@ -1,15 +1,22 @@
-export interface NarrowingId<K = unknown, V = unknown> {
+/** Algebra contract for one narrowing dimension: a value-equality and a
+ *  phantom brand pinning `(K, V)`. Reference identity is the axis identity —
+ *  the trie keys child-maps by the axis object itself.
+ *
+ *  Worklist plumbing (reseed analysis, runtime observation source/lift) lives
+ *  in `framework/analysis.Narrowing`, which extends this. The chain algebra
+ *  here only ever reads `eq`. */
+export interface NarrowingAxis<K = unknown, V = unknown> {
   eq(a: V, b: V): boolean;
-  readonly __narrowingBrand?: () => readonly [K, V];
+  readonly __axisBrand?: () => readonly [K, V];
 }
 
 export interface Assumption<K = unknown, V = unknown> {
-  readonly narrowing: NarrowingId<K, V>;
+  readonly narrowing: NarrowingAxis<K, V>;
   readonly key: K;
   readonly value: V;
 }
 
-type Bindings = ReadonlyMap<NarrowingId<any, any>, ReadonlyMap<unknown, Assumption>>;
+type Bindings = ReadonlyMap<NarrowingAxis<any, any>, ReadonlyMap<unknown, Assumption>>;
 
 interface AssumptionRoot {
   readonly depth: 0;
@@ -33,7 +40,7 @@ export const ROOT_CONTEXT: AssumptionChain = Object.freeze({
 });
 
 export function isRoot(ctx: AssumptionChain): ctx is AssumptionRoot {
-  return !("parent" in ctx);
+  return ctx === ROOT_CONTEXT;
 }
 
 // ---- canonicalization state -------------------------------------------------
@@ -46,13 +53,13 @@ interface ValueEntry {
 /** Child trie: `parent → narrowing → key → bucket of (value, node)`. The
  *  bucket disambiguates structurally-equal-but-not-`===` values via
  *  `narrowing.eq`. */
-type ChildTrie = Map<AssumptionChain, Map<NarrowingId<any, any>, Map<unknown, ValueEntry[]>>>;
+type ChildTrie = Map<AssumptionChain, Map<NarrowingAxis<any, any>, Map<unknown, ValueEntry[]>>>;
 const children: ChildTrie = new Map();
 
-const narrowingOrdinals: WeakMap<NarrowingId<any, any>, number> = new WeakMap();
+const narrowingOrdinals: WeakMap<NarrowingAxis<any, any>, number> = new WeakMap();
 let nextNarrowingOrdinal = 0;
 
-function ordinalOf(narrowing: NarrowingId<any, any>): number {
+function ordinalOf(narrowing: NarrowingAxis<any, any>): number {
   let n = narrowingOrdinals.get(narrowing);
   if (n === undefined) {
     n = nextNarrowingOrdinal++;
@@ -92,12 +99,12 @@ function bindingsExtended(parent: AssumptionChain, assumption: Assumption): Bind
 }
 
 function freezeAssumption<K, V>(
-  narrowing: NarrowingId<K, V>,
+  narrowing: NarrowingAxis<K, V>,
   key: K,
   value: V,
 ): Assumption {
   return Object.freeze({
-    narrowing: narrowing as NarrowingId<unknown, unknown>,
+    narrowing: narrowing as NarrowingAxis<unknown, unknown>,
     key: key as unknown,
     value: value as unknown,
   });
@@ -106,7 +113,7 @@ function freezeAssumption<K, V>(
 /** Intern (or reuse) the child of `parent` carrying `narrowing@key = value`. */
 function internChild<K, V>(
   parent: AssumptionChain,
-  narrowing: NarrowingId<K, V>,
+  narrowing: NarrowingAxis<K, V>,
   key: K,
   value: V,
 ): AssumptionBranch {
@@ -169,7 +176,7 @@ function factsExcept(
  *  (callers must `without` first). Order-independent. */
 export function extend<K, V>(
   s: AssumptionChain,
-  narrowing: NarrowingId<K, V>,
+  narrowing: NarrowingAxis<K, V>,
   key: K,
   value: V,
 ): AssumptionBranch {
@@ -198,7 +205,7 @@ export function extend<K, V>(
  *  pinning exists; otherwise the canonical sibling without it. */
 export function without<K>(
   s: AssumptionChain,
-  narrowing: NarrowingId<K, any>,
+  narrowing: NarrowingAxis<K, any>,
   key: K,
 ): AssumptionChain {
   const kept: Assumption[] = [];
@@ -221,7 +228,7 @@ export function without<K>(
 /** Value pinned at `narrowing@key` on `s`, or `undefined` if not pinned. */
 export function at<K, V>(
   s: AssumptionChain,
-  narrowing: NarrowingId<K, V>,
+  narrowing: NarrowingAxis<K, V>,
   key: K,
 ): V | undefined {
   return s.bindings.get(narrowing)?.get(key)?.value as V | undefined;
@@ -232,7 +239,7 @@ export function at<K, V>(
  *  of the doomed fact. */
 export function carrier<K>(
   s: AssumptionChain,
-  narrowing: NarrowingId<K, any>,
+  narrowing: NarrowingAxis<K, any>,
   key: K,
 ): AssumptionBranch | undefined {
   for (let cur: AssumptionChain = s; !isRoot(cur); cur = cur.parent) {

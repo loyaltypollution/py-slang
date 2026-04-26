@@ -18,7 +18,6 @@ export { truthiness } from "./type/transfer";
 export {
   typeRequirementAnalysis,
   returnKindNarrowing,
-  returnKindBinding,
   requirementAtEntry,
   type EntryRequirement,
 } from "./type-requirement/analysis";

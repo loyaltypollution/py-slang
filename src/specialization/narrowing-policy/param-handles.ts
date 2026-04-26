@@ -1,27 +1,20 @@
 import { liftType, typeAnalysis } from "../analysis/type/analysis";
 import { eq as typeEq, type TypeLattice } from "../analysis/type/lattice";
-import type { NarrowingBinding } from "../framework/analysis";
-import type { ObservationBinding } from "../observation/observation-binding";
+import type { Narrowing } from "../framework/analysis";
 import type { RawKind } from "../observation/raw-value";
 import { runtimeParamSource } from "../observation/runtime-analyses";
-import type { Function } from "../program/units/function/function";
 import type { FunctionLocator } from "../program/units/function/manager";
 import { paramKeyFunctionId, type ParamKey } from "./param-key";
 
-export const paramTypeNarrowing: NarrowingBinding<ParamKey, TypeLattice> = {
+/** Per-parameter type narrowing. Runtime parameter observations lift to
+ *  `TypeLattice` and extend the owning function's context with
+ *  `(paramTypeNarrowing, paramKey, type)`. The corresponding analysis
+ *  (`typeAnalysis`) reseeds at the entry block on every chain change. */
+export const paramTypeNarrowing: Narrowing<ParamKey, TypeLattice, RawKind> = {
   eq: typeEq,
   blockAnalysis: () => typeAnalysis,
-};
-
-export const paramTypeBinding: ObservationBinding<
-  Function,
-  FunctionLocator,
-  ParamKey,
-  TypeLattice,
-  RawKind
-> = {
-  narrowing: paramTypeNarrowing,
   source: runtimeParamSource,
   lift: liftType,
-  resolveUnit: (locator, key) => locator.functionById(paramKeyFunctionId(key)),
+  resolveUnit: (locator: FunctionLocator, key: ParamKey) =>
+    locator.functionById(paramKeyFunctionId(key)),
 };

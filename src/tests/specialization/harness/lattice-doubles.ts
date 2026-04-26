@@ -1,6 +1,6 @@
-import type { NarrowingId } from "../../../specialization/assumption/chain";
+import type { NarrowingAxis } from "../../../specialization/assumption/chain";
 
-export function makeNarrowing<K, V>(eq: (a: V, b: V) => boolean = Object.is): NarrowingId<K, V> {
+export function makeNarrowing<K, V>(eq: (a: V, b: V) => boolean = Object.is): NarrowingAxis<K, V> {
   return { eq };
 }
 

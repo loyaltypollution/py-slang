@@ -19,7 +19,6 @@ import {
 } from "../assumption";
 import type { AssumptionChain } from "../assumption";
 import type { SaturatingCounter } from "../observation/counter-store";
-import type { ObservationBinding } from "../observation/observation-binding";
 import type { ObservationSource } from "../observation/observation-channel";
 import type { NodeId, NodeSet } from "./analysis";
 import { intersects } from "../program/node-set";
@@ -27,7 +26,7 @@ import type {
   Analysis,
   AnalysisCtx,
   EntrySeed,
-  NarrowingBinding,
+  Narrowing,
   TransformRule,
 } from "./analysis";
 import { storeEvict, storeWrite } from "./analysis-store";
@@ -36,14 +35,14 @@ import { FunctionManager } from "../program/units/function/manager";
 import type { FunctionLocator } from "../program/units/function/manager";
 import type { UnitDomain, UnitLocator } from "./unit-domain";
 
-/** Resolver supplied per-binding (or the default below): turns the source
+/** Resolver supplied per-narrowing (or the default below): turns the source
  *  key into the owning unit so observation events can route narrowings
  *  to the right one. */
 type UnitResolver<U, L> = (locator: L, key: any) => U | undefined;
 
-/** Default resolver: assumes the binding's key is a NodeId and looks up the
- *  enclosing unit via the locator's `UnitLocator<U>` surface.
- *  ObservationBindings whose key is not a NodeId must supply their own
+/** Default resolver: assumes the narrowing's key is a NodeId and looks up
+ *  the enclosing unit via the locator's `UnitLocator<U>` surface.
+ *  Narrowings whose key is not a NodeId must supply their own
  *  `resolveUnit`. */
 function defaultUnitResolver<U>(locator: UnitLocator<U>, key: any): U | undefined {
   return locator.unitContainingNode(key as NodeId);
@@ -103,13 +102,15 @@ export interface WorklistConfig<U = Function, L = FunctionLocator> {
 
   readonly analyses: ReadonlyArray<Analysis<any, any>>;
   readonly transforms: ReadonlyArray<TransformRule<U, L>>;
-  readonly narrowings?: ReadonlyArray<NarrowingBinding<any, any>>;
+  /** Production narrowings. Each carries `blockAnalysis` (worklist reseed)
+   *  plus optional `source`/`lift`/`resolveUnit` (observation ingress glue);
+   *  axes without a `source` simply don't participate in ingress dispatch. */
+  readonly narrowings?: ReadonlyArray<Narrowing<any, any, any>>;
   /** Extra entry-seed pairs re-enqueued at every narrowing-entry alongside
    *  each narrowing's own `blockAnalysis()`. Used for context-sensitive
    *  analyses (e.g. purity) that must track each specialization context
    *  but aren't themselves narrowings. Policy-owned by the caller. */
   readonly extraEntrySeeds?: ReadonlyArray<EntrySeed>;
-  readonly observationBindings?: ReadonlyArray<ObservationBinding<U, L, any, any, any>>;
 }
 
 export class Worklist<U = Function, L = FunctionLocator> {
@@ -188,14 +189,15 @@ export class Worklist<U = Function, L = FunctionLocator> {
     return this.units.locator;
   }
 
-  private readonly narrowings: ReadonlyArray<NarrowingBinding<any, any>>;
+  private readonly narrowings: ReadonlyArray<Narrowing<any, any, any>>;
   private readonly extraEntrySeeds: ReadonlyArray<EntrySeed>;
-  /** Per-source unit resolver; all bindings on a source must agree. */
+  /** Per-source unit resolver; all narrowings on a source must agree. */
   private readonly unitResolverBySource: Map<ObservationSource<any, any>, UnitResolver<U, L>>;
-  /** Per-source observation bindings, indexed for ingress dispatch. */
+  /** Per-source narrowings, indexed for ingress dispatch. Only narrowings
+   *  whose `source` is defined appear here. */
   private readonly bindingsBySource: ReadonlyMap<
     ObservationSource<any, any>,
-    ReadonlyArray<ObservationBinding<U, L>>
+    ReadonlyArray<Narrowing<any, any, any>>
   >;
 
   constructor(config: WorklistConfig<U, L>) {
@@ -207,18 +209,25 @@ export class Worklist<U = Function, L = FunctionLocator> {
       transforms,
       narrowings = [],
       extraEntrySeeds = [],
-      observationBindings = [],
     } = config;
     this.narrowings = narrowings;
     this.extraEntrySeeds = extraEntrySeeds;
-    // Group bindings by observation source. Each group must agree on
-    // `resolveUnit`
-    // so registration bugs surface at construction.
+    // Group narrowings by observation source. Each group must agree on
+    // `resolveUnit` so registration bugs surface at construction.
     const unitResolverBySource = new Map<ObservationSource<any, any>, UnitResolver<U, L>>();
-    const bindingsBySource = new Map<ObservationSource<any, any>, ObservationBinding<U, L>[]>();
-    for (const b of observationBindings) {
-      const source = b.source;
-      const resolver: UnitResolver<U, L> = (b.resolveUnit ?? defaultUnitResolver) as UnitResolver<
+    const bindingsBySource = new Map<
+      ObservationSource<any, any>,
+      Narrowing<any, any, any>[]
+    >();
+    for (const n of narrowings) {
+      if (n.source === undefined) continue;
+      if (n.lift === undefined) {
+        throw new Error(
+          `[Worklist] narrowing has 'source' but no 'lift' — observation glue is incomplete.`,
+        );
+      }
+      const source = n.source;
+      const resolver: UnitResolver<U, L> = (n.resolveUnit ?? defaultUnitResolver) as UnitResolver<
         U,
         L
       >;
@@ -227,12 +236,12 @@ export class Worklist<U = Function, L = FunctionLocator> {
         unitResolverBySource.set(source, resolver);
       } else if (existing !== resolver) {
         throw new Error(
-          `[Worklist] bindings sharing a source disagree on resolveUnit — all bindings on one source must resolve to the same unit.`,
+          `[Worklist] narrowings sharing a source disagree on resolveUnit — all narrowings on one source must resolve to the same unit.`,
         );
       }
       const group = bindingsBySource.get(source);
-      if (group === undefined) bindingsBySource.set(source, [b]);
-      else group.push(b);
+      if (group === undefined) bindingsBySource.set(source, [n]);
+      else group.push(n);
     }
     this.unitResolverBySource = unitResolverBySource;
     this.bindingsBySource = bindingsBySource;
@@ -284,7 +293,7 @@ export class Worklist<U = Function, L = FunctionLocator> {
     this.refutations.add(minimal);
     this.units.fireRefute(unit, carrier);
     const fdCtx = this.units.chainFor(unit);
-    if (fdCtx !== ROOT_CONTEXT && this.refutations.contains(fdCtx)) {
+    if (!isRoot(fdCtx) && this.refutations.contains(fdCtx)) {
       this.units.clearChainFor(unit);
     }
   }
@@ -653,7 +662,7 @@ export class Worklist<U = Function, L = FunctionLocator> {
   private readonly ctxCache: WeakMap<AssumptionChain, AnalysisCtx> = new WeakMap();
 
   private ctxFor(context: AssumptionChain): AnalysisCtx {
-    if (context === ROOT_CONTEXT) return this.passCtx;
+    if (isRoot(context)) return this.passCtx;
     let ctx = this.ctxCache.get(context);
     if (ctx === undefined) {
       ctx = this.makeCtx(context);
@@ -701,17 +710,17 @@ export class Worklist<U = Function, L = FunctionLocator> {
 
     if (source.isUnknown(observed)) {
       let pruned = parentCtx;
-      for (const b of applicable) {
-        const c = carrierOf(pruned, b.narrowing, key);
+      for (const n of applicable) {
+        const c = carrierOf(pruned, n, key);
         if (c !== undefined) this.refute(unit, c);
-        pruned = without(pruned, b.narrowing, key);
+        pruned = without(pruned, n, key);
       }
       if (pruned === parentCtx) return parentCtx;
       if (this.refutations.contains(pruned)) {
         this.units.clearChainFor(unit);
         return ROOT_CONTEXT;
       }
-      if (pruned === ROOT_CONTEXT) this.units.clearChainFor(unit);
+      if (isRoot(pruned)) this.units.clearChainFor(unit);
       else this.units.setChainFor(unit, pruned);
       this.enqueueNarrowingEntry(unit, pruned);
       this.units.fireChainChange(unit, priorChain, pruned);
@@ -719,19 +728,21 @@ export class Worklist<U = Function, L = FunctionLocator> {
     }
 
     let newCtx = parentCtx;
-    for (const b of applicable) {
-      const lifted = b.lift(observed);
+    for (const n of applicable) {
+      // Narrowings reach `bindingsBySource` only when `source` is defined;
+      // by construction, so is `lift`.
+      const lifted = n.lift!(observed);
       if (lifted === undefined) continue;
-      const c = carrierOf(newCtx, b.narrowing, key);
+      const c = carrierOf(newCtx, n, key);
       const existing = c?.assumption?.value;
-      if (c !== undefined && b.narrowing.eq(existing, lifted)) continue;
+      if (c !== undefined && n.eq(existing, lifted)) continue;
       if (c !== undefined) {
         // Refute the chain node carrying the stale (n, key) binding before
         // splicing it out — a conflicting concrete observation violates it.
         this.refute(unit, c);
       }
-      const cleaned = c !== undefined ? without(newCtx, b.narrowing, key) : newCtx;
-      newCtx = extend(cleaned, b.narrowing, key, lifted);
+      const cleaned = c !== undefined ? without(newCtx, n, key) : newCtx;
+      newCtx = extend(cleaned, n, key, lifted);
     }
 
     if (newCtx === parentCtx) return parentCtx;

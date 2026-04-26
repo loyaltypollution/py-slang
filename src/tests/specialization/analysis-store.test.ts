@@ -8,7 +8,7 @@
  */
 import { AnalysisStore } from "../../specialization/framework/analysis-store";
 import type { JoinSemiLattice } from "../../specialization/framework/analysis";
-import { extend, ROOT_CONTEXT, type NarrowingId } from "../../specialization/assumption/chain";
+import { extend, ROOT_CONTEXT, type NarrowingAxis } from "../../specialization/assumption/chain";
 
 const intMaxLattice: JoinSemiLattice<number> = {
   bottom: 0,
@@ -31,7 +31,7 @@ const intMinCombine: JoinSemiLattice<number> = {
   eq: (a, b) => a === b,
 };
 
-function makeHandle<K, V>(_name: string, eq: (a: V, b: V) => boolean): NarrowingId<K, V> {
+function makeHandle<K, V>(_name: string, eq: (a: V, b: V) => boolean): NarrowingAxis<K, V> {
   return { eq };
 }
 

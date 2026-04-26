@@ -6,8 +6,7 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
 import { ROOT_CONTEXT, at, type AssumptionChain } from "../../assumption";
-import type { NarrowingBinding } from "../../framework/analysis";
-import type { ObservationBinding } from "../../observation/observation-binding";
+import type { Narrowing } from "../../framework/analysis";
 import type { RawKind } from "../../observation/raw-value";
 import { runtimeReturnSource } from "../../observation/runtime-analyses";
 import type { Function, FunctionId } from "../../program/units/function/function";
@@ -170,31 +169,18 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
     },
   });
 
-/** Narrowing dimension for per-function return-kind assumptions, keyed by
- *  FunctionDef.id. Parallel to `paramTypeNarrowing`. The corresponding
- *  observation glue lives in `returnKindBinding` below. */
-export const returnKindNarrowing: NarrowingBinding<FunctionId, TypeLattice> = {
+/** Per-function return-kind narrowing, keyed by FunctionId. Runtime return
+ *  observations classify via `liftType` and extend the called unit's context
+ *  with `(returnKindNarrowing, functionId, type)`; `typeRequirementAnalysis`
+ *  consumes that at Return statements. `resolveUnit` maps the functionId
+ *  to the function's own unit so the extension lands where requirement
+ *  propagation runs. Parallel to `paramTypeNarrowing`. */
+export const returnKindNarrowing: Narrowing<FunctionId, TypeLattice, RawKind> = {
   eq,
   blockAnalysis: () => typeRequirementAnalysis,
-};
-
-/** Observation binding for `returnKindNarrowing`. An observation at
- *  `functionId` (classified via `liftType`) extends the called unit's
- *  context with `(returnKindNarrowing, functionId, value)`; the analysis
- *  above consumes that at Return statements. `resolveUnit` maps the
- *  functionId to the function's own unit so the extension lands where the
- *  body's requirement-propagation runs. */
-export const returnKindBinding: ObservationBinding<
-  Function,
-  FunctionLocator,
-  FunctionId,
-  TypeLattice,
-  RawKind
-> = {
-  narrowing: returnKindNarrowing,
   source: runtimeReturnSource,
   lift: liftType,
-  resolveUnit: (loc, id) => loc.functionById(id),
+  resolveUnit: (loc: FunctionLocator, id: FunctionId) => loc.functionById(id),
 };
 
 /** Per-slot entry requirement split by satisfiability. `provable` slots are

@@ -9,7 +9,7 @@ export {
   without,
   type Assumption,
   type AssumptionChain,
-  type NarrowingId,
+  type NarrowingAxis,
 } from "./chain";
 
 export { Refutations } from "./refutation";

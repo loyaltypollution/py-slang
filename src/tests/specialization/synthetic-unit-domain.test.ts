@@ -20,7 +20,7 @@ import {
   ROOT_CONTEXT,
   extend,
   type AssumptionChain,
-  type NarrowingId,
+  type NarrowingAxis,
 } from "../../specialization/assumption";
 import { Worklist } from "../../specialization/framework/worklist";
 import type { TransformRule } from "../../specialization/framework/analysis";
@@ -33,8 +33,8 @@ import type {
   UnitDomain,
   UnitLocator,
 } from "../../specialization/framework/unit-domain";
-// Synthetic narrowing — any NarrowingId works as a chain extension axis.
-const TEST_NARROWING: NarrowingId<number, number> = { eq: (a, b) => a === b };
+// Synthetic narrowing — any NarrowingAxis works as a chain extension axis.
+const TEST_NARROWING: NarrowingAxis<number, number> = { eq: (a, b) => a === b };
 
 // --- a synthetic unit kind --------------------------------------------------
 

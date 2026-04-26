@@ -4,10 +4,7 @@ import { analyzeWithEnvironments } from "../../resolver";
 import { DEFAULT_PASSES } from "../../specialization/defaults";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { Worklist } from "../../specialization/framework/worklist";
-import {
-  paramTypeBinding,
-  paramTypeNarrowing,
-} from "../../specialization/narrowing-policy/param-handles";
+import { paramTypeNarrowing } from "../../specialization/narrowing-policy/param-handles";
 import { paramKey } from "../../specialization/narrowing-policy/param-key";
 import { runtimeParamSource } from "../../specialization/observation/runtime-analyses";
 import math from "../../stdlib/math";
@@ -31,7 +28,6 @@ function createObservationWorklist(code: string): {
     analyses: DEFAULT_PASSES,
     transforms: [],
     narrowings: [paramTypeNarrowing],
-    observationBindings: [paramTypeBinding],
   });
 
   const fd = ast.statements[0];

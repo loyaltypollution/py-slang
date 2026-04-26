@@ -6,13 +6,12 @@ import {
   livenessAnalysis,
   purityBlockAnalysis,
   purityFunctionAnalysis,
-  returnKindBinding,
   returnKindNarrowing,
   typeAnalysis,
   typeRequirementAnalysis,
 } from "./analysis";
 import { Worklist } from "./framework/worklist";
-import { paramTypeBinding, paramTypeNarrowing } from "./narrowing-policy/param-handles";
+import { paramTypeNarrowing } from "./narrowing-policy/param-handles";
 import {
   algebraicSimplifyRule,
   constantFoldingRule,
@@ -28,8 +27,6 @@ const DEFAULT_TRANSFORMS = [
   deadStoreRule,
   memoizationRule,
 ] as const;
-
-const DEFAULT_OBSERVATION_BINDINGS = [paramTypeBinding, returnKindBinding] as const;
 
 export const DEFAULT_PASSES = [
   typeAnalysis.env,
@@ -58,6 +55,5 @@ export function createDefaultWorklist(
     transforms: DEFAULT_TRANSFORMS,
     narrowings: [paramTypeNarrowing, returnKindNarrowing],
     extraEntrySeeds: [purityBlockAnalysis],
-    observationBindings: DEFAULT_OBSERVATION_BINDINGS,
   });
 }
