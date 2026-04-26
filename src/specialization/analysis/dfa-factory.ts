@@ -1,5 +1,5 @@
 import type { ExprNS } from "../../ast-types";
-import type { AssumptionChain } from "../assumption/chain";
+import { isRoot, type AssumptionChain } from "../assumption/chain";
 import type {
   Analysis,
   AnalysisCtx,
@@ -393,16 +393,16 @@ export function makeBlockFixpointAnalysis<L>(
     // advancing write to that block's facts map. Walk via store.tryRead so
     // we get a per-context view; the edge dedup means we record once.
     ctx.tryRead(factsAnalysis, block);
-    let cur: AssumptionChain | undefined = ctx.currentContext;
-    while (cur !== undefined) {
+    let cur: AssumptionChain = ctx.currentContext;
+    while (true) {
       const map = factsAnalysis.store.tryRead(block, cur);
       if (map !== undefined) {
         const value = map.get(nodeId);
         if (value !== undefined) return { value, witness: cur };
       }
+      if (isRoot(cur)) return undefined;
       cur = cur.parent;
     }
-    return undefined;
   }
 
   return {

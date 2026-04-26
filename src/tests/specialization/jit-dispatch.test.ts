@@ -80,12 +80,6 @@ print(fib(8))
   });
 });
 
-// Regression for the saturation short-circuit fix in runtime-analyses.ts.
-// Two distinct POS values saturate the param-observation shadow state at
-// (chain, paramKey(f,0)) to ⊤. The subsequent NEG call must still be
-// observed so `handleObservationForSpec` replaces the POS narrowing with
-// NEG. Before the fix, observation was skipped → POS-specialized body was
-// served to the NEG call.
 describe("saturated observation source still prunes on conflicting type", () => {
   beforeEach(clearMemoCache);
 

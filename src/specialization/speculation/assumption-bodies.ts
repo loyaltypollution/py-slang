@@ -2,7 +2,7 @@
 
 import type { StmtNS } from "../../ast-types";
 import { cloneStmts } from "./variant-body-clone";
-import { type AssumptionChain, leq } from "../assumption";
+import { isRoot, leq, type AssumptionChain } from "../assumption";
 import type { Function } from "../program/units/function/function";
 
 const bodies: WeakMap<Function, Map<AssumptionChain, StmtNS.Stmt[]>> = new WeakMap();
@@ -13,7 +13,7 @@ export function visibleBody(
   s: AssumptionChain,
   isRefuted?: (s: AssumptionChain) => boolean,
 ): readonly StmtNS.Stmt[] {
-  if (s.parent === undefined) return unit.body;
+  if (isRoot(s)) return unit.body;
   const m = bodies.get(unit);
   if (m === undefined) return unit.body;
   let best: AssumptionChain | undefined;
@@ -27,7 +27,7 @@ export function visibleBody(
 
 /** Materialize (or reuse) a forked body at `s`. Returns `unit.body` at root. */
 export function forkBody(unit: Function, s: AssumptionChain): StmtNS.Stmt[] {
-  if (s.parent === undefined) return unit.body;
+  if (isRoot(s)) return unit.body;
   let m = bodies.get(unit);
   if (m === undefined) {
     m = new Map();
@@ -47,7 +47,7 @@ export function invalidateDescendantVariants(unit: Function, witness: Assumption
   const byChain = bodies.get(unit);
   if (byChain === undefined) return;
 
-  if (witness.parent === undefined) {
+  if (isRoot(witness)) {
     bodies.delete(unit);
     return;
   }

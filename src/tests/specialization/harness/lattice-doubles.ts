@@ -1,10 +1,7 @@
-import type { Narrowing } from "../../../specialization/framework/analysis";
+import type { NarrowingId } from "../../../specialization/assumption/chain";
 
-export function makeNarrowing<K, V>(eq: (a: V, b: V) => boolean = Object.is): Narrowing<K, V> {
-  return {
-    eq,
-    blockAnalysis: () => ({} as any),
-  };
+export function makeNarrowing<K, V>(eq: (a: V, b: V) => boolean = Object.is): NarrowingId<K, V> {
+  return { eq };
 }
 
 export interface Boxed {

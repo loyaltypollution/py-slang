@@ -2,7 +2,7 @@
 // readonly surface; framework writes go through `storeWrite`.
 
 import type { JoinSemiLattice } from "./analysis";
-import type { AssumptionChain } from "../assumption/chain";
+import { isRoot, type AssumptionChain } from "../assumption/chain";
 
 export interface ReadonlyAnalysisStore<K, V> {
   read(key: K, context: AssumptionChain): V;
@@ -39,11 +39,15 @@ export function walkChain<K, V>(
   accept: (value: V) => boolean = () => true,
 ): { value: V; witness: AssumptionChain } | undefined {
   let match: { value: V; witness: AssumptionChain } | undefined;
-  for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
+  let cur: AssumptionChain = chain;
+  while (true) {
     const value = tryRead(key, cur);
-    if (value === undefined || !accept(value)) continue;
-    if (mode === "deepest") return { value, witness: cur };
-    match = { value, witness: cur };
+    if (value !== undefined && accept(value)) {
+      if (mode === "deepest") return { value, witness: cur };
+      match = { value, witness: cur };
+    }
+    if (isRoot(cur)) break;
+    cur = cur.parent;
   }
   return match;
 }

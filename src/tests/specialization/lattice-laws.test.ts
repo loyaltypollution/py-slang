@@ -1,7 +1,5 @@
 import {
-  constEq,
-  constJoin,
-  constLeq,
+  constLattice,
   CONST_BOTTOM,
   CONST_TOP,
   constOf,
@@ -85,12 +83,7 @@ describe("reusable lattice-law verification", () => {
 
   test("ConstLattice satisfies lattice laws for a representative finite slice", () => {
     expectJoinSemiLatticeLaws(
-      {
-        bottom: CONST_BOTTOM,
-        leq: constLeq,
-        join: constJoin,
-        eq: constEq,
-      },
+      constLattice,
       {
         values: [CONST_BOTTOM, CONST_TOP, constOf(0), constOf(1), constOf(-1), constOf(42)],
         describeValue: value =>

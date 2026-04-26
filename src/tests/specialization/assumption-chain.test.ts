@@ -7,7 +7,7 @@ import {
   extend,
   leq,
   without,
-} from "../../specialization/assumption/algebra";
+} from "../../specialization/assumption/chain";
 import { makeNarrowing } from "./harness/lattice-doubles";
 
 function makeAnalysis<K, V>(_name: string) {
@@ -18,8 +18,6 @@ describe("AssumptionChain", () => {
   it("ROOT_CONTEXT is root and has depth 0", () => {
     expect(isRoot(ROOT_CONTEXT)).toBe(true);
     expect(ROOT_CONTEXT.depth).toBe(0);
-    expect(ROOT_CONTEXT.parent).toBeUndefined();
-    expect(ROOT_CONTEXT.assumption).toBeUndefined();
   });
 
   it("extend produces a child with parent, assumption, depth+1", () => {

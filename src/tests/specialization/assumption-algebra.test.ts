@@ -2,22 +2,19 @@
 // algebraic law explicitly; together they pin down the semilattice shape
 // the rest of the framework reads as load-bearing invariants.
 
-import type { Narrowing } from "../../specialization/framework/analysis";
-import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import {
   at,
   bindings,
   carrier,
   extend,
   leq,
+  ROOT_CONTEXT,
   without,
-} from "../../specialization/assumption/algebra";
+  type NarrowingId,
+} from "../../specialization/assumption/chain";
 
-function mkN<K, V>(eq: (a: V, b: V) => boolean = (a, b) => a === b): Narrowing<K, V> {
-  return {
-    eq,
-    blockAnalysis: () => ({} as any),
-  };
+function mkN<K, V>(eq: (a: V, b: V) => boolean = (a, b) => a === b): NarrowingId<K, V> {
+  return { eq };
 }
 
 describe("assumption-algebra", () => {

@@ -1,5 +1,5 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { AssumptionChain } from "../assumption/chain";
+import { isRoot, type AssumptionChain } from "../assumption/chain";
 import {
   forkBody,
   invalidateDescendantVariants,
@@ -203,8 +203,10 @@ export const deadStoreRule: TransformRule = {
     if (removableNow.size === 0) return transformResultFor([]);
 
     const lineage: AssumptionChain[] = [];
-    for (let cur: AssumptionChain | undefined = chain; cur !== undefined; cur = cur.parent) {
+    for (let cur: AssumptionChain = chain; ; ) {
       lineage.push(cur);
+      if (isRoot(cur)) break;
+      cur = cur.parent;
     }
     lineage.reverse();
     const removalsByWitness = new Map<AssumptionChain, Set<number>>();

@@ -2,7 +2,7 @@
 // analysis/ keep direct sibling imports to avoid cycles through this barrel.
 
 export { constAnalysis } from "./const/analysis";
-export { constEq, type ConstLattice } from "./const/lattice";
+export { type ConstLattice } from "./const/lattice";
 
 export { typeAnalysis, typeNarrowing, liftType } from "./type/analysis";
 export {

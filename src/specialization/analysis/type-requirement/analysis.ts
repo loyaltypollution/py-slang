@@ -6,7 +6,7 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
 import { ROOT_CONTEXT, at, type AssumptionChain } from "../../assumption";
-import type { Narrowing } from "../../framework/analysis";
+import type { NarrowingBinding } from "../../framework/analysis";
 import type { ObservationBinding } from "../../observation/observation-binding";
 import type { RawKind } from "../../observation/raw-value";
 import { runtimeReturnSource } from "../../observation/runtime-analyses";
@@ -173,7 +173,7 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
 /** Narrowing dimension for per-function return-kind assumptions, keyed by
  *  FunctionDef.id. Parallel to `paramTypeNarrowing`. The corresponding
  *  observation glue lives in `returnKindBinding` below. */
-export const returnKindNarrowing: Narrowing<FunctionId, TypeLattice> = {
+export const returnKindNarrowing: NarrowingBinding<FunctionId, TypeLattice> = {
   eq,
   blockAnalysis: () => typeRequirementAnalysis,
 };

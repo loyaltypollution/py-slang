@@ -23,9 +23,8 @@ export function directParamEntryGuardsFor(
 
 export function contextIsEntrySpecializable(unit: Function, context: AssumptionChain): boolean {
   if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return false;
-  for (let cur: AssumptionChain | undefined = context; cur !== undefined && !isRoot(cur); cur = cur.parent) {
+  for (let cur: AssumptionChain = context; !isRoot(cur); cur = cur.parent) {
     const a = cur.assumption;
-    if (a === undefined) continue;
     if (a.narrowing === paramTypeNarrowing) {
       const index = paramKeyIndex(a.key as ParamKey);
       if (index >= 0 && index < unit.funcAst.parameters.length) continue;

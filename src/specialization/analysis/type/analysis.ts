@@ -2,7 +2,7 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
 import { blockFixpointFromSpec } from "../../analysis/stmt-transfer";
 import { type AssumptionChain, at, isRoot } from "../../assumption";
-import type { Narrowing, NodeId } from "../../framework/analysis";
+import type { NarrowingBinding, NodeId } from "../../framework/analysis";
 import { paramTypeNarrowing } from "../../narrowing-policy/param-handles";
 import type { ParamKey } from "../../narrowing-policy/param-key";
 import type { RawKind } from "../../observation/raw-value";
@@ -80,7 +80,7 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
  *  a non-ROOT context is met into the per-node fact via `annotate` — no
  *  separate store. Currently used by tests only; production param/return
  *  bindings live in `narrowing-policy/` and `type-requirement/`. */
-export const typeNarrowing: Narrowing<NodeId, TypeLattice> = {
+export const typeNarrowing: NarrowingBinding<NodeId, TypeLattice> = {
   eq,
   blockAnalysis: () => typeAnalysis,
 };

@@ -1,11 +1,10 @@
-import type { AssumptionChain } from "./algebra";
-import { leq } from "./algebra";
+import { isRoot, leq, type AssumptionChain } from "./chain";
 
 export class Refutations {
   private readonly generators: Set<AssumptionChain> = new Set();
 
   add(s: AssumptionChain): void {
-    if (s.parent === undefined) return;
+    if (isRoot(s)) return;
     for (const r of this.generators) {
       if (leq(r, s)) return;
     }

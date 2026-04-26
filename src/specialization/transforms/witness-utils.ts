@@ -1,5 +1,5 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import type { AssumptionChain } from "../assumption/chain";
+import { isRoot, type AssumptionChain } from "../assumption/chain";
 import type { TransformResult } from "../framework/analysis";
 import type { Function } from "../program/units/function/function";
 import { forkBody, invalidateDescendantVariants } from "../speculation/assumption-bodies";
@@ -164,7 +164,7 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
 export function transformResultFor(touchedWitnesses: readonly AssumptionChain[]): TransformResult {
   return {
     changed: touchedWitnesses.length > 0,
-    canonicalChanged: touchedWitnesses.some(witness => witness.parent === undefined),
+    canonicalChanged: touchedWitnesses.some(isRoot),
     touchedWitnesses,
   };
 }

@@ -15,7 +15,7 @@ import { transformResultFor } from "./witness-utils";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 
-export function memoIdFor(fd: StmtNS.FunctionDef, variant?: string): string {
+function memoIdFor(fd: StmtNS.FunctionDef, variant?: string): string {
   const base = `${fd.name.lexeme}@L${fd.name.line}`;
   return variant === undefined ? base : `${base}#${variant}`;
 }

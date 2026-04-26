@@ -12,6 +12,7 @@ import type { FunctionEnvironments } from "../../resolver";
 import {
   carrier as carrierOf,
   extend,
+  isRoot,
   Refutations,
   ROOT_CONTEXT,
   without,
@@ -26,7 +27,7 @@ import type {
   Analysis,
   AnalysisCtx,
   EntrySeed,
-  Narrowing,
+  NarrowingBinding,
   TransformRule,
 } from "./analysis";
 import { storeEvict, storeWrite } from "./analysis-store";
@@ -102,7 +103,7 @@ export interface WorklistConfig<U = Function, L = FunctionLocator> {
 
   readonly analyses: ReadonlyArray<Analysis<any, any>>;
   readonly transforms: ReadonlyArray<TransformRule<U, L>>;
-  readonly narrowings?: ReadonlyArray<Narrowing<any, any>>;
+  readonly narrowings?: ReadonlyArray<NarrowingBinding<any, any>>;
   /** Extra entry-seed pairs re-enqueued at every narrowing-entry alongside
    *  each narrowing's own `blockAnalysis()`. Used for context-sensitive
    *  analyses (e.g. purity) that must track each specialization context
@@ -187,7 +188,7 @@ export class Worklist<U = Function, L = FunctionLocator> {
     return this.units.locator;
   }
 
-  private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
+  private readonly narrowings: ReadonlyArray<NarrowingBinding<any, any>>;
   private readonly extraEntrySeeds: ReadonlyArray<EntrySeed>;
   /** Per-source unit resolver; all bindings on a source must agree. */
   private readonly unitResolverBySource: Map<ObservationSource<any, any>, UnitResolver<U, L>>;
@@ -277,8 +278,8 @@ export class Worklist<U = Function, L = FunctionLocator> {
    *  subscribers, then reconcile the unit's preferred dispatch chain by
    *  clearing it if it's now refuted. Idempotent. */
   private refute(unit: U, carrier: AssumptionChain): void {
-    if (carrier === ROOT_CONTEXT) return;
-    const a = carrier.assumption!;
+    if (isRoot(carrier)) return;
+    const a = carrier.assumption;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
     this.refutations.add(minimal);
     this.units.fireRefute(unit, carrier);

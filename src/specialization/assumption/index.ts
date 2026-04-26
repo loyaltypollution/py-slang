@@ -1,19 +1,15 @@
 export {
-  ROOT_CONTEXT,
+  at,
+  bindings,
+  carrier,
+  extend,
   isRoot,
+  leq,
+  ROOT_CONTEXT,
+  without,
   type Assumption,
   type AssumptionChain,
   type NarrowingId,
 } from "./chain";
-
-export {
-  at,
-  carrier,
-  extend,
-  leq,
-  without,
-} from "./algebra";
-
-export { ChainInterner } from "./interner";
 
 export { Refutations } from "./refutation";

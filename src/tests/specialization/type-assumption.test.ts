@@ -1,6 +1,6 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
-import { extend } from "../../specialization/assumption/algebra";
+import { extend } from "../../specialization/assumption/chain";
 import { typeAnalysis } from "../../specialization/analysis";
 import { typeNarrowing } from "../../specialization/analysis/type/analysis";
 import { INT_BIT, INT_POS, TOP } from "../../specialization/analysis/type/lattice";

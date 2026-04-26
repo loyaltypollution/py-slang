@@ -12,7 +12,7 @@ import { SVMLCompiler } from "../../engines/svml/svml-compiler";
 import { SVMLInterpreter } from "../../engines/svml/svml-interpreter";
 import { clearMemoCache, memoCacheSnapshot } from "../../runtime/memo";
 import { constAnalysis, typeAnalysis } from "../../specialization/analysis";
-import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
+import { isRoot, ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import type { Worklist } from "../../specialization/framework/worklist";
 import { makeJitDispatch } from "../../specialization/observation/jit-dispatch";
 import type { Function } from "../../specialization/program/units/function/function";
@@ -99,7 +99,7 @@ for i in range(20):
 `,
     "collatz",
   );
-  expect(worklist.futureDispatchChainFor(unit).parent).not.toBeUndefined();
+  expect(isRoot(worklist.futureDispatchChainFor(unit))).toBe(false);
   expect(startsWithMemoHas(specBody(unit, worklist))).toBe(true);
   expect(startsWithMemoHas(fd.body)).toBe(false);
   expect(memoBucketCount("collatz")).toBeGreaterThan(0);

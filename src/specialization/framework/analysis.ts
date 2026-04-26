@@ -68,10 +68,10 @@ export interface EntrySeed<K extends NodeSet = NodeSet, V extends NodeSet = Node
   seed(view: V): K;
 }
 
-/** Typed axis for extending an `AssumptionChain`. Carries no lattice or
- *  store of its own; `blockAnalysis()` names the paired entry-seed re-run
- *  on every narrowing. */
-export interface Narrowing<K = any, V = unknown> extends NarrowingId<K, V> {
+/** Worklist-facing binding: a `NarrowingId` plus the entry-seed analysis to
+ *  re-run when a chain extends/prunes along this axis. Only the worklist
+ *  reads `blockAnalysis()`; everything else takes plain `NarrowingId`. */
+export interface NarrowingBinding<K = any, V = unknown> extends NarrowingId<K, V> {
   readonly blockAnalysis: () => EntrySeed;
 }
 
