@@ -28,7 +28,7 @@ describe("Function/BasicBlock invariants — ownership, locator agreement, rebui
     }
   });
 
-  test("FunctionLocator.blockContaining(n) === functionContainingNode(n)?.blockOfNode(n) for every CFG-owned node", () => {
+  test("FunctionLocator.blockContaining(n) === unitContainingNode(n)?.blockOfNode(n) for every CFG-owned node", () => {
     const { worklist } = setup(SRC);
     const locator = worklist.locate;
 
@@ -36,7 +36,7 @@ describe("Function/BasicBlock invariants — ownership, locator agreement, rebui
     let checked = 0;
     for (const unit of allUnits) {
       for (const nodeId of unit.nodeToBlock.keys()) {
-        const direct = locator.functionContainingNode(nodeId)?.blockOfNode(nodeId);
+        const direct = locator.unitContainingNode(nodeId)?.blockOfNode(nodeId);
         const viaLocator = locator.blockContaining(nodeId);
         expect(viaLocator).toBe(direct);
         checked++;

@@ -13,7 +13,7 @@ import { buildSlotTable } from "./slot-table";
  *
  *  Two legitimate meanings, kept distinct at call sites:
  *    - `functionLocator.functionById(id)` — function rooted at that node.
- *    - `functionLocator.functionContainingNode(id)` — enclosing function
+ *    - `functionLocator.unitContainingNode(id)` — enclosing function
  *      whose CFG owns the FunctionDef statement. */
 export type FunctionId = NodeId;
 

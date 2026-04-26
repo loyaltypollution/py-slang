@@ -40,7 +40,7 @@ type UnitResolver = (locator: FunctionLocator, key: any) => Function | undefined
  *  enclosing function. ObservationBindings whose key is not a NodeId must
  *  supply their own `resolveUnit`. */
 const defaultUnitResolver: UnitResolver = (locator, key) =>
-  locator.functionContainingNode(key as NodeId);
+  locator.unitContainingNode(key as NodeId);
 
 /** A `(analysis, key, context)` triple as the worklist enqueues it. */
 interface AnalysisTriple {

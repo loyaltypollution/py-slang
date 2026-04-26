@@ -20,10 +20,16 @@ import {
 import type { FunctionLocator } from "./function-locator";
 import type { BasicBlock } from "./basic-block";
 import { FunctionDispatchState } from "./function-dispatch";
+import type {
+  ChainChangeListener,
+  ExtentChangeListener,
+  RefuteListener,
+  UnitDomain,
+} from "../framework/unit-domain";
 
-export type ExtentListener = (unit: Function, prev: UnitExtent, next: UnitExtent) => void;
+export type ExtentListener = ExtentChangeListener<Function>;
 
-export class FunctionManager implements FunctionLocator {
+export class FunctionManager implements FunctionLocator, UnitDomain<Function, FunctionLocator> {
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
   private readonly functionByNode = new Map<NodeId, Function>();
   private readonly pendingRebuilds = new Set<Function>();
@@ -45,15 +51,16 @@ export class FunctionManager implements FunctionLocator {
     return this.functionsByFunctionId.values();
   }
 
+  /** `UnitDomain.locator` — `FunctionManager` is its own locator. */
+  get locator(): FunctionLocator { return this; }
+
   functionById(id: FunctionId): Function | undefined {
     return this.functionsByFunctionId.get(id);
   }
 
-  functionForAst(ast: StmtNS.FileInput | StmtNS.FunctionDef): Function | undefined {
-    return this.functionsByFunctionId.get(ast.id);
-  }
-
-  functionContainingNode(nodeId: NodeId): Function | undefined {
+  /** `UnitLocator<Function>` — the generic worklist's only required
+   *  locator query. */
+  unitContainingNode(nodeId: NodeId): Function | undefined {
     return this.functionByNode.get(nodeId);
   }
 
@@ -96,11 +103,27 @@ export class FunctionManager implements FunctionLocator {
     return this.dispatch.futureDispatchChainFor(unit);
   }
 
+  /** `UnitDomain` chain stream — facade over the composed dispatch state. */
+  onChainChange(cb: ChainChangeListener<Function>): void {
+    this.dispatch.onChainChange(cb);
+  }
+
+  /** `UnitDomain` refute stream — facade over the composed dispatch state. */
+  onRefute(cb: RefuteListener<Function>): void {
+    this.dispatch.onRefute(cb);
+  }
+
+  /** `UnitDomain.extentOf(unit)` — public snapshot of `unit`'s current
+   *  CFG-owned ids. Same shape as the `next` payload on the extent stream. */
+  extentOf(unit: Function): UnitExtent {
+    return this.snapshotExtent(unit);
+  }
+
   hasPendingRebuilds(): boolean {
     return this.pendingRebuilds.size > 0;
   }
 
-  flushPendingRebuilds(): Function[] {
+  flushPendingRebuilds(): readonly Function[] {
     if (this.pendingRebuilds.size === 0) return [];
     const rebuilt: { unit: Function; prev: UnitExtent; next: UnitExtent }[] = [];
     for (const unit of this.pendingRebuilds) {
@@ -118,7 +141,7 @@ export class FunctionManager implements FunctionLocator {
   }
 
   futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
-    const unit = this.functionContainingNode(nodeId);
+    const unit = this.unitContainingNode(nodeId);
     return unit === undefined ? ROOT_CONTEXT : this.dispatch.futureDispatchChainFor(unit);
   }
 

@@ -46,7 +46,7 @@ f()
     expect(root.contains(nestedStmt.id)).toBe(false);
     expect(defBlock.contains(nestedStmt.id)).toBe(false);
     expect(nested.contains(nestedStmt.id)).toBe(true);
-    expect(worklist.locate.functionContainingNode(nestedStmt.id)).toBe(nested);
+    expect(worklist.locate.unitContainingNode(nestedStmt.id)).toBe(nested);
   });
 
   // Pins the documented hazard on `BasicBlock.nodeIds` and on
