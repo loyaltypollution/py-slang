@@ -6,7 +6,6 @@
 // orthogonal to its "what nodes does it own".
 
 import { ROOT_CONTEXT, type AssumptionChain } from "../assumption";
-import type { Refutations } from "../assumption/refutation";
 import type { Function } from "./function";
 
 export type ChainListener = (
@@ -50,19 +49,11 @@ export class FunctionDispatchState {
     this.refuteSubs.push(cb);
   }
 
-  /** Refute `carrier` for `unit`: fire refute subscribers, then drop the
-   *  unit's futureDispatchContext entry if it's now refuted. The implicit
-   *  clearing does NOT fire `onChainChange` — the outer ingress path
-   *  reconciles the dispatch context and fires the explicit chain delta. */
-  fireRefuteAndReconcile(
-    unit: Function,
-    carrier: AssumptionChain,
-    refutations: Refutations,
-  ): void {
+  /** Fire refute subscribers for `(unit, carrier)`. Does not touch
+   *  futureDispatchContext — the worklist owns the reconcile decision
+   *  (clear-if-refuted) so the framework keeps fire and reconcile
+   *  separable. */
+  fireRefute(unit: Function, carrier: AssumptionChain): void {
     for (const sub of this.refuteSubs) sub(unit, carrier);
-    const fdCtx = this.futureDispatchContextByUnit.get(unit);
-    if (fdCtx !== undefined && refutations.contains(fdCtx)) {
-      this.futureDispatchContextByUnit.delete(unit);
-    }
   }
 }

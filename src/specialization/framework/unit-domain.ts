@@ -63,9 +63,34 @@ export interface UnitDomain<U, L extends UnitLocator<U>> {
 
   onExtentChange(cb: ExtentChangeListener<U>): void;
 
+  // --- chain (preferred future-dispatch) ---
+
+  /** Read `unit`'s preferred future-dispatch chain. Returns `ROOT_CONTEXT`
+   *  when no preference is set. */
   chainFor(unit: U): AssumptionChain;
+  /** Set the preferred future-dispatch chain for `unit`. Does NOT fire
+   *  `onChainChange` on its own — observation ingress fires the chain
+   *  delta explicitly so the (prev, next) pair is correct. */
+  setChainFor(unit: U, chain: AssumptionChain): void;
+  /** Drop any preferred future-dispatch chain for `unit`. */
+  clearChainFor(unit: U): void;
+  /** Subscribe to chain changes. */
   onChainChange(cb: ChainChangeListener<U>): void;
+  /** Manually fire the chain stream — used by observation ingress after
+   *  it has reconciled `setChainFor`/`clearChainFor` with the new chain. */
+  fireChainChange(unit: U, prev: AssumptionChain, next: AssumptionChain): void;
+
+  // --- refute (orthogonal to chain change) ---
+
+  /** Subscribe to refutation events. The carrier identity is preserved —
+   *  consumers like memoization need it. */
   onRefute(cb: RefuteListener<U>): void;
+  /** Fire the refute stream for `unit` against `carrier`. Reconciliation
+   *  of `unit`'s preferred-chain (clearing it when refuted) is the
+   *  caller's responsibility — the worklist does it after firing. */
+  fireRefute(unit: U, carrier: AssumptionChain): void;
+
+  // --- rebuild ---
 
   scheduleRebuild(unit: U): void;
   flushPendingRebuilds(): readonly U[];

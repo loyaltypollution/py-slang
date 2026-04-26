@@ -258,14 +258,19 @@ export class Worklist {
 
   /** Refute `carrier` for `unit`: add the minimal singleton of the carrier's
    *  tip binding (full chain would under-refute — siblings carrying the same
-   *  binding under a different prefix would escape `isRefuted`), then fire
-   *  refute subscribers and reconcile dispatch context. Idempotent. */
+   *  binding under a different prefix would escape `isRefuted`), fire refute
+   *  subscribers, then reconcile the unit's preferred dispatch chain by
+   *  clearing it if it's now refuted. Idempotent. */
   private refute(unit: Function, carrier: AssumptionChain): void {
     if (carrier === ROOT_CONTEXT) return;
     const a = carrier.assumption!;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
     this.refutations.add(minimal);
-    this.functionManager.dispatch.fireRefuteAndReconcile(unit, carrier, this.refutations);
+    this.units.fireRefute(unit, carrier);
+    const fdCtx = this.units.chainFor(unit);
+    if (fdCtx !== ROOT_CONTEXT && this.refutations.contains(fdCtx)) {
+      this.units.clearChainFor(unit);
+    }
   }
 
   private static addSub<S>(
@@ -673,7 +678,7 @@ export class Worklist {
 
     const parentCtx = context;
 
-    const priorChain = this.functionManager.dispatch.futureDispatchChainFor(unit);
+    const priorChain = this.units.chainFor(unit);
 
     if (source.isUnknown(observed)) {
       let pruned = parentCtx;
@@ -684,13 +689,13 @@ export class Worklist {
       }
       if (pruned === parentCtx) return parentCtx;
       if (this.refutations.contains(pruned)) {
-        this.functionManager.dispatch.clearFutureDispatchContext(unit);
+        this.units.clearChainFor(unit);
         return ROOT_CONTEXT;
       }
-      if (pruned === ROOT_CONTEXT) this.functionManager.dispatch.clearFutureDispatchContext(unit);
-      else this.functionManager.dispatch.setFutureDispatchContext(unit, pruned);
+      if (pruned === ROOT_CONTEXT) this.units.clearChainFor(unit);
+      else this.units.setChainFor(unit, pruned);
       this.enqueueNarrowingEntry(unit, pruned);
-      this.functionManager.dispatch.fireChainChange(unit, priorChain, pruned);
+      this.units.fireChainChange(unit, priorChain, pruned);
       return pruned;
     }
 
@@ -712,23 +717,26 @@ export class Worklist {
 
     if (newCtx === parentCtx) return parentCtx;
     if (this.refutations.contains(newCtx)) {
-      this.functionManager.dispatch.clearFutureDispatchContext(unit);
+      this.units.clearChainFor(unit);
       return ROOT_CONTEXT;
     }
-    this.functionManager.dispatch.setFutureDispatchContext(unit, newCtx);
+    this.units.setChainFor(unit, newCtx);
     this.enqueueNarrowingEntry(unit, newCtx);
-    this.functionManager.dispatch.fireChainChange(unit, priorChain, newCtx);
+    this.units.fireChainChange(unit, priorChain, newCtx);
     return newCtx;
   }
 
-  /** Preferred future-dispatch chain for `unit`. Delegates to manager. */
+  /** Preferred future-dispatch chain for `unit`. Delegates to the unit
+   *  domain. */
   futureDispatchChainFor(unit: Function): AssumptionChain {
-    return this.functionManager.dispatch.futureDispatchChainFor(unit);
+    return this.units.chainFor(unit);
   }
 
-  /** Same as `futureDispatchChainFor`, keyed by nodeId. */
+  /** Same as `futureDispatchChainFor`, keyed by nodeId. Composed from
+   *  the locator + chain query — no Function-specific facade required. */
   futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
-    return this.functionManager.futureDispatchChainForNode(nodeId);
+    const unit = this.units.locator.unitContainingNode(nodeId);
+    return unit === undefined ? ROOT_CONTEXT : this.units.chainFor(unit);
   }
 
   /** Drain to fixed point: analyses → transforms → analyses → CFG rebuild,

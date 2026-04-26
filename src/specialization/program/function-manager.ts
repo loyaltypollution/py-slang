@@ -108,9 +108,27 @@ export class FunctionManager implements FunctionLocator, UnitDomain<Function, Fu
     this.dispatch.onChainChange(cb);
   }
 
+  setChainFor(unit: Function, chain: AssumptionChain): void {
+    this.dispatch.setFutureDispatchContext(unit, chain);
+  }
+
+  clearChainFor(unit: Function): void {
+    this.dispatch.clearFutureDispatchContext(unit);
+  }
+
+  fireChainChange(unit: Function, prev: AssumptionChain, next: AssumptionChain): void {
+    this.dispatch.fireChainChange(unit, prev, next);
+  }
+
   /** `UnitDomain` refute stream — facade over the composed dispatch state. */
   onRefute(cb: RefuteListener<Function>): void {
     this.dispatch.onRefute(cb);
+  }
+
+  /** Fire refute subscribers only. The worklist owns the
+   *  reconcile-against-Refutations decision. */
+  fireRefute(unit: Function, carrier: AssumptionChain): void {
+    this.dispatch.fireRefute(unit, carrier);
   }
 
   /** `UnitDomain.extentOf(unit)` — public snapshot of `unit`'s current

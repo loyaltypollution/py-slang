@@ -54,7 +54,15 @@ export interface Analysis<K extends NodeSet, V> {
 
 /** Pair of (analysis, seed-key) re-enqueued at every narrowing-entry to
  *  re-seed Kildall under a freshly extended/pruned context. Structurally
- *  satisfied by `BlockFixpointAnalysis` (`.env` + `.seed(view)`). */
+ *  satisfied by `BlockFixpointAnalysis` (`.env` + `.seed(view)`).
+ *
+ *  `seed(view)` is the **reseed frontier** of a unit: the analysis-key the
+ *  worklist re-enqueues when chain change reseeds Kildall for that unit.
+ *  For `Function` today this is the entry CFG block. Any unit kind that
+ *  participates in observation-driven chain change must satisfy
+ *  `V extends NodeSet` so `seed(unit)` is well-defined; a unit kind whose
+ *  reseed frontier differs from "entry block" supplies a different
+ *  EntrySeed implementation rather than a special-case worklist branch. */
 export interface EntrySeed<K extends NodeSet = NodeSet, V extends NodeSet = NodeSet> {
   readonly env: Analysis<K, any>;
   seed(view: V): K;
