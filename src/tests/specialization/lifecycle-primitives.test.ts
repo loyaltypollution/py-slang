@@ -4,7 +4,7 @@
 
 import { setup } from "./harness/compile-pipelines";
 import type { Function } from "../../specialization/program/function";
-import type { NodeSet } from "../../specialization/program/node-set";
+import type { UnitExtent } from "../../specialization/program/node-set";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import type { AssumptionChain } from "../../specialization/assumption/chain";
 
@@ -26,7 +26,7 @@ describe("Extent stream — onExtentChange", () => {
     const events: Array<{ unit: Function; prevSize: number; nextSize: number }> = [];
 
     fm.onExtentChange((unit, prev, next) => {
-      events.push({ unit, prevSize: prev.size ?? -1, nextSize: next.size ?? -1 });
+      events.push({ unit, prevSize: prev.size, nextSize: next.size });
     });
 
     const allUnits = Array.from(fm.values());
@@ -49,10 +49,8 @@ describe("Extent stream — onExtentChange", () => {
     const tail: Array<{ prevSize: number; nextSize: number }> = [];
     fm.onExtentChange((_unit, prev, next) => {
       // Skip the initial replay events for `tail`.
-      if ((prev.size ?? 0) > 0 || (next.size ?? 0) === 0) {
-        tail.push({ prevSize: prev.size ?? -1, nextSize: next.size ?? -1 });
-      } else if ((prev.size ?? 0) === 0 && (next.size ?? 0) > 0) {
-        // initial replay; ignore
+      if (prev.size > 0 || next.size === 0) {
+        tail.push({ prevSize: prev.size, nextSize: next.size });
       }
     });
 
@@ -72,7 +70,7 @@ describe("Extent stream — onExtentChange", () => {
     const evictions: Function[] = [];
 
     fm.onExtentChange((unit, prev, _next) => {
-      if ((prev.size ?? 0) > 0) evictions.push(unit);
+      if (prev.size > 0) evictions.push(unit);
     });
 
     expect(evictions).toHaveLength(0); // initial replay: prev is EMPTY → no evictions
@@ -138,12 +136,12 @@ describe("Refute event — orthogonal to chain stream", () => {
   });
 });
 
-describe("Snapshot semantics — extent NodeSet at moment-in-time", () => {
-  test("the `next` NodeSet on subscribe-time replay enumerates the unit's CFG-owned ids", () => {
+describe("Snapshot semantics — extent UnitExtent at moment-in-time", () => {
+  test("the `next` UnitExtent on subscribe-time replay enumerates the unit's CFG-owned ids", () => {
     const { worklist } = setup(SRC);
     const fm = worklist.functionManager;
 
-    let captured: { unit: Function; next: NodeSet } | undefined;
+    let captured: { unit: Function; next: UnitExtent } | undefined;
     fm.onExtentChange((unit, _prev, next) => {
       if (captured === undefined && unit.funcAst.kind === "FunctionDef") {
         captured = { unit, next };
@@ -153,10 +151,31 @@ describe("Snapshot semantics — extent NodeSet at moment-in-time", () => {
     expect(captured).toBeDefined();
     const { unit, next } = captured!;
 
-    // Snapshot enumeration should match unit.nodeToBlock.keys()
-    const fromSnapshot = new Set(next.iterate!());
+    // UnitExtent makes both `size` and `iterate()` required — no `!`.
+    const fromSnapshot = new Set(next.iterate());
     const fromUnit = new Set(unit.nodeToBlock.keys());
     expect(fromSnapshot).toEqual(fromUnit);
     expect(next.size).toBe(fromUnit.size);
+  });
+
+  test("UnitExtent contract — listeners receive finite, enumerable snapshots without optionality", () => {
+    const { worklist } = setup(SRC);
+    const fm = worklist.functionManager;
+
+    // The listener type must accept (UnitExtent, UnitExtent), not optional-
+    // size NodeSets. This is a compile-time assertion: if the framework
+    // weakens the extent stream back to NodeSet, this annotation breaks.
+    const listener: (
+      unit: Function,
+      prev: UnitExtent,
+      next: UnitExtent,
+    ) => void = (_u, prev, next) => {
+      // Both size and iterate() are required — no `?? 0`, no `!`.
+      void prev.size;
+      void next.size;
+      void Array.from(prev.iterate());
+      void Array.from(next.iterate());
+    };
+    fm.onExtentChange(listener);
   });
 });

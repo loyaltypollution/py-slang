@@ -4,7 +4,12 @@
 import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import { isRoot, ROOT_CONTEXT, type AssumptionChain } from "../assumption";
-import { EMPTY_NODESET, nodeSetOfIds, type NodeId, type NodeSet } from "./node-set";
+import {
+  EMPTY_NODESET,
+  nodeSetOfIds,
+  type NodeId,
+  type UnitExtent,
+} from "./node-set";
 import {
   buildFunctions,
   buildOneFunction,
@@ -16,7 +21,7 @@ import type { FunctionLocator } from "./function-locator";
 import type { BasicBlock } from "./basic-block";
 import { FunctionDispatchState } from "./function-dispatch";
 
-export type ExtentListener = (unit: Function, prev: NodeSet, next: NodeSet) => void;
+export type ExtentListener = (unit: Function, prev: UnitExtent, next: UnitExtent) => void;
 
 export class FunctionManager implements FunctionLocator {
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
@@ -97,7 +102,7 @@ export class FunctionManager implements FunctionLocator {
 
   flushPendingRebuilds(): Function[] {
     if (this.pendingRebuilds.size === 0) return [];
-    const rebuilt: { unit: Function; prev: NodeSet; next: NodeSet }[] = [];
+    const rebuilt: { unit: Function; prev: UnitExtent; next: UnitExtent }[] = [];
     for (const unit of this.pendingRebuilds) {
       const prev = this.snapshotExtent(unit);
       for (const id of unit.nodeToBlock.keys()) this.functionByNode.delete(id);
@@ -117,8 +122,8 @@ export class FunctionManager implements FunctionLocator {
     return unit === undefined ? ROOT_CONTEXT : this.dispatch.futureDispatchChainFor(unit);
   }
 
-  private snapshotExtent(unit: Function): NodeSet {
-    return nodeSetOfIds(new Set(unit.nodeToBlock.keys()));
+  private snapshotExtent(unit: Function): UnitExtent {
+    return nodeSetOfIds(new Set(unit.nodeToBlock.keys())) as UnitExtent;
   }
 
   private registerUnit(unit: Function): void {
