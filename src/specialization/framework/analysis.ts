@@ -101,19 +101,23 @@ export interface AnalysisCtx {
 /** Narrow capability surface offered to a `TransformRule.bind`. Lets a
  *  transform register dirtying subscriptions and refute hooks without
  *  receiving the full `Worklist` (and the read/write powers that come
- *  with it). */
-export interface TransformBindCtx {
+ *  with it).
+ *
+ *  Generic over `(U, L)` — the same unit kind / locator the owning
+ *  worklist dispatches over. Defaults to `(Function, FunctionLocator)`
+ *  so existing call sites compile unchanged. */
+export interface TransformBindCtx<U = Function, L = FunctionLocator> {
   onTransformFactDirty<K extends NodeSet>(
-    rule: TransformRule,
+    rule: TransformRule<U, L>,
     from: Analysis<K, any>,
-    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
+    dirtied: (locator: L, key: K) => Iterable<U>,
   ): void;
   onTransformCounterBumped<K>(
-    rule: TransformRule,
+    rule: TransformRule<U, L>,
     counter: CounterStore<K>,
-    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
+    dirtied: (locator: L, key: K) => Iterable<U>,
   ): void;
-  onRefute(cb: (unit: Function, carrier: AssumptionChain) => void): void;
+  onRefute(cb: (unit: U, carrier: AssumptionChain) => void): void;
 }
 
 /** Imperative AST sweep gated on analyses. No lattice, no transfer, no store
@@ -122,15 +126,17 @@ export interface TransformBindCtx {
  *  that rewrote are scheduled for rebuild. Idempotency is the rule's
  *  responsibility.
  *
- *  Monomorphic over `Function` today — `Function` is the only root scheduling
- *  unit. Adding a second root kind reintroduces generics from two consumers,
- *  not one. */
-export interface TransformRule {
+ *  Generic over `(U, L)` so a single worklist can drive transforms over
+ *  any unit kind it owns; defaults to `(Function, FunctionLocator)`.
+ *  Polymorphism is over **unit kinds**, not arbitrary `NodeSet` regions —
+ *  blocks/loops remain subordinate `NodeSet`s unless they graduate to a
+ *  full unit. */
+export interface TransformRule<U = Function, L = FunctionLocator> {
   /** Returns `true` iff the body at `chain` was mutated — the worklist
    *  then schedules a rebuild for `unit`. Worklist always passes
    *  `chain = chainFor(unit)`. */
-  sweep(unit: Function, chain: AssumptionChain, locator: FunctionLocator): boolean;
-  bind?(ctx: TransformBindCtx): void;
+  sweep(unit: U, chain: AssumptionChain, locator: L): boolean;
+  bind?(ctx: TransformBindCtx<U, L>): void;
 }
 
 /** Construct an `Analysis`, auto-attaching its `store` from `storeAlgebra`
