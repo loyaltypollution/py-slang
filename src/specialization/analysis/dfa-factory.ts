@@ -14,7 +14,7 @@ import { EMPTY_MAP, storeContexts, storeEvict, walkChain } from "../framework/an
 import { EMPTY_NODESET, nodeSetOfIds } from "../program/node-set";
 import type { BasicBlock, CFGEdge } from "../program/regions/basic-block";
 import type { Function } from "../program/units/function/function";
-import type { FunctionLocator } from "../program/units/function/manager";
+import type { BlockLocator } from "../program/regions/basic-block";
 import type { SlotLookup } from "../program/units/function/slot-table";
 import { MutableEnv } from "./block-env";
 
@@ -124,7 +124,7 @@ export interface BlockFixpointAnalysis<L> {
    *  consumers. NOT edge-recording — use `readPerExprDeepest(ctx, nodeId)`
    *  from inside a transfer if you want auto-invalidation when the cell
    *  changes. */
-  perExpr(locator: FunctionLocator): ReadonlyAnalysisStore<number, L>;
+  perExpr(locator: BlockLocator): ReadonlyAnalysisStore<number, L>;
   /** Edge-recording per-expression read. Walks the chain at `ctx.currentContext`,
    *  returning the deepest ancestor whose facts map contains `nodeId`.
    *  Records a read edge on `(facts, blockOfNode(nodeId))` so that any
@@ -341,7 +341,7 @@ export function makeBlockFixpointAnalysis<L>(
   // do not propagate through CFG successors. Captures `wl.locate` for the
   // transfer-time `readPerExprDeepest` block lookup — explicit dependency
   // instead of casting AnalysisCtx to a richer ctx.
-  let boundLocator: FunctionLocator | undefined;
+  let boundLocator: BlockLocator | undefined;
   factsAnalysis.bind = (wl) => {
     boundLocator = wl.locate;
     wl.units.onExtentChange((unit, prev) => {
@@ -349,8 +349,8 @@ export function makeBlockFixpointAnalysis<L>(
     });
   };
 
-  const perExprCache = new WeakMap<FunctionLocator, ReadonlyAnalysisStore<number, L>>();
-  function perExpr(locator: FunctionLocator): ReadonlyAnalysisStore<number, L> {
+  const perExprCache = new WeakMap<BlockLocator, ReadonlyAnalysisStore<number, L>>();
+  function perExpr(locator: BlockLocator): ReadonlyAnalysisStore<number, L> {
     const cached = perExprCache.get(locator);
     if (cached !== undefined) return cached;
     const tryReadNode = (nodeId: number, context: AssumptionChain): L | undefined => {

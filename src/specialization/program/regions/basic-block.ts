@@ -23,6 +23,15 @@ export type CFGEdge =
       readonly condition: ExprNS.Expr;
     };
 
+/** Read-only block lookup surface. The minimum query consumers reaching
+ *  for `BasicBlock` actually need; `FunctionLocator` extends this so
+ *  callers like `dfa-factory` can take the narrower interface and
+ *  document that they only depend on block resolution, not on the wider
+ *  function-shape. */
+export interface BlockLocator {
+  blockContaining(nodeId: NodeId): BasicBlock | undefined;
+}
+
 /** Synthetic blocks (entry/exit/joins) have empty `nodeIds` and are not
  *  valid `subscribe` interests. */
 export interface BasicBlock extends NodeSet {

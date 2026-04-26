@@ -30,7 +30,7 @@ import {
   type Function,
   type FunctionId,
 } from "./function";
-import type { BasicBlock } from "../../regions/basic-block";
+import type { BasicBlock, BlockLocator } from "../../regions/basic-block";
 import type {
   ChainChangeListener,
   ExtentChangeListener,
@@ -44,15 +44,13 @@ import type {
  *  as an explicit dependency rather than casting `AnalysisCtx` to a
  *  richer ctx.
  *
- *  Extends `UnitLocator<Function>` (the minimum surface generic worklist
- *  code needs) with function-specific queries used by analyses,
- *  transforms, and observation ingress. */
-export interface FunctionLocator extends UnitLocator<Function> {
+ *  Composes the two minimum surfaces: `UnitLocator<Function>` (one method
+ *  the generic worklist needs) and `BlockLocator` (one method
+ *  block-keyed analyses need). Adds `functionById` for callers that
+ *  resolve a unit by its FunctionId boundary key. */
+export interface FunctionLocator extends UnitLocator<Function>, BlockLocator {
   /** Lookup by FunctionId boundary key (typically `funcAst.id`). */
   functionById(id: FunctionId): Function | undefined;
-  /** Resolve the BasicBlock that owns `nodeId`, or undefined if `nodeId`
-   *  is not part of any indexed function. */
-  blockContaining(nodeId: NodeId): BasicBlock | undefined;
 }
 
 export type ExtentListener = ExtentChangeListener<Function>;
@@ -98,6 +96,7 @@ export class FunctionManager implements FunctionLocator, UnitDomain<Function, Fu
     return this.functionByNode.get(nodeId);
   }
 
+  /** `BlockLocator` — block-keyed analyses' only required query. */
   blockContaining(nodeId: NodeId): BasicBlock | undefined {
     return this.functionByNode.get(nodeId)?.blockOfNode(nodeId);
   }
