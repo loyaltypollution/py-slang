@@ -23,8 +23,8 @@ import {
   EMPTY_NODESET,
   nodeSetOfIds,
   type NodeId,
-  type UnitExtent,
 } from "../../specialization/program/node-set";
+import type { UnitExtent } from "../../specialization/program/unit-extent";
 import type {
   ChainChangeListener,
   ExtentChangeListener,

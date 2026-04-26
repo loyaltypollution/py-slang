@@ -1,6 +1,6 @@
 import { ROOT_CONTEXT, type AssumptionChain } from "../assumption";
 import { type JoinSemiLattice } from "../framework/analysis";
-import type { FunctionId } from "../program/function";
+import type { FunctionId } from "../program/units/function/function";
 import { paramKey, type ParamKey } from "../narrowing-policy/param-key";
 import type { Worklist } from "../framework/worklist";
 import { CounterStore } from "./counter-store";

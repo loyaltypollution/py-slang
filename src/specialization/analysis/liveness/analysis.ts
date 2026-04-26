@@ -1,9 +1,9 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import type { Token } from "../../../tokenizer";
 import type { AssumptionChain } from "../../assumption/chain";
-import type { BasicBlock } from "../../program/basic-block";
+import type { BasicBlock } from "../../program/regions/basic-block";
 import { MutableEnv } from "../../analysis/mutable-env";
-import { isLocal, type SlotLookup } from "../../program/slot-table";
+import { isLocal, type SlotLookup } from "../../program/units/function/slot-table";
 import {
     makeBlockFixpointAnalysis,
     type BlockFixpointAnalysis,

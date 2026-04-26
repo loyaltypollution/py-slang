@@ -1,30 +1,30 @@
 // Per-Function speculation policy is split into the composed
 // `FunctionDispatchState` — orthogonal to node ownership.
 
-import type { StmtNS } from "../../ast-types";
-import type { FunctionEnvironments } from "../../resolver";
-import type { AssumptionChain } from "../assumption";
+import type { StmtNS } from "../../../../ast-types";
+import type { FunctionEnvironments } from "../../../../resolver";
+import type { AssumptionChain } from "../../../assumption";
 import {
   EMPTY_NODESET,
   nodeSetOfIds,
   type NodeId,
-  type UnitExtent,
-} from "./node-set";
+} from "../../node-set";
+import type { UnitExtent } from "../../unit-extent";
 import {
   buildFunctions,
   wireCFG,
   type Function,
   type FunctionId,
 } from "./function";
-import type { FunctionLocator } from "./function-locator";
-import type { BasicBlock } from "./basic-block";
-import { FunctionDispatchState } from "./function-dispatch";
+import type { FunctionLocator } from "./locator";
+import type { BasicBlock } from "../../regions/basic-block";
+import { FunctionDispatchState } from "./dispatch";
 import type {
   ChainChangeListener,
   ExtentChangeListener,
   RefuteListener,
   UnitDomain,
-} from "../framework/unit-domain";
+} from "../../../framework/unit-domain";
 
 export type ExtentListener = ExtentChangeListener<Function>;
 

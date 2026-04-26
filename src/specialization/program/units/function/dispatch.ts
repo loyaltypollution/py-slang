@@ -5,7 +5,7 @@
 // concerns: a Function's "what chain do we want to dispatch under" is
 // orthogonal to its "what nodes does it own".
 
-import { ROOT_CONTEXT, type AssumptionChain } from "../assumption";
+import { ROOT_CONTEXT, type AssumptionChain } from "../../../assumption";
 import type { Function } from "./function";
 
 export type ChainListener = (

@@ -66,26 +66,13 @@ export function nodeSetOfIds(ids: ReadonlySet<NodeId>): NodeSet {
 
 /** Empty `NodeSet`. Useful as a no-advance delta sentinel; also serves as
  *  the empty `UnitExtent` for subscribe-time mint replay and (eventual)
- *  retirement events. */
+ *  retirement events. `UnitExtent` lives in `./unit-extent.ts`. */
+import type { UnitExtent } from "./unit-extent";
 export const EMPTY_NODESET: UnitExtent = {
   contains: () => false,
   size: 0,
   iterate: () => [],
 };
-
-/** A `NodeSet` that is finite, enumerable, and intended as an immutable
- *  snapshot for the duration of the event / consumer action that carries
- *  it. Lifecycle streams (extent change) carry `UnitExtent`, not arbitrary
- *  `NodeSet` — listeners can rely on `size` and `iterate()` without
- *  optionality, which matters for mint/rebuild/retire classification and
- *  for eviction logic.
- *
- *  Routing/subscription `NodeSet`s remain weak (predicate-only is fine).
- *  Use `UnitExtent` only where you genuinely need a snapshot. */
-export interface UnitExtent extends NodeSet {
-  readonly size: number;
-  iterate(): Iterable<NodeId>;
-}
 
 /** Universal predicate `NodeSet` — `contains` is true for every id. Pairs
  *  only with enumerable sets; `intersects(ANY, delta)` is true iff `delta`

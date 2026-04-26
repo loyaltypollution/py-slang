@@ -2,7 +2,7 @@ import {
   defineAnalysis,
   type Analysis,
 } from "../../specialization/framework/analysis";
-import type { BasicBlock } from "../../specialization/program/basic-block";
+import type { BasicBlock } from "../../specialization/program/regions/basic-block";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import {
   buildFirstFunctionUnit,

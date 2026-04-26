@@ -7,10 +7,10 @@ import {
 } from "./dfa-factory";
 import type { AssumptionChain } from "../assumption/chain";
 import { EMPTY_MAP } from "../framework/analysis-store";
-import type { BasicBlock } from "../program/basic-block";
-import type { Function } from "../program/function";
+import type { BasicBlock } from "../program/regions/basic-block";
+import type { Function } from "../program/units/function/function";
 import { MutableEnv } from "./mutable-env";
-import { isLocal, type SlotLookup } from "../program/slot-table";
+import { isLocal, type SlotLookup } from "../program/units/function/slot-table";
 
 /** Statement-level transfer; updates `env` in place. If/While/For headers
  *  evaluate condition/iter only. */

@@ -1,7 +1,7 @@
-import type { NodeId } from "./node-set";
-import type { BasicBlock } from "./basic-block";
+import type { NodeId } from "../../node-set";
+import type { BasicBlock } from "../../regions/basic-block";
 import type { Function, FunctionId } from "./function";
-import type { UnitLocator } from "../framework/unit-domain";
+import type { UnitLocator } from "../../../framework/unit-domain";
 
 /** Read-only program-wide lookup surface for `Function`.
  *

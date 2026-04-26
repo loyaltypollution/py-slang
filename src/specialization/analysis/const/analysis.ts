@@ -3,7 +3,7 @@ import { TokenType } from "../../../tokenizer";
 import type { AssumptionChain } from "../../assumption/chain";
 import { type NodeId } from "../../framework/analysis";
 import { MutableEnv } from "../../analysis/mutable-env";
-import { isLocal, type SlotLookup } from "../../program/slot-table";
+import { isLocal, type SlotLookup } from "../../program/units/function/slot-table";
 import { blockFixpointFromSpec } from "../../analysis/stmt-transfer";
 import type {
     BlockDfaSpec,

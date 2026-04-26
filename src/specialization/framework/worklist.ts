@@ -33,9 +33,9 @@ import {
   storeEvict,
   storeWrite,
 } from "./analysis-store";
-import { type Function } from "../program/function";
-import { FunctionManager } from "../program/function-manager";
-import type { FunctionLocator } from "../program/function-locator";
+import { type Function } from "../program/units/function/function";
+import { FunctionManager } from "../program/units/function/manager";
+import type { FunctionLocator } from "../program/units/function/locator";
 import type { UnitDomain, UnitLocator } from "./unit-domain";
 
 /** Resolver supplied per-binding (or the default below): turns the channel's

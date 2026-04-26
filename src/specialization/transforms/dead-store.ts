@@ -1,9 +1,9 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption/chain";
 import { forkBody, visibleBody } from "../speculation/assumption-bodies";
-import type { Function } from "../program/function";
-import type { FunctionLocator } from "../program/function-locator";
-import { isLocal, type SlotLookup } from "../program/slot-table";
+import type { Function } from "../program/units/function/function";
+import type { FunctionLocator } from "../program/units/function/locator";
+import { isLocal, type SlotLookup } from "../program/units/function/slot-table";
 import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../analysis";
 import { walkExpr, walkExprs } from "./witness-utils";

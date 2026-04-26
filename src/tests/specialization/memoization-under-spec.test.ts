@@ -16,7 +16,7 @@ import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { makeJitObservers } from "../../specialization/observation/runtime-analyses";
 import { visibleBody } from "../../specialization/speculation/assumption-bodies";
 import { bodyToCompile, dispatchValid } from "../../specialization/speculation/chain-dispatch";
-import type { Function } from "../../specialization/program/function";
+import type { Function } from "../../specialization/program/units/function/function";
 import type { Worklist } from "../../specialization/framework/worklist";
 import { setup } from "./harness/compile-pipelines";
 

@@ -10,13 +10,13 @@ import type {
 } from "../framework/analysis";
 import { defineAnalysis } from "../framework/analysis";
 import { EMPTY_NODESET, nodeSetOfIds } from "../program/node-set";
-import type { FunctionLocator } from "../program/function-locator";
+import type { FunctionLocator } from "../program/units/function/locator";
 import type { ReadonlyAnalysisStore } from "../framework/analysis-store";
 import { EMPTY_MAP, storeContexts, storeEvict, walkChain } from "../framework/analysis-store";
-import type { BasicBlock, CFGEdge } from "../program/basic-block";
-import type { Function } from "../program/function";
+import type { BasicBlock, CFGEdge } from "../program/regions/basic-block";
+import type { Function } from "../program/units/function/function";
 import { MutableEnv } from "../analysis/mutable-env";
-import type { SlotLookup } from "../program/slot-table";
+import type { SlotLookup } from "../program/units/function/slot-table";
 
 /** Author-facing spec for statement/expression analyses that run over a
  *  function's CFG blocks.

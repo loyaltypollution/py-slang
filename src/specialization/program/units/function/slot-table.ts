@@ -1,5 +1,5 @@
-import type { Environment } from "../../resolver";
-import type { Token } from "../../tokenizer";
+import type { Environment } from "../../../../resolver";
+import type { Token } from "../../../../tokenizer";
 
 export interface SlotInfo {
   slot: number;

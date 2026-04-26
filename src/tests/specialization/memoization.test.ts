@@ -11,7 +11,7 @@ import {
   memoPut,
 } from "../../runtime/memo";
 import { runtimeCallCounter } from "../../specialization/observation/runtime-analyses";
-import type { Function } from "../../specialization/program/function";
+import type { Function } from "../../specialization/program/units/function/function";
 import type { Worklist } from "../../specialization/framework/worklist";
 import { setup } from "./harness/compile-pipelines";
 import { findFunctionDef, observeCallsTo } from "./harness/function-observe";

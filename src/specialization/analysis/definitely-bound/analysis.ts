@@ -6,7 +6,7 @@
 
 import { ExprNS, StmtNS } from "../../../ast-types";
 import { MutableEnv } from "../../analysis/mutable-env";
-import { isLocal, type SlotLookup } from "../../program/slot-table";
+import { isLocal, type SlotLookup } from "../../program/units/function/slot-table";
 import {
     makeBlockFixpointAnalysis,
     type BlockFixpointAnalysis,

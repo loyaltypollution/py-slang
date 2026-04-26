@@ -10,7 +10,8 @@
 // changing the framework.
 
 import type { AssumptionChain } from "../assumption";
-import type { NodeId, UnitExtent } from "../program/node-set";
+import type { NodeId } from "../program/node-set";
+import type { UnitExtent } from "../program/unit-extent";
 
 /** Minimum program-shape lookup surface generic framework code needs:
  *  given a node id, find the owning unit (used by observation ingress'
