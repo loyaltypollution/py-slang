@@ -30,6 +30,7 @@ import {
 import { type Function } from "../program/function";
 import { FunctionManager } from "../program/function-manager";
 import type { FunctionLocator } from "../program/function-locator";
+import type { UnitDomain } from "./unit-domain";
 
 /** Resolver supplied per-binding (or the default below): turns the channel's
  *  key into the owning Function so observation ingress can route narrowings
@@ -96,9 +97,16 @@ export interface WorklistConfig {
 }
 
 export class Worklist {
-  /** Function-shape state lives here. Worklist's vocabulary stops at NodeSet-
-   *  routed dispatch; everything Function-specific (indices, lifecycle,
-   *  speculation context, CFG rebuild) is the manager's concern. */
+  /** The atomic-unit domain this worklist drives. All lifecycle / chain /
+   *  refute / rebuild orchestration routes through this contract, so the
+   *  worklist proper does not depend on `FunctionManager` directly.
+   *
+   *  Today this is always a `FunctionManager`; `functionManager` exposes
+   *  the concrete reference for the (still-Function-specific) call sites
+   *  in observation ingress, transforms, and analyses that need richer
+   *  surfaces (e.g. `dispatch.setFutureDispatchContext`, `addFunction`)
+   *  than `UnitDomain` exposes. */
+  readonly units: UnitDomain<Function, FunctionLocator>;
   readonly functionManager: FunctionManager;
 
   private readonly registeredAnalyses = new Set<Analysis<any, any>>();
@@ -164,9 +172,10 @@ export class Worklist {
   /** Read surface for `Function` lookups — by id, AST node, or enclosing
    *  node. Generic dispatch does not need this; consumers that genuinely
    *  require program shape capture it explicitly (typically at
-   *  `Analysis.bind` / `TransformRule.bind`). */
+   *  `Analysis.bind` / `TransformRule.bind`). Convenience over
+   *  `this.units.locator`. */
   get locate(): FunctionLocator {
-    return this.functionManager;
+    return this.units.locator;
   }
 
   private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
@@ -223,6 +232,7 @@ export class Worklist {
     // the initial extent-change burst it fires when subscribers register
     // via `onExtentChange`. Manager constructor builds Functions from `ast`.
     this.functionManager = new FunctionManager(ast, functionEnvironments);
+    this.units = this.functionManager;
 
     for (const p of analyses) this.register(p);
     for (const c of counters) this.registerCounter(c);
@@ -241,9 +251,9 @@ export class Worklist {
     return this.refutations.contains(node);
   }
 
-  /** Subscribe to refutation events. Delegates to the function manager. */
+  /** Subscribe to refutation events. Routed through the unit domain. */
   onRefute(callback: (unit: Function, carrier: AssumptionChain) => void): void {
-    this.functionManager.dispatch.onRefute(callback);
+    this.units.onRefute(callback);
   }
 
   /** Refute `carrier` for `unit`: add the minimal singleton of the carrier's
@@ -287,7 +297,7 @@ export class Worklist {
     const project = opts?.enqueueAt;
     const fire = (ctx: AnalysisCtx, key: unknown): void => {
       const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
-      for (const k of dirtied(this.functionManager, key)) this.enqueue(reader, k, enqueueCtx);
+      for (const k of dirtied(this.units.locator, key)) this.enqueue(reader, k, enqueueCtx);
     };
     let list = this.nodeSetSubs.get(from);
     if (list === undefined) {
@@ -308,7 +318,7 @@ export class Worklist {
     const project = opts?.enqueueAt;
     Worklist.addSub(this.advanceSubs, from, (ctx, key) => {
       const enqueueCtx = project !== undefined ? project(ctx.currentContext) : ctx.currentContext;
-      for (const k of dirtied(this.functionManager, key)) this.enqueue(reader, k, enqueueCtx);
+      for (const k of dirtied(this.units.locator, key)) this.enqueue(reader, k, enqueueCtx);
     });
   }
 
@@ -322,8 +332,8 @@ export class Worklist {
     reader: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
-    this.functionManager.onExtentChange((unit, _prev, _next) => {
-      for (const k of dirtied(this.functionManager, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+    this.units.onExtentChange((unit, _prev, _next) => {
+      for (const k of dirtied(this.units.locator, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
@@ -334,8 +344,8 @@ export class Worklist {
     reader: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
   ): void {
-    this.functionManager.dispatch.onChainChange((unit, _prev, _next) => {
-      for (const k of dirtied(this.functionManager, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
+    this.units.onChainChange((unit, _prev, _next) => {
+      for (const k of dirtied(this.units.locator, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
 
@@ -356,7 +366,7 @@ export class Worklist {
     this.transforms.push(rule);
     const dirty = new Set<Function>();
     this.transformDirty.set(rule, dirty);
-    this.functionManager.onExtentChange((unit, _prev, _next) => { dirty.add(unit); });
+    this.units.onExtentChange((unit, _prev, _next) => { dirty.add(unit); });
     rule.bind?.(this);
   }
 
@@ -369,7 +379,7 @@ export class Worklist {
   ): void {
     const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.advanceSubs, from as Analysis<any, any>, (_ctx, key) => {
-      for (const v of dirtied(this.functionManager, key as K)) dirty.add(v);
+      for (const v of dirtied(this.units.locator, key as K)) dirty.add(v);
     });
   }
 
@@ -404,7 +414,7 @@ export class Worklist {
   ): void {
     const dirty = this.dirtyFor(rule);
     Worklist.addSub(this.counterSubs, counter as CounterStore<any>, (_ctx, key) => {
-      for (const v of dirtied(this.functionManager, key as K)) dirty.add(v);
+      for (const v of dirtied(this.units.locator, key as K)) dirty.add(v);
     });
   }
 
@@ -558,11 +568,11 @@ export class Worklist {
         const dirty = this.dirtyFor(r);
         if (dirty.size === 0) continue;
         for (const unit of dirty) {
-          const chain = this.functionManager.chainFor(unit);
+          const chain = this.units.chainFor(unit);
           if (this.isRefuted(chain)) continue;
-          const fired = r.sweep(unit, chain, this.functionManager);
+          const fired = r.sweep(unit, chain, this.units.locator);
           if (fired) {
-            this.functionManager.scheduleRebuild(unit);
+            this.units.scheduleRebuild(unit);
             anyFired = true;
           }
         }
@@ -658,7 +668,7 @@ export class Worklist {
     if (applicable === undefined || applicable.length === 0) return context;
 
     const resolveUnit = this.unitResolverBySource.get(source) ?? defaultUnitResolver;
-    const unit = resolveUnit(this.functionManager, key);
+    const unit = resolveUnit(this.units.locator, key);
     if (unit === undefined) return context;
 
     const parentCtx = context;
@@ -733,7 +743,7 @@ export class Worklist {
       this.processAnalysesToFixpoint();
       const fired = this.sweepTransforms();
       this.processAnalysesToFixpoint();
-      const rebuilt = this.functionManager.flushPendingRebuilds();
+      const rebuilt = this.units.flushPendingRebuilds();
 
       if (!fired && rebuilt.length === 0) break;
 
