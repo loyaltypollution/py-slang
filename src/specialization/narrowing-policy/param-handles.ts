@@ -15,6 +15,6 @@ export const paramTypeNarrowing: Narrowing<ParamKey, TypeLattice, RawKind> = {
   blockAnalysis: () => typeAnalysis,
   source: runtimeParamSource,
   lift: liftType,
-  resolveFunction: (locator: FunctionLocator, key: ParamKey) =>
+  resolveUnit: (locator: FunctionLocator, key: ParamKey) =>
     locator.functionById(paramKeyFunctionId(key)),
 };

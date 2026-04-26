@@ -44,9 +44,9 @@ describe("observation ingress", () => {
 def f(x):
     return x
 `);
-    const function = worklist.locate.functionById(fd.id);
-    if (function === undefined) {
-      throw new Error("Expected worklist to resolve function function");
+    const unit = worklist.locate.functionById(fd.id);
+    if (unit === undefined) {
+      throw new Error("Expected worklist to resolve function unit");
     }
 
     const chain = worklist.observe(
@@ -57,6 +57,6 @@ def f(x):
     );
 
     expect(chain).not.toBe(ROOT_CONTEXT);
-    expect(worklist.futureDispatchChainFor(function)).toBe(chain);
+    expect(worklist.futureDispatchChainFor(unit)).toBe(chain);
   });
 });

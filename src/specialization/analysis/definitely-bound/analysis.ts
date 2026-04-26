@@ -28,30 +28,30 @@ export const definitelyBoundAnalysis: BlockFixpointAnalysis<BoundStatus> =
     direction: "forward",
     mergeKind: "must",
     valueLattice: boundLattice,
-    seedEnv: (function) => {
+    seedEnv: (unit) => {
       const paramCount =
-        function.funcAst instanceof StmtNS.FunctionDef
-          ? function.funcAst.parameters.length
+        unit.funcAst instanceof StmtNS.FunctionDef
+          ? unit.funcAst.parameters.length
           : 0;
       const env = new MutableEnv<BoundStatus>();
-      for (let i = 0; i < function.slotLookup.slotCount; i++) {
+      for (let i = 0; i < unit.slotLookup.slotCount; i++) {
         env.set(i, i < paramCount ? BOUND : UNBOUND);
       }
       return env;
     },
-    transferBlock: (_ctx, block, inEnv, function) => {
+    transferBlock: (_ctx, block, inEnv, unit) => {
       const outEnv = inEnv.snapshot();
       for (const stmt of block.stmts) {
         if (stmt instanceof StmtNS.Assign) {
           if (stmt.target instanceof ExprNS.Variable) {
-            bindSlot(outEnv, function.slotLookup, stmt.target.name);
+            bindSlot(outEnv, unit.slotLookup, stmt.target.name);
           }
         } else if (stmt instanceof StmtNS.AnnAssign) {
-          bindSlot(outEnv, function.slotLookup, stmt.target.name);
+          bindSlot(outEnv, unit.slotLookup, stmt.target.name);
         } else if (stmt instanceof StmtNS.For) {
-          bindSlot(outEnv, function.slotLookup, stmt.target);
+          bindSlot(outEnv, unit.slotLookup, stmt.target);
         } else if (stmt instanceof StmtNS.FunctionDef) {
-          bindSlot(outEnv, function.slotLookup, stmt.name);
+          bindSlot(outEnv, unit.slotLookup, stmt.name);
         }
       }
       return { outEnv, exprFacts: new Map() };

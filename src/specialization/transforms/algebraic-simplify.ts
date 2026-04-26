@@ -214,16 +214,16 @@ class AlgebraicSimplifyVisitor extends DescendingExprVisitor {
 
 export const algebraicSimplifyRule: TransformRule = {
   bind(wl) {
-    wl.onTransformFactDirty(algebraicSimplifyRule, typeAnalysis.facts, (_, b) => [b.function]);
+    wl.onTransformFactDirty(algebraicSimplifyRule, typeAnalysis.facts, (_, b) => [b.unit]);
   },
-  sweep(function: Function, chain: AssumptionChain, view: FunctionLocator) {
+  sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator) {
     const witnesses = new Set<AssumptionChain>();
-    walkExprs(visibleBody(function, chain), expr => {
+    walkExprs(visibleBody(unit, chain), expr => {
       const plan = rewritePlan(chain, view, expr);
       if (plan !== undefined) witnesses.add(plan.witness);
     });
     return runWitnessSweep(
-      function,
+      unit,
       witnesses,
       witness => new ExprDrivenStmtVisitor(new AlgebraicSimplifyVisitor(witness, view)),
     );

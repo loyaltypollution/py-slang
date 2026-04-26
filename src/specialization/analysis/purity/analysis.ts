@@ -253,9 +253,9 @@ function transferStmt(
       if (!isLocal(info)) { state.impure = true; return; }
       // `undefined` = scope verdict pending; readDeepest records the dep so
       // this block re-runs when the verdict lands.
-      const innerFunction = boundLocator?.functionById(fd.id);
-      const innerPure = innerFunction !== undefined
-        ? state.ctx.readDeepest(purityFunctionAnalysis, innerFunction)?.value
+      const innerUnit = boundLocator?.functionById(fd.id);
+      const innerPure = innerUnit !== undefined
+        ? state.ctx.readDeepest(purityFunctionAnalysis, innerUnit)?.value
         : undefined;
       state.env.set(info.slot, { kind: "closure", functionId: fd.id, pure: innerPure });
       return;
@@ -282,9 +282,9 @@ export const purityBlockAnalysis: BlockFixpointAnalysis<AbsVal> =
   direction: "forward",
   valueLattice: absValLattice,
   mergeKind: "may",
-  seedEnv: (function) => {
+  seedEnv: (unit) => {
     const env = new MutableEnv<AbsVal>();
-    const fd = function.funcAst;
+    const fd = unit.funcAst;
     if (fd instanceof StmtNS.FunctionDef) {
       for (let i = 0; i < fd.parameters.length; i++) {
         env.set(i, { kind: "param", slot: i });
@@ -292,12 +292,12 @@ export const purityBlockAnalysis: BlockFixpointAnalysis<AbsVal> =
     }
     return env;
   },
-  transferBlock: (ctx, block, inEnv, function) => {
-    const fd = function.funcAst;
+  transferBlock: (ctx, block, inEnv, unit) => {
+    const fd = unit.funcAst;
     const selfName = fd instanceof StmtNS.FunctionDef ? fd.name.lexeme : undefined;
     const state = POOLED_PURITY_VISITOR.state.reset(
       inEnv,
-      function.slotLookup,
+      unit.slotLookup,
       selfName,
       ctx,
     );
@@ -327,15 +327,15 @@ export const purityFunctionAnalysis: Analysis<Function, boolean | undefined> = d
   storeAlgebra: outerLattice,
   polarity: "may",
   tier: "analysis",
-  transfer(ctx: AnalysisCtx, function: Function): boolean | undefined {
-    const fd = function.funcAst;
+  transfer(ctx: AnalysisCtx, unit: Function): boolean | undefined {
+    const fd = unit.funcAst;
     if (!(fd instanceof StmtNS.FunctionDef)) return undefined;
     // Per-context reachability: a block reached only via a const-dead edge
     // under `ctx.currentContext` must not contribute its impure sentinel
     // (e.g. Collatz joining IMPURE under `x : pos-int`).
-    const reachable = reachableBlocks(ctx, function);
+    const reachable = reachableBlocks(ctx, unit);
     let anyVisited = false;
-    for (const block of function.cfg.blocks) {
+    for (const block of unit.cfg.blocks) {
       if (!reachable.has(block)) continue;
       // Read directly from the store rather than via `ctx.readDeepest` so
       // we don't record a per-block read edge. Invalidation is declared
@@ -352,10 +352,10 @@ export const purityFunctionAnalysis: Analysis<Function, boolean | undefined> = d
   },
   bind(wl) {
     boundLocator = wl.locate;
-    const functionOf = (function: Function): Function[] =>
-      function.funcAst instanceof StmtNS.FunctionDef ? [function] : [];
-    wl.onExtentChange(purityFunctionAnalysis, (_loc, function) => functionOf(function));
-    wl.onChainChange(purityFunctionAnalysis, (_loc, function) => functionOf(function));
+    const unitOf = (unit: Function): Function[] =>
+      unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
+    wl.onExtentChange(purityFunctionAnalysis, (_loc, unit) => unitOf(unit));
+    wl.onChainChange(purityFunctionAnalysis, (_loc, unit) => unitOf(unit));
     // Delta-routed wake on per-block purity facts. Interest is the IMPURE
     // sentinel only — the verdict is a join over reachable blocks of
     // "did any block emit IMPURE_SENTINEL?", so a block-fact advance that
@@ -364,14 +364,14 @@ export const purityFunctionAnalysis: Analysis<Function, boolean | undefined> = d
       purityBlockAnalysis.facts as Analysis<any, any>,
       purityFunctionAnalysis,
       internSingletonNode(IMPURE_SENTINEL_NODE_ID),
-      (_ctx, key) => functionOf((key as BasicBlock).function),
+      (_ctx, key) => unitOf((key as BasicBlock).unit),
     );
   },
 });
 
-function reachableBlocks(ctx: AnalysisCtx, function: Function): Set<BasicBlock> {
-  const reached = new Set<BasicBlock>([function.cfg.entry]);
-  const queue: BasicBlock[] = [function.cfg.entry];
+function reachableBlocks(ctx: AnalysisCtx, unit: Function): Set<BasicBlock> {
+  const reached = new Set<BasicBlock>([unit.cfg.entry]);
+  const queue: BasicBlock[] = [unit.cfg.entry];
   // Head cursor (O(1) amortized) vs shift() which is O(n) in V8.
   let head = 0;
   while (head < queue.length) {

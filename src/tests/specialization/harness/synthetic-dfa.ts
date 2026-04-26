@@ -1,18 +1,18 @@
 import { StmtNS } from "../../../ast-types";
-import { MutableEnv } from "../../../specialization/analysis/block-env";
-import {
-    makeBlockFixpointAnalysis,
-    type BlockFixpointAnalysis,
-} from "../../../specialization/analysis/dfa-factory";
 import type {
-    Analysis,
-    AnalysisCtx,
-    JoinSemiLattice,
-    Lattice,
+  Analysis,
+  AnalysisCtx,
+  JoinSemiLattice,
+  Lattice,
 } from "../../../specialization/framework/analysis";
-import type { Worklist } from "../../../specialization/framework/worklist";
 import type { BasicBlock } from "../../../specialization/program/basic-block";
+import {
+  makeBlockFixpointAnalysis,
+  type BlockFixpointAnalysis,
+} from "../../../specialization/analysis/dfa-factory";
 import type { Function } from "../../../specialization/program/function/function";
+import { MutableEnv } from "../../../specialization/analysis/block-env";
+import type { Worklist } from "../../../specialization/framework/worklist";
 import { setupWithAnalyses } from "./compile-pipelines";
 
 export const intMaxLattice: JoinSemiLattice<number> = {
@@ -65,13 +65,13 @@ export function syntheticDfa(opts: SyntheticDfaOpts): BlockFixpointAnalysis<numb
 }
 
 /** Parse + build a Worklist over the given analyses, drain, return the
- *  function for the first FunctionDef in the program. */
-export function buildFirstFunctionFunction(
+ *  unit for the first FunctionDef in the program. */
+export function buildFirstFunctionUnit(
   code: string,
   analyses: ReadonlyArray<Analysis<any, any>>,
-): { function: Function; worklist: Worklist } {
+): { unit: Function; worklist: Worklist } {
   const { ast, worklist } = setupWithAnalyses(code, analyses);
   worklist.drain();
   const fn = ast.statements[0] as StmtNS.FunctionDef;
-  return { function: worklist.locate.functionById(fn.id)!, worklist };
+  return { unit: worklist.locate.functionById(fn.id)!, worklist };
 }

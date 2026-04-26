@@ -6,7 +6,7 @@ import { bodyToCompile, dispatchValid } from "../speculation/chain-dispatch";
 import { makeJitObservers, type JitObservationRuntime } from "./runtime-analyses";
 
 export interface DispatchPlan {
-  readonly function: Function;
+  readonly unit: Function;
   readonly body?: readonly StmtNS.Stmt[];
 }
 
@@ -31,8 +31,8 @@ export function makeJitDispatch(runtime: JitDispatchRuntime): JitDispatch {
   function onCall(scopeId: FunctionId, args: readonly unknown[]): DispatchPlan | undefined {
     observers.observeScopeCall(scopeId);
 
-    const function = runtime.locate.functionById(scopeId);
-    if (function === undefined) {
+    const unit = runtime.locate.functionById(scopeId);
+    if (unit === undefined) {
       return undefined;
     }
 
@@ -43,16 +43,16 @@ export function makeJitDispatch(runtime: JitDispatchRuntime): JitDispatch {
     runtime.sweepTransforms();
 
     const chain = observers.currentChainFor(scopeId);
-    if (!dispatchValid(function, chain, isRefuted)) {
-      return { function };
+    if (!dispatchValid(unit, chain, isRefuted)) {
+      return { unit };
     }
 
-    const body = bodyToCompile(function, chain, runtime.locate, isRefuted);
-    if (body === function.body) {
-      return { function };
+    const body = bodyToCompile(unit, chain, runtime.locate, isRefuted);
+    if (body === unit.body) {
+      return { unit };
     }
 
-    return { function, body };
+    return { unit, body };
   }
 
   function onReturn(scopeId: FunctionId, value: unknown): void {

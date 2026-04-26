@@ -64,7 +64,7 @@ class ReadCollector implements ExprNS.Visitor<void> {
   visitNoneExpr(_expr: ExprNS.None): void {}
   visitComplexExpr(_expr: ExprNS.Complex): void {}
   // Lambda / MultiLambda bodies are their own scope; their names resolve
-  // against a different env than this function's `slotLookup`. We under-approx
+  // against a different env than this unit's `slotLookup`. We under-approx
   // here and DSE compensates by refusing to drop lambda-RHS assigns (see
   // dead-store.ts `isPureRhs`).
   visitLambdaExpr(_expr: ExprNS.Lambda): void {}
@@ -135,10 +135,10 @@ export const livenessAnalysis: BlockFixpointAnalysis<LiveVal> =
     mergeKind: "may",
     valueLattice: livenessLattice,
     seedEnv: () => new MutableEnv<LiveVal>(),
-    transferBlock: (_ctx, block, inEnv, function) => {
+    transferBlock: (_ctx, block, inEnv, unit) => {
       // `inEnv` is live-OUT; snapshot and mutate into live-IN.
       const outEnv = inEnv.snapshot();
-      const { slotLookup } = function;
+      const { slotLookup } = unit;
       const visitor = new ReadCollector(outEnv, slotLookup);
       const stmts = block.stmts;
       for (let i = stmts.length - 1; i >= 0; i--) {

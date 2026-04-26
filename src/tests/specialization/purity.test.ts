@@ -189,8 +189,8 @@ def hot(x):
     );
     worklist.drain();
 
-    const function = worklist.locate.functionById(fn.id)!;
-    const specCtx = worklist.futureDispatchChainFor(function);
+    const unit = worklist.locate.functionById(fn.id)!;
+    const specCtx = worklist.futureDispatchChainFor(unit);
     expect(specCtx).not.toBe(ROOT_CONTEXT);
     expect(
       worklist.tryRead(purityFunctionAnalysis, worklist.locate.functionById(fn.id)!, specCtx),

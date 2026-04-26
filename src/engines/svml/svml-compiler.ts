@@ -10,7 +10,7 @@ import {
 
 /** Static (ROOT-context) DFA reads the SVML compiler needs. Speculative
  *  reads are not exposed: the compiler only consults static facts; per-call
- *  speculative bodies arrive pre-pruned via `compileFunction(function, body)`. */
+ *  speculative bodies arrive pre-pruned via `compileFunction(unit, body)`. */
 interface DfaQuery {
   typeOf(nodeId: number): TypeLattice | undefined;
   constOf(nodeId: number): ConstLattice | undefined;
@@ -158,7 +158,7 @@ export class SVMLCompiler
     return compiler;
   }
 
-  static fromProgramFunction(
+  static fromProgramUnit(
     program: StmtNS.FileInput,
     functionEnvironments: FunctionEnvironments,
     dfaQuery?: DfaQuery,
@@ -272,15 +272,15 @@ export class SVMLCompiler
     }
   }
 
-  /** Compile a single FunctionDef function.
+  /** Compile a single FunctionDef unit.
    *  `specializedBody` — when provided, compiled in place of `funcAst.body`.
    *  The caller is responsible for ensuring the body is a valid speculative
    *  clone (NodeId-shadow policy, no topology insertion). */
   compileFunction(
-    function: Function,
+    unit: Function,
     specializedBody?: ReadonlyArray<StmtNS.Stmt>,
   ): SVMLIR {
-    const funcAst = function.funcAst;
+    const funcAst = unit.funcAst;
     if (!(funcAst instanceof StmtNS.FunctionDef)) {
       throw new Error(
         "compileFunction only supports FunctionDef functions; use compileProgram for FileInput",

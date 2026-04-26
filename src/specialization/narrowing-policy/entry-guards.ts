@@ -8,26 +8,26 @@ import { returnKindNarrowing, type TypeLattice } from "../analysis";
 type EntryGuard = { paramIndex: number; ty: TypeLattice };
 
 export function directParamEntryGuardsFor(
-  function: Function,
+  unit: Function,
   context: AssumptionChain,
 ): readonly EntryGuard[] | undefined {
-  if (!(function.funcAst instanceof StmtNS.FunctionDef)) return undefined;
+  if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return undefined;
   const guards: EntryGuard[] = [];
-  for (let i = 0; i < function.funcAst.parameters.length; i++) {
-    const key = paramKey(function.funcAst.id, i);
+  for (let i = 0; i < unit.funcAst.parameters.length; i++) {
+    const key = paramKey(unit.funcAst.id, i);
     const ty = at(context, paramTypeNarrowing, key);
     if (ty !== undefined) guards.push({ paramIndex: i, ty });
   }
   return guards.length > 0 ? guards : undefined;
 }
 
-export function contextIsEntrySpecializable(function: Function, context: AssumptionChain): boolean {
-  if (!(function.funcAst instanceof StmtNS.FunctionDef)) return false;
+export function contextIsEntrySpecializable(unit: Function, context: AssumptionChain): boolean {
+  if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return false;
   for (let cur: AssumptionChain = context; !isRoot(cur); cur = cur.parent) {
     const a = cur.assumption;
     if (a.narrowing === paramTypeNarrowing) {
       const index = paramKeyIndex(a.key as ParamKey);
-      if (index >= 0 && index < function.funcAst.parameters.length) continue;
+      if (index >= 0 && index < unit.funcAst.parameters.length) continue;
     }
     if (a.narrowing === returnKindNarrowing) continue;
     return false;

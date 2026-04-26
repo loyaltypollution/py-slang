@@ -69,10 +69,10 @@ function escapedLocalSlotsIn(
   return escaped;
 }
 
-function buildLiveOutMap(function: Function, chain: AssumptionChain): Map<number, ReadonlySet<number>> {
+function buildLiveOutMap(unit: Function, chain: AssumptionChain): Map<number, ReadonlySet<number>> {
   const out = new Map<number, ReadonlySet<number>>();
-  for (const block of function.cfg.blocks) {
-    const liveOuts = perStatementLiveOut(block, function.slotLookup, chain);
+  for (const block of unit.cfg.blocks) {
+    const liveOuts = perStatementLiveOut(block, unit.slotLookup, chain);
     const stmts = block.stmts;
     for (let i = 0; i < stmts.length; i++) {
       out.set(stmts[i].id, liveOuts[i]);
@@ -165,41 +165,41 @@ function memo<K, V>(cache: Map<K, V>, key: K, compute: (key: K) => V): V {
 }
 
 function witnessForRemoval(
-  function: Function,
+  unit: Function,
   lineage: readonly AssumptionChain[],
   stmtId: number,
   liveOutCache: Map<AssumptionChain, ReadonlyMap<number, ReadonlySet<number>>>,
   escapedCache: Map<AssumptionChain, ReadonlySet<number>>,
 ): AssumptionChain | undefined {
   for (const witness of lineage) {
-    const body = visibleBody(function, witness);
+    const body = visibleBody(unit, witness);
     const stmt = findAssignById(body, stmtId);
     if (stmt === undefined) continue;
 
-    const liveOutMap = memo(liveOutCache, witness, w => buildLiveOutMap(function, w));
-    const escaped = memo(escapedCache, witness, () => escapedLocalSlotsIn(body, function.slotLookup));
+    const liveOutMap = memo(liveOutCache, witness, w => buildLiveOutMap(unit, w));
+    const escaped = memo(escapedCache, witness, () => escapedLocalSlotsIn(body, unit.slotLookup));
 
-    if (removableAssignment(stmt, liveOutMap, function.slotLookup, escaped)) return witness;
+    if (removableAssignment(stmt, liveOutMap, unit.slotLookup, escaped)) return witness;
   }
   return undefined;
 }
 
 export const deadStoreRule: TransformRule = {
   bind(wl) {
-    wl.onTransformFactDirty(deadStoreRule, livenessAnalysis.env, (_, b) => [b.function]);
+    wl.onTransformFactDirty(deadStoreRule, livenessAnalysis.env, (_, b) => [b.unit]);
   },
-  sweep(function: Function, chain: AssumptionChain, _view: FunctionLocator) {
+  sweep(unit: Function, chain: AssumptionChain, _view: FunctionLocator) {
     // Top-level names are observable; only function-scope slots are safe to DSE.
-    if (function.funcAst instanceof StmtNS.FileInput) return transformResultFor([]);
+    if (unit.funcAst instanceof StmtNS.FileInput) return transformResultFor([]);
 
-    const body = visibleBody(function, chain);
+    const body = visibleBody(unit, chain);
     const liveOutCache = new Map<AssumptionChain, ReadonlyMap<number, ReadonlySet<number>>>();
     const escapedCache = new Map<AssumptionChain, ReadonlySet<number>>();
-    const liveOutMap = memo(liveOutCache, chain, w => buildLiveOutMap(function, w));
-    const escaped = memo(escapedCache, chain, () => escapedLocalSlotsIn(body, function.slotLookup));
+    const liveOutMap = memo(liveOutCache, chain, w => buildLiveOutMap(unit, w));
+    const escaped = memo(escapedCache, chain, () => escapedLocalSlotsIn(body, unit.slotLookup));
 
     const removableNow = new Set<number>();
-    collectRemovableStmtIds(body, liveOutMap, function.slotLookup, escaped, removableNow);
+    collectRemovableStmtIds(body, liveOutMap, unit.slotLookup, escaped, removableNow);
     if (removableNow.size === 0) return transformResultFor([]);
 
     const lineage: AssumptionChain[] = [];
@@ -211,7 +211,7 @@ export const deadStoreRule: TransformRule = {
     lineage.reverse();
     const removalsByWitness = new Map<AssumptionChain, Set<number>>();
     for (const stmtId of removableNow) {
-      const witness = witnessForRemoval(function, lineage, stmtId, liveOutCache, escapedCache);
+      const witness = witnessForRemoval(unit, lineage, stmtId, liveOutCache, escapedCache);
       if (witness === undefined) continue;
       let bucket = removalsByWitness.get(witness);
       if (bucket === undefined) {
@@ -225,10 +225,10 @@ export const deadStoreRule: TransformRule = {
     for (const witness of lineage) {
       const removableIds = removalsByWitness.get(witness);
       if (removableIds === undefined || removableIds.size === 0) continue;
-      const witnessBody = forkBody(function, witness);
+      const witnessBody = forkBody(unit, witness);
       if (sweepRemovalsById(witnessBody, removableIds)) {
         touchedWitnesses.push(witness);
-        invalidateDescendantVariants(function, witness);
+        invalidateDescendantVariants(unit, witness);
       }
     }
     return transformResultFor(touchedWitnesses);

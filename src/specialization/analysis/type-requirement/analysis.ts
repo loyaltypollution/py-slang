@@ -145,7 +145,7 @@ function transferStmtBackward(
 }
 
 /** Backward must-merge analysis. Stored `outEnv` is the block's
- *  requirement-IN (pre-first-statement point). At `function.cfg.entry` this is
+ *  requirement-IN (pre-first-statement point). At `unit.cfg.entry` this is
  *  the function's pre-body requirement — parameter-type constraints that, if
  *  checked at entry, discharge the return-kind speculation for the body. */
 export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
@@ -154,8 +154,8 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
     mergeKind: "must",
     valueLattice: typeLattice,
     seedEnv: () => new MutableEnv<TypeLattice>(),
-    transferBlock: (ctx, block, inEnv, function) => {
-      const fd = function.funcAst;
+    transferBlock: (ctx, block, inEnv, unit) => {
+      const fd = unit.funcAst;
       const required =
         fd instanceof StmtNS.FunctionDef
           ? at(ctx.currentContext, returnKindNarrowing, fd.id)
@@ -163,24 +163,24 @@ export const typeRequirementAnalysis: BlockFixpointAnalysis<TypeLattice> =
       const outEnv = inEnv.snapshot();
       const stmts = block.stmts;
       for (let i = stmts.length - 1; i >= 0; i--) {
-        transferStmtBackward(stmts[i], outEnv, function.slotLookup, required);
+        transferStmtBackward(stmts[i], outEnv, unit.slotLookup, required);
       }
       return { outEnv, exprFacts: new Map() };
     },
   });
 
 /** Per-function return-kind narrowing, keyed by FunctionId. Runtime return
- *  observations classify via `liftType` and extend the called function's context
+ *  observations classify via `liftType` and extend the called unit's context
  *  with `(returnKindNarrowing, functionId, type)`; `typeRequirementAnalysis`
- *  consumes that at Return statements. `resolveFunction` maps the functionId
- *  to the function's own function so the extension lands where requirement
+ *  consumes that at Return statements. `resolveUnit` maps the functionId
+ *  to the function's own unit so the extension lands where requirement
  *  propagation runs. Parallel to `paramTypeNarrowing`. */
 export const returnKindNarrowing: Narrowing<FunctionId, TypeLattice, RawKind> = {
   eq,
   blockAnalysis: () => typeRequirementAnalysis,
   source: runtimeReturnSource,
   lift: liftType,
-  resolveFunction: (loc: FunctionLocator, id: FunctionId) => loc.functionById(id),
+  resolveUnit: (loc: FunctionLocator, id: FunctionId) => loc.functionById(id),
 };
 
 /** Per-slot entry requirement split by satisfiability. `provable` slots are
@@ -192,12 +192,12 @@ export interface EntryRequirement {
 }
 
 export function requirementAtEntry(
-  function: Function,
+  unit: Function,
   context: AssumptionChain = ROOT_CONTEXT,
 ): EntryRequirement {
   const provable = new Map<number, TypeLattice>();
   const unprovable = new Set<number>();
-  const env = typeRequirementAnalysis.env.store.read(function.cfg.entry, context);
+  const env = typeRequirementAnalysis.env.store.read(unit.cfg.entry, context);
   for (const slot of env.definedSlots()) {
     const req = env.get(slot);
     if (req === undefined || req === TOP) continue;

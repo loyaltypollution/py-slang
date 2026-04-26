@@ -12,18 +12,18 @@ else:
 z = 3
 `);
 
-    const function = worklist.locate.functionById(ast.id)!;
+    const unit = worklist.locate.functionById(ast.id)!;
     const ifStmt = ast.statements.find((s): s is StmtNS.If => s instanceof StmtNS.If)!;
     const thenStmt = ifStmt.body[0];
     const elseStmt = ifStmt.elseBlock![0];
-    const ifBlock = function.blockOfNode(ifStmt.id)!;
+    const ifBlock = unit.blockOfNode(ifStmt.id)!;
 
     expect(ifBlock.contains(ifStmt.id)).toBe(true);
     expect(ifBlock.contains(ifStmt.condition.id)).toBe(true);
     expect(ifBlock.contains(thenStmt.id)).toBe(false);
     expect(ifBlock.contains(elseStmt.id)).toBe(false);
-    expect(function.blockOfNode(thenStmt.id)).not.toBe(ifBlock);
-    expect(function.blockOfNode(elseStmt.id)).not.toBe(ifBlock);
+    expect(unit.blockOfNode(thenStmt.id)).not.toBe(ifBlock);
+    expect(unit.blockOfNode(elseStmt.id)).not.toBe(ifBlock);
   });
 
   test("enclosing function NodeSets exclude nested function body nodes", () => {
@@ -46,7 +46,7 @@ f()
     expect(root.contains(nestedStmt.id)).toBe(false);
     expect(defBlock.contains(nestedStmt.id)).toBe(false);
     expect(nested.contains(nestedStmt.id)).toBe(true);
-    expect(worklist.locate.functionContainingNode(nestedStmt.id)).toBe(nested);
+    expect(worklist.locate.unitContainingNode(nestedStmt.id)).toBe(nested);
   });
 
   // Pins the documented hazard on `BasicBlock.nodeIds` and on
@@ -66,15 +66,15 @@ while i < 3:
     i = i + 1
 `);
 
-    const function = worklist.locate.functionById(ast.id)!;
+    const unit = worklist.locate.functionById(ast.id)!;
     // Exit block is always synthetic — only ever link-targeted, never has
     // stmts pushed onto it.
-    expect(function.cfg.exit.stmts.length).toBe(0);
-    expect(function.cfg.exit.nodeIds.size).toBe(0);
+    expect(unit.cfg.exit.stmts.length).toBe(0);
+    expect(unit.cfg.exit.nodeIds.size).toBe(0);
 
     // Every block that has no `stmts` (synthetic) must have empty nodeIds;
     // every block that owns at least one stmt must have at least one node.
-    for (const block of function.cfg.blocks) {
+    for (const block of unit.cfg.blocks) {
       if (block.stmts.length === 0) {
         expect(block.nodeIds.size).toBe(0);
       } else {
@@ -84,7 +84,7 @@ while i < 3:
 
     // The if-join and the while loopExit are both synthetic, so the program
     // produces multiple stmts-empty blocks.
-    const synthetic = function.cfg.blocks.filter(b => b.stmts.length === 0);
+    const synthetic = unit.cfg.blocks.filter(b => b.stmts.length === 0);
     expect(synthetic.length).toBeGreaterThanOrEqual(2);
   });
 });

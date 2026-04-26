@@ -46,17 +46,17 @@ class ConstFoldExprVisitor extends DescendingExprVisitor {
 
 export const constantFoldingRule: TransformRule = {
   bind(wl) {
-    wl.onTransformFactDirty(constantFoldingRule, constAnalysis.facts, (_, b) => [b.function]);
+    wl.onTransformFactDirty(constantFoldingRule, constAnalysis.facts, (_, b) => [b.unit]);
   },
-  sweep(function: Function, chain: AssumptionChain, view: FunctionLocator) {
+  sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator) {
     const witnesses = new Set<AssumptionChain>();
-    walkExprs(visibleBody(function, chain), e => {
+    walkExprs(visibleBody(unit, chain), e => {
       if (!(e instanceof ExprNS.Binary)) return;
       const info = readConst(chain, view, e.id);
       if (info !== undefined) witnesses.add(info.witness);
     });
     return runWitnessSweep(
-      function,
+      unit,
       witnesses,
       witness => new ExprDrivenStmtVisitor(new ConstFoldExprVisitor(witness, view)),
     );

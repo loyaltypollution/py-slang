@@ -36,7 +36,7 @@ export interface BasicBlock extends NodeSet {
   readonly stmts: StmtNS.Stmt[];
   readonly successorEdges: CFGEdge[];
   readonly predecessorEdges: CFGEdge[];
-  readonly function: Function;
+  readonly unit: Function;
   readonly nodeIds: Set<NodeId>;
   contains(n: NodeId): boolean;
   readonly size: number;
@@ -49,7 +49,7 @@ export interface CFG {
   readonly blocks: ReadonlyArray<BasicBlock>;
 }
 
-export function buildCFG(body: StmtNS.Stmt[], function: Function): CFG {
+export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
   const blocks: BasicBlock[] = [];
 
   function makeBlock(): BasicBlock {
@@ -58,7 +58,7 @@ export function buildCFG(body: StmtNS.Stmt[], function: Function): CFG {
       stmts: [],
       successorEdges: [],
       predecessorEdges: [],
-      function,
+      unit,
       nodeIds,
       contains: (n) => nodeIds.has(n),
       get size(): number {

@@ -10,7 +10,7 @@ export interface JitObservationRuntime<U> {
   readonly locate: {
     functionById(id: FunctionId): U | undefined;
   };
-  futureDispatchChainFor(function: U): AssumptionChain;
+  futureDispatchChainFor(unit: U): AssumptionChain;
   observe<K, V>(
     source: ObservationSource<K, V>,
     key: K,
@@ -96,9 +96,9 @@ export function makeJitObservers<U>(runtime: JitObservationRuntime<U>): JitObser
   }
 
   function observeScopeCall(scopeId: FunctionId): void {
-    const function = runtime.locate.functionById(scopeId);
+    const unit = runtime.locate.functionById(scopeId);
     const provenanceChain =
-      function !== undefined ? runtime.futureDispatchChainFor(function) : ROOT_CONTEXT;
+      unit !== undefined ? runtime.futureDispatchChainFor(unit) : ROOT_CONTEXT;
 
     runtime.incrementPolicyCounter(runtimeCallHotness, scopeId);
     scopeIds.push(scopeId);

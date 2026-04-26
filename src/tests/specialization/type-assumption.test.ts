@@ -1,8 +1,9 @@
 import { ExprNS, StmtNS } from "../../ast-types";
+import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
+import { extend } from "../../specialization/assumption/chain";
 import { typeAnalysis } from "../../specialization/analysis";
 import { typeNarrowing } from "../../specialization/analysis/type/analysis";
 import { INT_BIT, INT_POS, TOP } from "../../specialization/analysis/type/lattice";
-import { extend, ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 describe("typeAnalysis under a non-ROOT context", () => {
@@ -14,7 +15,7 @@ def hot(x):
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    const block = worklist.locate.functionContainingNode(xRead.id)?.blockOfNode(xRead.id)!;
+    const block = worklist.locate.unitContainingNode(xRead.id)?.blockOfNode(xRead.id)!;
 
     // ROOT-context fact: x is a parameter slot → TOP.
     expect(typeAnalysis.perExpr(worklist.locate).tryRead(xRead.id, ROOT_CONTEXT)?.kinds)
@@ -24,7 +25,7 @@ def hot(x):
     const ctx = extend(ROOT_CONTEXT, typeNarrowing, xRead.id, INT_POS);
 
     // Re-run typeAnalysis under the context.
-    worklist.enqueue(typeAnalysis.env, block.function.cfg.entry, ctx);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctx);
     worklist.drain();
 
     // The non-ROOT cell holds the narrowed fact.
@@ -59,11 +60,11 @@ def hot(x, z):
     ) as StmtNS.Assign;
     const xRead = xAssign.value as ExprNS.Variable;
     const zRead = zAssign.value as ExprNS.Variable;
-    const block = worklist.locate.functionContainingNode(xRead.id)?.blockOfNode(xRead.id)!;
+    const block = worklist.locate.unitContainingNode(xRead.id)?.blockOfNode(xRead.id)!;
 
     // Assumption only at xRead.id, not zRead.id.
     const ctx = extend(ROOT_CONTEXT, typeNarrowing, xRead.id, INT_POS);
-    worklist.enqueue(typeAnalysis.env, block.function.cfg.entry, ctx);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctx);
     worklist.drain();
 
     const xFact = worklist.tryRead(typeAnalysis.facts, block, ctx)?.get(xRead.id);
@@ -83,7 +84,7 @@ def hot(x):
 `);
     const fn = ast.statements[0] as StmtNS.FunctionDef;
     const xRead = (fn.body[0] as StmtNS.Assign).value as ExprNS.Variable;
-    const block = worklist.locate.functionContainingNode(xRead.id)?.blockOfNode(xRead.id)!;
+    const block = worklist.locate.unitContainingNode(xRead.id)?.blockOfNode(xRead.id)!;
 
     const ctxIntPos = extend(ROOT_CONTEXT, typeNarrowing, xRead.id, INT_POS);
     // A different assumption value at the same node.
@@ -92,8 +93,8 @@ def hot(x):
       intRef: 1, // IntRef.Neg
     });
 
-    worklist.enqueue(typeAnalysis.env, block.function.cfg.entry, ctxIntPos);
-    worklist.enqueue(typeAnalysis.env, block.function.cfg.entry, ctxNeg);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctxIntPos);
+    worklist.enqueue(typeAnalysis.env, block.unit.cfg.entry, ctxNeg);
     worklist.drain();
 
     const posFact = worklist.tryRead(typeAnalysis.facts, block, ctxIntPos)?.get(xRead.id);

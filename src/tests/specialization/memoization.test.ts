@@ -27,10 +27,10 @@ function dfaQueryFor(worklist: Worklist) {
 
 const MEMO_TRIGGER_CALLS = runtimeCallHotness.max - 1;
 
-// TODO(plan.md §1): replace with `memoization.didFireOn(function)` once the
+// TODO(plan.md §1): replace with `memoization.didFireOn(unit)` once the
 // transform exposes a public tag; this helper pins the wrapper's private shape.
-function memoFired(function: Function): boolean {
-  const fd = function.funcAst;
+function memoFired(unit: Function): boolean {
+  const fd = unit.funcAst;
   if (!(fd instanceof StmtNS.FunctionDef)) return false;
   const first = fd.body[0];
   if (!(first instanceof StmtNS.If)) return false;
@@ -200,7 +200,7 @@ describe("memoization: SVML wiring", () => {
   async function compileAndRun(code: string): Promise<void> {
     const { ast, environments, worklist } = setup(code);
     worklist.drain();
-    const compiler = SVMLCompiler.fromProgramFunction(ast, environments, dfaQueryFor(worklist));
+    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, dfaQueryFor(worklist));
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
     worklist.drain();
   }
@@ -224,7 +224,7 @@ f(5)
     worklist.drain();
     expect(memoFired(worklist.locate.functionById(fd.id)!)).toBe(true);
 
-    const compiler = SVMLCompiler.fromProgramFunction(ast, environments, dfaQueryFor(worklist));
+    const compiler = SVMLCompiler.fromProgramUnit(ast, environments, dfaQueryFor(worklist));
     await new SVMLInterpreter(compiler.compileProgram(ast)).execute();
 
     const fBuckets = Array.from(memoCacheSnapshot().entries()).filter(([k]) => k.startsWith("f@"));

@@ -1,12 +1,12 @@
 /**
- * Function tests for the Moo-based lexer's indentation handling.
+ * Unit tests for the Moo-based lexer's indentation handling.
  *
  * Tests exercise processTokens() indirectly through the exported
  * pythonLexer (PythonLexer wrapper).
  */
-import type moo from "moo";
 import pythonLexer from "../parser/lexer";
-import { InconsistentDedentError, UnexpectedIndentError } from "../parser/lexer-errors";
+import { UnexpectedIndentError, InconsistentDedentError } from "../parser/lexer-errors";
+import type moo from "moo";
 
 // ---------------------------------------------------------------------------
 // Helpers

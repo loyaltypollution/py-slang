@@ -7,7 +7,7 @@ import type { Function } from "../../specialization/program/function/function";
 import { setupAndDrain } from "./harness/compile-pipelines";
 
 type SpecializedFunction = {
-  function: Function;
+  unit: Function;
   worklist: ReturnType<typeof setupAndDrain>["worklist"];
   chainX: AssumptionChain;
   chainXY: AssumptionChain;
@@ -24,7 +24,7 @@ def f(x, y):
     return 0
 `);
   const fd = ast.statements[0] as StmtNS.FunctionDef;
-  const function = worklist.locate.functionById(fd.id)!;
+  const unit = worklist.locate.functionById(fd.id)!;
   const chainX = worklist.observe(
     runtimeParamSource,
     paramKey(fd.id, 0),
@@ -37,20 +37,20 @@ def f(x, y):
     { kind: "bool", value: true },
     chainX,
   );
-  return { function, worklist, chainX, chainXY };
+  return { unit, worklist, chainX, chainXY };
 }
 
 describe("speculative variant cache", () => {
   test("ancestor rewrite invalidates a pre-existing descendant fork", () => {
-    const { function, worklist, chainX, chainXY } = specializeBooleanPair();
+    const { unit, worklist, chainX, chainXY } = specializeBooleanPair();
 
-    forkBody(function, chainX);
-    const staleDescendant = forkBody(function, chainXY);
+    forkBody(unit, chainX);
+    const staleDescendant = forkBody(unit, chainXY);
     expect(staleDescendant).toHaveLength(2);
 
     worklist.sweepTransforms();
 
-    const refreshedDescendant = forkBody(function, chainXY);
+    const refreshedDescendant = forkBody(unit, chainXY);
     expect(refreshedDescendant).not.toBe(staleDescendant);
     expect(refreshedDescendant[0]).toBeInstanceOf(StmtNS.Return);
     expect(staleDescendant[0]).toBeInstanceOf(StmtNS.If);
@@ -60,9 +60,9 @@ describe("speculative variant cache", () => {
     const { worklist } = specializeBooleanPair();
     const rebuilds: Function[] = [];
 
-    worklist.functions.onExtentChange((function, prev) => {
+    worklist.units.onExtentChange((unit, prev) => {
       if (prev.size > 0) {
-        rebuilds.push(function);
+        rebuilds.push(unit);
       }
     });
 

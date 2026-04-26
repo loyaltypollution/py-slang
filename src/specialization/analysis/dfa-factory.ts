@@ -42,7 +42,7 @@ export interface BlockDfaSpec<L> extends Lattice<L> {
    *  AssumptionChain-oblivious modules ignore it. */
   makeExprVisitor(
     env: MutableEnv<L>,
-    function: Function,
+    unit: Function,
     slotLookup: SlotLookup,
     recordExprFact: (nodeId: NodeId, val: L) => void,
     context: AssumptionChain,
@@ -52,7 +52,7 @@ export interface BlockDfaSpec<L> extends Lattice<L> {
    *  merged into the current block's IN env. Must be monotone (result ⊑
    *  input) and MUST NOT mutate `env` in place — `snapshot()` first. When
    *  omitted, the factory treats every edge as identity (no narrowing). */
-  refineOnEdge?(env: MutableEnv<L>, edge: CFGEdge, function: Function): MutableEnv<L>;
+  refineOnEdge?(env: MutableEnv<L>, edge: CFGEdge, unit: Function): MutableEnv<L>;
 }
 
 /** Self-iterating iterable over block-projected CFG edges. Reused across
@@ -89,16 +89,16 @@ class EdgeBlockIterable implements Iterable<BasicBlock>, Iterator<BasicBlock> {
   }
 }
 
-/** Evict every BasicBlock cell belonging to `function` across all contexts.
+/** Evict every BasicBlock cell belonging to `unit` across all contexts.
  *  Block cells are keyed by `BasicBlock` (not `Function`), so the worklist's
- *  universal function-keyed eviction doesn't reach them. */
+ *  universal unit-keyed eviction doesn't reach them. */
 function evictStaleBlockCells(
   store: ReadonlyAnalysisStore<BasicBlock, any>,
-  function: Function,
+  unit: Function,
 ): void {
   for (const context of storeContexts(store)) {
     for (const b of store.readAll(context).keys()) {
-      if (b.function === function) storeEvict(store, b, context);
+      if (b.unit === unit) storeEvict(store, b, context);
     }
   }
 }
@@ -115,7 +115,7 @@ function evictStaleBlockCells(
  *  successor block.
  *
  *  `perExpr(view)` is the read facade that projects `nodeId -> owning block ->
- *  block facts`. `seed(function)` returns the block where the fixpoint starts
+ *  block facts`. `seed(unit)` returns the block where the fixpoint starts
  *  (entry for forward, exit for backward). */
 export interface BlockFixpointAnalysis<L> {
   readonly env: Analysis<BasicBlock, MutableEnv<L>>;
@@ -152,13 +152,13 @@ type DfaConfig<L> = {
     ctx: AnalysisCtx,
     block: BasicBlock,
     inEnv: MutableEnv<L>,
-    function: Function,
+    unit: Function,
   ) => BlockPassResult<L>;
   /** Seed the entry (forward) / exit (backward) block's IN env. */
-  readonly seedEnv: (function: Function) => MutableEnv<L>;
+  readonly seedEnv: (unit: Function) => MutableEnv<L>;
   /** Per-edge env refinement. See `BlockDfaSpec.refineOnEdge`. Optional;
    *  omitted means identity (no narrowing on any edge). */
-  readonly refineOnEdge?: (env: MutableEnv<L>, edge: CFGEdge, function: Function) => MutableEnv<L>;
+  readonly refineOnEdge?: (env: MutableEnv<L>, edge: CFGEdge, unit: Function) => MutableEnv<L>;
 } & (
   | { readonly mergeKind: "may"; readonly valueLattice: JoinSemiLattice<L> }
   | { readonly mergeKind: "must"; readonly valueLattice: Lattice<L> }
@@ -243,25 +243,25 @@ export function makeBlockFixpointAnalysis<L>(
     eq: (a, b) => a === b || (factsLeq(a, b) && factsLeq(b, a)),
   };
 
-  const seedKey = (function: Function): BasicBlock =>
-    config.direction === "forward" ? function.cfg.entry : function.cfg.exit;
+  const seedKey = (unit: Function): BasicBlock =>
+    config.direction === "forward" ? unit.cfg.entry : unit.cfg.exit;
 
   const isForward = config.direction === "forward";
 
   function inEnvFor(
     block: BasicBlock,
-    function: Function,
+    unit: Function,
     context: AssumptionChain,
   ): MutableEnv<L> {
     // Iterate predecessor *edges* so `refineOnEdge` sees the labeled edge.
     // Backward analyses treat CFG successors as predecessors by symmetry.
     const preds = isForward ? block.predecessorEdges : block.successorEdges;
-    if (preds.length === 0) return config.seedEnv(function);
+    if (preds.length === 0) return config.seedEnv(unit);
     let env: MutableEnv<L> | undefined;
     for (const edge of preds) {
       const predBlock = isForward ? edge.from : edge.to;
       const predOut = envAnalysis.store.read(predBlock, context);
-      const refined = config.refineOnEdge ? config.refineOnEdge(predOut, edge, function) : predOut;
+      const refined = config.refineOnEdge ? config.refineOnEdge(predOut, edge, unit) : predOut;
       if (env === undefined) {
         // Snapshot only when `refineOnEdge` returned the stored env unchanged.
         env = refined === predOut ? predOut.snapshot() : refined;
@@ -271,7 +271,7 @@ export function makeBlockFixpointAnalysis<L>(
         env.joinWith(refined, config.valueLattice);
       }
     }
-    return env ?? config.seedEnv(function);
+    return env ?? config.seedEnv(unit);
   }
 
   const envAnalysis: Analysis<BasicBlock, MutableEnv<L>> = defineAnalysis({
@@ -280,9 +280,9 @@ export function makeBlockFixpointAnalysis<L>(
     tier: "analysis",
     polarity: config.mergeKind,
     transfer(ctx, block): MutableEnv<L> | undefined {
-      const function = block.function;
-      const inEnv = inEnvFor(block, function, ctx.currentContext);
-      const result = config.transferBlock(ctx, block, inEnv, function);
+      const unit = block.unit;
+      const inEnv = inEnvFor(block, unit, ctx.currentContext);
+      const result = config.transferBlock(ctx, block, inEnv, unit);
       // Paired-cell write: `.facts` has no transfer of its own, so its
       // cell is populated exclusively from here. Route through `ctx.write`
       // (not the store directly) so the eq-gated advance publishes a
@@ -320,17 +320,17 @@ export function makeBlockFixpointAnalysis<L>(
     edgeIter.reset(isForward ? b.successorEdges : b.predecessorEdges);
   envAnalysis.bind = (wl) => {
     // One extent-change subscriber covers both mint (prev empty) and rebuild
-    // (prev non-empty): re-seed the function, and on rebuild also evict cells
+    // (prev non-empty): re-seed the unit, and on rebuild also evict cells
     // whose blocks no longer belong to the rewired CFG.
-    wl.onExtentChange(envAnalysis, (_loc, function) => [seedKey(function)]);
-    wl.functions.onExtentChange((function, prev) => {
-      if (prev.size > 0) evictStaleBlockCells(envAnalysis.store, function);
+    wl.onExtentChange(envAnalysis, (_loc, unit) => [seedKey(unit)]);
+    wl.units.onExtentChange((unit, prev) => {
+      if (prev.size > 0) evictStaleBlockCells(envAnalysis.store, unit);
     });
     // Chain change invalidates the block fixpoint under the old chain;
     // re-seed the entry/exit block so the new chain's fixpoint starts from
     // the seed env rather than stale successor envs. Intrinsic to context-
     // sensitive block-DFA; every makeBlockFixpointAnalysis caller needs it.
-    wl.onChainChange(envAnalysis, (_loc, function) => [seedKey(function)]);
+    wl.onChainChange(envAnalysis, (_loc, unit) => [seedKey(unit)]);
     // Self-wake: block OUT env change → CFG successors recompute IN.
     wl.subscribeOnAdvance(envAnalysis, envAnalysis, (_ctx, key) =>
       downstreamBlocks(key as BasicBlock),
@@ -344,8 +344,8 @@ export function makeBlockFixpointAnalysis<L>(
   let boundLocator: BlockLocator | undefined;
   factsAnalysis.bind = (wl) => {
     boundLocator = wl.locate;
-    wl.functions.onExtentChange((function, prev) => {
-      if (prev.size > 0) evictStaleBlockCells(factsAnalysis.store, function);
+    wl.units.onExtentChange((unit, prev) => {
+      if (prev.size > 0) evictStaleBlockCells(factsAnalysis.store, unit);
     });
   };
 

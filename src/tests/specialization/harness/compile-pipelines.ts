@@ -81,7 +81,7 @@ export function setupWithAnalyses(code: string, analyses: WorklistConfig["analys
 
 export function compileOptimized(code: string): SVMLProgram {
   const { ast, environments, worklist } = setupAndDrain(code);
-  const compiler = SVMLCompiler.fromProgramFunction(ast, environments, dfaQueryFor(worklist));
+  const compiler = SVMLCompiler.fromProgramUnit(ast, environments, dfaQueryFor(worklist));
   return compiler.compileProgram(ast);
 }
 

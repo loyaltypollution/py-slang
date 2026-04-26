@@ -1,7 +1,7 @@
 // The publication boundary — between the specialization framework and
 // the execution layer that compiles and publishes its results.
 //
-// CONTRACT: Function is the only swap function, function-entry the only
+// CONTRACT: Function is the only swap unit, function-entry the only
 // swap channel. Specialized bodies become visible to executing code
 // strictly at the next CALL — never mid-frame, never at a back-edge,
 // never to a frame already running. In-flight frames continue under
@@ -14,12 +14,12 @@
 // have ratified an OSR contract, every part of the framework that
 // touches publication assumes "Function only, next-call only."
 //
-// Adding a second swap function kind, or any mid-frame swap channel,
+// Adding a second swap unit kind, or any mid-frame swap channel,
 // requires changing both this file's contract AND each backend's
 // runtime. It is not a glue-layer change. Resist the temptation to
 // generalize this interface in anticipation.
 //
-//   Q1 — what function do we analyze / transform / reschedule?
+//   Q1 — what unit do we analyze / transform / reschedule?
 //        → Function. See `framework/function-domain.ts`.
 //
 //   Q2 — what artifact gets published, and when?

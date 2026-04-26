@@ -80,7 +80,7 @@ function transferBlock<L>(
   block: BasicBlock,
   inEnv: MutableEnv<L>,
   module: BlockDfaSpec<L>,
-  function: Function,
+  unit: Function,
   context: AssumptionChain,
 ): BlockPassResult<L> {
   // Lazy fact-map allocation: most blocks record no per-expr facts.
@@ -89,8 +89,8 @@ function transferBlock<L>(
     if (exprFacts === undefined) exprFacts = new Map<number, L>();
     exprFacts.set(nodeId, val);
   };
-  const slotLookup = function.slotLookup;
-  const visitor = module.makeExprVisitor(inEnv, function, slotLookup, recordExprFact, context);
+  const slotLookup = unit.slotLookup;
+  const visitor = module.makeExprVisitor(inEnv, unit, slotLookup, recordExprFact, context);
   const stmts = block.stmts;
   if (module.direction === "backward") {
     for (let i = stmts.length - 1; i >= 0; i--) {
@@ -120,8 +120,8 @@ export function blockFixpointFromSpec<L>(
     valueLattice: module,
     mergeKind: module.mergeKind,
     seedEnv: () => new MutableEnv<L>(),
-    transferBlock: (ctx, block, inEnv, function) =>
-      transferBlock(block, inEnv, module, function, ctx.currentContext),
+    transferBlock: (ctx, block, inEnv, unit) =>
+      transferBlock(block, inEnv, module, unit, ctx.currentContext),
     refineOnEdge: module.refineOnEdge,
   });
 }
