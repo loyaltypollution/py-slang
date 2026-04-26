@@ -21,7 +21,7 @@ import { EvaluatorError } from "./errors";
  * the chain the body was pruned under is the same chain the arguments
  * produced a moment ago.
  *
- * Publication: this evaluator IS the `PublicationStrategy` (see
+ * Publication: this evaluator IS the `FunctionSwapStrategy` (see
  * `specialization/publication.ts`). The artifact (`SVMLIR`) is captured
  * directly into the new call frame and never installed back into
  * `SVMLProgram` — the only swap channel is the next-call dispatch.
