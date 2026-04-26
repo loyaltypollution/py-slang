@@ -1,5 +1,4 @@
-// FunctionManager — `UnitDomain<Function, FunctionLocator>` for the
-// only concrete unit kind today.
+// FunctionManager — the concrete `FunctionDomain` implementation.
 //
 // Owns three orthogonal pieces of state, all kept private:
 //
@@ -34,9 +33,8 @@ import type { BasicBlock, BlockLocator } from "../../regions/basic-block";
 import type {
   ChainChangeListener,
   ExtentChangeListener,
+  FunctionDomain,
   RefuteListener,
-  UnitDomain,
-  UnitLocator,
 } from "../../../framework/unit-domain";
 
 /** Read-only program-wide lookup surface for `Function`. Owned by
@@ -44,32 +42,33 @@ import type {
  *  as an explicit dependency rather than casting `AnalysisCtx` to a
  *  richer ctx.
  *
- *  Composes the two minimum surfaces: `UnitLocator<Function>` (one method
- *  the generic worklist needs) and `BlockLocator` (one method
- *  block-keyed analyses need). Adds `functionById` for callers that
- *  resolve a unit by its FunctionId boundary key. */
-export interface FunctionLocator extends UnitLocator<Function>, BlockLocator {
+ *  Composes `BlockLocator` (one method block-keyed analyses need),
+ *  `unitContainingNode` (the worklist's only required locator query),
+ *  and `functionById` for callers that resolve a unit by its
+ *  FunctionId boundary key. */
+export interface FunctionLocator extends BlockLocator {
+  /** The worklist's only required locator query — observation ingress
+   *  uses this to route NodeId-keyed events to their owning function. */
+  unitContainingNode(nodeId: NodeId): Function | undefined;
   /** Lookup by FunctionId boundary key (typically `funcAst.id`). */
   functionById(id: FunctionId): Function | undefined;
 }
 
-type ExtentListener = ExtentChangeListener<Function>;
-
-export class FunctionManager implements FunctionLocator, UnitDomain<Function, FunctionLocator> {
+export class FunctionManager implements FunctionLocator, FunctionDomain {
   // --- registry / locator state ---
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
   private readonly functionByNode = new Map<NodeId, Function>();
 
   // --- lifecycle state ---
   private readonly pendingRebuilds = new Set<Function>();
-  private readonly extentSubs: ExtentListener[] = [];
+  private readonly extentSubs: ExtentChangeListener[] = [];
 
   // --- chain / refute state ---
   /** Per-unit preferred chain for future compiles/dispatches. Unset or
    *  ROOT_CONTEXT means future dispatch is unspecialized. */
   private readonly futureDispatchContextByUnit = new Map<Function, AssumptionChain>();
-  private readonly chainSubs: ChainChangeListener<Function>[] = [];
-  private readonly refuteSubs: RefuteListener<Function>[] = [];
+  private readonly chainSubs: ChainChangeListener[] = [];
+  private readonly refuteSubs: RefuteListener[] = [];
 
   constructor(ast: StmtNS.FileInput, functionEnvironments: FunctionEnvironments) {
     for (const [, unit] of buildFunctions(ast, functionEnvironments)) {
@@ -79,7 +78,7 @@ export class FunctionManager implements FunctionLocator, UnitDomain<Function, Fu
 
   // --- locator surface ---
 
-  /** `UnitDomain.locator` — `FunctionManager` is its own locator. */
+  /** `FunctionDomain.locator` — `FunctionManager` is its own locator. */
   get locator(): FunctionLocator { return this; }
 
   values(): Iterable<Function> {
@@ -90,8 +89,8 @@ export class FunctionManager implements FunctionLocator, UnitDomain<Function, Fu
     return this.functionsByFunctionId.get(id);
   }
 
-  /** `UnitLocator<Function>` — the generic worklist's only required
-   *  locator query. */
+  /** The worklist's only required locator query — used by observation
+   *  ingress to route NodeId-keyed events to their owning function. */
   unitContainingNode(nodeId: NodeId): Function | undefined {
     return this.functionByNode.get(nodeId);
   }
@@ -107,14 +106,14 @@ export class FunctionManager implements FunctionLocator, UnitDomain<Function, Fu
    *  time with `prev = EMPTY_NODESET` so late subscribers replay the mint
    *  burst. Rebuild fires `(unit, prevSnapshot, nextSnapshot)`.
    *  Eviction listeners gate on `prev.size > 0`. */
-  onExtentChange(cb: ExtentListener): void {
+  onExtentChange(cb: ExtentChangeListener): void {
     this.extentSubs.push(cb);
     for (const unit of this.functionsByFunctionId.values()) {
       cb(unit, EMPTY_NODESET, this.snapshotExtent(unit));
     }
   }
 
-  /** `UnitDomain.extentOf(unit)` — public snapshot of `unit`'s current
+  /** `FunctionDomain.extentOf(unit)` — public snapshot of `unit`'s current
    *  CFG-owned ids. Same shape as the `next` payload on the extent stream. */
   extentOf(unit: Function): UnitExtent {
     return this.snapshotExtent(unit);
@@ -155,7 +154,7 @@ export class FunctionManager implements FunctionLocator, UnitDomain<Function, Fu
     this.futureDispatchContextByUnit.delete(unit);
   }
 
-  onChainChange(cb: ChainChangeListener<Function>): void {
+  onChainChange(cb: ChainChangeListener): void {
     this.chainSubs.push(cb);
   }
 
@@ -165,7 +164,7 @@ export class FunctionManager implements FunctionLocator, UnitDomain<Function, Fu
 
   // --- refute (orthogonal to chain change) ---
 
-  onRefute(cb: RefuteListener<Function>): void {
+  onRefute(cb: RefuteListener): void {
     this.refuteSubs.push(cb);
   }
 

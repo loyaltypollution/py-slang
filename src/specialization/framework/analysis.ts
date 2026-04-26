@@ -50,7 +50,7 @@ export interface Analysis<K extends NodeSet, V> {
   transfer(ctx: AnalysisCtx, key: K): V | undefined;
 
   /** Optional registration hook. Called by `Worklist.register`. */
-  bind?(worklist: Worklist<any, any>): void;
+  bind?(worklist: Worklist): void;
 }
 
 /** Pair of (analysis, seed-key) re-enqueued at every narrowing-entry to
@@ -87,7 +87,7 @@ export interface Narrowing<K = any, V = unknown, O = unknown> extends NarrowingA
   lift?(observed: O): V | undefined;
   /** Defaults at the worklist to `(loc, key) => loc.unitContainingNode(key)`
    *  when omitted — i.e. the observation key is treated as a NodeId. */
-  resolveUnit?(locator: any, key: K): unknown;
+  resolveUnit?(locator: FunctionLocator, key: K): Function | undefined;
 }
 
 /** Generic transfer-time context. The framework knows about chain-walking
@@ -130,23 +130,19 @@ export interface TransformResult {
 /** Narrow capability surface offered to a `TransformRule.bind`. Lets a
  *  transform register dirtying subscriptions and refute hooks without
  *  receiving the full `Worklist` (and the read/write powers that come
- *  with it).
- *
- *  Generic over `(U, L)` — the same unit kind / locator the owning
- *  worklist dispatches over. Defaults to `(Function, FunctionLocator)`
- *  so existing call sites compile unchanged. */
-export interface TransformBindCtx<U = Function, L = FunctionLocator> {
+ *  with it). */
+export interface TransformBindCtx {
   onTransformFactDirty<K extends NodeSet>(
-    rule: TransformRule<U, L>,
+    rule: TransformRule,
     from: Analysis<K, any>,
-    dirtied: (locator: L, key: K) => Iterable<U>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
   ): void;
   onPolicyCounterAdvance<K>(
-    rule: TransformRule<U, L>,
+    rule: TransformRule,
     counter: SaturatingCounter<K>,
-    dirtied: (locator: L, key: K) => Iterable<U>,
+    dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
   ): void;
-  onRefute(cb: (unit: U, carrier: AssumptionChain) => void): void;
+  onRefute(cb: (unit: Function, carrier: AssumptionChain) => void): void;
 }
 
 /** Imperative AST sweep gated on analyses. No lattice, no transfer, no store
@@ -156,19 +152,13 @@ export interface TransformBindCtx<U = Function, L = FunctionLocator> {
  *  `TransformResult` distinguishes canonical-body mutation from speculative
  *  variant mutation. Only canonical mutation requires CFG rebuild. Variant
  *  sweeps may also update cached speculative bodies; those rules are
- *  responsible for keeping descendant caches coherent while they rewrite.
- *
- *  Generic over `(U, L)` so a single worklist can drive transforms over
- *  any unit kind it owns; defaults to `(Function, FunctionLocator)`.
- *  Polymorphism is over **unit kinds**, not arbitrary `NodeSet` regions —
- *  blocks/loops remain subordinate `NodeSet`s unless they graduate to a
- *  full unit. */
-export interface TransformRule<U = Function, L = FunctionLocator> {
+ *  responsible for keeping descendant caches coherent while they rewrite. */
+export interface TransformRule {
   /** Returns the structural effect of one sweep at `chain = chainFor(unit)`.
    *  `canonicalChanged` means `unit` needs a rebuild; `touchedWitnesses`
    *  record which speculative ancestors were rewritten. */
-  sweep(unit: U, chain: AssumptionChain, locator: L): TransformResult;
-  bind?(ctx: TransformBindCtx<U, L>): void;
+  sweep(unit: Function, chain: AssumptionChain, locator: FunctionLocator): TransformResult;
+  bind?(ctx: TransformBindCtx): void;
 }
 
 /** Construct an `Analysis`, auto-attaching its `store` from `storeAlgebra`
