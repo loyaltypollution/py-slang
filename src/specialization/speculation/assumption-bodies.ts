@@ -7,11 +7,14 @@ import type { Function } from "../program/function/function";
 
 const bodies: WeakMap<Function, Map<AssumptionChain, StmtNS.Stmt[]>> = new WeakMap();
 
-/** Deepest non-refuted stored fork ⊑ `s`, else `unit.body`. */
+/** Deepest stored fork ⊑ `s`, else `unit.body`.
+ *
+ *  Precondition: `s` is non-refuted. Refutation is the dispatch-lane
+ *  caller's pre-check — no stored fork `k ⊑ s` can be refuted while `s`
+ *  itself is not, since `r ⊑ k ⊑ s ⇒ r ⊑ s`. */
 export function visibleBody(
   unit: Function,
   s: AssumptionChain,
-  isRefuted?: (s: AssumptionChain) => boolean,
 ): readonly StmtNS.Stmt[] {
   if (isRoot(s)) return unit.body;
   const m = bodies.get(unit);
@@ -19,7 +22,6 @@ export function visibleBody(
   let best: AssumptionChain | undefined;
   for (const k of m.keys()) {
     if (!leq(k, s)) continue;
-    if (isRefuted?.(k)) continue;
     if (best === undefined || k.depth > best.depth) best = k;
   }
   return best !== undefined ? m.get(best)! : unit.body;

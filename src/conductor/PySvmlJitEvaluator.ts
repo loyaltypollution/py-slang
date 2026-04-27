@@ -11,24 +11,6 @@ import memo from "../stdlib/memo";
 import misc from "../stdlib/misc";
 import { EvaluatorError } from "./errors";
 
-/**
- * SVML evaluator with JIT specialization — V2 collapse.
- *
- * No dispatch tree, no IR cache, no deopt path. Each CALL goes through
- * `dispatchCall`: observe runtime events, derive the specialized body under
- * the resulting (live-correct) chain, compile to fresh SVMLIR, return it
- * for this one invocation. Precision drift is impossible by construction:
- * the chain the body was pruned under is the same chain the arguments
- * produced a moment ago.
- *
- * Publication: this evaluator IS the `FunctionSwapStrategy` (see
- * `specialization/publication.ts`). The artifact (`SVMLIR`) is captured
- * directly into the new call frame and never installed back into
- * `SVMLProgram` — the only swap channel is the next-call dispatch.
- *
- * Symmetric with `PyCseJitEvaluator.dispatchCall`, modulo the final
- * `compiler.compileFunction` step that lowers the chosen body to bytecode.
- */
 export class PySvmlJitEvaluator extends BasicEvaluator {
   async evaluateChunk(chunk: string): Promise<void> {
     try {

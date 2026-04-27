@@ -11,10 +11,9 @@ import type {
   JoinSemiLattice,
 } from "../../framework/analysis";
 import { defineAnalysis } from "../../framework/analysis";
-import { internSingletonNode } from "../../program/node-set";
+import type { NodeSet } from "../../program/node-set";
 import type { BasicBlock } from "../../program/basic-block";
 import type { Function } from "../../program/function/function";
-import type { FunctionLocator } from "../../program/function/manager";
 import { isCapture, isLocal, type SlotLookup } from "../../program/function/slot-table";
 import { MutableEnv } from "../block-env";
 import { constAnalysis } from "../const/analysis";
@@ -253,7 +252,7 @@ function transferStmt(
       if (!isLocal(info)) { state.impure = true; return; }
       // `undefined` = scope verdict pending; readDeepest records the dep so
       // this block re-runs when the verdict lands.
-      const innerUnit = boundLocator?.functionById(fd.id);
+      const innerUnit = state.ctx.locator.functionById(fd.id);
       const innerPure = innerUnit !== undefined
         ? state.ctx.readDeepest(purityFunctionAnalysis, innerUnit)?.value
         : undefined;
@@ -272,10 +271,6 @@ function transferStmt(
 const EMPTY_EXPR_FACTS: ReadonlyMap<number, AbsVal> = new Map();
 
 const POOLED_PURITY_VISITOR = new PurityExprVisitor();
-
-/** Captured at `purityFunctionAnalysis.bind` time so the per-block transfer
- *  can resolve nested-FunctionDef ids without casting AnalysisCtx. */
-let boundLocator: FunctionLocator | undefined;
 
 export const purityBlockAnalysis: BlockFixpointAnalysis<AbsVal> =
   makeBlockFixpointAnalysis<AbsVal>({
@@ -350,20 +345,26 @@ export const purityFunctionAnalysis: Analysis<Function, boolean | undefined> = d
     }
     return anyVisited ? true : undefined;
   },
-  bind(wl) {
-    boundLocator = wl.locate;
+  bind(ctx) {
     const unitOf = (unit: Function): Function[] =>
       unit.funcAst instanceof StmtNS.FunctionDef ? [unit] : [];
-    wl.onExtentChange(purityFunctionAnalysis, (_loc, unit) => unitOf(unit));
-    wl.onChainChange(purityFunctionAnalysis, (_loc, unit) => unitOf(unit));
+    ctx.onExtentChange((unit) => {
+      for (const u of unitOf(unit)) ctx.enqueue(purityFunctionAnalysis, u);
+    });
+    ctx.onChainChange(purityFunctionAnalysis, (_loc, unit) => unitOf(unit));
     // Delta-routed wake on per-block purity facts. Interest is the IMPURE
     // sentinel only — the verdict is a join over reachable blocks of
     // "did any block emit IMPURE_SENTINEL?", so a block-fact advance that
     // doesn't touch that sentinel cannot move the verdict.
-    wl.subscribe(
+    const impureSentinelInterest: NodeSet = {
+      contains: (n) => n === IMPURE_SENTINEL_NODE_ID,
+      size: 1,
+      iterate: () => [IMPURE_SENTINEL_NODE_ID],
+    };
+    ctx.subscribe(
       purityBlockAnalysis.facts as Analysis<any, any>,
       purityFunctionAnalysis,
-      internSingletonNode(IMPURE_SENTINEL_NODE_ID),
+      impureSentinelInterest,
       (_ctx, key) => unitOf((key as BasicBlock).unit),
     );
   },

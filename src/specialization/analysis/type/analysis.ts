@@ -2,7 +2,8 @@ import { ExprNS, StmtNS } from "../../../ast-types";
 import { TokenType } from "../../../tokenizer";
 import { blockFixpointFromSpec } from "../../analysis/stmt-transfer";
 import { type AssumptionChain, at, isRoot } from "../../assumption";
-import type { Narrowing, NodeId } from "../../framework/analysis";
+import type { NarrowingAxis } from "../../assumption/chain";
+import type { NodeId } from "../../framework/analysis";
 import { paramTypeNarrowing } from "../../narrowing-policy/param-handles";
 import type { ParamKey } from "../../narrowing-policy/param-key";
 import type { RawKind } from "../../observation/raw-value";
@@ -78,11 +79,11 @@ const COMPARE_OP_MAP: ReadonlyMap<TokenType, string> = new Map([
 
 /** Node-keyed type-narrowing. A `(typeNarrowing, nodeId, lattice)` binding in
  *  a non-ROOT context is met into the per-node fact via `annotate` — no
- *  separate store. Currently used by tests only; production param/return
- *  bindings live in `narrowing-policy/` and `type-requirement/`. */
-export const typeNarrowing: Narrowing<NodeId, TypeLattice> = {
+ *  separate store. Tests-only axis: production param/return bindings live in
+ *  `narrowing-policy/` and `type-requirement/`. Algebra-only — never reaches
+ *  `WorklistConfig.narrowings`. */
+export const typeNarrowing: NarrowingAxis<NodeId, TypeLattice> = {
   eq,
-  blockAnalysis: () => typeAnalysis,
 };
 
 class TypeAnalysisVisitor implements ExprNS.Visitor<TypeLattice> {
@@ -305,10 +306,10 @@ const typeAnalysisModule: BlockDfaSpec<TypeLattice> = {
     );
   },
   /** Narrow env on branch edge. Handles `slot OP literal` / `literal OP slot`
-   *  (six comparison ops) and `not c`. Other predicate shapes return `env`
-   *  unchanged — sound no-op. */
+   *  (six comparison ops) and `not c`. Returns `undefined` for unconditional
+   *  edges and unrecognized predicate shapes — sound no-op. */
   refineOnEdge(env, edge, unit) {
-    if (edge.kind === "unconditional") return env;
+    if (edge.kind === "unconditional") return undefined;
     const truth = edge.kind === "branch-true";
     return applyPredicate(env, edge.condition, truth, unit.slotLookup);
   },
@@ -420,14 +421,14 @@ function negateOp(op: string): string {
   }
 }
 
-/** Apply a predicate to the env. Returns `env` unchanged when no refinement
- *  is possible — callers use identity to skip the snapshot. */
+/** Apply a predicate to the env. Returns a fresh snapshot with the
+ *  narrowing applied, or `undefined` when no refinement is possible. */
 function applyPredicate(
   env: MutableEnv<TypeLattice>,
   cond: ExprNS.Expr,
   truth: boolean,
   slotLookup: SlotLookup,
-): MutableEnv<TypeLattice> {
+): MutableEnv<TypeLattice> | undefined {
   if (cond instanceof ExprNS.Unary && cond.operator.type === TokenType.NOT) {
     return applyPredicate(env, cond.right, !truth, slotLookup);
   }
@@ -440,9 +441,9 @@ function applyPredicate(
     return refineSlot(env, cond, truth ? TRUTHY_MASK : FALSY_MASK, slotLookup);
   }
 
-  if (!(cond instanceof ExprNS.Compare)) return env;
+  if (!(cond instanceof ExprNS.Compare)) return undefined;
   const opStr = COMPARE_OP_MAP.get(cond.operator.type);
-  if (opStr === undefined) return env;
+  if (opStr === undefined) return undefined;
 
   // Push negation into the operator so `leftSlotRefinement` sees the
   // predicate as directly asserted. Then normalize to `slot OP literal` form.
@@ -461,29 +462,29 @@ function applyPredicate(
     litValue = leftLit;
     normalizedOp = swapOp(effectiveOp);
   } else {
-    return env;
+    return undefined;
   }
 
   const ref = leftSlotRefinement(normalizedOp, litValue);
-  if (ref === undefined) return env;
+  if (ref === undefined) return undefined;
 
   return refineSlot(env, slotVar, numericRefinement(ref), slotLookup);
 }
 
-/** Meet-refine a slot's env entry by `mask`; snapshot only when the value
- *  changes. Returns `env` unchanged when the slot is non-local or the meet
- *  is a no-op. */
+/** Meet-refine a slot's env entry by `mask`. Returns a fresh snapshot with
+ *  the narrowing applied, or `undefined` when the slot is non-local or the
+ *  meet is a no-op. */
 function refineSlot(
   env: MutableEnv<TypeLattice>,
   slotVar: ExprNS.Variable,
   mask: TypeLattice,
   slotLookup: SlotLookup,
-): MutableEnv<TypeLattice> {
+): MutableEnv<TypeLattice> | undefined {
   const info = slotLookup(slotVar.name);
-  if (!isLocal(info)) return env;
+  if (!isLocal(info)) return undefined;
   const existing = env.get(info.slot) ?? TOP;
   const refined = meet(existing, mask);
-  if (refined === existing) return env;
+  if (refined === existing) return undefined;
   const out = env.snapshot();
   out.set(info.slot, refined);
   return out;

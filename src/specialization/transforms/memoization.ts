@@ -11,7 +11,7 @@ import type { Function } from "../program/function/function";
 import { runtimeCallHotness } from "../observation/runtime-analyses";
 import type { FunctionLocator } from "../program/function/manager";
 import { purityFunctionAnalysis } from "../analysis";
-import { transformResultFor } from "./witness-utils";
+import { transformResultFor } from "./witness-sweep";
 
 const [MEMO_HAS, MEMO_GET, MEMO_PUT] = MEMO_INTRINSIC_NAMES;
 

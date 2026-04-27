@@ -12,19 +12,7 @@ const CLOSURE: RawKind = { kind: "closure" };
 const COMPLEX: RawKind = { kind: "complex" };
 export const RAW_UNKNOWN: RawKind = { kind: "unknown" };
 
-// One-slot last-seen memo: hot loops re-observe the same primitive.
-let lastRaw: unknown = Symbol("cache-miss-sentinel");
-let lastKind: RawKind = RAW_UNKNOWN;
-
 export function classifyRawValue(raw: unknown): RawKind {
-  if (raw === lastRaw) return lastKind;
-  const classified = classify(raw);
-  lastRaw = raw;
-  lastKind = classified;
-  return classified;
-}
-
-function classify(raw: unknown): RawKind {
   if (raw === null || raw === undefined) return NONE;
   if (typeof raw === "number") return { kind: "number", value: raw };
   if (typeof raw === "boolean") return { kind: "bool", value: raw };

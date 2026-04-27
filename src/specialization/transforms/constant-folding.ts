@@ -1,46 +1,35 @@
-import { ExprNS } from "../../ast-types";
+import { ExprNS, StmtNS } from "../../ast-types";
 import { constAnalysis, type ConstLattice } from "../analysis";
 import type { TransformRule } from "../framework/analysis";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/function/function";
 import type { FunctionLocator } from "../program/function/manager";
-import {
-  DescendingExprVisitor,
-  ExprDrivenStmtVisitor,
-  runWitnessSweep,
-  walkExprs,
-  type Witnessed,
-} from "./witness-utils";
+import { DescendingExprVisitor, IdReplacer, rewriteStmtRhs } from "./expr-visitor";
+import { groupPlansByWitness, runPerWitness } from "./witness-sweep";
 
-type ConstHit = Witnessed<Extract<ConstLattice, { tag: "const" }>>;
+type Plan = { witness: AssumptionChain; replacement: ExprNS.Expr };
 
-function readConst(
-  chain: AssumptionChain,
-  view: FunctionLocator,
-  nodeId: number,
-): ConstHit | undefined {
-  return constAnalysis
-    .perExpr(view)
-    .readMinimal(chain, nodeId, (cv: ConstLattice) => cv.tag === "const") as ConstHit | undefined;
-}
-
-class ConstFoldExprVisitor extends DescendingExprVisitor {
-  changed = false;
-
+class ConstFoldMatcher extends DescendingExprVisitor {
   constructor(
     private readonly chain: AssumptionChain,
     private readonly view: FunctionLocator,
+    private readonly out: Map<number, Plan>,
   ) {
     super();
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
     super.visitBinaryExpr(expr);
-    const cv = readConst(this.chain, this.view, expr.id);
-    if (cv === undefined || cv.witness !== this.chain) return expr;
-    this.changed = true;
-    return new ExprNS.Literal(expr.startToken, expr.endToken, cv.value.value);
+    const cv = constAnalysis
+      .perExpr(this.view)
+      .readMinimal(this.chain, expr.id, (v: ConstLattice) => v.tag === "const");
+    if (cv === undefined || cv.value.tag !== "const") return expr;
+    this.out.set(expr.id, {
+      witness: cv.witness,
+      replacement: new ExprNS.Literal(expr.startToken, expr.endToken, cv.value.value),
+    });
+    return expr;
   }
 }
 
@@ -49,16 +38,13 @@ export const constantFoldingRule: TransformRule = {
     wl.onTransformFactDirty(constantFoldingRule, constAnalysis.facts, (_, b) => [b.unit]);
   },
   sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator) {
-    const witnesses = new Set<AssumptionChain>();
-    walkExprs(visibleBody(unit, chain), e => {
-      if (!(e instanceof ExprNS.Binary)) return;
-      const info = readConst(chain, view, e.id);
-      if (info !== undefined) witnesses.add(info.witness);
+    const plans = new Map<number, Plan>();
+    rewriteStmtRhs(visibleBody(unit, chain) as StmtNS.Stmt[], new ConstFoldMatcher(chain, view, plans));
+
+    return runPerWitness(unit, groupPlansByWitness(plans), (body, replacements) => {
+      const replacer = new IdReplacer(replacements);
+      rewriteStmtRhs(body, replacer);
+      return replacer.changed;
     });
-    return runWitnessSweep(
-      unit,
-      witnesses,
-      witness => new ExprDrivenStmtVisitor(new ConstFoldExprVisitor(witness, view)),
-    );
   },
 };

@@ -13,12 +13,7 @@
 
 import type { StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
-import {
-  EMPTY_NODESET,
-  nodeSetOfIds,
-  type NodeId,
-} from "../node-set";
-import type { FunctionExtent } from "../function-extent";
+import type { NodeId } from "../node-set";
 import {
   buildFunctions,
   wireCFG,
@@ -90,50 +85,49 @@ export class FunctionManager implements FunctionLocator, FunctionDomain {
   // --- lifecycle (extent stream + rebuild) ---
 
   /** Sole lifecycle primitive. Fires for every existing unit at subscribe
-   *  time with `prev = EMPTY_NODESET` so late subscribers replay the mint
-   *  burst. Rebuild fires `(unit, prevSnapshot, nextSnapshot)`.
-   *  Eviction listeners gate on `prev.size > 0`. */
+   *  time with `isMint = true` so late subscribers replay the mint burst;
+   *  rebuild fires with `isMint = false`. */
   onExtentChange(cb: ExtentChangeListener): void {
     this.extentSubs.push(cb);
-    for (const unit of this.functionsByFunctionId.values()) {
-      cb(unit, EMPTY_NODESET, this.snapshotExtent(unit));
-    }
-  }
-
-  /** `FunctionDomain.extentOf(unit)` — public snapshot of `unit`'s current
-   *  CFG-owned ids. Same shape as the `next` payload on the extent stream. */
-  extentOf(unit: Function): FunctionExtent {
-    return this.snapshotExtent(unit);
+    for (const unit of this.functionsByFunctionId.values()) cb(unit, true);
   }
 
   scheduleRebuild(unit: Function): void {
+    if (!this.functionsByFunctionId.has(unit.funcAst.id)) {
+      throw new Error(
+        `[FunctionManager] scheduleRebuild for unregistered unit (FunctionId ${unit.funcAst.id}).`,
+      );
+    }
     this.pendingRebuilds.add(unit);
   }
 
   flushPendingRebuilds(): readonly Function[] {
     if (this.pendingRebuilds.size === 0) return [];
-    const rebuilt: { unit: Function; prev: FunctionExtent; next: FunctionExtent }[] = [];
+    const rebuilt: Function[] = [];
     for (const unit of this.pendingRebuilds) {
-      const prev = this.snapshotExtent(unit);
       for (const id of unit.nodeToBlock.keys()) this.functionByNode.delete(id);
       wireCFG(unit);
       this.indexUnitNodes(unit);
-      rebuilt.push({ unit, prev, next: this.snapshotExtent(unit) });
+      rebuilt.push(unit);
     }
     this.pendingRebuilds.clear();
-    for (const { unit, prev, next } of rebuilt) {
-      for (const sub of this.extentSubs) sub(unit, prev, next);
+    for (const unit of rebuilt) {
+      for (const sub of this.extentSubs) sub(unit, false);
     }
-    return rebuilt.map(r => r.unit);
+    return rebuilt;
   }
 
-  // --- internals ---
-
-  private snapshotExtent(unit: Function): FunctionExtent {
-    return nodeSetOfIds(new Set(unit.nodeToBlock.keys())) as FunctionExtent;
-  }
-
+  // Units are program-stable: the registry is populated once at construction
+  // from the AST and never mutated afterwards. `scheduleRebuild` re-wires an
+  // existing unit's CFG; it does not add or remove units. If specialization
+  // ever inlines a function or eliminates a definition, this assert will
+  // surface the divergence rather than silently double-registering.
   private registerUnit(unit: Function): void {
+    if (this.functionsByFunctionId.has(unit.funcAst.id)) {
+      throw new Error(
+        `[FunctionManager] duplicate registration for FunctionId ${unit.funcAst.id} — units are program-stable.`,
+      );
+    }
     this.functionsByFunctionId.set(unit.funcAst.id, unit);
     this.indexUnitNodes(unit);
   }

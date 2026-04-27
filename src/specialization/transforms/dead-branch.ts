@@ -5,13 +5,16 @@ import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/function/function";
 import type { FunctionLocator } from "../program/function/manager";
 import { BOOL_BIT, BoolRef, type TypeLattice, typeAnalysis } from "../analysis";
-import { BaseStmtVisitor, runWitnessSweep, type Witnessed } from "./witness-utils";
+import { BaseStmtVisitor } from "./expr-visitor";
+import { groupPlansByWitness, runPerWitness } from "./witness-sweep";
+
+type Plan = { witness: AssumptionChain; replacement: StmtNS.Stmt[] };
 
 function boolCondition(
-  chain: AssumptionChain,
   view: FunctionLocator,
+  chain: AssumptionChain,
   nodeId: number,
-): Witnessed<TypeLattice> | undefined {
+): { value: TypeLattice; witness: AssumptionChain } | undefined {
   return typeAnalysis
     .perExpr(view)
     .readMinimal(
@@ -22,32 +25,48 @@ function boolCondition(
     );
 }
 
-function collectConstCondWitnesses(
-  stmts: readonly StmtNS.Stmt[],
-  chain: AssumptionChain,
-  view: FunctionLocator,
-  out: Set<AssumptionChain>,
-): void {
-  for (const s of stmts) {
-    if (s instanceof StmtNS.If) {
-      const r = boolCondition(chain, view, s.condition.id);
-      if (r !== undefined) out.add(r.witness);
-      collectConstCondWitnesses(s.body, chain, view, out);
-      if (s.elseBlock) collectConstCondWitnesses(s.elseBlock, chain, view, out);
-    } else if (s instanceof StmtNS.While || s instanceof StmtNS.For) {
-      collectConstCondWitnesses(s.body, chain, view, out);
-    } else if (s instanceof StmtNS.FileInput) {
-      collectConstCondWitnesses(s.statements, chain, view, out);
-    }
-  }
-}
-
-class DeadBranchVisitor extends BaseStmtVisitor {
-  changed = false;
+class DeadBranchMatcher extends BaseStmtVisitor {
   constructor(
     private readonly chain: AssumptionChain,
     private readonly view: FunctionLocator,
+    private readonly out: Map<number, Plan>,
   ) {
+    super();
+  }
+
+  walk(stmts: readonly StmtNS.Stmt[]): void {
+    for (const s of stmts) {
+      if (s instanceof StmtNS.If) {
+        const r = boolCondition(this.view, this.chain, s.condition.id);
+        if (r !== undefined) {
+          this.out.set(s.id, {
+            witness: r.witness,
+            replacement: r.value.boolRef === BoolRef.True ? [...s.body] : [...(s.elseBlock ?? [])],
+          });
+        }
+      }
+      s.accept(this);
+    }
+  }
+
+  visitIfStmt(s: StmtNS.If): void {
+    this.walk(s.body);
+    if (s.elseBlock) this.walk(s.elseBlock);
+  }
+  visitWhileStmt(s: StmtNS.While): void {
+    this.walk(s.body);
+  }
+  visitForStmt(s: StmtNS.For): void {
+    this.walk(s.body);
+  }
+  visitFileInputStmt(s: StmtNS.FileInput): void {
+    this.walk(s.statements);
+  }
+}
+
+class DeadBranchSplicer extends BaseStmtVisitor {
+  changed = false;
+  constructor(private readonly replacements: ReadonlyMap<number, StmtNS.Stmt[]>) {
     super();
   }
 
@@ -55,37 +74,32 @@ class DeadBranchVisitor extends BaseStmtVisitor {
     let i = 0;
     while (i < stmts.length) {
       const s = stmts[i];
-      const replacement = this.tryReplaceIf(s);
-      if (replacement !== null) {
-        stmts.splice(i, 1, ...replacement);
-        this.changed = true;
-        // Do not advance i: spliced-in head may itself be a dead `If`.
-      } else {
-        s.accept(this);
-        i++;
+      if (s instanceof StmtNS.If) {
+        const r = this.replacements.get(s.id);
+        if (r !== undefined) {
+          stmts.splice(i, 1, ...r);
+          this.changed = true;
+          // Do not advance: spliced-in head may itself be a dead `If`.
+          continue;
+        }
       }
+      s.accept(this);
+      i++;
     }
   }
 
-  private tryReplaceIf(stmt: StmtNS.Stmt): StmtNS.Stmt[] | null {
-    if (!(stmt instanceof StmtNS.If)) return null;
-    const r = boolCondition(this.chain, this.view, stmt.condition.id);
-    if (r === undefined || r.witness !== this.chain) return null;
-    return r.value.boolRef === BoolRef.True ? stmt.body : (stmt.elseBlock ?? []);
+  visitIfStmt(s: StmtNS.If): void {
+    this.sweep(s.body);
+    if (s.elseBlock) this.sweep(s.elseBlock);
   }
-
-  visitIfStmt(stmt: StmtNS.If): void {
-    this.sweep(stmt.body);
-    if (stmt.elseBlock) this.sweep(stmt.elseBlock);
+  visitWhileStmt(s: StmtNS.While): void {
+    this.sweep(s.body);
   }
-  visitWhileStmt(stmt: StmtNS.While): void {
-    this.sweep(stmt.body);
+  visitForStmt(s: StmtNS.For): void {
+    this.sweep(s.body);
   }
-  visitForStmt(stmt: StmtNS.For): void {
-    this.sweep(stmt.body);
-  }
-  visitFileInputStmt(stmt: StmtNS.FileInput): void {
-    this.sweep(stmt.statements);
+  visitFileInputStmt(s: StmtNS.FileInput): void {
+    this.sweep(s.statements);
   }
 }
 
@@ -94,8 +108,13 @@ export const deadBranchRule: TransformRule = {
     wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, (_, b) => [b.unit]);
   },
   sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator) {
-    const witnesses = new Set<AssumptionChain>();
-    collectConstCondWitnesses(visibleBody(unit, chain), chain, view, witnesses);
-    return runWitnessSweep(unit, witnesses, witness => new DeadBranchVisitor(witness, view));
+    const plans = new Map<number, Plan>();
+    new DeadBranchMatcher(chain, view, plans).walk(visibleBody(unit, chain) as StmtNS.Stmt[]);
+
+    return runPerWitness(unit, groupPlansByWitness(plans), (body, replacements) => {
+      const splicer = new DeadBranchSplicer(replacements);
+      splicer.sweep(body);
+      return splicer.changed;
+    });
   },
 };

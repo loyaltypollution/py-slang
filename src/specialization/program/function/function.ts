@@ -1,6 +1,6 @@
 import { ExprNS, StmtNS } from "../../../ast-types";
 import type { FunctionEnvironments } from "../../../resolver";
-import type { NodeId, NodeSet } from "../node-set";
+import type { NodeId } from "../node-set";
 import type { BasicBlock, CFG } from "../basic-block";
 import { buildCFG } from "../basic-block";
 import type { SlotLookup } from "./slot-table";
@@ -20,16 +20,13 @@ export type FunctionId = NodeId;
 /** Per-scope optimization unit. Owns its CFG materialization in-place:
  *  `cfg` and `nodeToBlock` are produced by `wireCFG` and replaced by
  *  `FunctionManager.flushPendingRebuilds`. */
-export interface Function extends NodeSet {
+export interface Function {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
   cfg: CFG;
   nodeToBlock: Map<NodeId, BasicBlock>;
   blockOfNode(nodeId: NodeId): BasicBlock | undefined;
-  contains(n: NodeId): boolean;
-  readonly size: number;
-  iterate(): Iterable<NodeId>;
 }
 
 /** No recursion into nested scopes — see `buildFunctions`. */
@@ -53,15 +50,6 @@ function buildOneFunction(
     },
     blockOfNode(nodeId) {
       return unit.nodeToBlock.get(nodeId);
-    },
-    contains(nodeId) {
-      return unit.nodeToBlock.has(nodeId);
-    },
-    get size(): number {
-      return unit.nodeToBlock.size;
-    },
-    iterate() {
-      return unit.nodeToBlock.keys();
     },
   };
   wireCFG(unit);

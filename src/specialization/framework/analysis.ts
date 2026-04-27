@@ -5,7 +5,6 @@ import type { Function } from "../program/function/function";
 import type { FunctionLocator } from "../program/function/manager";
 import type { NodeId, NodeSet } from "../program/node-set";
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
-import type { Worklist } from "./worklist";
 
 export type { NodeId, NodeSet } from "../program/node-set";
 
@@ -26,11 +25,10 @@ export interface Lattice<V> extends JoinSemiLattice<V> {
   meet(a: V, b: V): V;
 }
 
-/** A computation over per-analysis fact cells. `K` is the key space — must
- *  extend `NodeSet` so the worklist can route delta-bearing writes by node-id
- *  intersection. `V` is the stored cell domain. `transfer` returning
- *  `undefined` means "no write". */
-export interface Analysis<K extends NodeSet, V> {
+/** A computation over per-analysis fact cells. `K` is the key space (opaque
+ *  to the framework — bus routing is per-subscription, not per-key). `V` is
+ *  the stored cell domain. `transfer` returning `undefined` means "no write". */
+export interface Analysis<K, V> {
   readonly storeAlgebra: JoinSemiLattice<V>;
   /** Override for the unwritten-cell default. Falls back to
    *  `storeAlgebra.bottom`. */
@@ -50,7 +48,44 @@ export interface Analysis<K extends NodeSet, V> {
   transfer(ctx: AnalysisCtx, key: K): V | undefined;
 
   /** Optional registration hook. Called by `Worklist.register`. */
-  bind?(worklist: Worklist): void;
+  bind?(ctx: AnalysisBindCtx): void;
+}
+
+/** Narrow capability surface offered to an `Analysis.bind`. Lets an analysis
+ *  register lifecycle / fact-routing subscriptions without receiving the full
+ *  `Worklist` (and the read/write/observe powers that come with it).
+ *
+ *  `onExtentChange` always carries the `isMint` flag; the worklist's own
+ *  `onExtentChange` convenience that drops the flag is internal. */
+export interface AnalysisBindCtx {
+  /** Subscribe to mint and rebuild on any unit. `isMint` is `true` for the
+   *  subscribe-time replay of every existing unit, `false` for rebuilds. */
+  onExtentChange(cb: (unit: Function, isMint: boolean) => void): void;
+  /** Enqueue `(analysis, key)` at `ROOT_CONTEXT`. Lifecycle hooks
+   *  (e.g. extent-change handlers that need to seed work) call this to
+   *  schedule a transfer without reaching for the full worklist. */
+  enqueue<K>(analysis: Analysis<K, any>, key: K): void;
+  /** Subscribe `reader` to chain changes on any unit's preferred future-
+   *  dispatch chain. Re-enqueues at `ROOT_CONTEXT`. */
+  onChainChange<K>(
+    reader: Analysis<K, any>,
+    dirtied: (locator: FunctionLocator, unit: Function) => Iterable<K>,
+  ): void;
+  /** Subscribe `reader` to advancing writes on `from` whose published node
+   *  delta intersects `interest`. */
+  subscribe<K>(
+    from: Analysis<any, any>,
+    reader: Analysis<K, any>,
+    interest: NodeSet,
+    dirtied: (locator: FunctionLocator, key: unknown) => Iterable<K>,
+  ): void;
+  /** Subscribe `reader` to every advancing write on `from`, regardless of
+   *  node delta. Cell-identity dependency, not node-membership. */
+  subscribeOnAdvance<K>(
+    from: Analysis<any, any>,
+    reader: Analysis<K, any>,
+    dirtied: (locator: FunctionLocator, key: unknown) => Iterable<K>,
+  ): void;
 }
 
 /** Pair of (analysis, seed-key) re-enqueued at every narrowing-entry to
@@ -59,66 +94,63 @@ export interface Analysis<K extends NodeSet, V> {
  *
  *  `seed(view)` is the **reseed frontier** of a unit: the analysis-key the
  *  worklist re-enqueues when chain change reseeds Kildall for that unit.
- *  For `Function` today this is the entry CFG block. Any unit kind that
- *  participates in observation-driven chain change must satisfy
- *  `V extends NodeSet` so `seed(unit)` is well-defined; a unit kind whose
+ *  For `Function` today this is the entry CFG block. A unit kind whose
  *  reseed frontier differs from "entry block" supplies a different
  *  EntrySeed implementation rather than a special-case worklist branch. */
-export interface EntrySeed<K extends NodeSet = NodeSet, V extends NodeSet = NodeSet> {
+export interface EntrySeed<K = unknown, V = Function> {
   readonly env: Analysis<K, any>;
   seed(view: V): K;
 }
 
 /** Production narrowing dimension. Extends the algebra-only `NarrowingAxis`
- *  with the worklist's reseed hook (`blockAnalysis`) and the optional
- *  observation glue (`source` + `lift` + `resolveUnit`).
- *
- *  Test/synthetic axes that don't drive observation can satisfy this with
- *  `source`/`lift`/`resolveUnit` omitted. The worklist only routes ingress
- *  for axes that supply a `source`.
+ *  with the worklist's reseed hook (`blockAnalysis`) and the observation
+ *  glue (`source` + `lift` + `resolveUnit`).
  *
  *  Locator and unit types are loose here; concrete axes type their
  *  `resolveUnit` lambda explicitly, and the worklist casts at the ingress
  *  seam (one cast at registration, not per observation). */
 export interface Narrowing<K = any, V = unknown, O = unknown> extends NarrowingAxis<K, V> {
   readonly blockAnalysis: () => EntrySeed;
-  readonly source?: ObservationSource<K, O>;
+  readonly source: ObservationSource<K, O>;
   /** `undefined` = observation doesn't map (skip without refuting). */
-  lift?(observed: O): V | undefined;
-  /** Defaults at the worklist to `(loc, key) => loc.unitContainingNode(key)`
-   *  when omitted — i.e. the observation key is treated as a NodeId. */
-  resolveUnit?(locator: FunctionLocator, key: K): Function | undefined;
+  lift(observed: O): V | undefined;
+  resolveUnit(locator: FunctionLocator, key: K): Function | undefined;
 }
 
 /** Generic transfer-time context. The framework knows about chain-walking
- *  reads, writes (with optional delta), and evictions — nothing about
- *  program-shape nouns like `Function` or `BasicBlock`. Analyses that need
- *  program-shape lookup capture a `FunctionLocator` explicitly at `bind`
- *  time via `worklist.locate`; the ctx surface stays narrow. */
+ *  reads, writes (with optional delta), evictions, and the program-shape
+ *  read surface (`locator`). Anything richer than `FunctionLocator` (e.g.
+ *  scheduling, chain mutation) stays off the ctx and on the `Worklist`. */
 export interface AnalysisCtx {
   readonly currentContext: AssumptionChain;
-  read<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): V;
-  tryRead<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): V | undefined;
-  readAll<K extends NodeSet, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V>;
+  /** Program-shape read surface: by-FunctionId / by-NodeId / blockContaining.
+   *  Plumbed by the worklist so transfers don't reimplement bind-time
+   *  capture against a mutable `let`. */
+  readonly locator: FunctionLocator;
+  read<K, V>(analysis: Analysis<K, V>, key: K): V;
+  tryRead<K, V>(analysis: Analysis<K, V>, key: K): V | undefined;
+  readAll<K, V>(analysis: Analysis<K, V>): ReadonlyMap<K, V>;
   /** Chain-walking read: shallowest ancestor with a hit satisfying `accept`,
    *  or `undefined`. Records a per-(analysis, key) read edge. */
-  readMinimal<K extends NodeSet, V>(
+  readMinimal<K, V>(
     analysis: Analysis<K, V>,
     key: K,
     accept: (value: V) => boolean,
   ): { value: V; witness: AssumptionChain } | undefined;
   /** Chain-walking read: deepest ancestor with any hit. Same edge-recording
    *  contract as `readMinimal`. */
-  readDeepest<K extends NodeSet, V>(
+  readDeepest<K, V>(
     analysis: Analysis<K, V>,
     key: K,
   ): { value: V; witness: AssumptionChain } | undefined;
   /** Write at `currentContext` and publish a `FactChange`. Returns `true`
    *  iff the cell advanced. `delta` (a `NodeSet`) scopes node-intersection
-   *  subscribers; defaults to `key`. */
-  write<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K, value: V, delta?: NodeSet): boolean;
+   *  subscribers; required when this analysis has any `subscribe()` reader,
+   *  forbidden via the absence of subscribers otherwise (no implicit
+   *  default — the worklist throws on a NodeSet-routed write with no delta). */
+  write<K, V>(analysis: Analysis<K, V>, key: K, value: V, delta?: NodeSet): boolean;
   /** Evict at `currentContext`. */
-  evict<K extends NodeSet, V>(analysis: Analysis<K, V>, key: K): void;
+  evict<K, V>(analysis: Analysis<K, V>, key: K): void;
 }
 
 export interface TransformResult {
@@ -132,7 +164,7 @@ export interface TransformResult {
  *  receiving the full `Worklist` (and the read/write powers that come
  *  with it). */
 export interface TransformBindCtx {
-  onTransformFactDirty<K extends NodeSet>(
+  onTransformFactDirty<K>(
     rule: TransformRule,
     from: Analysis<K, any>,
     dirtied: (locator: FunctionLocator, key: K) => Iterable<Function>,
@@ -163,7 +195,7 @@ export interface TransformRule {
 
 /** Construct an `Analysis`, auto-attaching its `store` from `storeAlgebra`
  *  and `emptyValue`. */
-export function defineAnalysis<K extends NodeSet, V, P extends Analysis<K, V>["polarity"]>(
+export function defineAnalysis<K, V, P extends Analysis<K, V>["polarity"]>(
   spec: Omit<Analysis<K, V>, "store" | "polarity"> & { polarity: P },
 ): Analysis<K, V> & { polarity: P } {
   const store = new AnalysisStore<K, V>(spec.storeAlgebra, spec.emptyValue);

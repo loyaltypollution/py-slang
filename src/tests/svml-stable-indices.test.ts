@@ -17,7 +17,7 @@ import memo from "../stdlib/memo";
 import misc from "../stdlib/misc";
 import { traverseAST } from "../validator/traverse";
 import { buildTestWorklist } from "./utils";
-import type { FunctionManager } from "../specialization/program/function/manager";
+import type { Function } from "../specialization/program/function/function";
 
 function build(code: string) {
   const script = code + "\n";
@@ -26,12 +26,7 @@ function build(code: string) {
   if (errors.length > 0) throw errors[0];
   const engine = buildTestWorklist(ast, environments);
   engine.drain();
-  // For Function-flavored tests we need both the UnitDomain `values()`
-  // surface and the FunctionLocator `functionById` surface — Worklist's
-  // public `units: UnitDomain<Function, FunctionLocator>` typing only
-  // exposes the former. The default constructor uses FunctionManager so
-  // the cast is sound.
-  const functions = engine.units as FunctionManager;
+  const functions = engine.units;
   const typeStore = typeAnalysis.perExpr(engine.locate);
   const constStore = constAnalysis.perExpr(engine.locate);
   const compiler = SVMLCompiler.fromProgramUnit(ast, environments, {
@@ -83,7 +78,7 @@ g(2)
     const fullProgram = compiler.compileProgram(ast);
 
     // Pick the `h` unit (nested inside `g`)
-    let hUnit: ReturnType<typeof functions.functionById> | undefined;
+    let hUnit: Function | undefined;
     for (const unit of functions.values()) {
       const scope = unit.funcAst;
       if (scope instanceof StmtNS.FunctionDef && scope.name.lexeme === "h") {
@@ -211,7 +206,7 @@ g(3)
     const progA = a.compiler.compileProgram(a.ast);
 
     const b = build(program);
-    let hUnitB: ReturnType<typeof b.functions.functionById> | undefined;
+    let hUnitB: Function | undefined;
     for (const unit of b.functions.values()) {
       const scope = unit.funcAst;
       if (scope instanceof StmtNS.FunctionDef && scope.name.lexeme === "h") hUnitB = unit;

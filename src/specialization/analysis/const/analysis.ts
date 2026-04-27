@@ -16,9 +16,6 @@ import {
   type ConstLattice
 } from "./lattice";
 
-// Chain-invariant const propagation. Param speculation lives on
-// `paramTypeNarrowing`; folding it in here causes recursive value thrash.
-
 function foldBinary(op: TokenType, left: ConstLattice, right: ConstLattice): ConstLattice {
   if (left.tag !== "const" || right.tag !== "const") return CONST_TOP;
   const lv = left.value;

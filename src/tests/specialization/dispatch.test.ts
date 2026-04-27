@@ -24,7 +24,7 @@ def f():
     expect(dispatchValid(unit, ROOT_CONTEXT)).toBe(false);
   });
 
-  test("retired context rejected", () => {
+  test("retired context refuted", () => {
     const { ast, worklist } = setupAndDrain(`
 def f(x):
     if x:
@@ -44,7 +44,8 @@ def f(x):
     // Simulate retirement: observe a conflicting value.
     worklist.observe(runtimeParamSource, paramKey(fd.id, 0), { kind: "bool", value: false }, chain);
     worklist.drain();
-    expect(dispatchValid(unit, chain, n => worklist.isRefuted(n))).toBe(false);
+    // dispatchValid is shape-only; refutation is the lane caller's pre-check.
+    expect(worklist.isRefuted(chain)).toBe(true);
   });
 });
 

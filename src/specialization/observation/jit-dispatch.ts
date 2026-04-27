@@ -18,15 +18,11 @@ export interface JitDispatch {
 export interface JitDispatchRuntime extends JitObservationRuntime<Function> {
   readonly locate: FunctionLocator;
   isRefuted(context: AssumptionChain): boolean;
-  sweepTransforms(): boolean;
+  drain(): readonly Function[];
 }
 
 export function makeJitDispatch(runtime: JitDispatchRuntime): JitDispatch {
   const observers = makeJitObservers(runtime);
-
-  function isRefuted(context: AssumptionChain): boolean {
-    return runtime.isRefuted(context);
-  }
 
   function onCall(scopeId: FunctionId, args: readonly unknown[]): DispatchPlan | undefined {
     observers.observeScopeCall(scopeId);
@@ -40,14 +36,14 @@ export function makeJitDispatch(runtime: JitDispatchRuntime): JitDispatch {
       observers.observeParamEntry(scopeId, i, args[i]);
     }
 
-    runtime.sweepTransforms();
+    runtime.drain();
 
     const chain = observers.currentChainFor(scopeId);
-    if (!dispatchValid(unit, chain, isRefuted)) {
+    if (runtime.isRefuted(chain) || !dispatchValid(unit, chain)) {
       return { unit };
     }
 
-    const body = bodyToCompile(unit, chain, runtime.locate, isRefuted);
+    const body = bodyToCompile(unit, chain, runtime.locate);
     if (body === unit.body) {
       return { unit };
     }

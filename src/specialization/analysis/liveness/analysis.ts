@@ -124,8 +124,6 @@ function transferStmtBackward(
     stmt.value.accept(visitor);
     return;
   }
-  // FunctionDef, Pass, Break, Continue, Global, NonLocal, FromImport,
-  // FileInput: no reads, no kills.
 }
 
 /** Backward may-liveness. Stored `outEnv` is the block's live-IN. */

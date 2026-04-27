@@ -1,9 +1,3 @@
-// Structural deep-clone for Stmt/Expr trees. Per-AssumptionChain variant
-// bodies share fact cells with the original via preserved `nodeId`s and
-// preserved prototypes (so `instanceof` keeps working). Arrays containing
-// Stmt/Expr get fresh outer arrays (transforms mutate them); other arrays,
-// tokens, and literal-value fields share by reference.
-
 import { ExprNS, StmtNS } from "../../ast-types";
 
 export function cloneStmts(stmts: readonly StmtNS.Stmt[]): StmtNS.Stmt[] {

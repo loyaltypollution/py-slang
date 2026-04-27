@@ -1,10 +1,4 @@
 import { ExprNS, StmtNS } from "../../ast-types";
-import { isRoot, type AssumptionChain } from "../assumption/chain";
-import type { TransformResult } from "../framework/analysis";
-import type { Function } from "../program/function/function";
-import { forkBody, invalidateDescendantVariants } from "../speculation/assumption-bodies";
-
-export type Witnessed<T> = { value: T; witness: AssumptionChain };
 
 export function walkExprs(
   stmts: readonly StmtNS.Stmt[],
@@ -82,19 +76,21 @@ export abstract class BaseStmtVisitor implements StmtNS.Visitor<void> {
   visitFromImportStmt(_stmt: StmtNS.FromImport): void {}
 }
 
+/** Recursive expr rewriter. All descent goes through `this.rewrite`, so a
+ *  subclass can wrap every node by overriding `rewrite` alone. */
 export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   rewrite(expr: ExprNS.Expr): ExprNS.Expr {
     return expr.accept(this);
   }
 
   private descendLeftRight(expr: ExprNS.Binary | ExprNS.Compare | ExprNS.BoolOp): ExprNS.Expr {
-    expr.left = expr.left.accept(this);
-    expr.right = expr.right.accept(this);
+    expr.left = this.rewrite(expr.left);
+    expr.right = this.rewrite(expr.right);
     return expr;
   }
 
   private descendArray(exprs: ExprNS.Expr[]): void {
-    for (let i = 0; i < exprs.length; i++) exprs[i] = exprs[i].accept(this);
+    for (let i = 0; i < exprs.length; i++) exprs[i] = this.rewrite(exprs[i]);
   }
 
   visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
@@ -107,17 +103,17 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     return this.descendLeftRight(expr);
   }
   visitUnaryExpr(expr: ExprNS.Unary): ExprNS.Expr {
-    expr.right = expr.right.accept(this);
+    expr.right = this.rewrite(expr.right);
     return expr;
   }
   visitTernaryExpr(expr: ExprNS.Ternary): ExprNS.Expr {
-    expr.predicate = expr.predicate.accept(this);
-    expr.consequent = expr.consequent.accept(this);
-    expr.alternative = expr.alternative.accept(this);
+    expr.predicate = this.rewrite(expr.predicate);
+    expr.consequent = this.rewrite(expr.consequent);
+    expr.alternative = this.rewrite(expr.alternative);
     return expr;
   }
   visitCallExpr(expr: ExprNS.Call): ExprNS.Expr {
-    expr.callee = expr.callee.accept(this);
+    expr.callee = this.rewrite(expr.callee);
     this.descendArray(expr.args);
     return expr;
   }
@@ -126,16 +122,16 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
     return expr;
   }
   visitSubscriptExpr(expr: ExprNS.Subscript): ExprNS.Expr {
-    expr.value = expr.value.accept(this);
-    expr.index = expr.index.accept(this);
+    expr.value = this.rewrite(expr.value);
+    expr.index = this.rewrite(expr.index);
     return expr;
   }
   visitGroupingExpr(expr: ExprNS.Grouping): ExprNS.Expr {
-    expr.expression = expr.expression.accept(this);
+    expr.expression = this.rewrite(expr.expression);
     return expr;
   }
   visitStarredExpr(expr: ExprNS.Starred): ExprNS.Expr {
-    expr.value = expr.value.accept(this);
+    expr.value = this.rewrite(expr.value);
     return expr;
   }
   visitLambdaExpr(expr: ExprNS.Lambda): ExprNS.Expr {
@@ -161,84 +157,43 @@ export class DescendingExprVisitor implements ExprNS.Visitor<ExprNS.Expr> {
   }
 }
 
-export function transformResultFor(touchedWitnesses: readonly AssumptionChain[]): TransformResult {
-  return {
-    changed: touchedWitnesses.length > 0,
-    canonicalChanged: touchedWitnesses.some(isRoot),
-    touchedWitnesses,
-  };
-}
-
-export function runWitnessSweep(
-  unit: Function,
-  witnesses: Iterable<AssumptionChain>,
-  makeVisitor: (witness: AssumptionChain) => {
-    readonly changed: boolean;
-    sweep(body: StmtNS.Stmt[]): void;
-  },
-): TransformResult {
-  const ordered = Array.from(witnesses).sort((a, b) => a.depth - b.depth);
-  const touchedWitnesses: AssumptionChain[] = [];
-  for (const witness of ordered) {
-    const body = forkBody(unit, witness);
-    const visitor = makeVisitor(witness);
-    visitor.sweep(body);
-    if (visitor.changed) {
-      touchedWitnesses.push(witness);
-      invalidateDescendantVariants(unit, witness);
-    }
-  }
-  return transformResultFor(touchedWitnesses);
-}
-
-export class ExprDrivenStmtVisitor<
-  V extends DescendingExprVisitor & { changed: boolean },
-> extends BaseStmtVisitor {
-  constructor(readonly exprVisitor: V) {
+/** Replaces any expr whose `id` is in the map with the corresponding node. */
+export class IdReplacer extends DescendingExprVisitor {
+  changed = false;
+  constructor(private readonly replacements: ReadonlyMap<number, ExprNS.Expr>) {
     super();
   }
+  rewrite(expr: ExprNS.Expr): ExprNS.Expr {
+    const after = super.rewrite(expr);
+    const replacement = this.replacements.get(after.id);
+    if (replacement === undefined) return after;
+    this.changed = true;
+    return replacement;
+  }
+}
 
-  get changed(): boolean {
-    return this.exprVisitor.changed;
-  }
-
-  sweep(stmts: StmtNS.Stmt[]): void {
-    for (const stmt of stmts) stmt.accept(this);
-  }
-
-  private rewrite(e: ExprNS.Expr): ExprNS.Expr {
-    return this.exprVisitor.rewrite(e);
-  }
-
-  visitAssignStmt(stmt: StmtNS.Assign): void {
-    stmt.value = this.rewrite(stmt.value);
-  }
-  visitAnnAssignStmt(stmt: StmtNS.AnnAssign): void {
-    stmt.value = this.rewrite(stmt.value);
-  }
-  visitIfStmt(stmt: StmtNS.If): void {
-    stmt.condition = this.rewrite(stmt.condition);
-    this.sweep(stmt.body);
-    if (stmt.elseBlock) this.sweep(stmt.elseBlock);
-  }
-  visitWhileStmt(stmt: StmtNS.While): void {
-    stmt.condition = this.rewrite(stmt.condition);
-    this.sweep(stmt.body);
-  }
-  visitForStmt(stmt: StmtNS.For): void {
-    stmt.iter = this.rewrite(stmt.iter);
-    this.sweep(stmt.body);
-  }
-  visitReturnStmt(stmt: StmtNS.Return): void {
-    if (stmt.value) stmt.value = this.rewrite(stmt.value);
-  }
-  visitSimpleExprStmt(stmt: StmtNS.SimpleExpr): void {
-    stmt.expression = this.rewrite(stmt.expression);
-  }
-  visitAssertStmt(stmt: StmtNS.Assert): void {
-    stmt.value = this.rewrite(stmt.value);
-  }
-  visitFileInputStmt(stmt: StmtNS.FileInput): void {
-    this.sweep(stmt.statements);
+/** Walks `stmts` (recursing into compound bodies) and rewrites each
+ *  expression-bearing position via `visitor.rewrite`. */
+export function rewriteStmtRhs(stmts: StmtNS.Stmt[], visitor: DescendingExprVisitor): void {
+  for (const s of stmts) {
+    if (s instanceof StmtNS.Assign || s instanceof StmtNS.AnnAssign || s instanceof StmtNS.Assert) {
+      s.value = visitor.rewrite(s.value);
+    } else if (s instanceof StmtNS.Return) {
+      if (s.value) s.value = visitor.rewrite(s.value);
+    } else if (s instanceof StmtNS.SimpleExpr) {
+      s.expression = visitor.rewrite(s.expression);
+    } else if (s instanceof StmtNS.If) {
+      s.condition = visitor.rewrite(s.condition);
+      rewriteStmtRhs(s.body, visitor);
+      if (s.elseBlock) rewriteStmtRhs(s.elseBlock, visitor);
+    } else if (s instanceof StmtNS.While) {
+      s.condition = visitor.rewrite(s.condition);
+      rewriteStmtRhs(s.body, visitor);
+    } else if (s instanceof StmtNS.For) {
+      s.iter = visitor.rewrite(s.iter);
+      rewriteStmtRhs(s.body, visitor);
+    } else if (s instanceof StmtNS.FileInput) {
+      rewriteStmtRhs(s.statements, visitor);
+    }
   }
 }

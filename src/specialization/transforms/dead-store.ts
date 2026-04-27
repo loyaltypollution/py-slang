@@ -10,7 +10,8 @@ import type { FunctionLocator } from "../program/function/manager";
 import { isLocal, type SlotLookup } from "../program/function/slot-table";
 import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../analysis";
-import { transformResultFor, walkExpr, walkExprs } from "./witness-utils";
+import { BaseStmtVisitor, walkExpr, walkExprs } from "./expr-visitor";
+import { transformResultFor } from "./witness-sweep";
 
 function isPureRhs(expr: ExprNS.Expr, slotLookup: SlotLookup): boolean {
   if (
@@ -99,60 +100,108 @@ function removableAssignment(
   );
 }
 
-function forEachNestedBody(stmt: StmtNS.Stmt, visit: (body: readonly StmtNS.Stmt[]) => void): void {
-  if (stmt instanceof StmtNS.If) {
-    visit(stmt.body);
-    if (stmt.elseBlock) visit(stmt.elseBlock);
-  } else if (stmt instanceof StmtNS.While || stmt instanceof StmtNS.For) {
-    visit(stmt.body);
+class RemovableCollector extends BaseStmtVisitor {
+  constructor(
+    private readonly liveOutMap: ReadonlyMap<number, ReadonlySet<number>>,
+    private readonly slotLookup: SlotLookup,
+    private readonly escaped: ReadonlySet<number>,
+    readonly into: Set<number>,
+  ) {
+    super();
   }
-}
 
-function collectRemovableStmtIds(
-  stmts: readonly StmtNS.Stmt[],
-  liveOutMap: ReadonlyMap<number, ReadonlySet<number>>,
-  slotLookup: SlotLookup,
-  escaped: ReadonlySet<number>,
-  out: Set<number>,
-): void {
-  for (const s of stmts) {
-    if (s instanceof StmtNS.Assign && removableAssignment(s, liveOutMap, slotLookup, escaped)) {
-      out.add(s.id);
+  walk(stmts: readonly StmtNS.Stmt[]): void {
+    for (const s of stmts) {
+      if (
+        s instanceof StmtNS.Assign &&
+        removableAssignment(s, this.liveOutMap, this.slotLookup, this.escaped)
+      ) {
+        this.into.add(s.id);
+      }
+      s.accept(this);
     }
-    forEachNestedBody(s, body =>
-      collectRemovableStmtIds(body, liveOutMap, slotLookup, escaped, out),
-    );
+  }
+
+  visitIfStmt(stmt: StmtNS.If): void {
+    this.walk(stmt.body);
+    if (stmt.elseBlock) this.walk(stmt.elseBlock);
+  }
+  visitWhileStmt(stmt: StmtNS.While): void {
+    this.walk(stmt.body);
+  }
+  visitForStmt(stmt: StmtNS.For): void {
+    this.walk(stmt.body);
+  }
+  visitFileInputStmt(stmt: StmtNS.FileInput): void {
+    this.walk(stmt.statements);
   }
 }
 
-function findAssignById(stmts: readonly StmtNS.Stmt[], stmtId: number): StmtNS.Assign | undefined {
-  for (const stmt of stmts) {
-    if (stmt instanceof StmtNS.Assign && stmt.id === stmtId) return stmt;
-    let found: StmtNS.Assign | undefined;
-    forEachNestedBody(stmt, body => {
-      if (found === undefined) found = findAssignById(body, stmtId);
-    });
-    if (found !== undefined) return found;
+class AssignFinder extends BaseStmtVisitor {
+  result?: StmtNS.Assign;
+  constructor(private readonly stmtId: number) {
+    super();
   }
-  return undefined;
-}
 
-function sweepRemovalsById(stmts: StmtNS.Stmt[], removableIds: ReadonlySet<number>): boolean {
-  let changed = false;
-  let i = 0;
-  while (i < stmts.length) {
-    const stmt = stmts[i];
-    if (stmt instanceof StmtNS.Assign && removableIds.has(stmt.id)) {
-      stmts.splice(i, 1);
-      changed = true;
-      continue;
+  walk(stmts: readonly StmtNS.Stmt[]): void {
+    for (const s of stmts) {
+      if (this.result !== undefined) return;
+      if (s instanceof StmtNS.Assign && s.id === this.stmtId) {
+        this.result = s;
+        return;
+      }
+      s.accept(this);
     }
-    forEachNestedBody(stmt, body => {
-      if (sweepRemovalsById(body as StmtNS.Stmt[], removableIds)) changed = true;
-    });
-    i++;
   }
-  return changed;
+
+  visitIfStmt(stmt: StmtNS.If): void {
+    this.walk(stmt.body);
+    if (this.result === undefined && stmt.elseBlock) this.walk(stmt.elseBlock);
+  }
+  visitWhileStmt(stmt: StmtNS.While): void {
+    this.walk(stmt.body);
+  }
+  visitForStmt(stmt: StmtNS.For): void {
+    this.walk(stmt.body);
+  }
+  visitFileInputStmt(stmt: StmtNS.FileInput): void {
+    this.walk(stmt.statements);
+  }
+}
+
+class RemovalSplicer extends BaseStmtVisitor {
+  changed = false;
+  constructor(private readonly removableIds: ReadonlySet<number>) {
+    super();
+  }
+
+  sweep(stmts: StmtNS.Stmt[]): void {
+    let i = 0;
+    while (i < stmts.length) {
+      const s = stmts[i];
+      if (s instanceof StmtNS.Assign && this.removableIds.has(s.id)) {
+        stmts.splice(i, 1);
+        this.changed = true;
+        continue;
+      }
+      s.accept(this);
+      i++;
+    }
+  }
+
+  visitIfStmt(stmt: StmtNS.If): void {
+    this.sweep(stmt.body);
+    if (stmt.elseBlock) this.sweep(stmt.elseBlock);
+  }
+  visitWhileStmt(stmt: StmtNS.While): void {
+    this.sweep(stmt.body);
+  }
+  visitForStmt(stmt: StmtNS.For): void {
+    this.sweep(stmt.body);
+  }
+  visitFileInputStmt(stmt: StmtNS.FileInput): void {
+    this.sweep(stmt.statements);
+  }
 }
 
 function memo<K, V>(cache: Map<K, V>, key: K, compute: (key: K) => V): V {
@@ -173,13 +222,14 @@ function witnessForRemoval(
 ): AssumptionChain | undefined {
   for (const witness of lineage) {
     const body = visibleBody(unit, witness);
-    const stmt = findAssignById(body, stmtId);
-    if (stmt === undefined) continue;
+    const finder = new AssignFinder(stmtId);
+    finder.walk(body);
+    if (finder.result === undefined) continue;
 
     const liveOutMap = memo(liveOutCache, witness, w => buildLiveOutMap(unit, w));
     const escaped = memo(escapedCache, witness, () => escapedLocalSlotsIn(body, unit.slotLookup));
 
-    if (removableAssignment(stmt, liveOutMap, unit.slotLookup, escaped)) return witness;
+    if (removableAssignment(finder.result, liveOutMap, unit.slotLookup, escaped)) return witness;
   }
   return undefined;
 }
@@ -199,7 +249,7 @@ export const deadStoreRule: TransformRule = {
     const escaped = memo(escapedCache, chain, () => escapedLocalSlotsIn(body, unit.slotLookup));
 
     const removableNow = new Set<number>();
-    collectRemovableStmtIds(body, liveOutMap, unit.slotLookup, escaped, removableNow);
+    new RemovableCollector(liveOutMap, unit.slotLookup, escaped, removableNow).walk(body);
     if (removableNow.size === 0) return transformResultFor([]);
 
     const lineage: AssumptionChain[] = [];
@@ -226,7 +276,9 @@ export const deadStoreRule: TransformRule = {
       const removableIds = removalsByWitness.get(witness);
       if (removableIds === undefined || removableIds.size === 0) continue;
       const witnessBody = forkBody(unit, witness);
-      if (sweepRemovalsById(witnessBody, removableIds)) {
+      const splicer = new RemovalSplicer(removableIds);
+      splicer.sweep(witnessBody);
+      if (splicer.changed) {
         touchedWitnesses.push(witness);
         invalidateDescendantVariants(unit, witness);
       }

@@ -1,17 +1,15 @@
+import type { NarrowingAxis } from "../../specialization/assumption/chain";
 import {
   ROOT_CONTEXT,
-  isRoot,
-} from "../../specialization/assumption/chain";
-import {
   at,
   extend,
+  isRoot,
   leq,
   without,
 } from "../../specialization/assumption/chain";
-import { makeNarrowing } from "./harness/lattice-doubles";
 
-function makeAnalysis<K, V>(_name: string) {
-  return makeNarrowing<K, V>();
+export function makeAnalysis<K, V>(eq: (a: V, b: V) => boolean = Object.is): NarrowingAxis<K, V> {
+  return { eq };
 }
 
 describe("AssumptionChain", () => {
@@ -21,7 +19,7 @@ describe("AssumptionChain", () => {
   });
 
   it("extend produces a child with parent, assumption, depth+1", () => {
-    const p = makeAnalysis<number, number>("p");
+    const p = makeAnalysis<number, number>();
     const c1 = extend(ROOT_CONTEXT, p, 7, 42);
 
     expect(c1.parent).toBe(ROOT_CONTEXT);
@@ -31,7 +29,7 @@ describe("AssumptionChain", () => {
   });
 
   it("extend chains and tracks depth", () => {
-    const p = makeAnalysis<number, number>("p");
+    const p = makeAnalysis<number, number>();
     const c1 = extend(ROOT_CONTEXT, p, 1, 10);
     const c2 = extend(c1, p, 2, 20);
     const c3 = extend(c2, p, 3, 30);
@@ -43,8 +41,8 @@ describe("AssumptionChain", () => {
   });
 
   it("at returns the bound value", () => {
-    const p = makeAnalysis<number, number>("p");
-    const q = makeAnalysis<number, number>("q");
+    const p = makeAnalysis<number, number>();
+    const q = makeAnalysis<number, number>();
     // Strict extend: replacement goes through without() first.
     const c1 = extend(ROOT_CONTEXT, p, 7, 10);
     const c2 = extend(without(c1, p, 7), p, 7, 20);
@@ -56,12 +54,12 @@ describe("AssumptionChain", () => {
   });
 
   it("at returns undefined at ROOT", () => {
-    const p = makeAnalysis<number, number>("p");
+    const p = makeAnalysis<number, number>();
     expect(at(ROOT_CONTEXT, p, 1)).toBeUndefined();
   });
 
   it("leq: empty ⊑ s; s ⊑ s; s ⊑ extend(s, a)", () => {
-    const p = makeAnalysis<number, number>("p");
+    const p = makeAnalysis<number, number>();
     const c1 = extend(ROOT_CONTEXT, p, 1, 10);
     const c2 = extend(c1, p, 2, 20);
 
@@ -72,7 +70,7 @@ describe("AssumptionChain", () => {
   });
 
   it("siblings do not see each other's assumptions", () => {
-    const p = makeAnalysis<number, number>("p");
+    const p = makeAnalysis<number, number>();
     const left = extend(ROOT_CONTEXT, p, 1, 10);
     const right = extend(ROOT_CONTEXT, p, 1, 20);
 
@@ -83,22 +81,22 @@ describe("AssumptionChain", () => {
   });
 
   it("extend freezes the returned node", () => {
-    const p = makeAnalysis<number, number>("p");
+    const p = makeAnalysis<number, number>();
     const c1 = extend(ROOT_CONTEXT, p, 1, 10);
     expect(Object.isFrozen(c1)).toBe(true);
     expect(Object.isFrozen(c1.assumption)).toBe(true);
   });
 
   it("without returns ctx unchanged when no link matches", () => {
-    const p = makeAnalysis<number, number>("p");
+    const p = makeAnalysis<number, number>();
     const c1 = extend(ROOT_CONTEXT, p, 1, 10);
     expect(without(c1, p, 99)).toBe(c1);
     expect(without(ROOT_CONTEXT, p, 1)).toBe(ROOT_CONTEXT);
   });
 
   it("without prunes matching links and rebuilds the chain above them", () => {
-    const p = makeAnalysis<number, number>("p");
-    const q = makeAnalysis<number, number>("q");
+    const p = makeAnalysis<number, number>();
+    const q = makeAnalysis<number, number>();
     const c1 = extend(ROOT_CONTEXT, p, 1, 10);
     const c2 = extend(c1, q, 2, 20);
     const c3 = extend(c2, p, 3, 30);
@@ -111,7 +109,7 @@ describe("AssumptionChain", () => {
   });
 
   it("without then extend at same axis replaces the binding", () => {
-    const p = makeAnalysis<number, number>("p");
+    const p = makeAnalysis<number, number>();
     const c1 = extend(ROOT_CONTEXT, p, 7, 10);
     const c2 = extend(without(c1, p, 7), p, 7, 20);
     expect(at(c2, p, 7)).toBe(20);

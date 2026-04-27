@@ -1,4 +1,4 @@
-import { ExprNS } from "../../ast-types";
+import { ExprNS, StmtNS } from "../../ast-types";
 import { TokenType } from "../../tokenizer";
 import {
   BOOL_BIT,
@@ -16,31 +16,22 @@ import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/function/function";
 import type { FunctionLocator } from "../program/function/manager";
-import {
-  DescendingExprVisitor,
-  ExprDrivenStmtVisitor,
-  runWitnessSweep,
-  walkExprs,
-  type Witnessed,
-} from "./witness-utils";
+import { DescendingExprVisitor, IdReplacer, rewriteStmtRhs } from "./expr-visitor";
+import { groupPlansByWitness, runPerWitness } from "./witness-sweep";
 
-type RewritePlan = { witness: AssumptionChain; replacement: ExprNS.Expr };
+type Plan = { witness: AssumptionChain; replacement: ExprNS.Expr };
+type Witnessed<V> = { value: V; witness: AssumptionChain };
+type Ctx = { readonly chain: AssumptionChain; readonly view: FunctionLocator };
 
-function readType(
-  chain: AssumptionChain,
-  view: FunctionLocator,
-  node: ExprNS.Expr,
-): Witnessed<TypeLattice> | undefined {
-  return typeAnalysis.perExpr(view).readMinimal(chain, node.id, () => true);
-}
+/** A rewrite gate. `undefined` = fail. `null` = pass without contributing
+ *  a witness (structural). An `AssumptionChain` = pass with that witness. */
+type Predicate<F> = (facts: F) => AssumptionChain | null | undefined;
 
-function readConst(
-  chain: AssumptionChain,
-  view: FunctionLocator,
-  node: ExprNS.Expr,
-): Witnessed<ConstLattice> | undefined {
-  return constAnalysis.perExpr(view).readMinimal(chain, node.id, () => true);
-}
+const readType = (ctx: Ctx, node: ExprNS.Expr): Witnessed<TypeLattice> | undefined =>
+  typeAnalysis.perExpr(ctx.view).readMinimal(ctx.chain, node.id, () => true);
+
+const readConst = (ctx: Ctx, node: ExprNS.Expr): Witnessed<ConstLattice> | undefined =>
+  constAnalysis.perExpr(ctx.view).readMinimal(ctx.chain, node.id, () => true);
 
 function intZeroWitness(
   type: Witnessed<TypeLattice> | undefined,
@@ -70,93 +61,105 @@ function isSafeToDrop(e: ExprNS.Expr): boolean {
   );
 }
 
-function planWhen(
-  a: AssumptionChain | undefined,
-  b: AssumptionChain | undefined,
-  replacement: ExprNS.Expr,
-): RewritePlan | undefined {
-  if (a === undefined || b === undefined) return undefined;
-  return { witness: a.depth >= b.depth ? a : b, replacement };
+interface BinaryFacts {
+  readonly expr: ExprNS.Binary;
+  readonly leftType: Witnessed<TypeLattice> | undefined;
+  readonly rightType: Witnessed<TypeLattice> | undefined;
+  readonly leftConst: Witnessed<ConstLattice> | undefined;
+  readonly rightConst: Witnessed<ConstLattice> | undefined;
 }
 
-function planBinary(
-  chain: AssumptionChain,
-  view: FunctionLocator,
-  expr: ExprNS.Binary,
-): RewritePlan | undefined {
-  const lt = readType(chain, view, expr.left);
-  const rt = readType(chain, view, expr.right);
-  const lc = readConst(chain, view, expr.left);
-  const rc = readConst(chain, view, expr.right);
+const pureIntL: Predicate<BinaryFacts> = f =>
+  f.leftType?.value.kinds === INT_BIT ? f.leftType.witness : undefined;
+const pureIntR: Predicate<BinaryFacts> = f =>
+  f.rightType?.value.kinds === INT_BIT ? f.rightType.witness : undefined;
+const zeroL: Predicate<BinaryFacts> = f => intZeroWitness(f.leftType, f.leftConst);
+const zeroR: Predicate<BinaryFacts> = f => intZeroWitness(f.rightType, f.rightConst);
+const oneL: Predicate<BinaryFacts> = f =>
+  f.leftConst?.value.tag === "const" && f.leftConst.value.value === 1
+    ? f.leftConst.witness
+    : undefined;
+const oneR: Predicate<BinaryFacts> = f =>
+  f.rightConst?.value.tag === "const" && f.rightConst.value.value === 1
+    ? f.rightConst.witness
+    : undefined;
+const safeDropL: Predicate<BinaryFacts> = f => (isSafeToDrop(f.expr.left) ? null : undefined);
+const safeDropR: Predicate<BinaryFacts> = f => (isSafeToDrop(f.expr.right) ? null : undefined);
 
-  const leftPureInt = lt?.value.kinds === INT_BIT ? lt.witness : undefined;
-  const rightPureInt = rt?.value.kinds === INT_BIT ? rt.witness : undefined;
-  const leftZero = intZeroWitness(lt, lc);
-  const rightZero = intZeroWitness(rt, rc);
-  const leftOne = lc?.value.tag === "const" && lc.value.value === 1 ? lc.witness : undefined;
-  const rightOne = rc?.value.tag === "const" && rc.value.value === 1 ? rc.witness : undefined;
-
-  switch (expr.operator.type) {
-    case TokenType.PLUS:
-      return (
-        planWhen(leftPureInt, rightZero, expr.left) ?? planWhen(leftZero, rightPureInt, expr.right)
-      );
-    case TokenType.MINUS:
-      return planWhen(leftPureInt, rightZero, expr.left);
-    case TokenType.STAR: {
-      const oneIdent =
-        planWhen(leftPureInt, rightOne, expr.left) ?? planWhen(leftOne, rightPureInt, expr.right);
-      if (oneIdent !== undefined) return oneIdent;
-      const zero = new ExprNS.Literal(expr.startToken, expr.endToken, 0);
-      if (isSafeToDrop(expr.left)) {
-        const plan = planWhen(leftPureInt, rightZero, zero);
-        if (plan !== undefined) return plan;
-      }
-      if (isSafeToDrop(expr.right)) {
-        const plan = planWhen(leftZero, rightPureInt, zero);
-        if (plan !== undefined) return plan;
-      }
-      return undefined;
-    }
-    case TokenType.DOUBLESLASH:
-      return planWhen(leftPureInt, rightOne, expr.left);
-    default:
-      return undefined;
-  }
+interface BoolOpFacts {
+  readonly expr: ExprNS.BoolOp;
+  readonly leftType: Witnessed<TypeLattice> | undefined;
 }
 
-function planBoolOp(
-  chain: AssumptionChain,
-  view: FunctionLocator,
-  expr: ExprNS.BoolOp,
-): RewritePlan | undefined {
-  const lt = readType(chain, view, expr.left);
-  if (lt === undefined) return undefined;
-  const truth = truthiness(lt.value);
-  const isAnd = expr.operator.type === TokenType.AND;
-  const isOr = expr.operator.type === TokenType.OR;
-  if (!isAnd && !isOr) return undefined;
-  if (truth === BoolRef.False) {
-    return { witness: lt.witness, replacement: isAnd ? expr.left : expr.right };
+const truthyL = (expected: BoolRef.True | BoolRef.False): Predicate<BoolOpFacts> => f =>
+  f.leftType !== undefined && truthiness(f.leftType.value) === expected
+    ? f.leftType.witness
+    : undefined;
+
+/** Run every predicate; on full match, return the deepest contributed witness
+ *  (or `fallback` if none were contributed). On any failure, return `undefined`. */
+function joinPredicates<F>(
+  predicates: readonly Predicate<F>[],
+  facts: F,
+  fallback: AssumptionChain,
+): AssumptionChain | undefined {
+  let deepest: AssumptionChain | undefined;
+  for (const p of predicates) {
+    const r = p(facts);
+    if (r === undefined) return undefined;
+    if (r !== null && (deepest === undefined || r.depth > deepest.depth)) deepest = r;
   }
-  if (truth === BoolRef.True) {
-    return { witness: lt.witness, replacement: isAnd ? expr.right : expr.left };
+  return deepest ?? fallback;
+}
+
+interface Rule<E, F> {
+  readonly op: TokenType;
+  readonly match: readonly Predicate<F>[];
+  readonly pick: (expr: E) => ExprNS.Expr;
+}
+
+const mkZero = (e: ExprNS.Binary): ExprNS.Expr => new ExprNS.Literal(e.startToken, e.endToken, 0);
+
+const BINARY_RULES: readonly Rule<ExprNS.Binary, BinaryFacts>[] = [
+  { op: TokenType.PLUS,        match: [pureIntL, zeroR],                  pick: e => e.left },
+  { op: TokenType.PLUS,        match: [zeroL,    pureIntR],               pick: e => e.right },
+  { op: TokenType.MINUS,       match: [pureIntL, zeroR],                  pick: e => e.left },
+  { op: TokenType.STAR,        match: [pureIntL, oneR],                   pick: e => e.left },
+  { op: TokenType.STAR,        match: [oneL,     pureIntR],               pick: e => e.right },
+  { op: TokenType.STAR,        match: [pureIntL, zeroR, safeDropL],       pick: mkZero },
+  { op: TokenType.STAR,        match: [zeroL,    pureIntR, safeDropR],    pick: mkZero },
+  { op: TokenType.DOUBLESLASH, match: [pureIntL, oneR],                   pick: e => e.left },
+];
+
+const BOOLOP_RULES: readonly Rule<ExprNS.BoolOp, BoolOpFacts>[] = [
+  { op: TokenType.AND, match: [truthyL(BoolRef.False)], pick: e => e.left },
+  { op: TokenType.AND, match: [truthyL(BoolRef.True)],  pick: e => e.right },
+  { op: TokenType.OR,  match: [truthyL(BoolRef.False)], pick: e => e.right },
+  { op: TokenType.OR,  match: [truthyL(BoolRef.True)],  pick: e => e.left },
+];
+
+function firstMatch<E extends { operator: { type: TokenType } }, F>(
+  rules: readonly Rule<E, F>[],
+  expr: E,
+  facts: F,
+  fallback: AssumptionChain,
+): Plan | undefined {
+  for (const r of rules) {
+    if (r.op !== expr.operator.type) continue;
+    const witness = joinPredicates(r.match, facts, fallback);
+    if (witness !== undefined) return { witness, replacement: r.pick(expr) };
   }
   return undefined;
 }
 
-function planUnary(
-  chain: AssumptionChain,
-  view: FunctionLocator,
-  expr: ExprNS.Unary,
-): RewritePlan | undefined {
+function planUnary(expr: ExprNS.Unary, ctx: Ctx): Plan | undefined {
   const inner = unwrapGrouping(expr.right);
   if (
     expr.operator.type === TokenType.MINUS &&
     inner instanceof ExprNS.Unary &&
     inner.operator.type === TokenType.MINUS
   ) {
-    return { witness: chain, replacement: inner.right };
+    return { witness: ctx.chain, replacement: inner.right };
   }
   if (
     expr.operator.type === TokenType.NOT &&
@@ -164,51 +167,45 @@ function planUnary(
     inner.operator.type === TokenType.NOT
   ) {
     const body = inner.right;
-    const bodyType = readType(chain, view, body);
-    if (bodyType?.value.kinds === BOOL_BIT) {
-      return { witness: bodyType.witness, replacement: body };
-    }
+    const t = readType(ctx, body);
+    if (t?.value.kinds === BOOL_BIT) return { witness: t.witness, replacement: body };
   }
   return undefined;
 }
 
-function rewritePlan(
-  chain: AssumptionChain,
-  view: FunctionLocator,
-  expr: ExprNS.Expr,
-): RewritePlan | undefined {
-  if (expr instanceof ExprNS.Binary) return planBinary(chain, view, expr);
-  if (expr instanceof ExprNS.BoolOp) return planBoolOp(chain, view, expr);
-  if (expr instanceof ExprNS.Unary) return planUnary(chain, view, expr);
-  return undefined;
-}
-
-class AlgebraicSimplifyVisitor extends DescendingExprVisitor {
-  changed = false;
+class AlgebraicMatcher extends DescendingExprVisitor {
   constructor(
-    private readonly chain: AssumptionChain,
-    private readonly view: FunctionLocator,
+    private readonly ctx: Ctx,
+    private readonly out: Map<number, Plan>,
   ) {
     super();
   }
 
-  private maybeRewrite(expr: ExprNS.Expr): ExprNS.Expr {
-    const plan = rewritePlan(this.chain, this.view, expr);
-    if (plan === undefined || plan.witness !== this.chain) return expr;
-    this.changed = true;
-    return plan.replacement;
-  }
-
   visitBinaryExpr(expr: ExprNS.Binary): ExprNS.Expr {
-    return this.maybeRewrite(super.visitBinaryExpr(expr));
+    super.visitBinaryExpr(expr);
+    const facts: BinaryFacts = {
+      expr,
+      leftType: readType(this.ctx, expr.left),
+      rightType: readType(this.ctx, expr.right),
+      leftConst: readConst(this.ctx, expr.left),
+      rightConst: readConst(this.ctx, expr.right),
+    };
+    const plan = firstMatch(BINARY_RULES, expr, facts, this.ctx.chain);
+    if (plan !== undefined) this.out.set(expr.id, plan);
+    return expr;
   }
-
   visitBoolOpExpr(expr: ExprNS.BoolOp): ExprNS.Expr {
-    return this.maybeRewrite(super.visitBoolOpExpr(expr));
+    super.visitBoolOpExpr(expr);
+    const facts: BoolOpFacts = { expr, leftType: readType(this.ctx, expr.left) };
+    const plan = firstMatch(BOOLOP_RULES, expr, facts, this.ctx.chain);
+    if (plan !== undefined) this.out.set(expr.id, plan);
+    return expr;
   }
-
   visitUnaryExpr(expr: ExprNS.Unary): ExprNS.Expr {
-    return this.maybeRewrite(super.visitUnaryExpr(expr));
+    super.visitUnaryExpr(expr);
+    const plan = planUnary(expr, this.ctx);
+    if (plan !== undefined) this.out.set(expr.id, plan);
+    return expr;
   }
 }
 
@@ -217,15 +214,13 @@ export const algebraicSimplifyRule: TransformRule = {
     wl.onTransformFactDirty(algebraicSimplifyRule, typeAnalysis.facts, (_, b) => [b.unit]);
   },
   sweep(unit: Function, chain: AssumptionChain, view: FunctionLocator) {
-    const witnesses = new Set<AssumptionChain>();
-    walkExprs(visibleBody(unit, chain), expr => {
-      const plan = rewritePlan(chain, view, expr);
-      if (plan !== undefined) witnesses.add(plan.witness);
+    const plans = new Map<number, Plan>();
+    rewriteStmtRhs(visibleBody(unit, chain) as StmtNS.Stmt[], new AlgebraicMatcher({ chain, view }, plans));
+
+    return runPerWitness(unit, groupPlansByWitness(plans), (body, replacements) => {
+      const replacer = new IdReplacer(replacements);
+      rewriteStmtRhs(body, replacer);
+      return replacer.changed;
     });
-    return runWitnessSweep(
-      unit,
-      witnesses,
-      witness => new ExprDrivenStmtVisitor(new AlgebraicSimplifyVisitor(witness, view)),
-    );
   },
 };

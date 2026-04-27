@@ -63,31 +63,30 @@ function pruneWithFactsAt(
   return changed ? out : stmts;
 }
 
-/** Is `(unit, s)` a valid target for speculation-lane dispatch? */
-export function dispatchValid(
-  unit: Function,
-  s: AssumptionChain,
-  isRefuted?: (s: AssumptionChain) => boolean,
-): boolean {
+/** Is `(unit, s)` a shape-valid target for speculation-lane dispatch?
+ *
+ *  Tests entry-specializability and the presence of param entry guards.
+ *  Refutation is orthogonal: callers must filter refuted chains before
+ *  asking. Mixing the two checks under one predicate hid that contract. */
+export function dispatchValid(unit: Function, s: AssumptionChain): boolean {
   if (!(unit.funcAst instanceof StmtNS.FunctionDef)) return false;
   if (!contextIsEntrySpecializable(unit, s)) return false;
-  if (isRefuted?.(s)) return false;
   if (directParamEntryGuardsFor(unit, s) === undefined) return false;
   return true;
 }
 
-/** Body to compile at `(unit, s)`: nearest non-retired ancestor fork
+/** Body to compile at `(unit, s)`: deepest stored fork ⊑ `s`
  *  (or `unit.body`), dead-branch-pruned under `s`'s type facts.
  *  Reference equality vs `unit.body` indicates whether speculation contributed.
- *  Requires `dispatchValid(unit, s, isRefuted)`. */
+ *
+ *  Preconditions: `dispatchValid(unit, s)` and `s` is non-refuted. */
 export function bodyToCompile(
   unit: Function,
   s: AssumptionChain,
   view: FunctionLocator,
-  isRefuted?: (s: AssumptionChain) => boolean,
 ): readonly StmtNS.Stmt[] {
-  if (!dispatchValid(unit, s, isRefuted)) {
-    throw new Error("[bodyToCompile] dispatchValid(unit, s, isRefuted) must hold");
+  if (!dispatchValid(unit, s)) {
+    throw new Error("[bodyToCompile] dispatchValid(unit, s) must hold");
   }
-  return pruneWithFactsAt(visibleBody(unit, s, isRefuted), s, view);
+  return pruneWithFactsAt(visibleBody(unit, s), s, view);
 }

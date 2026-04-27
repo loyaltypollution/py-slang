@@ -3,7 +3,7 @@
 // CFG produces fresh BasicBlock objects.
 
 import type { ExprNS, StmtNS } from "../../ast-types";
-import type { NodeId, NodeSet } from "./node-set";
+import type { NodeId } from "./node-set";
 import type { Function } from "./function/function";
 
 export type CFGEdge =
@@ -30,17 +30,15 @@ export interface BlockLocator {
   blockContaining(nodeId: NodeId): BasicBlock | undefined;
 }
 
-/** Synthetic blocks (entry/exit/joins) have empty `nodeIds` and are not
- *  valid `subscribe` interests. */
-export interface BasicBlock extends NodeSet {
+/** Synthetic blocks (entry/exit/joins) have empty `nodeIds`; never wrap them
+ *  via `nodeSetOfIds(block.nodeIds)` for a `subscribe()` interest — empty
+ *  membership is vacuously absent. */
+export interface BasicBlock {
   readonly stmts: StmtNS.Stmt[];
   readonly successorEdges: CFGEdge[];
   readonly predecessorEdges: CFGEdge[];
   readonly unit: Function;
   readonly nodeIds: Set<NodeId>;
-  contains(n: NodeId): boolean;
-  readonly size: number;
-  iterate(): Iterable<NodeId>;
 }
 
 export interface CFG {
@@ -53,18 +51,12 @@ export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
   const blocks: BasicBlock[] = [];
 
   function makeBlock(): BasicBlock {
-    const nodeIds = new Set<NodeId>();
     const block: BasicBlock = {
       stmts: [],
       successorEdges: [],
       predecessorEdges: [],
       unit,
-      nodeIds,
-      contains: (n) => nodeIds.has(n),
-      get size(): number {
-        return nodeIds.size;
-      },
-      iterate: () => nodeIds,
+      nodeIds: new Set<NodeId>(),
     };
     blocks.push(block);
     return block;
