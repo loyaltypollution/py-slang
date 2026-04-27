@@ -103,10 +103,19 @@ export interface WorklistConfig {
 }
 
 export class Worklist {
-  /** Function-shape state lives here. Worklist's vocabulary stops at
-   *  Function-agnostic dispatch; everything Function-specific (indices,
-   *  lifecycle, speculation context, CFG rebuild) is the manager's concern. */
+  /** Function registry + lifecycle (mint/rebuild, indices, pending CFG
+   *  rebuilds). Speculation/refute state lives on Worklist directly —
+   *  it's policy that the registry has no business knowing about. */
   readonly functionManager: FunctionManager;
+
+  /** Per-unit preferred chain for future compiles/dispatches. Unset or
+   *  `ROOT_CONTEXT` means future dispatch is unspecialized. */
+  private readonly futureDispatchContextByUnit = new Map<Function, AssumptionChain>();
+  /** Spec-rev subscribers — fired when observation-driven extension mutates
+   *  `futureDispatchContext`. */
+  private readonly specRevSubs: Array<(unit: Function) => void> = [];
+  /** Refute subscribers — fired when a chain carrier is refuted. */
+  private readonly refuteSubs: Array<(unit: Function, carrier: AssumptionChain) => void> = [];
 
   private readonly registeredAnalyses = new Set<Analysis<any, any>>();
   // Two tier-specific FIFOs: the only enforced order is
@@ -261,15 +270,15 @@ export class Worklist {
     return this.refutations.contains(node);
   }
 
-  /** Subscribe to refutation events. Delegates to the function-view manager. */
+  /** Subscribe to refutation events. */
   onRefute(callback: (unit: Function, carrier: AssumptionChain) => void): void {
-    this.functionManager.onRefute(callback);
+    this.refuteSubs.push(callback);
   }
 
   /** Refute `carrier` for `unit`: add the minimal singleton of the carrier's
-   *  tip binding, then ask the manager to fire refute subscribers and drop
-   *  the unit's futureDispatchContext if it now points into the refuted
-   *  subtree. Body eviction is lazy. Idempotent. */
+   *  tip binding, fire refute subscribers, and drop the unit's
+   *  `futureDispatchContext` if it now points into the refuted subtree. Body
+   *  eviction is lazy. Idempotent. */
   private refute(unit: Function, carrier: AssumptionChain): void {
     if (carrier === ROOT_CONTEXT) return;
     // MINIMAL generators: storing the full carrier chain would under-refute
@@ -278,7 +287,11 @@ export class Worklist {
     const a = carrier.assumption!;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
     this.refutations.add(minimal);
-    this.functionManager.refuteSubscribersAndReconcileDispatch(unit, carrier, this.refutations);
+    for (const sub of this.refuteSubs) sub(unit, carrier);
+    const fdCtx = this.futureDispatchContextByUnit.get(unit);
+    if (fdCtx !== undefined && this.refutations.contains(fdCtx)) {
+      this.futureDispatchContextByUnit.delete(unit);
+    }
   }
 
   private static addSub<S>(
@@ -382,7 +395,7 @@ export class Worklist {
     reader: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
   ): void {
-    this.functionManager.onSpecRev(unit => {
+    this.specRevSubs.push(unit => {
       for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
@@ -761,13 +774,13 @@ export class Worklist {
       }
       if (pruned === parentCtx) return parentCtx;
       if (this.refutations.contains(pruned)) {
-        this.functionManager.clearFutureDispatchContext(unit);
+        this.futureDispatchContextByUnit.delete(unit);
         return ROOT_CONTEXT;
       }
-      if (pruned === ROOT_CONTEXT) this.functionManager.clearFutureDispatchContext(unit);
-      else this.functionManager.setFutureDispatchContext(unit, pruned);
+      if (pruned === ROOT_CONTEXT) this.futureDispatchContextByUnit.delete(unit);
+      else this.futureDispatchContextByUnit.set(unit, pruned);
       this.enqueueNarrowingEntry(unit, pruned);
-      this.functionManager.fireSpecRev(unit);
+      for (const sub of this.specRevSubs) sub(unit);
       return pruned;
     }
 
@@ -789,23 +802,24 @@ export class Worklist {
 
     if (newCtx === parentCtx) return parentCtx;
     if (this.refutations.contains(newCtx)) {
-      this.functionManager.clearFutureDispatchContext(unit);
+      this.futureDispatchContextByUnit.delete(unit);
       return ROOT_CONTEXT;
     }
-    this.functionManager.setFutureDispatchContext(unit, newCtx);
+    this.futureDispatchContextByUnit.set(unit, newCtx);
     this.enqueueNarrowingEntry(unit, newCtx);
-    this.functionManager.fireSpecRev(unit);
+    for (const sub of this.specRevSubs) sub(unit);
     return newCtx;
   }
 
-  /** Preferred future-dispatch chain for `unit`. Delegates to manager. */
+  /** Preferred future-dispatch chain for `unit`. */
   futureDispatchChainFor(unit: Function): AssumptionChain {
-    return this.functionManager.futureDispatchChainFor(unit);
+    return this.futureDispatchContextByUnit.get(unit) ?? ROOT_CONTEXT;
   }
 
   /** Same as `futureDispatchChainFor`, keyed by nodeId. */
   futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
-    return this.functionManager.futureDispatchChainForNode(nodeId);
+    const unit = this.functionManager.functionOfNode(nodeId);
+    return unit === undefined ? ROOT_CONTEXT : this.futureDispatchChainFor(unit);
   }
 
   /** Drain to fixed point. Each iteration runs analyses to quiescence,
