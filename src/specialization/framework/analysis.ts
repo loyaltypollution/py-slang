@@ -1,5 +1,7 @@
 import type { AssumptionChain, NarrowingId } from "../assumption/chain";
 import type { NodeId, NodeSet } from "../program/node-set";
+import type { Function } from "../program/function";
+import type { FunctionRegistry } from "../program/function-keys";
 import { AnalysisStore, type ReadonlyAnalysisStore } from "./analysis-store";
 import type { Worklist } from "./worklist";
 
@@ -119,24 +121,22 @@ export interface AnalysisCtx {
 }
 
 /** Imperative AST sweep gated on analyses. No lattice, no transfer, no
- *  store write. The worklist dirties a rule on view mint/rebuild and on
- *  writes to subscribed analyses; `sweep` runs once per dirty view; views
- *  that rewrote are scheduled for rebuild. Idempotency across rebuilds is
- *  the rule's responsibility.
+ *  store write. The worklist dirties a rule on Function mint/rebuild and on
+ *  writes to subscribed analyses; `sweep` runs once per dirty Function;
+ *  Functions whose body changed are scheduled for rebuild. Idempotency
+ *  across rebuilds is the rule's responsibility.
  *
- *  Generic over `V` (view) and `P` (program-wide handle) so the framework
- *  type doesn't commit to view kind. Today's transforms instantiate as
- *  `TransformRule<Function, FunctionRegistry>`; the framework treats them as
- *  `TransformRule<unknown, unknown>` and the worklist's sweep loop casts
- *  to the concrete pair when invoking. */
-export interface TransformRule<V = unknown, P = unknown> {
+ *  Function is the only swap unit: backends can hot-swap at function
+ *  boundaries (next-call channel) but not mid-function (no OSR). The sweep
+ *  contract reflects that — there's no second view kind to abstract over. */
+export interface TransformRule {
   /** Returns `true` iff the body at `chain` was mutated — the worklist
-   *  then schedules a rebuild for `view`. Worklist always passes
-   *  `chain = futureDispatchChainFor(view)`. */
+   *  then schedules a rebuild for `unit`. Worklist always passes
+   *  `chain = futureDispatchChainFor(unit)`. */
   sweep(
-    view: V,
+    unit: Function,
     chain: AssumptionChain,
-    program: P,
+    program: FunctionRegistry,
   ): boolean;
   bind?(worklist: Worklist): void;
 }
