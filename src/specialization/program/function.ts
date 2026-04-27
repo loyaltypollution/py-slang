@@ -1,30 +1,29 @@
 import { ExprNS, StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import type { NodeId } from "./node-set";
-import type { BasicBlock, BlockId, CFG } from "./cfg";
+import type { BasicBlock, CFG } from "./cfg";
 import { buildCFG } from "./cfg";
 import type { SlotLookup } from "./slot-table";
 import { buildSlotTable } from "./slot-table";
 
-/** Per-scope optimization unit. `cfg` and `blockMap` are scheduler-owned
- *  and replaced by `Worklist.flushPendingRebuilds`. `body` is a live getter
- *  onto the AST. Function identity lives on `funcAst.id`; bytecode slot
- *  numbering (if any) is a backend concern and lives on the backend's own
- *  table (e.g. `SvmlSlotTable`). */
+/** Per-scope optimization unit. `cfg` is scheduler-owned and replaced by
+ *  `Worklist.flushPendingRebuilds`. `body` is a live getter onto the AST.
+ *  Function identity lives on `funcAst.id`; bytecode slot numbering (if any)
+ *  is a backend concern and lives on the backend's own table (e.g.
+ *  `SvmlSlotTable`). */
 export interface Function {
   readonly funcAst: StmtNS.FileInput | StmtNS.FunctionDef;
   readonly slotLookup: SlotLookup;
   readonly body: StmtNS.Stmt[];
   cfg: CFG;
-  blockMap: Map<BlockId, BasicBlock>;
   /** Node id → enclosing basic block, rebuilt with `wireCFG`. */
   nodeToBlock: Map<NodeId, BasicBlock>;
   blockOfNode(nodeId: NodeId): BasicBlock | undefined;
   /** NodeSet conformance: O(1) via this unit's `nodeToBlock` keys. */
   contains(n: NodeId): boolean;
-  /** NodeSet conformance: number of nodes owned by this function-view. */
+  /** NodeSet conformance: number of nodes owned by this Function. */
   readonly size: number;
-  /** NodeSet conformance: iterate node ids owned by this function-view. */
+  /** NodeSet conformance: iterate node ids owned by this Function. */
   iterate(): Iterable<NodeId>;
 }
 
@@ -42,7 +41,6 @@ export function buildOneFunction(
   const unit = {
     funcAst,
     slotLookup: buildSlotTable(env, paramNames),
-    blockMap: new Map(),
     nodeToBlock: new Map<NodeId, BasicBlock>(),
     get body(): StmtNS.Stmt[] {
       return funcAst instanceof StmtNS.FileInput ? funcAst.statements : funcAst.body;
@@ -66,15 +64,10 @@ export function buildOneFunction(
 
 // Lambda bodies are separate scopes and not analyzed here.
 
-/** (Re)build `unit.cfg`, refresh `blockMap`, and reindex `nodeToBlock`. The
- *  topology reindexes its own flat `NodeId → Function` map separately. */
+/** (Re)build `unit.cfg` and reindex `nodeToBlock`. The topology reindexes
+ *  its own flat `NodeId → Function` map separately. */
 export function wireCFG(unit: Function): void {
   unit.cfg = buildCFG(unit.body, unit);
-  const blockMap = new Map<BlockId, BasicBlock>();
-  for (const block of unit.cfg.blocks) {
-    blockMap.set(block.id, block);
-  }
-  unit.blockMap = blockMap;
   const nodeToBlock = new Map<NodeId, BasicBlock>();
   for (const block of unit.cfg.blocks) {
     for (const stmt of block.stmts) {

@@ -52,13 +52,13 @@ describe("makeBlockFixpointAnalysis quadrant coverage", () => {
       mergeKind: "must",
     });
 
-    const seenBlocks: number[] = [];
+    const seenBlocks: BasicBlock[] = [];
     const factsReader: Analysis<BasicBlock, number> = defineAnalysis({
       storeAlgebra: intMaxLattice,
       tier: "analysis",
       polarity: "may",
       transfer: (_ctx, key) => {
-        seenBlocks.push(key.id);
+        seenBlocks.push(key);
         return 1;
       },
       bind(wl) {
@@ -68,6 +68,6 @@ describe("makeBlockFixpointAnalysis quadrant coverage", () => {
 
     const { unit } = buildFirstFunctionUnit(FN_SRC, [analysis.env, analysis.facts, factsReader]);
 
-    expect(seenBlocks).toContain(analysis.seed(unit).id);
+    expect(seenBlocks).toContain(analysis.seed(unit));
   });
 });

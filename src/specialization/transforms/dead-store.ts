@@ -68,7 +68,7 @@ function escapedLocalSlotsIn(
 
 function buildLiveOutMap(unit: Function, chain: AssumptionChain): Map<number, ReadonlySet<number>> {
   const out = new Map<number, ReadonlySet<number>>();
-  for (const block of unit.blockMap.values()) {
+  for (const block of unit.cfg.blocks) {
     const liveOuts = perStatementLiveOut(block, unit.slotLookup, chain);
     const stmts = block.stmts;
     for (let i = 0; i < stmts.length; i++) {

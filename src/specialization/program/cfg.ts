@@ -6,8 +6,6 @@ import type { NodeId } from "./node-set";
 import type { FunctionId } from "./function-keys";
 import type { Function } from "./function";
 
-export type BlockId = number;
-
 export type CFGEdge =
   | { readonly kind: "unconditional"; readonly from: BasicBlock; readonly to: BasicBlock }
   | {
@@ -24,7 +22,6 @@ export type CFGEdge =
     };
 
 export interface BasicBlock {
-  readonly id: BlockId;
   /** View into the AST's statement arrays; do not mutate. */
   readonly stmts: StmtNS.Stmt[];
   readonly successorEdges: CFGEdge[];
@@ -61,13 +58,11 @@ export interface CFG {
 /** Build CFG from a flat stmt list. Single entry/exit; unreachable tails
  *  not represented. */
 export function buildCFG(body: StmtNS.Stmt[], unit: Function): CFG {
-  let nextId = 0;
   const blocks: BasicBlock[] = [];
 
   function makeBlock(): BasicBlock {
     const nodeIds = new Set<NodeId>();
     const block: BasicBlock = {
-      id: nextId++,
       stmts: [],
       successorEdges: [],
       predecessorEdges: [],
