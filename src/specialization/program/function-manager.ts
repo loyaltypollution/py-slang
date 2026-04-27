@@ -3,24 +3,24 @@
 // rebuilds, per-function speculation context, and lifecycle subscriptions.
 //
 // Worklist holds an instance and delegates Function-specific orchestration
-// here. The framework's vocabulary stops at `View` / `NodeSet`; this file is
-// where Function semantics live.
+// here. The framework's vocabulary stops at `NodeSet`; Function semantics
+// live here.
 
-import { StmtNS } from "../../../ast-types";
-import type { FunctionEnvironments } from "../../../resolver";
-import { ROOT_CONTEXT, isRoot, type AssumptionChain } from "../../assumption";
-import type { NodeId } from "../node-set";
-import type { FunctionId } from "../program-view";
-import type { Refutations } from "../../assumption/refutation";
-import { buildFunctions, buildOneFunction, wireCFG, type Function } from "../function";
-import type { FunctionView } from "../program-view";
+import { StmtNS } from "../../ast-types";
+import type { FunctionEnvironments } from "../../resolver";
+import { ROOT_CONTEXT, isRoot, type AssumptionChain } from "../assumption";
+import type { NodeId } from "./node-set";
+import type { FunctionId } from "./program-view";
+import type { Refutations } from "../assumption/refutation";
+import { buildFunctions, buildOneFunction, wireCFG, type Function } from "./function";
+import type { FunctionView } from "./program-view";
 
 /** Owns Function lifecycle, indexing, and per-function dispatch context.
  *  Worklist delegates all Function-shape orchestration here; this file is
  *  the home for Function semantics that the framework deliberately doesn't
  *  know about. Implements `FunctionView` so it's the runtime backing for
  *  `ProgramCtx.functions` / `ProgramCtx.functionOfNode`. */
-export class FunctionViewManager implements FunctionView {
+export class FunctionManager implements FunctionView {
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
   private readonly functionByNode = new Map<NodeId, Function>();
   private readonly nodesByFunction = new Map<Function, Set<NodeId>>();
@@ -30,8 +30,8 @@ export class FunctionViewManager implements FunctionView {
   private readonly futureDispatchContextByUnit = new Map<Function, AssumptionChain>();
 
   /** Lifecycle subscriber lists. Worklist registers wrappers here that
-   *  re-enqueue analyses on view-mint / view-rebuild / view-specrev events;
-   *  external consumers (e.g. memoization for refute) can subscribe directly. */
+   *  re-enqueue analyses on mint / rebuild / spec-rev events; external
+   *  consumers (e.g. memoization for refute) can subscribe directly. */
   private readonly mintSubs: Array<(unit: Function) => void> = [];
   private readonly rebuildSubs: Array<(unit: Function) => void> = [];
   private readonly specRevSubs: Array<(unit: Function) => void> = [];
@@ -75,7 +75,7 @@ export class FunctionViewManager implements FunctionView {
   addFunction(node: StmtNS.FunctionDef, chain: AssumptionChain): Function {
     if (!isRoot(chain)) {
       throw new Error(
-        `[FunctionViewManager.addFunction] structural rewrites are ROOT-only (chain depth=${chain.depth}).`,
+        `[FunctionManager.addFunction] structural rewrites are ROOT-only (chain depth=${chain.depth}).`,
       );
     }
     const unit = buildOneFunction(node, this.functionEnvironments);

@@ -36,7 +36,7 @@ import {
   storeWrite,
 } from "./analysis-store";
 import { type Function } from "../program/function";
-import { FunctionViewManager } from "../program/views/function-view-manager";
+import { FunctionManager } from "../program/function-manager";
 
 /** Catches misregistration: only Analyses carry `polarity`. */
 function assertNoPolarity(thing: object, site: string, kind: string): void {
@@ -103,10 +103,10 @@ export interface WorklistConfig {
 }
 
 export class Worklist {
-  /** Function-shape state lives here. Worklist's vocabulary stops at view-
-   *  agnostic dispatch; everything Function-specific (indices, lifecycle,
-   *  speculation context, CFG rebuild) is the manager's concern. */
-  readonly functionViews: FunctionViewManager;
+  /** Function-shape state lives here. Worklist's vocabulary stops at
+   *  Function-agnostic dispatch; everything Function-specific (indices,
+   *  lifecycle, speculation context, CFG rebuild) is the manager's concern. */
+  readonly functionManager: FunctionManager;
 
   private readonly registeredAnalyses = new Set<Analysis<any, any>>();
   // Two tier-specific FIFOs: the only enforced order is
@@ -168,13 +168,13 @@ export class Worklist {
   /** Refutation filter (minimal generators; `contains(c) = ∃ r. leq(r, c)`). */
   private readonly refutations: Refutations = new Refutations();
 
-  // ── Backward-compat delegates to the function-view manager ─────────
+  // ── Delegates to the function manager ──────────────────────────────
   get functions(): ReadonlyMap<FunctionId, Function> {
-    return this.functionViews.functions;
+    return this.functionManager.functions;
   }
 
   functionOfNode(nodeId: NodeId): Function | undefined {
-    return this.functionViews.functionOfNode(nodeId);
+    return this.functionManager.functionOfNode(nodeId);
   }
 
   private readonly narrowings: ReadonlyArray<Narrowing<any, any>>;
@@ -234,7 +234,7 @@ export class Worklist {
     // Build the function-view manager FIRST: registrations below depend on
     // the initial mint burst it fires when subscribers register via
     // `onMint`. Manager constructor builds Functions from `ast`.
-    this.functionViews = new FunctionViewManager(ast, functionEnvironments);
+    this.functionManager = new FunctionManager(ast, functionEnvironments);
 
     for (const p of analyses) this.register(p);
     for (const c of counters) this.registerCounter(c);
@@ -245,7 +245,7 @@ export class Worklist {
   /** Register a structurally-introduced FunctionDef. Delegates to the
    *  function-view manager, which builds the unit and fires its mint subs. */
   addFunction(node: StmtNS.FunctionDef, chain: AssumptionChain): Function {
-    return this.functionViews.addFunction(node, chain);
+    return this.functionManager.addFunction(node, chain);
   }
 
   private dirtyFor(rule: TransformRule): Set<Function> {
@@ -263,7 +263,7 @@ export class Worklist {
 
   /** Subscribe to refutation events. Delegates to the function-view manager. */
   onRefute(callback: (unit: Function, carrier: AssumptionChain) => void): void {
-    this.functionViews.onRefute(callback);
+    this.functionManager.onRefute(callback);
   }
 
   /** Refute `carrier` for `unit`: add the minimal singleton of the carrier's
@@ -278,7 +278,7 @@ export class Worklist {
     const a = carrier.assumption!;
     const minimal = extend(ROOT_CONTEXT, a.narrowing, a.key, a.value);
     this.refutations.add(minimal);
-    this.functionViews.refuteSubscribersAndReconcileDispatch(unit, carrier, this.refutations);
+    this.functionManager.refuteSubscribersAndReconcileDispatch(unit, carrier, this.refutations);
   }
 
   private static addSub<S>(
@@ -354,7 +354,7 @@ export class Worklist {
     reader: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
   ): void {
-    this.functionViews.onMint(unit => {
+    this.functionManager.onMint(unit => {
       for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
@@ -365,7 +365,7 @@ export class Worklist {
     reader: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
   ): void {
-    this.functionViews.onRebuild(unit => {
+    this.functionManager.onRebuild(unit => {
       for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
@@ -373,7 +373,7 @@ export class Worklist {
   /** Subscribe an evict callback to rebuild. Typically used to drop block-
    *  keyed cells whose `BasicBlock` identities belong to the pre-rebuild CFG. */
   onRebuildEvict(evict: (unit: Function) => void): void {
-    this.functionViews.onRebuild(evict);
+    this.functionManager.onRebuild(evict);
   }
 
   /** Subscribe `reader` to spec-context bumps on any unit. Fires when
@@ -382,7 +382,7 @@ export class Worklist {
     reader: Analysis<K, any>,
     dirtied: (ctx: AnalysisCtx, unit: Function) => Iterable<K>,
   ): void {
-    this.functionViews.onSpecRev(unit => {
+    this.functionManager.onSpecRev(unit => {
       for (const k of dirtied(this.passCtx, unit)) this.enqueue(reader, k, ROOT_CONTEXT);
     });
   }
@@ -406,8 +406,8 @@ export class Worklist {
     this.transformDirty.set(rule, dirty);
 
     const addUnit = (unit: Function): void => { dirty.add(unit); };
-    this.functionViews.onMint(addUnit);
-    this.functionViews.onRebuild(addUnit);
+    this.functionManager.onMint(addUnit);
+    this.functionManager.onRebuild(addUnit);
     rule.bind?.(this);
   }
 
@@ -642,7 +642,7 @@ export class Worklist {
           if (this.isRefuted(chain)) continue;
           const fired = r.sweep(unit, chain, this);
           if (fired) {
-            this.functionViews.schedulePendingRebuild(unit);
+            this.functionManager.schedulePendingRebuild(unit);
             anyFired = true;
           }
         }
@@ -661,7 +661,7 @@ export class Worklist {
   private makeCtx(context: AssumptionChain): ProgramCtx {
     const worklist = this;
     // Use getters for `functions`/`functionOfNode` so the ctx works even
-    // when constructed before `functionViews` is assigned (passCtx is a
+    // when constructed before `functionManager` is assigned (passCtx is a
     // class-field initializer that runs before the constructor body).
     return {
       get functions() { return worklist.functions; },
@@ -761,13 +761,13 @@ export class Worklist {
       }
       if (pruned === parentCtx) return parentCtx;
       if (this.refutations.contains(pruned)) {
-        this.functionViews.clearFutureDispatchContext(unit);
+        this.functionManager.clearFutureDispatchContext(unit);
         return ROOT_CONTEXT;
       }
-      if (pruned === ROOT_CONTEXT) this.functionViews.clearFutureDispatchContext(unit);
-      else this.functionViews.setFutureDispatchContext(unit, pruned);
+      if (pruned === ROOT_CONTEXT) this.functionManager.clearFutureDispatchContext(unit);
+      else this.functionManager.setFutureDispatchContext(unit, pruned);
       this.enqueueNarrowingEntry(unit, pruned);
-      this.functionViews.fireSpecRev(unit);
+      this.functionManager.fireSpecRev(unit);
       return pruned;
     }
 
@@ -789,23 +789,23 @@ export class Worklist {
 
     if (newCtx === parentCtx) return parentCtx;
     if (this.refutations.contains(newCtx)) {
-      this.functionViews.clearFutureDispatchContext(unit);
+      this.functionManager.clearFutureDispatchContext(unit);
       return ROOT_CONTEXT;
     }
-    this.functionViews.setFutureDispatchContext(unit, newCtx);
+    this.functionManager.setFutureDispatchContext(unit, newCtx);
     this.enqueueNarrowingEntry(unit, newCtx);
-    this.functionViews.fireSpecRev(unit);
+    this.functionManager.fireSpecRev(unit);
     return newCtx;
   }
 
   /** Preferred future-dispatch chain for `unit`. Delegates to manager. */
   futureDispatchChainFor(unit: Function): AssumptionChain {
-    return this.functionViews.futureDispatchChainFor(unit);
+    return this.functionManager.futureDispatchChainFor(unit);
   }
 
   /** Same as `futureDispatchChainFor`, keyed by nodeId. */
   futureDispatchChainForNode(nodeId: NodeId): AssumptionChain {
-    return this.functionViews.futureDispatchChainForNode(nodeId);
+    return this.functionManager.futureDispatchChainForNode(nodeId);
   }
 
   /** Drain to fixed point. Each iteration runs analyses to quiescence,
@@ -831,7 +831,7 @@ export class Worklist {
       this.processAnalysesToFixpoint();
       const fired = this.sweepTransforms();
       this.processAnalysesToFixpoint();
-      const rebuilt = this.functionViews.flushPendingRebuilds();
+      const rebuilt = this.functionManager.flushPendingRebuilds();
 
       if (!fired && rebuilt.length === 0) break;
 
