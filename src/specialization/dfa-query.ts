@@ -1,5 +1,5 @@
 import type { NodeId } from "./framework/analysis";
-import type { FunctionView } from "./program/program-view";
+import type { FunctionRegistry } from "./program/function-keys";
 import { ROOT_CONTEXT, type AssumptionChain } from "./assumption/chain";
 import {
   constAnalysis,
@@ -24,19 +24,19 @@ export interface DfaQuery extends StaticDfaQuery {
 }
 
 /** Thin facade over `typeAnalysis`/`constAnalysis` per-expression stores.
- *  The `FunctionView` handle is the seam where node-keyed reads
+ *  The `FunctionRegistry` handle is the seam where node-keyed reads
  *  materialize from block-keyed storage (`perExpr` walks block → env →
  *  expr-fact at the node's position). */
-interface FutureDispatchView extends FunctionView {
+interface FutureDispatchView extends FunctionRegistry {
   futureDispatchChainForNode(nodeId: NodeId): AssumptionChain;
 }
 
-function hasFutureDispatchView(view: FunctionView): view is FutureDispatchView {
+function hasFutureDispatchView(view: FunctionRegistry): view is FutureDispatchView {
   return typeof (view as Partial<FutureDispatchView>).futureDispatchChainForNode === "function";
 }
 
 export function makeDfaQuery(
-  view: FunctionView,
+  view: FunctionRegistry,
   futureDispatchChainForNode?: (nodeId: NodeId) => AssumptionChain,
 ): DfaQuery {
   const typeStore = typeAnalysis.perExpr(view);

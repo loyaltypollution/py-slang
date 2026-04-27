@@ -1,11 +1,11 @@
 import { ExprNS } from "../../ast-types";
 import { constAnalysis, type ConstLattice } from "../analysis";
 import type { TransformRule } from "../framework/analysis";
-import { functionOfBlock, wakeOwningFunction } from "../program/program-view";
+import { functionOfBlock, wakeOwningFunction } from "../program/function-keys";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/function";
-import type { FunctionView } from "../program/program-view";
+import type { FunctionRegistry } from "../program/function-keys";
 import {
   DescendingExprVisitor,
   ExprDrivenStmtVisitor,
@@ -16,7 +16,7 @@ import {
 
 type ConstHit = Witnessed<Extract<ConstLattice, { tag: "const" }>>;
 
-function readConst(chain: AssumptionChain, view: FunctionView, nodeId: number): ConstHit | undefined {
+function readConst(chain: AssumptionChain, view: FunctionRegistry, nodeId: number): ConstHit | undefined {
   return constAnalysis.perExpr(view).readMinimal(
     chain,
     nodeId,
@@ -29,7 +29,7 @@ class ConstFoldExprVisitor extends DescendingExprVisitor {
 
   constructor(
     private readonly chain: AssumptionChain,
-    private readonly view: FunctionView,
+    private readonly view: FunctionRegistry,
   ) {
     super();
   }
@@ -51,7 +51,7 @@ export const constantFoldingRule: TransformRule = {
       wakeOwningFunction(functionOfBlock),
     );
   },
-  sweep(unit: Function, chain: AssumptionChain, view: FunctionView): boolean {
+  sweep(unit: Function, chain: AssumptionChain, view: FunctionRegistry): boolean {
     const witnesses = new Set<AssumptionChain>();
     walkExprs(visibleBody(unit, chain), (e) => {
       if (!(e instanceof ExprNS.Binary)) return;

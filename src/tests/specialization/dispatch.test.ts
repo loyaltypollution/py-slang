@@ -1,7 +1,7 @@
 import { StmtNS } from "../../ast-types";
 import { ROOT_CONTEXT } from "../../specialization/assumption/chain";
 import { bodyToCompile, dispatchValid } from "../../specialization/speculation/chain-dispatch";
-import { paramKey } from "../../specialization/program/program-view";
+import { paramKey } from "../../specialization/program/function-keys";
 import { runtimeParamChannel } from "../../specialization/observation/runtime-analyses";
 import { setupAndDrain } from "./harness/compile-pipelines";
 

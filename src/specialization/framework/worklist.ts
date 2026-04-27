@@ -21,7 +21,7 @@ import type { ObservationBinding } from "../observation/observation-binding";
 import type { ObservationChannel } from "../observation/observation-channel";
 import type { NodeId, NodeSet } from "./analysis";
 import { intersects } from "../program/node-set";
-import type { FunctionId } from "../program/program-view";
+import type { FunctionId } from "../program/function-keys";
 import {
   type Analysis,
   type AnalysisCtx,
@@ -29,7 +29,7 @@ import {
   type Narrowing,
   type TransformRule,
 } from "./analysis";
-import { functionOfNodeId, type FunctionResolver } from "../program/program-view";
+import { functionOfNodeId, type FunctionResolver } from "../program/function-keys";
 import type { ProgramCtx } from "../program/program-ctx";
 import {
   storeEvict,

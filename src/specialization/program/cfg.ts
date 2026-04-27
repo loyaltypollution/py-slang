@@ -3,7 +3,7 @@
 
 import type { ExprNS, StmtNS } from "../../ast-types";
 import type { NodeId } from "./node-set";
-import type { FunctionId } from "./program-view";
+import type { FunctionId } from "./function-keys";
 import type { Function } from "./function";
 
 export type BlockId = number;
@@ -29,8 +29,8 @@ export interface BasicBlock {
   readonly stmts: StmtNS.Stmt[];
   readonly successorEdges: CFGEdge[];
   readonly predecessorEdges: CFGEdge[];
-  /** Id of the function-view that owns this block. Resolve to the
-   *  `Function` via the function-view-manager (`view.functions.get(unitId)`).
+  /** Id of the Function that owns this block. Resolve to the
+   *  `Function` via the `FunctionRegistry` (`view.functions.get(unitId)`).
    *  An opaque numeric tag, not a typed back-pointer — blocks are pure
    *  NodeSets; ownership is data, not structure. */
   readonly unitId: FunctionId;

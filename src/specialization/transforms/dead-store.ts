@@ -2,9 +2,9 @@ import { ExprNS, StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption/chain";
 import { forkBody, visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/function";
-import type { FunctionView } from "../program/program-view";
+import type { FunctionRegistry } from "../program/function-keys";
 import { isLocal, type SlotLookup } from "../program/slot-table";
-import { functionOfBlock, wakeOwningFunction } from "../program/program-view";
+import { functionOfBlock, wakeOwningFunction } from "../program/function-keys";
 import type { TransformRule } from "../framework/analysis";
 import { livenessAnalysis, perStatementLiveOut } from "../analysis";
 import { walkExpr, walkExprs } from "./witness-utils";
@@ -188,7 +188,7 @@ export const deadStoreRule: TransformRule = {
   bind(wl) {
     wl.onTransformFactDirty(deadStoreRule, livenessAnalysis.env, wakeOwningFunction(functionOfBlock));
   },
-  sweep(unit: Function, chain: AssumptionChain, _view: FunctionView): boolean {
+  sweep(unit: Function, chain: AssumptionChain, _view: FunctionRegistry): boolean {
     // Top-level names are observable; only function-scope slots are safe to DSE.
     if (unit.funcAst instanceof StmtNS.FileInput) return false;
 

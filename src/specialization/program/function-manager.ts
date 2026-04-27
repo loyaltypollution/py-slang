@@ -10,17 +10,17 @@ import { StmtNS } from "../../ast-types";
 import type { FunctionEnvironments } from "../../resolver";
 import { ROOT_CONTEXT, isRoot, type AssumptionChain } from "../assumption";
 import type { NodeId } from "./node-set";
-import type { FunctionId } from "./program-view";
+import type { FunctionId } from "./function-keys";
 import type { Refutations } from "../assumption/refutation";
 import { buildFunctions, buildOneFunction, wireCFG, type Function } from "./function";
-import type { FunctionView } from "./program-view";
+import type { FunctionRegistry } from "./function-keys";
 
 /** Owns Function lifecycle, indexing, and per-function dispatch context.
  *  Worklist delegates all Function-shape orchestration here; this file is
  *  the home for Function semantics that the framework deliberately doesn't
- *  know about. Implements `FunctionView` so it's the runtime backing for
+ *  know about. Implements `FunctionRegistry` so it's the runtime backing for
  *  `ProgramCtx.functions` / `ProgramCtx.functionOfNode`. */
-export class FunctionManager implements FunctionView {
+export class FunctionManager implements FunctionRegistry {
   private readonly functionsByFunctionId = new Map<FunctionId, Function>();
   private readonly functionByNode = new Map<NodeId, Function>();
   private readonly nodesByFunction = new Map<Function, Set<NodeId>>();
@@ -46,7 +46,7 @@ export class FunctionManager implements FunctionView {
     }
   }
 
-  // ── FunctionView surface ────────────────────────────────────────────
+  // ── FunctionRegistry surface ────────────────────────────────────────────
   get functions(): ReadonlyMap<FunctionId, Function> {
     return this.functionsByFunctionId;
   }

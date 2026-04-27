@@ -10,7 +10,7 @@ import type {
 } from "../framework/analysis";
 import { defineAnalysis } from "../framework/analysis";
 import { EMPTY_NODESET, nodeSetOfIds } from "../program/node-set";
-import type { FunctionView } from "../program/program-view";
+import type { FunctionRegistry } from "../program/function-keys";
 import { asProgramCtx } from "../program/program-ctx";
 import type { ReadonlyAnalysisStore } from "../framework/analysis-store";
 import { EMPTY_MAP, storeContexts, storeEvict, walkChain } from "../framework/analysis-store";
@@ -113,7 +113,7 @@ export interface BlockFixpointAnalysis<L> {
    *  consumers. NOT edge-recording — use `readPerExprDeepest(ctx, nodeId)`
    *  from inside a transfer if you want auto-invalidation when the cell
    *  changes. */
-  perExpr(view: FunctionView): ReadonlyAnalysisStore<number, L>;
+  perExpr(view: FunctionRegistry): ReadonlyAnalysisStore<number, L>;
   /** Edge-recording per-expression read. Walks the chain at `ctx.currentContext`,
    *  returning the deepest ancestor whose facts map contains `nodeId`.
    *  Records a read edge on `(facts, blockOfNode(nodeId))` so that any
@@ -330,8 +330,8 @@ export function makeBlockFixpointAnalysis<L>(
     wl.onRebuildEvict((unit) => evictStaleBlockCells(factsAnalysis.store, unit));
   };
 
-  const perExprCache = new WeakMap<FunctionView, ReadonlyAnalysisStore<number, L>>();
-  function perExpr(view: FunctionView): ReadonlyAnalysisStore<number, L> {
+  const perExprCache = new WeakMap<FunctionRegistry, ReadonlyAnalysisStore<number, L>>();
+  function perExpr(view: FunctionRegistry): ReadonlyAnalysisStore<number, L> {
     const cached = perExprCache.get(view);
     if (cached !== undefined) return cached;
     const tryReadNode = (nodeId: number, context: AssumptionChain): L | undefined => {

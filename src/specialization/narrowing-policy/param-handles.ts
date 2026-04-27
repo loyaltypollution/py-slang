@@ -1,6 +1,6 @@
 import { type Narrowing } from "../framework/analysis";
 import { asProgramCtx } from "../program/program-ctx";
-import { paramKeyFunctionId, type ParamKey } from "../program/program-view";
+import { paramKeyFunctionId, type ParamKey } from "../program/function-keys";
 import { eq as typeEq, type TypeLattice } from "../analysis/type/lattice";
 import { liftType, typeAnalysis } from "../analysis/type/analysis";
 import type { ObservationBinding } from "../observation/observation-binding";

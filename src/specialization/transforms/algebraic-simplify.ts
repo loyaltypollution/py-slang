@@ -12,11 +12,11 @@ import {
   type TypeLattice,
 } from "../analysis";
 import type { TransformRule } from "../framework/analysis";
-import { functionOfBlock, wakeOwningFunction } from "../program/program-view";
+import { functionOfBlock, wakeOwningFunction } from "../program/function-keys";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/function";
-import type { FunctionView } from "../program/program-view";
+import type { FunctionRegistry } from "../program/function-keys";
 import {
   DescendingExprVisitor,
   ExprDrivenStmtVisitor,
@@ -29,7 +29,7 @@ type RewritePlan = { witness: AssumptionChain; replacement: ExprNS.Expr };
 
 function readType(
   chain: AssumptionChain,
-  view: FunctionView,
+  view: FunctionRegistry,
   node: ExprNS.Expr,
 ): Witnessed<TypeLattice> | undefined {
   return typeAnalysis.perExpr(view).readMinimal(chain, node.id, () => true);
@@ -37,7 +37,7 @@ function readType(
 
 function readConst(
   chain: AssumptionChain,
-  view: FunctionView,
+  view: FunctionRegistry,
   node: ExprNS.Expr,
 ): Witnessed<ConstLattice> | undefined {
   return constAnalysis.perExpr(view).readMinimal(chain, node.id, () => true);
@@ -82,7 +82,7 @@ function planWhen(
 
 function planBinary(
   chain: AssumptionChain,
-  view: FunctionView,
+  view: FunctionRegistry,
   expr: ExprNS.Binary,
 ): RewritePlan | undefined {
   const lt = readType(chain, view, expr.left);
@@ -130,7 +130,7 @@ function planBinary(
 
 function planBoolOp(
   chain: AssumptionChain,
-  view: FunctionView,
+  view: FunctionRegistry,
   expr: ExprNS.BoolOp,
 ): RewritePlan | undefined {
   const lt = readType(chain, view, expr.left);
@@ -150,7 +150,7 @@ function planBoolOp(
 
 function planUnary(
   chain: AssumptionChain,
-  view: FunctionView,
+  view: FunctionRegistry,
   expr: ExprNS.Unary,
 ): RewritePlan | undefined {
   const inner = unwrapGrouping(expr.right);
@@ -177,7 +177,7 @@ function planUnary(
 
 function rewritePlan(
   chain: AssumptionChain,
-  view: FunctionView,
+  view: FunctionRegistry,
   expr: ExprNS.Expr,
 ): RewritePlan | undefined {
   if (expr instanceof ExprNS.Binary) return planBinary(chain, view, expr);
@@ -190,7 +190,7 @@ class AlgebraicSimplifyVisitor extends DescendingExprVisitor {
   changed = false;
   constructor(
     private readonly chain: AssumptionChain,
-    private readonly view: FunctionView,
+    private readonly view: FunctionRegistry,
   ) {
     super();
   }
@@ -223,7 +223,7 @@ export const algebraicSimplifyRule: TransformRule = {
       wakeOwningFunction(functionOfBlock),
     );
   },
-  sweep(unit: Function, chain: AssumptionChain, view: FunctionView): boolean {
+  sweep(unit: Function, chain: AssumptionChain, view: FunctionRegistry): boolean {
     const witnesses = new Set<AssumptionChain>();
     walkExprs(visibleBody(unit, chain), (expr) => {
       const plan = rewritePlan(chain, view, expr);

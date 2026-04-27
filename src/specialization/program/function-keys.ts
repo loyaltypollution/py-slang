@@ -8,11 +8,10 @@ export type { NodeId } from "./node-set";
 /** `FunctionDef.id` or `FileInput.id` (alias of NodeId, semantic only). */
 export type FunctionId = NodeId;
 
-/** Read-only program-wide unit index. `Worklist` is the canonical implementer.
- *  This is the public read surface for consumers that need to enumerate
- *  function-views; the worklist exposes it as the runtime backing of
+/** Read-only program-wide function index. `FunctionManager` is the canonical
+ *  implementer; the worklist exposes it as the runtime backing of
  *  `ProgramCtx`. */
-export interface FunctionView {
+export interface FunctionRegistry {
   readonly functions: ReadonlyMap<FunctionId, Function>;
   functionOfNode(nodeId: NodeId): Function | undefined;
 }
@@ -34,7 +33,7 @@ export function paramKeyIndex(key: ParamKey): number {
 }
 
 /** Resolves a key (BasicBlock, NodeId, FunctionId) to its owning Function via
- *  the function-view-manager handle on the runtime ctx. Takes the framework's
+ *  the `FunctionRegistry` mixed into the runtime ctx. Takes the framework's
  *  generic `AnalysisCtx` and casts to `ProgramCtx` internally — the cast is
  *  safe at runtime because Worklist always constructs `ProgramCtx` for
  *  transfers; the framework just doesn't promise it in its types. */

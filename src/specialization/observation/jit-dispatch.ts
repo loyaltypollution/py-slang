@@ -1,6 +1,6 @@
 import type { StmtNS } from "../../ast-types";
 import type { AssumptionChain } from "../assumption";
-import type { FunctionId } from "../program/program-view";
+import type { FunctionId } from "../program/function-keys";
 import type { Function } from "../program/function";
 import type { Worklist } from "../framework/worklist";
 import { bodyToCompile, dispatchValid } from "../speculation/chain-dispatch";

@@ -55,8 +55,8 @@ export interface Analysis<K extends NodeSet, V> {
 
 /** Pair of (analysis, seed-key) re-enqueued at every narrowing-entry to
  *  re-seed Kildall under a freshly extended/pruned context. The seed receives
- *  the `view` (a `NodeSet` — today always a `FunctionView`, but the type does
- *  not commit to that) and produces an analysis-specific key to enqueue.
+ *  the `view` (a `NodeSet` — typically a `Function`) and produces an
+ *  analysis-specific key to enqueue.
  *  Structurally satisfied by `BlockFixpointAnalysis` (`.env` + `.seed(view)`). */
 export interface EntrySeed {
   readonly env: Analysis<any, any>;
@@ -73,10 +73,10 @@ export interface Narrowing<K = any, V = unknown> extends NarrowingId<K, V> {
 
 /** Generic transfer-time context. The framework knows about: chain-walking
  *  reads, writes (with optional delta), and evictions. It knows nothing
- *  about Functions, BasicBlocks, or any specific view kind.
+ *  about Functions or BasicBlocks.
  *
  *  Worklist runtime hands transfers a ctx that ALSO carries program-shape
- *  accessors (function-view-manager methods); analyses that need those cast
+ *  accessors (`FunctionRegistry` methods); analyses that need those cast
  *  the ctx via `asProgramCtx` from `program/program-ctx.ts`. The cast is
  *  the boundary: framework's vocabulary stops at `AnalysisCtx`. */
 export interface AnalysisCtx {
@@ -126,7 +126,7 @@ export interface AnalysisCtx {
  *
  *  Generic over `V` (view) and `P` (program-wide handle) so the framework
  *  type doesn't commit to view kind. Today's transforms instantiate as
- *  `TransformRule<Function, FunctionView>`; the framework treats them as
+ *  `TransformRule<Function, FunctionRegistry>`; the framework treats them as
  *  `TransformRule<unknown, unknown>` and the worklist's sweep loop casts
  *  to the concrete pair when invoking. */
 export interface TransformRule<V = unknown, P = unknown> {

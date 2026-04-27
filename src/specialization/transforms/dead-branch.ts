@@ -1,14 +1,14 @@
 import { StmtNS } from "../../ast-types";
 import type { TransformRule } from "../framework/analysis";
-import { functionOfBlock, wakeOwningFunction } from "../program/program-view";
+import { functionOfBlock, wakeOwningFunction } from "../program/function-keys";
 import type { AssumptionChain } from "../assumption/chain";
 import { visibleBody } from "../speculation/assumption-bodies";
 import type { Function } from "../program/function";
-import type { FunctionView } from "../program/program-view";
+import type { FunctionRegistry } from "../program/function-keys";
 import { BOOL_BIT, BoolRef, type TypeLattice, typeAnalysis } from "../analysis";
 import { BaseStmtVisitor, runWitnessSweep } from "./witness-utils";
 
-function boolCondition(chain: AssumptionChain, view: FunctionView, nodeId: number) {
+function boolCondition(chain: AssumptionChain, view: FunctionRegistry, nodeId: number) {
   return typeAnalysis
     .perExpr(view)
     .readMinimal(
@@ -22,7 +22,7 @@ function boolCondition(chain: AssumptionChain, view: FunctionView, nodeId: numbe
 function collectConstCondWitnesses(
   stmts: readonly StmtNS.Stmt[],
   chain: AssumptionChain,
-  view: FunctionView,
+  view: FunctionRegistry,
   out: Set<AssumptionChain>,
 ): void {
   for (const s of stmts) {
@@ -43,7 +43,7 @@ class DeadBranchVisitor extends BaseStmtVisitor {
   changed = false;
   constructor(
     private readonly chain: AssumptionChain,
-    private readonly view: FunctionView,
+    private readonly view: FunctionRegistry,
   ) {
     super();
   }
@@ -90,7 +90,7 @@ export const deadBranchRule: TransformRule = {
   bind(wl) {
     wl.onTransformFactDirty(deadBranchRule, typeAnalysis.facts, wakeOwningFunction(functionOfBlock));
   },
-  sweep(unit: Function, chain: AssumptionChain, view: FunctionView): boolean {
+  sweep(unit: Function, chain: AssumptionChain, view: FunctionRegistry): boolean {
     const witnesses = new Set<AssumptionChain>();
     collectConstCondWitnesses(visibleBody(unit, chain), chain, view, witnesses);
     return runWitnessSweep(
